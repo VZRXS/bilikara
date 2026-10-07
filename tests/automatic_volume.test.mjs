@@ -15,11 +15,25 @@ const evidence = process.env.BILIKARA_TEST_AUTO_VOLUME_EVIDENCE || mkdtempSync(p
 mkdirSync(evidence, { recursive: true });
 const companion = process.env.BILIKARA_TEST_LIBAV_COMPANION;
 let prepared;
+async function timingFixtures(folder) {
+  // Stream-copy only: timestamp quantization changes no encoded samples.
+  // An independent oracle remains the original 12s/48kHz sine corpus.
+  for (const [name, expression] of [
+    ['aac-quantized.m4a','round(PTS*TB*1000)/(TB*1000)'],
+    ['aac-gap.m4a','PTS+not(not(floor(N/4)))*0.01/TB'],
+    ['aac-overlap.m4a','PTS-not(not(floor(N/4)))*0.01/TB'],
+  ]) {
+    const filter=`setts=pts=${expression}:dts=${expression.replaceAll('PTS','DTS')}`;
+    const result=await runNative('ffmpeg',['-hide_banner','-loglevel','error','-y','-i',path.join(folder,'aac-48000.m4a'),
+      '-map','0:a:0','-c:a','copy','-bsf:a',filter,'-movflags','+faststart',path.join(folder,name)],process.env,30000);
+    assert.equal(result.status,0,result.stderr);
+  }
+}
 async function fixtures() {
   return prepared ||= (async () => {
     assert.ok(companion, 'Declare the actual prepared BILIKARA_TEST_LIBAV_COMPANION; no mocked loudness');
     const folder = path.join(evidence, 'fixtures'); mkdirSync(folder, { recursive: true });
-    if (process.env.BILIKARA_TEST_REUSE_AUDIO_FIXTURES === '1') return folder;
+    if (process.env.BILIKARA_TEST_REUSE_AUDIO_FIXTURES === '1') { await timingFixtures(folder); return folder; }
     const cases = [
       ['aac-44100.m4a', 44100, 2, 'aac', 12, 1], ['aac-48000.m4a', 48000, 1, 'aac', 12, 1],
       ['flac-96000.flac', 96000, 2, 'flac', 12, 1], ['opus-48000.mp4', 48000, 2, 'libopus', 12, 1],
@@ -47,6 +61,7 @@ async function fixtures() {
     writeFileSync(path.join(folder, 'oracle.json'), JSON.stringify(oracle, null, 2));
     const video = await runNative('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=24', '-t', '90', '-an', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', path.join(folder, 'video.mp4')], process.env, 120000);
     assert.equal(video.status, 0, video.stderr);
+    await timingFixtures(folder);
     return folder;
   })();
 }
@@ -66,7 +81,7 @@ test('real native compressed PCM loudness, failure/cancellation and artifact reu
   }
 });
 
-async function startFixture(folder, t) {
+async function startFixture(folder, t, { deferPendingAudio = false } = {}) {
   const home = mkdtempSync(path.join(evidence, 'native-'));
   const data = path.join(home, 'data'); mkdirSync(data, { recursive: true });
   writeFileSync(path.join(data, '.bilikara-desktop-rust-preview'), 'desktop-rust-preview-v1\n');
@@ -74,7 +89,10 @@ async function startFixture(folder, t) {
   const certs = await localCertificate(path.join(home, 'certs'), ['api.bilibili.com', 'fixture.bilivideo.com']);
   const titles = ['晨光练习', '海风练习', '星空练习'];
   const bvids = ['BV1xx411c7mD', 'BV1z84y1p7oS', 'BV1tPC2BEEjq'];
-  const provider = await videoFixture((raw, headers) => {
+  let releasePending;
+  const pending = deferPendingAudio ? new Promise(resolve => { releasePending = resolve; }) : Promise.resolve();
+  const pendingRequests = [];
+  const provider = await videoFixture(async (raw, headers) => {
     const url = new URL(raw, 'https://api.bilibili.com');
     if (['/x/web-interface/view','/x/web-interface/wbi/view'].includes(url.pathname)) {
       const index = Math.max(0, bvids.indexOf(url.searchParams.get('bvid')));
@@ -86,6 +104,10 @@ async function startFixture(folder, t) {
       return {code:0,data:{quality:64,dash:{duration:90,video:[{id:64,codecid:7,bandwidth:100000,baseUrl:'https://fixture.bilivideo.com/video.mp4',mimeType:'video/mp4',codecs:'avc1.64001e'}],audio:[{id:30280,bandwidth:128000,baseUrl:`https://fixture.bilivideo.com/${audio}.m4a`,mimeType:'audio/mp4',codecs:'mp4a.40.2'}]}}};
     }
     if (['/video.mp4','/reference.m4a','/louder.m4a','/quieter.m4a'].includes(url.pathname)) {
+      if (deferPendingAudio && url.pathname !== '/reference.m4a' && url.pathname !== '/video.mp4') {
+        pendingRequests.push(url.pathname);
+        await pending;
+      }
       let body = readFileSync(path.join(folder, url.pathname.slice(1))); const responseHeaders = {'Accept-Ranges':'bytes'}; let status=200;
       if (headers.range) {const [,start,end] = headers.range.match(/^bytes=(\d+)-(\d*)$/); const first=Number(start),last=end?Number(end):body.length-1;responseHeaders['Content-Range']=`bytes ${first}-${last}/${body.length}`;body=body.subarray(first,last+1);status=206;}
       return {fixtureResponse:{status,rawBody:body,headers:responseHeaders}};
@@ -94,16 +116,58 @@ async function startFixture(folder, t) {
     writeFileSync(path.join(evidence,'unhandled-provider.txt'), raw + '\n', {flag:'a'});
     return {fixtureResponse:{status:503,data:{error:'offline synthetic provider only'}}};
   }, certs);
-  t.after(() => provider.close());
-  const env = {...isolatedEnvironment(home), ...provider.environment, BILIKARA_LIBAV_COMPANION:companion, NO_PROXY:'127.0.0.1,localhost', no_proxy:'127.0.0.1,localhost', BILIKARA_CATALOG_SHEETS_URL:'http://127.0.0.1:1/disabled.csv'};
+  t.after(async () => { releasePending?.(); await provider.close(); });
+  const env = {...isolatedEnvironment(home), ...provider.environment, BILIKARA_LIBAV_COMPANION:companion, NO_PROXY:'127.0.0.1,localhost', no_proxy:'127.0.0.1,localhost', BILIKARA_CF_API_URL:'http://127.0.0.1:1', BILIKARA_CATALOG_SHEETS_URL:'http://127.0.0.1:1/disabled.csv'};
   const executable = await buildNativeHost();
   const host = await RunningHost.start(executable, home, ['--headless','--port','0','--data-dir',data,'--static-dir',path.join(root,'static')], env);
   t.after(() => host.close());
   await host.api('/api/session-users/add',{name:'练习者'});
   for (const bvid of bvids) await host.api('/api/playlist/add',{url:`https://www.bilibili.com/video/${bvid}`,allow_repeat:true});
-  await waitFor(async () => { const state = await host.api('/api/state'); const items=[state.current_item,...state.playlist]; if(items.some(i=>i?.cache_status==='failed')) assert.fail(JSON.stringify(items.map(i=>({title:i?.title,status:i?.cache_status,message:i?.cache_message})))); return state.current_item?.cache_status === 'ready' && state.playlist.every(i => i.cache_status === 'ready'); }, 'synthetic audio publication', 60000);
-  return {host, provider, executable, env, data, home};
+  if (!deferPendingAudio) await waitFor(async () => { const state = await host.api('/api/state'); const items=[state.current_item,...state.playlist]; if(items.some(i=>i?.cache_status==='failed')) assert.fail(JSON.stringify(items.map(i=>({title:i?.title,status:i?.cache_status,message:i?.cache_message})))); return state.current_item?.cache_status === 'ready' && state.playlist.every(i => i.cache_status === 'ready'); }, 'synthetic audio publication', 60000);
+  return {host, provider, executable, env, data, home, releasePending, pendingRequests};
 }
+
+test('continued session freshly caches and analyzes pending audio after a real Host restart', { timeout: 180000 }, async t => {
+  const fixture = await startFixture(await fixtures(), t, { deferPendingAudio: true });
+  const { host, executable, home, data, env, releasePending, pendingRequests } = fixture;
+  await host.api('/api/player/volume', {volume_percent:50});
+  await host.api('/api/player/automatic-volume', {action:'enable',enabled:true});
+  await waitFor(() => pendingRequests.length > 0, 'pending media transfer reaches the real downloader');
+  const before = await host.api('/api/state');
+  assert.ok([before.current_item,...before.playlist].some(item => item.cache_status !== 'ready'));
+  assert.equal(before.automatic_volume.enabled, true);
+  await host.close(releasePending);
+  const restarted = await RunningHost.start(executable, home,
+    ['--headless','--port','0','--data-dir',data,'--static-dir',path.join(root,'static')], env);
+  t.after(() => restarted.close());
+  const restored = await restarted.api('/api/state');
+  assert.equal(restored.session_flags.startup_choice_pending, true);
+  assert.equal(restored.automatic_volume.enabled, true, 'the setting is persisted across the actual process boundary');
+  assert.equal(restored.player_settings.volume_percent, 50, 'restore preserves the current manual volume');
+  assert.ok([restored.current_item,...restored.playlist].some(item => item.cache_status !== 'ready'),
+    'restored work still needs a fresh download, not a pre-published fixture');
+  const requestsBeforeContinue = fixture.provider.requests.length;
+  await restarted.api('/api/session/startup-choice', {choice:'continue'});
+  await waitFor(async () => {
+    const state = await restarted.api('/api/state');
+    const items = [state.current_item,...state.playlist];
+    assert.ok(items.every(item => item.cache_status !== 'failed'), 'cache restoration must not silently fail');
+    return items.every(item => item.cache_status === 'ready') && state.automatic_volume.can_reference;
+  }, 'continued pending cache and real whole-audio analysis', 60000);
+  assert.ok(fixture.provider.requests.slice(requestsBeforeContinue).some(url => /\/(louder|quieter)\.m4a/.test(url)),
+    'the restarted process actually acquires the pending audio');
+  const ready = await restarted.api('/api/state');
+  const analyses = (await restarted.api('/api/diagnostics/native')).events.filter(event => event.event === 'automatic-volume-analysis');
+  assert.ok(analyses.some(event => event.reused === false), 'real PCM execution occurs after restoration');
+  await restarted.api('/api/player/automatic-volume', {action:'reference',context:ready.automatic_volume.context});
+  await restarted.api('/api/player/next', {playback_generation:(await restarted.api('/api/state')).playback_generation});
+  await waitFor(async () => (await restarted.api('/api/state')).automatic_volume.status === 'automatic',
+    'pending next-song audio is usable as a real automatic-volume input', 45000);
+  assert.ok(Math.abs((await restarted.api('/api/state')).player_settings.volume_percent - 32) <= 1,
+    'independent +4dB fixture produces the preserved automatic-volume result after restoration');
+  writeFileSync(path.join(evidence,'restored-pending-analysis.json'),JSON.stringify({pendingRequests,
+    before:before.automatic_volume,restored:restored.automatic_volume,ready:ready.automatic_volume,analyses},null,2));
+});
 
 test('actual desktop Host calibration, local/public authorization and rendered shared dialogs', { timeout: 300000 }, async t => {
   const fixture = await startFixture(await fixtures(), t);
@@ -145,9 +209,10 @@ test('actual desktop Host calibration, local/public authorization and rendered s
   assert.equal((await host.api('/api/diagnostics/native')).events.some(event=>event.event==='automatic-volume-analysis'),false);
 
   const browser=await webkit.launch({headless:true}); t.after(()=>browser.close());
-  const desktop=await browser.newContext({viewport:{width:1440,height:1000},locale:'zh-CN'});
+  const desktopViewport={width:1920,height:1080}, remoteViewport={width:440,height:956};
+  const desktop=await browser.newContext({viewport:desktopViewport,locale:'zh-CN'});
   await desktop.addCookies([...host.cookies].map(([name,value])=>({name,value,url:host.base})));
-  const remoteContext=await browser.newContext({viewport:{width:390,height:844},locale:'zh-CN',hasTouch:true,isMobile:true});
+  const remoteContext=await browser.newContext({viewport:remoteViewport,locale:'zh-CN',hasTouch:true,isMobile:true});
   for (const context of [desktop,remoteContext]) await context.route('**/*',route=>new URL(route.request().url()).origin===host.base?route.continue():route.abort());
   const errors=[], consoleErrors=[], failedResponses=[];
   const page=await desktop.newPage(); const remote=await remoteContext.newPage();
@@ -160,6 +225,29 @@ test('actual desktop Host calibration, local/public authorization and rendered s
   if(await tray.isVisible() && await tray.getAttribute('aria-expanded')!=='true')await tray.click();
   await page.locator('#volume-value').click();
   const dialog=page.locator('.volume-adjust-popover');
+  await settle(dialog);
+  assert.equal(await dialog.locator('[data-auto-status]').isVisible(),true,'Host state stays visible even while automatic volume is off');
+  assert.equal(await dialog.locator('[data-auto-status]').textContent(),'已关闭 · 手动音量');
+  // Help belongs to the info button, not the setting title or its switch.
+  // Wait beyond the shared 160ms hover delay to detect unintended openings.
+  for (const [name, target] of [['label', '[data-auto-label]'], ['switch', '.automatic-volume-toggle']]) {
+    const box=await dialog.locator(target).boundingBox();
+    await page.mouse.move(box.x+box.width/2,box.y+box.height/2);
+    await page.waitForTimeout(250);
+    await page.screenshot({path:path.join(evidence,`00-host-auto-info-${name}-hover.png`)});
+    assert.equal(await page.locator('#host-automatic-volume-help').evaluate(node=>node.matches(':popover-open')),false,
+      `Hovering the automatic-volume ${name} must not open help`);
+  }
+  const infoBounds=await dialog.locator('[data-auto-info]').boundingBox();
+  assert.equal(infoBounds.width,32); assert.equal(infoBounds.height,32,'the shared help target stays accessible');
+  await page.mouse.move(infoBounds.x+infoBounds.width/2,infoBounds.y+infoBounds.height/2);
+  await page.waitForFunction(()=>document.querySelector('#host-automatic-volume-help').matches(':popover-open'));
+  await page.keyboard.press('Escape');
+  await page.mouse.move(20,20);
+  await dialog.locator('[data-auto-info]').focus();
+  await page.waitForFunction(()=>document.querySelector('#host-automatic-volume-help').matches(':popover-open'));
+  await page.keyboard.press('Escape');
+  assert.equal(await dialog.evaluate(node=>node.open),true,'closing help keeps the volume editor open');
   await dialog.locator('.automatic-volume-toggle').click();
   const responsiveness=[];
   for(let i=0;i<10;i++) {
@@ -193,24 +281,36 @@ test('actual desktop Host calibration, local/public authorization and rendered s
       const toggle=row.querySelector('.automatic-volume-toggle').getBoundingClientRect();
       const range=document.createRange(); range.selectNodeContents(label);
       const text=range.getBoundingClientRect(),cell=label.getBoundingClientRect();
-      return {statusHidden:status.hidden,height:box.height,
+      const statusBox=status.getBoundingClientRect();
+      const statusRange=document.createRange(); statusRange.selectNodeContents(status);
+      const statusText=statusRange.getBoundingClientRect();
+      return {statusHidden:status.hidden,statusText:status.textContent,height:box.height,
+        statusInside:statusText.left>=statusBox.left && statusText.right<=statusBox.right + 0.1
+          && statusText.top>=statusBox.top && statusText.bottom<=statusBox.bottom,
         toggleInRow:toggle.top>=box.top && toggle.bottom<=box.bottom,
         labelInside:text.left>=cell.left && text.right<=cell.right + 0.1
           && text.top>=box.top && text.bottom<=box.bottom};
     });
-    assert.equal(geometry.statusHidden,true,'the reference button conveys the measured uncalibrated state without a status row');
-    assert.ok(geometry.height<=32.1 && geometry.toggleInRow && geometry.labelInside,'translated heading and switch fit one control row');
+    assert.equal(geometry.statusHidden,false,'waiting for a reference retains the Host state row');
+    const waitingLabels={en:'Waiting for volume reference',ja:'音量の基準設定を待っています',zh:'等待设定音量基准'};
+    assert.equal(geometry.statusText,waitingLabels[language]);
+    assert.ok(geometry.height<=60 && geometry.toggleInRow && geometry.labelInside && geometry.statusInside,
+      'translated title/switch and the separate state row fit without clipping');
     const reference=dialog.locator('[data-auto-reference]');
     assert.equal(await reference.isEnabled(),true);
     const hints={en:'No reference has been set',ja:'基準はまだ設定されていません',zh:'尚未设定基准'};
-    const helpStarts={en:'No reference yet',ja:'基準は未設定です',zh:'尚未设定基准'};
+    const helpText={
+      en:'Once the song is cached, adjust the volume to a comfortable level (50–75% is suggested). Select “Set reference” to use the current song and volume as the reference for automatic adjustments to later songs, up to 100%.\nWith auto volume enabled, manual adjustments affect only this song. Selecting “Update reference” affects later songs.',
+      ja:'曲のキャッシュが完了したら、音量を快適な大きさに調整してください（目安は 50～75% です）。「基準を設定」を押すと、現在の曲と音量を基準に、以降の曲の音量を自動で調整します。自動調整は最大 100% です。\n自動音量が有効な間、手動調整はこの曲だけに適用されます。「基準を更新」を押すと、以降の曲にも適用されます。',
+      zh:'歌曲缓存完成后，将音量调到合适水平（建议 50～75%）。点击「设为基准」后，软件将以当前歌曲和音量建立基准，自动调节后续曲目的音量；自动调整最高为 100%。\n开启自动音量后，手动调节只影响本曲，点击「更新基准」会影响后续歌曲。',
+    };
     assert.equal(await reference.getAttribute('title'),hints[language]);
     assert.ok((await reference.getAttribute('aria-label')).includes(hints[language]));
     await dialog.locator('[data-auto-info]').click();
     const help=page.locator('#host-automatic-volume-help');
     await page.waitForFunction(()=>document.querySelector('#host-automatic-volume-help').matches(':popover-open'));
     await settle(help);
-    assert.ok((await help.textContent()).startsWith(helpStarts[language]),'tap/click help explains the waiting state without hover');
+    assert.equal(await help.textContent(),helpText[language],'tap/click help explains the workflow without requiring the user to judge analysis completion');
     await page.screenshot({path:path.join(evidence,`01-host-waiting-help-${language}.png`)});
     await page.keyboard.press('Escape');
     const waitingState=await host.api('/api/state');
@@ -219,7 +319,7 @@ test('actual desktop Host calibration, local/public authorization and rendered s
     waitingGeometry.push({language,theme,...geometry});
     await page.screenshot({path:path.join(evidence,`01-host-waiting-reference-${language}.png`)});
   }
-  await page.setViewportSize({width:1440,height:1000}); await settle(dialog);
+  await page.setViewportSize(desktopViewport); await settle(dialog);
   await page.screenshot({path:path.join(evidence,'01-host-waiting-reference.png')});
   await dialog.locator('[data-auto-reference]').click();
   await page.waitForFunction(()=>state.data.automatic_volume.status==='automatic');
@@ -372,13 +472,31 @@ test('actual desktop Host calibration, local/public authorization and rendered s
   await remoteDialog.locator('[data-volume-reset]').click();
   await remote.waitForFunction(()=>state.data.player_settings.volume_percent===100 && state.data.automatic_volume.status==='manual');
   assert.equal(JSON.parse(readFileSync(path.join(fixture.data,'host-state.json'))).state.automatic_volume.target_lufs,savedTarget);
+  await remote.waitForFunction(()=>!document.querySelector('[data-volume-reset]').hasAttribute('aria-busy'));
   await remote.keyboard.press('Escape'); await remote.waitForFunction(()=>!document.querySelector('.volume-adjust-popover').open);
   assert.ok(await page.locator('body').innerText()); assert.ok(await remote.locator('body').innerText());
+  if(await tray.isVisible() && await tray.getAttribute('aria-expanded')!=='true')await tray.click();
+  await page.locator('#volume-value').click();await settle(dialog);
+  const remaining=await host.api('/api/state');
+  for(const item of [remaining.current_item,...remaining.playlist].filter(Boolean)) {
+    await host.api('/api/playlist/remove',{item_id:item.id});
+  }
+  const empty=await host.api('/api/state');
+  assert.equal(empty.current_item,null);
+  assert.equal(empty.automatic_volume.reference_reason,'no_audio');
+  assert.equal(empty.automatic_volume.can_reference,false);
+  assert.equal((await host.request('/api/player/automatic-volume',{action:'reference',context:remaining.automatic_volume.context})).status,409,
+    'the actual Host also rejects reference requests without a song');
+  await page.waitForFunction(()=>!state.data.current_item && state.data.automatic_volume.reference_reason==='no_audio');
+  assert.equal(await dialog.locator('[data-auto-reference]').isVisible(),true,'the reference action stays visible without a song');
+  assert.equal(await dialog.locator('[data-auto-reference]').isDisabled(),true,'no-song reference is visibly disabled');
+  assert.equal(await dialog.locator('[data-auto-status]').textContent(),'キャッシュ済みの曲を再生してください。',
+    'the final Japanese layout keeps the localized no-song explanation');
   assert.deepEqual(errors,[]);
   const expectedConsole=entry=>entry.text.includes('Viewport argument key "interactive-widget" not recognized') || (new URL(entry.location.url).pathname==='/api/remote/connection-diagnostic' && entry.text.includes('403')) || (['/api/player/status','/api/player/automatic-volume'].includes(new URL(entry.location.url).pathname) && entry.text.includes('409'));
   assert.deepEqual(consoleErrors.filter(entry=>!expectedConsole(entry)),[]);
   const diagnostics=await host.api('/api/diagnostics/native');
-  writeFileSync(path.join(evidence,'browser-summary.json'),JSON.stringify({desktopViewport:[1440,1000],remoteViewport:[390,844],engine:'WebKit browser simulation',nativeDesktopHost:true,referenceVolume:50,remoteManualVolume:65,nextAutomaticVolume:next.player_settings.volume_percent,media,disabledResponsiveness,responsiveness,waitingGeometry,geometry,analysis:diagnostics.events.filter(event=>event.event==='automatic-volume-analysis'),errors,consoleErrors},null,2));
+  writeFileSync(path.join(evidence,'browser-summary.json'),JSON.stringify({desktopViewport,remoteViewport,engine:'WebKit browser simulation',nativeDesktopHost:true,referenceVolume:50,remoteManualVolume:65,nextAutomaticVolume:next.player_settings.volume_percent,media,disabledResponsiveness,responsiveness,waitingGeometry,geometry,analysis:diagnostics.events.filter(event=>event.event==='automatic-volume-analysis'),errors,consoleErrors},null,2));
 });
 
 test('missing or older PCM capability leaves native manual controls usable', {timeout:120000}, async t=>{

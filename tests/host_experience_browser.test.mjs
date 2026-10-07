@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import test, { before } from 'node:test';
@@ -145,6 +145,8 @@ for (const [name, engine] of [['Chromium', chromium], ['WebKit', webkit]]) {
     skip: nativeLimit, timeout: 90000,
   }, async t => {
     const { page, home } = await open(t, engine);
+    const screenshots = process.env.BILIKARA_TEST_HOST_EXPERIENCE_EVIDENCE || home;
+    mkdirSync(screenshots, { recursive: true });
     await page.evaluate(async () => {
       fetchState = async () => {}; state.eventSource?.close(); setLanguage('zh');
       await setLocalPlayerVolumeAndMuted(.9, false);
@@ -180,19 +182,20 @@ for (const [name, engine] of [['Chromium', chromium], ['WebKit', webkit]]) {
       const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
       return { focused: document.activeElement.id, controls: node.querySelectorAll('button,input,a,select').length,
         pointer: s.pointerEvents, blur: s.backdropFilter || s.webkitBackdropFilter, radius: s.borderRadius, shadow: s.boxShadow,
-        duration: s.transitionDuration, right: parent.right - r.right,
+        duration: s.transitionDuration, width: r.width, height: r.height, right: parent.right - r.right,
         center: (r.top + r.bottom) / 2 - (parent.top + parent.bottom) / 2,
         within: r.left >= parent.left && r.right <= parent.right && r.top >= parent.top && r.bottom <= parent.bottom,
         intercepts: hit === node || node.contains(hit), owned: node.parentElement.parentElement === elements.playerPanel,
         media: window.feedbackMedia.isConnected };
     });
+    await page.screenshot({ path: path.join(screenshots, `${name}-fullscreen-feedback.png`) });
     assert.equal(bounds.focused, 'feedback-focus-probe'); assert.equal(bounds.controls, 0);
     assert.equal(bounds.pointer, 'none'); assert.equal(bounds.radius, '18px'); assert.match(bounds.blur, /blur\(/);
     assert.equal(bounds.shadow, 'none', 'Passive cards must not cast a shadow onto their neighboring card');
     assert.ok(bounds.duration.split(',').every(duration => duration.trim() === '0.12s'));
-    assert.ok(Math.abs(bounds.right - 16) <= 1 && Math.abs(bounds.center + 76) <= 1 && bounds.within, JSON.stringify(bounds));
+    assert.equal(bounds.width, 112); assert.equal(bounds.height, 112);
+    assert.ok(Math.abs(bounds.right - 16) <= 1 && Math.abs(bounds.center + 60) <= 1 && bounds.within, JSON.stringify(bounds));
     assert.equal(bounds.intercepts, false); assert.equal(bounds.owned, true); assert.equal(bounds.media, true);
-    await page.screenshot({ path: path.join(home, `${name}-fullscreen-feedback.png`) });
     await page.evaluate(() => dispatchAvDelayAction({ type: 'adjust', delta_ms: 150 }));
     await page.waitForFunction(() => {
       const cards = [...document.querySelectorAll('#presentation-feedback .presentation-feedback-card.is-visible')];
@@ -206,6 +209,16 @@ for (const [name, engine] of [['Chromium', chromium], ['WebKit', webkit]]) {
     assert.deepEqual(stack.map(card => card.category), ['volume', 'delay']);
     assert.ok(stack[1].top - stack[0].bottom >= 7, JSON.stringify(stack));
     assert.ok(stack.every(card => card.shadow === 'none'), JSON.stringify(stack));
+    await page.screenshot({ path: path.join(screenshots, `${name}-fullscreen-feedback-two.png`) });
+    if (process.env.BILIKARA_TEST_HOST_EXPERIENCE_EVIDENCE) {
+      const clip = await popup.locator('.presentation-feedback-card.is-visible').evaluateAll(nodes => {
+        const boxes = nodes.map(node => node.getBoundingClientRect());
+        const x = Math.min(...boxes.map(box => box.left)) - 8, y = Math.min(...boxes.map(box => box.top)) - 8;
+        return { x, y, width: Math.max(...boxes.map(box => box.right)) - x + 8,
+          height: Math.max(...boxes.map(box => box.bottom)) - y + 8 };
+      });
+      await page.screenshot({ path: path.join(screenshots, `${name}-feedback-detail.png`), clip });
+    }
     await page.evaluate(() => setLocalPlayerVolumeAndMuted(.85, false));
     assert.deepEqual(await popup.locator('.presentation-feedback-card.is-visible').evaluateAll(nodes => nodes.map(node => ({
       category: node.dataset.feedbackCategory, top: node.getBoundingClientRect().top,
@@ -240,19 +253,70 @@ for (const [name, engine] of [['Chromium', chromium], ['WebKit', webkit]]) {
     assert.equal(await popup.locator('[data-feedback-category^=user]').count(), 0);
     assert.equal(await page.evaluate(() => state.presentationActionFeedback.key), renamed, 'User edits remain Host toast operations');
     await page.waitForFunction(() => document.querySelector('#presentation-feedback').classList.contains('hidden'), null, { timeout: 4000 });
-    for (const [index, theme] of ['light', 'dark', 'blue'].entries()) {
-      await page.evaluate(async ({index, theme}) => {
-        applyTheme(theme); await setLocalPlayerVolumeAndMuted(.6 + index * .05, false);
-      }, {index, theme});
-      await page.waitForFunction(() => getComputedStyle(document.querySelector('#presentation-feedback .presentation-feedback-card')).opacity === '1');
-      assert.equal(await popup.locator(".presentation-feedback-card").evaluate(node => getComputedStyle(node).backgroundColor),
-        await page.evaluate(() => {
+    const localizedLabels = { zh: '音画延迟锁定', en: 'Audio/video delay lock', ja: '音声・映像の遅延ロック' };
+    const compactGeometry = [];
+    for (const [language, label] of Object.entries(localizedLabels)) {
+      for (const [index, theme] of ['light', 'dark', 'blue'].entries()) {
+        await page.evaluate(async ({language, index, theme}) => {
+          setLanguage(language); applyTheme(theme); await setLocalPlayerVolumeAndMuted(.6 + index * .05, false);
+          await dispatchAvDelayAction({ type: 'toggle_lock' });
+        }, {language, index, theme});
+        await page.waitForFunction(() => {
+          const cards = [...document.querySelectorAll('#presentation-feedback .presentation-feedback-card.is-visible')];
+          return cards.length === 2 && cards.every(card => getComputedStyle(card).opacity === '1'
+            && new DOMMatrixReadOnly(getComputedStyle(card).transform).m41 === 0);
+        });
+        const measured = await popup.locator('.presentation-feedback-card.is-visible').evaluateAll(nodes => nodes.map(node => {
+          const box = node.getBoundingClientRect(), label = node.querySelector('.presentation-feedback-label');
+          const content = [...node.children].filter(child => !child.hidden).map(child => {
+            const r = child.getBoundingClientRect(), range = document.createRange(); range.selectNodeContents(child);
+            const text = range.getBoundingClientRect();
+            return { top: r.top, bottom: r.bottom,
+              inside: r.left >= box.left + 6 && r.right <= box.right - 6 && r.top >= box.top + 6 && r.bottom <= box.bottom - 6,
+              textInside: !child.textContent || (text.left >= box.left + 6 && text.right <= box.right - 6
+                && text.top >= box.top + 6 && text.bottom <= box.bottom - 6) };
+          });
+          const icon = node.querySelector('svg').getBoundingClientRect();
+          const colors = ['--ink', '--accent'].map(variable => {
+            const probe = document.createElement('span'); probe.style.color = `var(${variable})`;
+            node.append(probe); const color = getComputedStyle(probe).color; probe.remove(); return color;
+          });
+          return { category: node.dataset.feedbackCategory, width: box.width, height: box.height,
+            label: label.textContent, labelFont: getComputedStyle(label).fontSize, icon: [icon.width, icon.height],
+            balancedEdges: Math.abs((content[0].top - box.top) - (box.bottom - content.at(-1).bottom)) <= 0.1,
+            iconColor: getComputedStyle(node.querySelector('.presentation-feedback-icon')).color,
+            labelColor: getComputedStyle(label).color,
+            valueColor: getComputedStyle(node.querySelector('.presentation-feedback-value')).color, colors,
+            background: getComputedStyle(node).backgroundColor,
+            fits: content.every(child => child.inside && child.textInside)
+              && content.every((child, i) => i === 0 || child.top >= content[i - 1].bottom) };
+        }));
+        const background = await page.evaluate(() => {
           const reference = document.createElement('div'); reference.style.backgroundColor = 'var(--modal-card-bg)';
           document.body.append(reference); const color = getComputedStyle(reference).backgroundColor; reference.remove(); return color;
-        }));
+        });
+        assert.equal(measured.find(card => card.category === 'delay-lock')?.label, label);
+        for (const card of measured) {
+          assert.equal(card.width, 112); assert.equal(card.height, 112);
+          assert.equal(card.labelFont, '13px'); assert.deepEqual(card.icon, [32, 32]);
+          assert.equal(card.balancedEdges, true, 'visible content has equal top and bottom insets');
+          assert.equal(card.iconColor, card.colors[0]); assert.equal(card.labelColor, card.colors[0]);
+          assert.equal(card.valueColor, card.colors[1], 'only the information value receives the theme accent');
+          assert.equal(card.background, background);
+          assert.ok(card.fits, `${language}/${theme} fits without clipping: ${JSON.stringify(card)}`);
+        }
+        compactGeometry.push({ language, theme, cards: measured });
+        await page.screenshot({ path: path.join(screenshots, `${name}-fullscreen-feedback-${language}-${theme}.png`) });
+      }
+    }
+    if (process.env.BILIKARA_TEST_HOST_EXPERIENCE_EVIDENCE) {
+      writeFileSync(path.join(screenshots, `${name}-feedback-geometry.json`), JSON.stringify({ bounds, stack, compactGeometry }, null, 2));
     }
     await page.emulateMedia({ reducedMotion: 'reduce' });
-    assert.ok((await popup.locator(".presentation-feedback-card").evaluate(node => getComputedStyle(node).transitionDuration)).split(',').every(duration => duration.trim() === '0s'));
+    const motions = await popup.locator('.presentation-feedback-card.is-visible').evaluateAll(nodes =>
+      nodes.map(node => getComputedStyle(node).transitionDuration));
+    assert.equal(motions.length, 2, 'Reduced-motion checks run against both visible cards');
+    assert.ok(motions.every(durations => durations.split(',').every(duration => duration.trim() === '0s')));
     await page.evaluate(() => {
       elements.playerPanel.classList.remove('is-tauri-fullscreen'); document.body.classList.remove('is-tauri-fullscreen-active');
       handleFullscreenChange(); elements.playerPanel.classList.add('is-tauri-fullscreen');

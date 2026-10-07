@@ -143,9 +143,9 @@
       </div>
       <button type="button" class="${resetClass}" data-volume-reset></button>
       <section class="automatic-volume-section">
-        <div class="automatic-volume-row ${isRemote ? 'remote-contextual-info-region' : 'cache-contextual-info-region'}">
+        <div class="automatic-volume-row ${isRemote ? 'remote-contextual-info-region' : ''}">
           <span data-auto-label></span>
-          <span class="${isRemote ? 'info-trigger-wrap' : 'cache-advanced-info'}">
+          <span class="${isRemote ? 'info-trigger-wrap' : 'cache-advanced-info cache-contextual-info-region'}">
             <button type="button" class="${isRemote ? 'remote-info-button' : 'playback-contextual-info-button cache-advanced-info-button'}" data-auto-info aria-expanded="false" aria-describedby="${isRemote ? 'remote' : 'host'}-automatic-volume-help"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
             <span class="${isRemote ? 'remote-tooltip-bubble' : 'cache-advanced-tooltip'}" id="${isRemote ? 'remote' : 'host'}-automatic-volume-help" role="tooltip"></span>
           </span>
@@ -180,7 +180,7 @@
     const autoStatus = dialog.querySelector('[data-auto-status]');
     const autoHelp = dialog.querySelector('[role="tooltip"]');
     const autoInfo = dialog.querySelector('[data-auto-info]');
-    bindInfo?.(dialog.querySelector('.automatic-volume-row'));
+    bindInfo?.(isRemote ? dialog.querySelector('.automatic-volume-row') : autoInfo.closest('.cache-advanced-info'));
     let autoBusy = false;
     let busy = false;
     let draftDirty = false;
@@ -364,7 +364,7 @@
       const host = automatic.host_controls === true && typeof onAutomatic === 'function';
       dialog.querySelector('[data-auto-label]').textContent = t('automaticVolume.title');
       autoInfo.setAttribute('aria-label', t('automaticVolume.helpLabel'));
-      const helpKey = isRemote ? ({off:'automaticVolume.remoteHelpOff', waiting_baseline:'automaticVolume.remoteHelpWaiting', unavailable:'automaticVolume.remoteHelpUnavailable'}[automatic.status] || 'automaticVolume.remoteHelp') : (!automatic.scanner_available ? 'automaticVolume.hostHelpUnavailable' : automatic.enabled && !automatic.calibrated ? 'automaticVolume.hostHelpWaiting' : 'automaticVolume.hostHelp');
+      const helpKey = isRemote ? ({off:'automaticVolume.remoteHelpOff', waiting_baseline:'automaticVolume.remoteHelpWaiting', unavailable:'automaticVolume.remoteHelpUnavailable'}[automatic.status] || 'automaticVolume.remoteHelp') : (!automatic.scanner_available ? 'automaticVolume.hostHelpUnavailable' : 'automaticVolume.hostHelp');
       autoHelp.textContent = t(helpKey);
       autoToggle.hidden = !host;
       autoSwitch.checked = automatic.enabled === true;
@@ -372,22 +372,19 @@
       autoSwitch.setAttribute('aria-label', t('automaticVolume.title'));
       const status = automatic.status || 'off';
       autoStatus.dataset.status = status;
-      autoStatus.hidden = !isRemote && !automatic.enabled;
+      autoStatus.hidden = false;
       reference.hidden = !host || !automatic.enabled;
       reference.textContent = t(automatic.calibrated ? 'automaticVolume.update' : 'automaticVolume.reference');
       const draft = dialog.open && draftDirty && input.value !== String(bounded(getValue()));
       reference.disabled = busy || autoBusy || !automatic.can_reference || draft;
       const reason = draft ? "draft" : automatic.reference_reason;
       const explanation = reason ? t(reasonKeys[reason] || reasonKeys.unavailable) : '';
-      const waitingForReference = host && automatic.enabled && status === 'waiting_baseline' && !explanation;
-      autoStatus.hidden ||= waitingForReference;
       const labels = isRemote ? compactStatusKeys : statusKeys;
       autoStatus.textContent = t(labels[status] || labels.off);
       reference.title = explanation || t(automatic.calibrated ? 'automaticVolume.updateHint' : 'automaticVolume.referenceHint');
       reference.setAttribute('aria-label', `${reference.textContent} · ${reference.title}`);
       autoStatus.id = `${isRemote ? 'remote' : 'host'}-automatic-volume-status`;
-      if (autoStatus.hidden) reference.removeAttribute('aria-describedby');
-      else reference.setAttribute('aria-describedby', autoStatus.id);
+      reference.setAttribute('aria-describedby', autoStatus.id);
       // The Host's existing row carries actionable state; no permanent
       // message block below its actions. Remote retains only its one-line tag.
       if (host && automatic.enabled && explanation) autoStatus.textContent = explanation;

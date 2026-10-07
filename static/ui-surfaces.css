@@ -445,7 +445,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   right: max(16px, env(safe-area-inset-right));
   z-index: 20;
   display: none;
-  width: min(168px, calc(100% - 32px));
+  width: min(112px, calc(100% - 32px));
   height: 0;
   pointer-events: none;
 }
@@ -453,16 +453,16 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   position: absolute;
   top: 0;
   width: 100%;
-  height: 144px;
+  height: 112px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 16px;
+  gap: 3px;
+  padding: 6px;
   color: var(--ink);
-  font-size: 22px;
-  line-height: 28px;
+  font-size: 20px;
+  line-height: 24px;
   font-variant-numeric: tabular-nums;
   opacity: 0;
   visibility: hidden;
@@ -488,7 +488,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   text-align: center;
   overflow-wrap: anywhere;
 }
-.presentation-feedback-value { max-width: 100%; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.presentation-feedback-value { max-width: 100%; min-width: 0; color: var(--accent); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .presentation-feedback-value[hidden] { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .presentation-feedback-card { transition: none; }

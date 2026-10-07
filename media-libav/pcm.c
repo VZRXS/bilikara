@@ -39,9 +39,17 @@ static int visit_frame(const AVStream *stream, Call *call, const BmPcmRequest *q
     int begin = position < 0 ? (int)FFMIN((int64_t)frame->nb_samples, -position) : 0;
     int end = (int)FFMAX(0, FFMIN((int64_t)frame->nb_samples, length - position));
     if (end <= begin) return BM_OK;
-    // Gaps/overlaps would need playback-specific concealment. Refuse them.
+    // Container PTS may be quantized to milliseconds even when the remuxed
+    // time base is one sample (e.g. 48kHz AAC alternates +/-16 samples).
+    // Compare against the total decoded sample clock, not the previous PTS,
+    // so rounding cannot accumulate into an accepted gap or concealment.
     int64_t difference = position + begin - (int64_t)r->frames;
-    if (difference < -2 || difference > 2) return BM_INVALID_MEDIA;
+    int64_t tolerance = av_rescale_q_rnd(1, (AVRational){1, 1000}, samples, AV_ROUND_UP);
+    if (difference < -tolerance || difference > tolerance) return BM_INVALID_MEDIA;
+    // Clip only the declared presentation tail, using decoded sample position.
+    // Using a rounded packet PTS here can over/under-count the final frame.
+    end = begin + (int)FFMIN((int64_t)frame->nb_samples - begin, length - (int64_t)r->frames);
+    if (end <= begin) return BM_OK;
     float buffer[BM_PCM_FRAMES * 2];
     for (int offset = begin; offset < end;) {
         if (interrupted(call)) return BM_CANCELLED;

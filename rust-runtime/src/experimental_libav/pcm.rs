@@ -289,6 +289,7 @@ mod tests {
         for name in [
             "aac-44100.m4a",
             "aac-48000.m4a",
+            "aac-quantized.m4a",
             "flac-96000.flac",
             "opus-48000.mp4",
         ] {
@@ -296,7 +297,13 @@ mod tests {
             let fact = probe
                 .integrated_loudness(&fixtures.join(name), &flag)
                 .unwrap();
-            let expected = oracle[name].as_f64().unwrap();
+            let expected = oracle[if name == "aac-quantized.m4a" {
+                "aac-48000.m4a"
+            } else {
+                name
+            }]
+            .as_f64()
+            .unwrap();
             assert!(
                 (fact.integrated_lufs - expected).abs() <= 0.15,
                 "{name}: measured {} vs independent FFmpeg {expected}",
@@ -321,6 +328,8 @@ mod tests {
             "short.m4a",
             "truncated.m4a",
             "invalid.m4a",
+            "aac-gap.m4a",
+            "aac-overlap.m4a",
             "surround.m4a",
         ] {
             assert!(

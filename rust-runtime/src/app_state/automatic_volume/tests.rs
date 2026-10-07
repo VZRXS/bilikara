@@ -423,6 +423,12 @@ fn no_song_and_queue_edits_cannot_create_or_drift_target() {
         now: 12.0,
     });
     enable(&mut fresh, &host, true);
+    let empty = fresh.data.as_ref().unwrap().automatic_snapshot();
+    assert_eq!(empty.reference_reason, "no_audio");
+    assert!(
+        !empty.can_reference,
+        "no song cannot enable the reference button"
+    );
     assert_eq!(
         fresh.data.as_ref().unwrap().automatic_snapshot().status,
         "waiting_baseline"
@@ -455,6 +461,12 @@ fn unmeasured_transition_is_safe_and_mute_and_reset_keep_their_roles() {
         now: 9.0,
     });
     assert_eq!(percent(&app), 50, "unmeasured next song is never forced up");
+    let pending = app.data.as_ref().unwrap().automatic_snapshot();
+    assert_eq!(pending.reference_reason, "analyzing");
+    assert!(
+        !pending.can_reference,
+        "incomplete analysis cannot enable the reference button"
+    );
     assert_eq!(
         app.data.as_ref().unwrap().automatic_snapshot().status,
         "analyzing"
