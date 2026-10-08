@@ -57,6 +57,8 @@ test('startup refresh overlaps foreground UP/favorites, shares a source and pres
     assert.equal(state.gatcha.last_result.rebuild.current_uid,'11','foreground completion hid background progress');
     await assert.rejects(host.api('/api/gatcha/refresh',{}),{status:409});
     await assert.rejects(host.api('/api/gatcha/source/remove',{source:'uid',id:'22'}),{status:409});
+    const version=(await host.api('/api/gatcha/browse')).source_order_version;
+    for(const edit of [{action:'remove',ids:['22']},{action:'move',id:'22',before_id:'11'},{action:'move',id:'22',before_id:'22'}])await assert.rejects(host.api('/api/gatcha/sources/edit',{source:'uid',expected_version:version,edit}),{status:409});
     await host.api('/api/gatcha/uids/add',{uid:'11',queue:true});
     await waitFor(async()=> (await host.api('/api/state')).gatcha.source_queue.active?.uid==='11','same-source follower was not admitted',5000);
     releaseBackground(); state=await idle(host);
@@ -66,7 +68,13 @@ test('startup refresh overlaps foreground UP/favorites, shares a source and pres
     await waitFor(()=>provider.posts.flatMap(([,body])=>body.records||[]).length>=3,'missing independent source deltas',5000);
     const rows=provider.posts.flatMap(([,body])=>body.records||[]);
     for(const bvid of ['BVTEST000011','BVTEST000022','BVFAV0000456']) assert.equal(rows.filter(row=>row.bvid===bvid).length,1,'a reused source appended twice');
+    const display=(await host.api('/api/gatcha/browse')).source_order_version;
+    await host.api('/api/gatcha/sources/edit',{source:'uid',expected_version:display,edit:{action:'move',id:'22',before_id:'11'}});
+    const displayBytes=readFileSync(path.join(data,'gatcha_source_order.json'),'utf8');
     assert.equal((await host.api('/api/gatcha/refresh',{})).started,true,'startup consumed manual cooldown'); await idle(host);
+    assert.equal(readFileSync(path.join(data,'gatcha_source_order.json'),'utf8'),displayBytes,'actual refresh retains display preferences');
+    assert.deepEqual((await host.api('/api/gatcha/browse')).owners.map(owner=>owner.uid),['22','11']);
+    assert.deepEqual(JSON.parse(readFileSync(path.join(data,'gatcha_uids.json'))).uids,['11','22'],'display preference leaves configured scan order intact');
     await assert.rejects(host.api('/api/gatcha/refresh',{}),{status:429});
   } finally {releaseBackground(); if(host)await host.close(); await provider.close(); rmSync(home,{recursive:true,force:true});}
 });

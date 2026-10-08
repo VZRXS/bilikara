@@ -4157,6 +4157,7 @@ function activateRequestSubview(subview, { focusTab = false } = {}) {
   }
   rememberRequestScrollPosition();
   const changed = state.requestSubview !== nextSubview;
+  if (changed) leaveSourceEditors();
   if (changed) {
     closeRequestDetailForNavigation();
   }
@@ -4230,6 +4231,7 @@ function activateSourcesMode(mode, { focusTab = false } = {}) {
   }
   rememberRequestScrollPosition();
   const changed = state.sourcesMode !== nextMode;
+  if (changed) leaveSourceEditors();
   if (changed) {
     closeRequestDetailForNavigation();
   }
@@ -4778,6 +4780,7 @@ function activateHostWorkspace(workspace, { inputOrigin = "pointer" } = {}) {
     rememberRequestScrollPosition();
   }
   const changed = state.activeHostWorkspace !== nextWorkspace;
+  if (changed) leaveSourceEditors();
   const interactiveActivation = inputOrigin === "pointer" || inputOrigin === "keyboard";
   if (changed && interactiveActivation) {
     beginHostWorkspaceTransition(state.activeHostWorkspace, nextWorkspace);
@@ -8956,30 +8959,102 @@ function followOwnerDisplayName(owner) {
 }
 
 const sourceRemovalEditors = new Map();
+function leaveSourceEditors() {
+  for (const editor of sourceRemovalEditors.values()) editor?.leave();
+}
 function sourceRemovalEditor(source) {
   if (!sourceRemovalEditors.has(source)) {
     sourceRemovalEditors.set(source, window.BilikaraSourceRemoval?.create(
       source === "uid" ? elements.followUpGrid : elements.favlistGrid, {
         source, translate: t, reportError: message => setAppMessage(message, true),
-        remove: async target => {
-          await apiPost("/api/gatcha/source/remove", target);
+        message: setAppMessage,
+        post: body => apiPost("/api/gatcha/sources/edit", body),
+        reload: async () => {
           state.gatchaCandidate = null;
           renderGatchaWorkspace();
-          if (source === "uid") await loadFollowBrowse({ uid: "", query: "" });
-          else await loadFavlistBrowse({ folderId: "", query: "" });
-          setAppMessage(t("sources.removedLocal"));
+          if (source === "uid") {
+            state.followBrowseRenderSignature = "";
+            await loadFollowBrowse({ uid: state.followBrowseSelectedUid, query: state.followBrowseQuery, keepQuery: true });
+          } else {
+            state.favlistBrowseRenderSignature = "";
+            await loadFavlistBrowse({ folderId: state.favlistBrowseSelectedFolderId, query: state.favlistBrowseQuery, keepQuery: true });
+          }
         },
+        refresh: () => source === "uid" ? renderFollowBrowse() : renderFavlistBrowse(),
+        confirm: (editor, captured, message, preview) => {
+          openConfirm({type: "remove-sources", sourceEditor: editor, captured,
+            message: message + (preview ? "\n" + preview : ""), primaryLabel: t("sources.removeSelected")});
+          elements.confirmCancel.focus({preventScroll:true});
+        },
+        closeConfirmation: editor => {
+          if (state.confirmIntent?.sourceEditor === editor) closeConfirm();
+        },
+        renderPage: (rows, message, container, editor) => renderHostSourceCardPage(container, rows, message, source, editor),
       },
     ));
   }
   return sourceRemovalEditors.get(source);
 }
 
+function renderHostSourceCardPage(container, rows, emptyText, source, editor) {
+  const favorites = source === "favlist", nodes = [];
+  for (const entry of rows) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = favorites ? "follow-up-button favlist-browse-button" : "follow-up-button";
+    button.classList.toggle("source-card-placeholder", Boolean(entry.placeholder));
+    button.dataset[favorites ? "folderId" : "uid"] = entry.id;
+    button.title = entry.title;
+    const name = document.createElement("span");
+    name.className = favorites ? "follow-up-name favlist-browse-name" : "follow-up-name";
+    name.textContent = entry.title;
+    const count = document.createElement("span");
+    count.className = favorites ? "follow-up-count favlist-browse-count" : "follow-up-count";
+    count.textContent = entry.placeholder ? "" : t(favorites ? "favlist.mediaCount" : "follow.countSongs", {
+      count: Number((favorites ? entry.media_count : entry.count) || entry.count || 0),
+    });
+    button.append(name, count);
+    if (entry.avatar_url) {
+      const avatar = document.createElement("img");
+      avatar.className = "follow-up-avatar";
+      avatar.alt = ""; avatar.loading = "lazy"; avatar.referrerPolicy = "no-referrer";
+      avatar.src = entry.avatar_url; button.append(avatar);
+    }
+    window.BilikaraSourceStatus?.syncCard(button, state.data?.gatcha, t);
+    button.dataset.contentSignature = JSON.stringify([entry, state.language,
+      window.BilikaraSourceStatus.sourceState(state.data?.gatcha, favorites ? {folderId:entry.id} : {uid:entry.id})]);
+    nodes.push(editor?.card(button, entry) || button);
+  }
+  if (!nodes.length) {
+    const empty = document.createElement("div"); empty.className = "search-empty";
+    empty.textContent = emptyText; nodes.push(empty);
+  }
+  // Keep capture, focus and unchanged card nodes through progress-only snapshots.
+  for (const node of [...container.children]) if (!nodes.includes(node)) node.remove();
+  nodes.forEach((node, index) => {
+    if (container.children[index] !== node) container.insertBefore(node, container.children[index] || null);
+  });
+}
+
+function updateHostSourceEditor(source, entries, data, {loading, detail, filter, emptyText}) {
+  const editor = sourceRemovalEditor(source);
+  const records = entries.map(entry => ({...entry,
+    id:String(source === "uid" ? entry.uid : entry.id),
+    placeholder:Boolean(entry.placeholder),
+    title:source === "uid" ? followOwnerDisplayName(entry)
+      : String(entry.title || (entry.placeholder ? t("favlist.folder") + " " + entry.folder_id : entry.id || t("favlist.folder"))),
+  }));
+  editor?.update({records, version:data?.source_order_version, editable:data?.source_order_editable,
+    count:data?.source_order_count, loading, pullBusy:Boolean(state.data?.gatcha?.busy || state.data?.gatcha?.background_busy),
+    active:!detail && state.requestSubview === "sources"
+      && state.sourcesMode === (source === "uid" ? "uids" : "favorites")
+      && state.activeHostWorkspace === "request", filter, language:state.language, emptyText});
+}
+
 function renderFollowBrowse() {
   if (!elements.followUpGrid || !elements.followSongResults) {
     return;
   }
-  sourceRemovalEditor("uid")?.sync();
   const owners = Array.isArray(state.followBrowseData?.owners) ? state.followBrowseData.owners : [];
   const items = Array.isArray(state.followBrowseData?.items) ? state.followBrowseData.items : [];
   const hasSelectedUid = Boolean(state.followBrowseSelectedUid);
@@ -8991,10 +9066,15 @@ function renderFollowBrowse() {
     selected: state.followBrowseSelectedUid,
     sourceState: window.BilikaraSourceStatus.sourceState(state.data?.gatcha, {uid: state.followBrowseSelectedUid}),
     owners,
+    editorState: [state.followBrowseData?.source_order_version, state.followBrowseData?.source_order_editable],
     placeholders,
     items,
     language: state.language,
     query: state.followBrowseQuery,
+  });
+  updateHostSourceEditor("uid", [...placeholders, ...owners], state.followBrowseData, {
+    loading:state.followBrowseLoading, detail:hasSelectedUid, filter:state.followBrowseQuery,
+    emptyText:state.followBrowseLoading ? t("follow.loadingOwners") : t("follow.noOwners"),
   });
   if (signature === state.followBrowseRenderSignature) {
     return;
@@ -9006,48 +9086,7 @@ function renderFollowBrowse() {
 
   if (!hasSelectedUid) {
     window.BilikaraBrowseSearch?.reset(elements.followSearchForm);
-    elements.followUpGrid.innerHTML = "";
     elements.followSongResults.innerHTML = "";
-    if (!owners.length && !placeholders.length) {
-      const empty = document.createElement("div");
-      empty.className = "search-empty";
-      empty.textContent = state.followBrowseLoading ? t("follow.loadingOwners") : t("follow.noOwners");
-      elements.followUpGrid.appendChild(empty);
-    } else {
-      [...placeholders, ...owners].forEach((owner) => {
-        const displayName = followOwnerDisplayName(owner);
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = owner.placeholder ? "follow-up-button source-card-placeholder" : "follow-up-button";
-        button.dataset.uid = String(owner.uid || "");
-        button.title = displayName;
-
-        const name = document.createElement("span");
-        name.className = "follow-up-name";
-        name.textContent = displayName;
-
-        const count = document.createElement("span");
-        count.className = "follow-up-count";
-        // A queued source has no count yet; its status label fills this line.
-        count.textContent = owner.placeholder ? "" : t("follow.countSongs", { count: Number(owner.count || 0) });
-
-        button.append(name, count);
-        window.BilikaraSourceStatus?.syncCard(button, state.data?.gatcha, t);
-
-        if (owner.avatar_url) {
-          const avatar = document.createElement("img");
-          avatar.className = "follow-up-avatar";
-          avatar.src = owner.avatar_url;
-          avatar.alt = "";
-          avatar.loading = "lazy";
-          avatar.referrerPolicy = "no-referrer";
-          button.append(avatar);
-        }
-
-        elements.followUpGrid.appendChild(sourceRemovalEditor("uid")?.card(button,
-          { id: button.dataset.uid, title: button.title, placeholder: owner.placeholder }) || button);
-      });
-    }
     setFollowBrowseMessage("");
     return;
   }
@@ -9131,7 +9170,6 @@ function renderFavlistBrowse() {
   if (!elements.favlistGrid || !elements.favlistSongResults) {
     return;
   }
-  sourceRemovalEditor("favlist")?.sync();
   const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
   const items = Array.isArray(state.favlistBrowseData?.items) ? state.favlistBrowseData.items : [];
   const placeholders = window.BilikaraSourceStatus?.queuedSources?.(state.data?.gatcha, "favorites",
@@ -9141,10 +9179,15 @@ function renderFavlistBrowse() {
     selected: state.favlistBrowseSelectedFolderId,
     sourceState: window.BilikaraSourceStatus.sourceState(state.data?.gatcha, {folderId: state.favlistBrowseSelectedFolderId}),
     folders,
+    editorState: [state.favlistBrowseData?.source_order_version, state.favlistBrowseData?.source_order_editable],
     placeholders,
     items,
     language: state.language,
     query: state.favlistBrowseQuery,
+  });
+  updateHostSourceEditor("favlist", [...placeholders, ...folders], state.favlistBrowseData, {
+    loading:state.favlistBrowseLoading, detail:Boolean(state.favlistBrowseSelectedFolderId), filter:state.favlistBrowseQuery,
+    emptyText:state.favlistBrowseLoading ? t("favlist.loadingFolders") : t("favlist.noBrowseFolders"),
   });
   if (signature === state.favlistBrowseRenderSignature) {
     return;
@@ -9157,53 +9200,7 @@ function renderFavlistBrowse() {
 
   if (!hasSelectedFolder) {
     window.BilikaraBrowseSearch?.reset(elements.favlistSearchForm);
-    elements.favlistGrid.innerHTML = "";
     elements.favlistSongResults.innerHTML = "";
-    if (!folders.length && !placeholders.length) {
-      const empty = document.createElement("div");
-      empty.className = "search-empty";
-      empty.textContent = state.favlistBrowseLoading ? t("favlist.loadingFolders") : t("favlist.noBrowseFolders");
-      elements.favlistGrid.appendChild(empty);
-    } else {
-      [...placeholders, ...folders].forEach((folder) => {
-        const folderId = String(folder.id || "").trim();
-        const title = String(folder.title
-          || (folder.placeholder ? `${t("favlist.folder")} ${folder.folder_id}` : folderId || t("favlist.folder"))).trim();
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = folder.placeholder
-          ? "follow-up-button favlist-browse-button source-card-placeholder"
-          : "follow-up-button favlist-browse-button";
-        button.dataset.folderId = folderId;
-        button.title = title;
-
-        const name = document.createElement("span");
-        name.className = "follow-up-name favlist-browse-name";
-        name.textContent = title;
-
-        const count = document.createElement("span");
-        count.className = "follow-up-count favlist-browse-count";
-        count.textContent = folder.placeholder
-          ? ""
-          : t("favlist.mediaCount", { count: Number(folder.media_count || folder.count || 0) });
-
-        button.append(name, count);
-        window.BilikaraSourceStatus?.syncCard(button, state.data?.gatcha, t);
-
-        if (folder.avatar_url) {
-          const avatar = document.createElement("img");
-          avatar.className = "follow-up-avatar favlist-browse-avatar";
-          avatar.src = folder.avatar_url;
-          avatar.alt = "";
-          avatar.loading = "lazy";
-          avatar.referrerPolicy = "no-referrer";
-          button.append(avatar);
-        }
-
-        elements.favlistGrid.appendChild(sourceRemovalEditor("favlist")?.card(button,
-          { id: folderId, title, placeholder: folder.placeholder }) || button);
-      });
-    }
     setFavlistBrowseMessage("");
     return;
   }
@@ -9779,8 +9776,12 @@ function syncGatchaTaskTerminalMessage() {
         : status === "partial"
           ? t("gatcha.refreshPartial")
           : t("gatcha.refreshFailed");
-    const message = task.last_result?.operation === "remove_source"
-      ? t("sources.removedLocal") : localizedGatchaTaskMessage(task.last_message, status) || fallback;
+    const operation = task.last_result?.operation;
+    const message = operation === "source_order" ? t("sources.orderSaved")
+      : operation === "source_cleanup" ? t(status === "partial" ? "sources.removedCleanupPending" : "sources.cleanupDone")
+      : ["remove_source", "remove_sources"].includes(operation)
+        ? t(status === "partial" ? "sources.removedCleanupPending" : "sources.removedLocal")
+        : localizedGatchaTaskMessage(task.last_message, status) || fallback;
     const detail = task.last_error ? `${message} ${task.last_error}` : message;
     setGatchaUidMessage(detail, status !== "success");
   }
@@ -17129,7 +17130,9 @@ function openConfirm(intent) {
 function closeConfirm({ restoreFocus = true } = {}) {
   closeCacheAdvancedInfo();
   const focusElement = state.confirmIntent?.focusElement;
+  const sourceEditor = state.confirmIntent?.sourceEditor;
   state.confirmIntent = null;
+  if (sourceEditor) sourceEditor.confirmation = null;
   state.confirmPopoverRenderSignature = "";
   renderConfirmPopover();
   if (restoreFocus && focusElement?.isConnected && typeof focusElement.focus === "function") {
@@ -17255,7 +17258,8 @@ function renderConfirmPopover() {
   const hideMessage = Boolean(intent.hideMessage);
   const isExport = intent.type === "export-history";
   const title = isExport ? t("history.exportTitle")
-    : intent.type === "install-app-update" ? t("service.appUpdate") : "";
+    : intent.type === "install-app-update" ? t("service.appUpdate")
+      : intent.type === "remove-sources" ? t("sources.removeSelected") : "";
   if (elements.confirmTitle) {
     elements.confirmTitle.textContent = title;
     elements.confirmTitle.classList.toggle("hidden", !title);
@@ -21172,6 +21176,12 @@ elements.confirmOk.addEventListener("click", async () => {
 
   let keepBusyUntilApplicationExit = false;
   try {
+    if (intent.type === "remove-sources") {
+      const pending = intent.sourceEditor.confirmRemoval(intent.captured);
+      closeConfirm();
+      await pending;
+      return;
+    }
     if (intent.type === "clear-playlist") {
       await clearPlaylist();
       return;
@@ -21399,6 +21409,11 @@ document.addEventListener("keydown", (event) => {
   if (state.stageControlTrayOpen && !stageControlsAreInline()) {
     setStageControlTrayOpen(false, { restoreFocus: true });
     event.preventDefault();
+    return;
+  }
+  if (!isPlayerPanelFullscreen() && [...sourceRemovalEditors.values()].some(editor => editor?.handleEscape())) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
     return;
   }
   if (!isPlayerPanelFullscreen() && closeHostWorkspaceOverlay()) {
@@ -21743,16 +21758,21 @@ async function runRequestBusyAction(button, loadingLabel, action) {
     return;
   }
   const wasDisabled = button.disabled;
-  const originalText = button.textContent;
+  const originalLabel = button.getAttribute("aria-label");
   button.disabled = true;
   button.setAttribute("aria-busy", "true");
-  button.textContent = loadingLabel;
+  button.setAttribute("aria-label", loadingLabel);
   try {
     await action();
   } finally {
     button.disabled = wasDisabled;
     button.removeAttribute("aria-busy");
-    button.textContent = originalText;
+    // Navigation already displays loading in the detail view. Retain the
+    // card's name/count/avatar nodes and any newer accessible label.
+    if (button.getAttribute("aria-label") === loadingLabel) {
+      if (originalLabel === null) button.removeAttribute("aria-label");
+      else button.setAttribute("aria-label", originalLabel);
+    }
   }
 }
 

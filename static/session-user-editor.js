@@ -7,6 +7,8 @@
   const trash = icon('<path d="M3 6h18M19 6v14H5V6m4 0V3h6v3M10 10v7M14 10v7"/>');
 
   class SessionUserEditor {
+    static get selectionIcon() { return checklist; }
+
     constructor({ stage, list, t, post, message, bindHelp }) {
       this.stage = stage;
       this.list = list;

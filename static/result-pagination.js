@@ -1,9 +1,19 @@
-/* Remote result navigation. This owns only the current read-only UI page. */
+/* Shared browse result navigation. This owns only the current read-only UI page. */
 (function (root) {
   "use strict";
   const pageSize = 6;
   const maximumPage = Math.floor(100000 / pageSize) + 1;
   const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
+
+  // Bounded native panels fit complete rows. A hidden/unmeasured panel keeps
+  // its existing page; very short panels use one row and internal scrolling.
+  function fittedPageSize({columns, height, itemHeight, gap = 0, padding = 0}) {
+    if (![columns,height,itemHeight,gap,padding].every(Number.isFinite)
+      || columns < 1 || height <= 0 || itemHeight <= 0 || gap < 0 || padding < 0) return null;
+    const cols = Math.min(48, Math.floor(columns));
+    const rows = Math.max(1, Math.floor((height - padding + gap + .5) / (itemHeight + gap)));
+    return cols * Math.min(rows, Math.floor(48 / cols));
+  }
 
   function compactCount(value, language) {
     if (count(value) === null) return "?";
@@ -39,7 +49,7 @@
     }
 
     update(options) {
-      const size = [3, 6, 9, 12, 15, 18, 21, 24, 30, 36, 42, 48].includes(options.pageSize) ? options.pageSize : pageSize;
+      const size = Number.isSafeInteger(options.pageSize) && options.pageSize >= 1 && options.pageSize <= 48 ? options.pageSize : pageSize;
       const sameSource = this.sourceKey === options.key && this.initialItems === options.items;
       const firstItem = (this.page - 1) * this.pageSize;
       const changed = !sameSource || this.pageSize !== size;
@@ -247,7 +257,7 @@
     return Array.from({ length }, (_, index) => start + index);
   }
 
-  function create(container, { translate, renderItems, reportError, rows = 0 }) {
+  function create(container, { translate, renderItems, reportError, rows = 0, ignoreSwipe = "", footer = null, fit = null }) {
     const viewport = document.createElement("div");
     viewport.className = "result-page-viewport";
     container.before(viewport);
@@ -270,7 +280,10 @@
       + arrow("next", "M9 6 15 12 9 18") + arrow("last", "M5 6 11 12 5 18 M13 6 19 12 13 18") + '</div>'
       + '<span class="result-pager-items-total"><span aria-hidden="true"></span><span class="result-pager-exact"></span></span>'
       + '<span class="result-pager-announcement" role="status" aria-live="polite"></span>';
-    viewport.after(pager);
+    if (footer) {
+      pager.classList.add("host-result-pager");
+      footer.append(pager);
+    } else viewport.after(pager);
     container.classList.add("has-result-pages");
     const editor = pager.querySelector("form");
     const submit = pager.querySelector("[data-page-go]");
@@ -288,6 +301,12 @@
     let navigationVersion = 0;
     let inputDraft = false;
     let viewportWidth = 0;
+    let layoutFrame = null;
+
+    function scheduleLayout() {
+      if (layoutFrame !== null) return;
+      layoutFrame = requestAnimationFrame(() => { layoutFrame = null; layout(); });
+    }
 
     function layout() {
       if (!pager.getClientRects().length) return;
@@ -295,7 +314,23 @@
         viewportWidth = viewport.clientWidth;
         viewport.style.minHeight = "";
       }
-      if (rows) {
+      if (fit && !model.loading) {
+        const item = container.firstElementChild;
+        if (!item || item.classList.contains("search-empty")) return;
+        const style = getComputedStyle(container);
+        const size = fittedPageSize({
+          columns:style.gridTemplateColumns.split(" ").length,
+          height:fit.clientHeight,
+          itemHeight:item.getBoundingClientRect().height,
+          gap:parseFloat(style.rowGap) || 0,
+          padding:(parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0),
+        });
+        if (size !== null && model.pageSize !== size) {
+          cancelNavigation();
+          viewport.style.minHeight = "";
+          model.update({...options, pageSize:size});
+        }
+      } else if (rows) {
         const columns = getComputedStyle(container).gridTemplateColumns.split(" ").length;
         const size = Math.max(1, Math.min(8, columns)) * rows;
         if (model.pageSize !== size) {
@@ -305,8 +340,14 @@
         }
       }
     }
-    const resizeObserver = new ResizeObserver(layout);
+    const resizeObserver = new ResizeObserver(scheduleLayout);
     resizeObserver.observe(pager);
+    if (fit) {
+      resizeObserver.observe(fit);
+      resizeObserver.observe(container);
+      document.fonts?.ready.then(scheduleLayout);
+      document.fonts?.addEventListener("loadingdone", scheduleLayout);
+    }
 
     function animate(element, frames, duration = 220) {
       if (reducedMotion.matches) return null;
@@ -442,7 +483,7 @@
         renderItems(model.items, options.emptyText);
       }
       pager.hidden = container.classList.contains("hidden") || !model.items.length;
-      layout();
+      scheduleLayout();
     });
 
     function clearSwipe() {
@@ -602,6 +643,7 @@
       else void restoreDrag(displacement);
     }
     viewport.addEventListener("pointerdown", event => {
+      if (ignoreSwipe && event.target.closest(ignoreSwipe)) return;
       suppressClick = false;
       if (event.pointerType === "touch" || !event.isPrimary || model.loading || settling || (event.pointerType === "mouse" && event.button !== 0)) return;
       drag = { id: event.pointerId, x: event.clientX, y: event.clientY, horizontal: false };
@@ -636,6 +678,7 @@
     // intent is clear. Passive Pointer Events alone cannot stop Safari from
     // taking a diagonal drag and issuing pointercancel partway through it.
     viewport.addEventListener("touchstart", event => {
+      if (ignoreSwipe && event.target.closest(ignoreSwipe)) return;
       if (event.touches.length !== 1) {
         if (drag?.id === "touch") finishDrag({pointerId:"touch"}, true);
         return;
@@ -691,13 +734,15 @@
         }
         options = value;
         const columns = rows ? getComputedStyle(container).gridTemplateColumns.split(" ").length : 1;
-        model.update({...value, shouldPrefetch:() => Boolean(viewport.getClientRects().length), pageSize:rows ? Math.max(1, Math.min(8, columns)) * rows : value.pageSize});
+        model.update({...value, shouldPrefetch:() => Boolean(viewport.getClientRects().length),
+          pageSize:fit && model.items.length ? model.pageSize : rows ? Math.max(1, Math.min(8, columns)) * rows : value.pageSize});
       },
       localize(language) {
         options.language = language;
         if (!pager.hidden) model.onChange();
       },
       hide() {
+        if (layoutFrame !== null) { cancelAnimationFrame(layoutFrame); layoutFrame = null; }
         model.version += 1;
         cancelNavigation();
         model.busy = false;
@@ -712,7 +757,7 @@
     };
   }
 
-  const api = { Pages, pageSize, maximumPage, compactCount, swipeDirection, dotWindow, create };
+  const api = { Pages, pageSize, maximumPage, compactCount, swipeDirection, dotWindow, fittedPageSize, create };
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.BilikaraResultPager = api;
 })(typeof window === "undefined" ? null : window);

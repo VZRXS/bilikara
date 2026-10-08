@@ -2895,18 +2895,6 @@ select:disabled {
   min-height: var(--remote-form-control-height);
 }
 
-.source-uploader-actions {
-  display: block;
-}
-
-.source-refresh-button {
-  width: auto;
-  min-height: var(--remote-form-control-height);
-  border-radius: var(--remote-form-control-radius);
-  white-space: nowrap;
-}
-
-
 #favlist-list-view,
 #favlist-items-view,
 #sources-follow-list-view,
@@ -2955,26 +2943,6 @@ select:disabled {
 #sources-follow-items-view .follow-browser-head {
   margin-bottom: 4px;
 }
-
-.source-uid-form {
-  min-width: 0;
-  margin: 0;
-  align-self: start;
-  gap: 8px;
-}
-
-#sources-follow-uid-form {
-  grid-template-columns: minmax(0, 1fr) auto auto;
-}
-
-.source-uid-form input {
-  height: var(--remote-form-control-height);
-}
-
-.source-uid-form .primary-button {
-  min-height: var(--remote-form-control-height);
-}
-
 
 .remote-search-browser-view .search-results {
   display: grid;

@@ -19,7 +19,8 @@
   }
   function takeCompletion(task = {}, saving = false) {
     const signature = JSON.stringify([task.busy, task.background_busy, task.last_status,
-      task.last_updated_at, task.last_message, task.last_error]);
+      task.last_updated_at, task.last_message, task.last_error,
+      task.last_result?.operation, task.last_result?.source_order_version]);
     // The initial server snapshot is a baseline, not a new completion. Compare
     // server observations, never the phone's clock with the Host's clock.
     if (observedTask === undefined) { observedTask = signature; return false; }

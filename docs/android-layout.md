@@ -34,6 +34,22 @@ or audience output. The last active shared workspace is mapped back to its phone
 page. Independent audience output keeps its own shared fullscreen renderer;
 Host resizing does not rotate or rebuild the audience WebView.
 
+Phone Host reuses Remote's shared request components where the workflow fits.
+For example, Sources keeps the UID field, add and manual-refresh controls on
+one row at phone widths, using the same definition rather than a phone-only
+copy. Native Host pagination remains panel chrome: Sources places its pager
+below the internally scrolling list and fits complete rows to the available
+width/height. Resizing keeps the previously visible item in range and retains
+selections. Remote keeps its document scrolling and fixed source-page limit.
+
+The phone layout targets a minimum 360 CSS px window width and also checks
+320 px without horizontal overflow. Source frames fit complete rows at usable
+heights from 640 to 1000 CSS px, keeping their 44 px action row and bottom
+pagination. System bars and the keyboard reduce the actual WebView height;
+record that height separately from the emulator's physical display size.
+Long-press selection retains the page capacity and media nodes. See
+[source management](source-management.md) for its floating tools and gestures.
+
 ## Player touch controls
 
 In both phone and desktop layouts on Android, a single tap on the video reveals
@@ -62,6 +78,12 @@ Desktop browser and desktop Tauri click/fullscreen shortcuts are unchanged.
    pause/resume. Repeat while paused and in fullscreen. A seek must not turn a
    temporary native scrub pause into a permanent user pause, or resume a song
    that was already paused. The native play button must still respond to one tap.
+7. At 360 and 320 CSS px widths, check Sources at 640, 800 and 1000 CSS px
+   heights in Chinese, English and Japanese. Long-press a card, scroll to covered
+   items, change pages and exit selection. Check the native screen capture as
+   well as the DOM after layout settles; one transient matching frame is not
+   evidence that the rendered page retained its capacity. Keep the same Host
+   document during resize checks rather than navigating it through DevTools.
 
 `tests/android_layout.cjs` and `tests/android_portrait_navigation.cjs` cover policy,
 bridge failures/lifecycle, workspace restoration, system rotation and ignored

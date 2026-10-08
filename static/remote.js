@@ -3842,8 +3842,12 @@ function syncGatchaTaskTerminalMessage() {
         : status === "partial"
           ? t("gatcha.refreshPartial")
           : t("gatcha.refreshFailed");
-    const message = task.last_result?.operation === "remove_source"
-      ? t("sources.removedLocal") : localizedGatchaTaskMessage(task.last_message, status) || fallback;
+    const operation = task.last_result?.operation;
+    const message = operation === "source_order" ? t("sources.orderSaved")
+      : operation === "source_cleanup" ? t(status === "partial" ? "sources.removedCleanupPending" : "sources.cleanupDone")
+      : ["remove_source", "remove_sources"].includes(operation)
+        ? t(status === "partial" ? "sources.removedCleanupPending" : "sources.removedLocal")
+        : localizedGatchaTaskMessage(task.last_message, status) || fallback;
     const detail = task.last_error ? `${message} ${task.last_error}` : message;
     setGatchaUidMessage(detail, status !== "success");
   }
@@ -4251,26 +4255,6 @@ function renderRemoteGridPages(container, items, key, renderPage, {loading = fal
     loading, emptyText, language:state.language});
 }
 
-const sourceRemovalEditors = new Map();
-function sourceRemovalEditor(source) {
-  if (!sourceRemovalEditors.has(source)) {
-    sourceRemovalEditors.set(source, window.BilikaraSourceRemoval?.create(
-      source === "uid" ? elements.sourcesFollowGrid : elements.favlistGrid, {
-        source, translate: t, reportError: message => setAppMessage(message, true),
-        remove: async target => {
-          await apiPost("/api/gatcha/source/remove", target);
-          state.gatchaCandidate = null;
-          renderGatchaView();
-          if (source === "uid") await loadFollowBrowse({ uid: "", query: "" });
-          else await loadFavlistBrowse({ folderId: "", query: "" });
-          setAppMessage(t("sources.removedLocal"));
-        },
-      },
-    ));
-  }
-  return sourceRemovalEditors.get(source);
-}
-
 function renderSourceCardPage(container, entries, emptyText, favorites = false) {
   container.replaceChildren();
   if (!entries.length) {
@@ -4310,8 +4294,7 @@ function renderSourceCardPage(container, entries, emptyText, favorites = false) 
       button.append(avatar);
     }
     window.BilikaraSourceStatus?.syncCard(button, state.data?.gatcha, t);
-    container.append(sourceRemovalEditor(favorites ? "favlist" : "uid")?.card(button,
-      { id, title, placeholder: entry.placeholder }) || button);
+    container.append(button);
   }
 }
 
@@ -4970,7 +4953,6 @@ function renderFavlistBrowse() {
   if (!elements.favlistGrid || !elements.favlistSongResults) {
     return;
   }
-  sourceRemovalEditor("favlist")?.sync();
   const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
   const items = Array.isArray(state.favlistBrowseData?.items) ? state.favlistBrowseData.items : [];
   const hasMore = Boolean(state.favlistBrowseData?.has_more);
@@ -5352,7 +5334,6 @@ function renderSourcesFollowBrowse() {
   if (!elements.sourcesFollowGrid || !elements.sourcesFollowResults) {
     return;
   }
-  sourceRemovalEditor("uid")?.sync();
 
   const owners = Array.isArray(state.followBrowseData?.owners) ? state.followBrowseData.owners : [];
   const items = Array.isArray(state.followBrowseData?.items) ? state.followBrowseData.items : [];

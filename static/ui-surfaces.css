@@ -423,7 +423,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   .song-detail-card, .rating-card, .volume-adjust-popover, .audio-variant-popover,
   .remote-access-card, .remote-identity-card, .binding-sheet-panel, .history-export-dialog,
   .playback-sheet-panel, .remote-menu-panel, .menu-content, .topbar .cache-panel,
-  .presentation-feedback-card,
+  .presentation-feedback-card, .source-tools .source-float-surface,
   .app-shell[data-stage-controls-layout="popup"] .stage-control-tray) {
   background: var(--modal-card-bg);
   border: var(--modal-card-border);
@@ -432,6 +432,11 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   backdrop-filter: blur(var(--modal-surface-blur));
   -webkit-backdrop-filter: blur(var(--modal-surface-blur));
 }
+
+:root .source-tools .source-float-surface { border-radius: 999px; }
+:root .source-tools :is(.source-select-mode, .source-remove-selected).source-float-surface { border-radius: 50%; }
+:root .source-tools .source-select-mode[aria-pressed="true"] { border-color: var(--accent); }
+:root .source-tools .source-remove-selected.drag-over { background: var(--red); color: white; }
 
 /* Passive feedback belongs inside the fullscreen/audience root, never a body portal. */
 :root .presentation-feedback-card {

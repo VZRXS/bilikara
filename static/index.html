@@ -14,6 +14,7 @@
   <link rel="stylesheet" href="/remote-access.css" />
   <link rel="stylesheet" href="/host-layout.css" />
   <link rel="stylesheet" href="/status-indicators.css" />
+  <link rel="stylesheet" href="/result-pagination.css" />
   <link rel="stylesheet" href="/source-removal.css" />
   <link rel="stylesheet" href="/volume-control.css" />
   <link rel="stylesheet" href="/request-tabs.css" />
@@ -1188,14 +1189,14 @@
               <section class="request-mode-panel source-mode-panel" id="request-sources-uids" role="tabpanel"
                 data-sources-panel="uids">
                 <div class="source-action-row">
-                  <form id="modal-follow-uid-form" class="follow-search-form modal-uid-form">
+                  <form id="modal-follow-uid-form" class="follow-search-form modal-uid-form source-uid-form">
                     <input type="text" id="modal-follow-uid-input" placeholder="UID 或 UP 主空间链接"
                       data-i18n-placeholder="gatcha.uidPlaceholder" autocomplete="off">
                     <button type="submit" id="modal-add-follow-uid-button" class="next-button"
                       data-i18n="sources.addUid">添加 UID</button>
+                    <button type="button" id="refresh-gatcha-cache-button" class="toolbar-button source-refresh-button"
+                      data-i18n="gatcha.refresh">手动更新</button>
                   </form>
-                  <button type="button" id="refresh-gatcha-cache-button" class="toolbar-button"
-                    data-i18n="gatcha.refresh">手动更新</button>
                 </div>
                 <p class="gatcha-message source-action-message" id="gatcha-uid-message" role="status"></p>
                 <div class="source-browse-scroll request-scroll-region" id="request-sources-followed-scroll"
@@ -1232,7 +1233,7 @@
               <section class="request-mode-panel source-mode-panel" id="request-sources-favorites" role="tabpanel"
                 data-sources-panel="favorites" hidden inert>
                 <div class="source-action-row">
-                  <form id="modal-favlist-pull-form" class="follow-search-form modal-uid-form">
+                  <form id="modal-favlist-pull-form" class="follow-search-form modal-uid-form source-uid-form">
                     <input type="text" id="modal-favlist-uid-input" placeholder="UID 或 UP 主空间链接"
                       data-i18n-placeholder="gatcha.uidPlaceholder" autocomplete="off">
                     <button type="submit" id="modal-pull-favlist-button" class="next-button"
@@ -1900,6 +1901,7 @@
   <script src="/pitch-player.js" defer></script>
   <script src="/export-guard.js" defer></script>
   <script src="/source-status.js" defer></script>
+  <script src="/result-pagination.js" defer></script>
   <script src="/source-removal.js" defer></script>
   <script src="/browse-search.js" defer></script>
   <script src="/export-download.js" defer></script>

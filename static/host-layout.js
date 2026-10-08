@@ -205,6 +205,7 @@
   function navigate(next, {openSettings = false, remember = true} = {}) {
     if (!portrait || !pages.has(next)) return;
     const changed = next !== page || settings !== openSettings;
+    if (changed) leaveSourceEditors();
     page = next;
     settings = page === "my" && openSettings;
     state.cacheSettingsOpen = settingsEmbedded();

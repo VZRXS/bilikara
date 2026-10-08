@@ -35,8 +35,6 @@ on:
       - static/song-detail.js
       - static/status-indicators.css
       - static/source-status.js
-      - static/source-removal.js
-      - static/source-removal.css
       - static/volume-control.css
       - static/volume-control.js
       - static/pic/*
@@ -86,7 +84,6 @@ jobs:
         run: |
           node --check static/browse-search.js
           node --check static/source-status.js
-          node --check static/source-removal.js
           node --check static/export-guard.js
           node --check static/export-download.js
           node --check static/internet-remote-host.js

@@ -124,7 +124,19 @@ fn execute(directory: &Path, operation: GatchaOperation) -> Result<Value, ApiErr
         default_uids: default_uids(),
         operation,
     })
-    .map_err(|error| ApiError::new(400, &error.kind, error.message))
+    .map_err(repository_error)
+}
+
+fn repository_error(error: crate::gatcha_repository::GatchaRepositoryError) -> ApiError {
+    ApiError::new(
+        if error.kind == "stale_source_version" || error.kind == "unknown_source" {
+            409
+        } else {
+            400
+        },
+        &error.kind,
+        error.message,
+    )
 }
 
 pub(super) fn query_value(query: &str, key: &str) -> String {
@@ -676,13 +688,31 @@ impl TaskLease {
         configured: bool,
     ) {
         let mut task = match result {
-            Ok(value) if value["operation"] == "remove_source" => GachaTaskUpdate {
-                status: GachaTaskStatus::Success,
-                message: "本地来源已删除".into(),
-                error: String::new(),
-                result: Some(value.clone()),
-                blocking: false,
-            },
+            Ok(value)
+                if matches!(
+                    value["operation"].as_str(),
+                    Some("remove_source" | "remove_sources" | "source_order" | "source_cleanup")
+                ) =>
+            {
+                GachaTaskUpdate {
+                    status: if value["cleanup_pending"]
+                        .as_array()
+                        .is_some_and(|v| !v.is_empty())
+                    {
+                        GachaTaskStatus::Partial
+                    } else {
+                        GachaTaskStatus::Success
+                    },
+                    message: if value["operation"] == "source_order" {
+                        "来源显示顺序已更新".into()
+                    } else {
+                        "本地来源已删除".into()
+                    },
+                    error: String::new(),
+                    result: Some(value.clone()),
+                    blocking: false,
+                }
+            }
             _ => crate::gatcha_refresh::native_task(result.as_ref().ok()),
         };
         if let Err(error) = result {
@@ -850,6 +880,75 @@ pub(super) fn write(
     path: &str,
     body: &Value,
 ) -> Result<Value, ApiError> {
+    if path == "/api/gatcha/sources/edit" {
+        with_app(|app| app.native_authorize(identity, true))?;
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct SourceEditing {
+            source: String,
+            expected_version: String,
+            edit: crate::gatcha_repository::SourceEdit,
+        }
+        let edit: SourceEditing = serde_json::from_value(body.clone())
+            .map_err(|_| ApiError::invalid("Invalid source edit"))?;
+        crate::gatcha_repository::validate_source_edit(
+            &edit.source,
+            &edit.expected_version,
+            &edit.edit,
+        )
+        .map_err(repository_error)?;
+        if let crate::gatcha_repository::SourceEdit::Move { id, before_id } = &edit.edit {
+            // A read-only no-op needs no task status or state broadcast. An
+            // actual write revalidates the captured version under the lease.
+            with_app(|app| {
+                let session = app.native();
+                if session.library_refresh_active
+                    || session.library_source_active
+                    || session.login.gacha_snapshot().busy
+                {
+                    return Err(ApiError::new(
+                        409,
+                        "library_busy",
+                        "拉取任务执行中，请等待任务结束",
+                    ));
+                }
+                Ok(())
+            })?;
+            let preview = crate::gatcha_repository::preview_source_move(
+                &paths(&context.directory),
+                &edit.source,
+                &edit.expected_version,
+                id,
+                before_id.as_deref(),
+            )
+            .map_err(repository_error)?;
+            if preview["changed"] == false {
+                return Ok(preview);
+            }
+        }
+        let (lease, _) = TaskLease::acquire(Some(identity), "remove_source", false, true)?;
+        let result = execute(
+            &context.directory,
+            GatchaOperation::EditSources {
+                source: edit.source,
+                expected_version: edit.expected_version,
+                edit: edit.edit,
+            },
+        );
+        if let Ok(value) = &result
+            && value["operation"] == "remove_sources"
+        {
+            with_app(|app| {
+                for removal in value["removals"].as_array().into_iter().flatten() {
+                    app.native().library_queue.remove_source(removal);
+                }
+                Ok(())
+            })?;
+            publish_favorites_timestamp(&context.directory);
+        }
+        lease.finish(&result)?;
+        return result;
+    }
     if path == "/api/gatcha/pool-config" {
         let key = with_app(|app| {
             app.native_pool_key(

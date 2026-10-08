@@ -50,3 +50,5 @@ import './split_player_sync_contract.test.mjs';
 import './startup_state_frontend_contract.test.mjs';
 import './tauri_export_source_contract.test.mjs';
 import './volume_boost_frontend_contract.test.mjs';
+
+import './source_management_contract.test.mjs';

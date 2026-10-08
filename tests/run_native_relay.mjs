@@ -13,9 +13,9 @@ import { root } from './desktop_construction_support.mjs';
 import { buildNativeHost } from './native_runtime_artifacts.mjs';
 import { TransportFixture } from './native_transport_support.mjs';
 import { localCertificate } from './local_tls_certificate.mjs';
+import { localSignaling } from './local_signaling_fixture.mjs';
 
 const require = createRequire(import.meta.url), { chromium } = require('playwright');
-const { wsServer } = require(path.join(root, 'node_modules/playwright-core/lib/utilsBundle.js'));
 const script = fileURLToPath(import.meta.url);
 const outputIndex=process.argv.indexOf('--output');
 const output = path.resolve(outputIndex>=0?process.argv[outputIndex + 1]:'.tmp/internet-remote-relay');
@@ -112,7 +112,7 @@ async function run() {
       'no-software-attribute','log-file=stdout','simple-log',`pidfile=${path.join(owned,'coturn.pid')}`,
     ].join('\n')+'\n',{mode:0o600});
     relay = child(turnserver,['-c',config]); resources.push(relay); await delay(400); assert.equal(relay.exitCode,null,relay.output);
-    const lanes = new Map(); let currentCase;
+    let currentCase;
     service = http.createServer(async (request,response) => {
       counters.http++;
       const pathname = new URL(request.url,'http://localhost').pathname;
@@ -137,22 +137,15 @@ async function run() {
     }
     service.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>sockets.delete(socket));});
     await new Promise(resolve=>service.listen(0,'10.77.0.1',resolve));const port=service.address().port;
-    const wss = new wsServer({server:service,handleProtocols:()=> 'bilikara-v1'});
-    wss.on('connection',(socket,request)=>{
-      counters.websocketConnections++;
-      const auth=String(request.headers['sec-websocket-protocol']).split(',').map(value=>value.trim()).find(value=>/^(host|remote)\./u.test(value));
-      assert.ok(auth);const [role,,peerId]=auth.split('.');lanes.set(role,socket);socket.peerId=peerId;
-      if (currentCase.turn) {
-        const expires=Math.floor(Date.now()/1000)+300, username=`${expires}:fixture:${role}:${peerId}`;
-        const credential=currentCase.invalid?'invalid':createHmac('sha1',secret).update(username).digest('base64');
-        const scheme=currentCase.protocol==='tls'?'turns':'turn'; const turnPort=currentCase.unavailable?3499:currentCase.protocol==='tls'?5349:3478;
-        const url=`${scheme}:${currentCase.protocol==='tls'?'relay.test':'10.77.0.1'}:${turnPort}?transport=${currentCase.protocol==='udp'?'udp':'tcp'}`;
-        socket.send(JSON.stringify({type:'ice.config',payload:{expires_at:expires*1000,ice_servers:[{urls:[url],username,credential}]}}));counters.iceConfigs++;
-      }
-      const host=lanes.get('host'),remote=lanes.get('remote');if(host?.readyState===1&&remote?.readyState===1)host.send(JSON.stringify({type:'peer.join',peer_id:remote.peerId}));
-      socket.on('message',wire=>{counters.signals++;const message=JSON.parse(wire);const target=lanes.get(role==='host'?'remote':'host');if(target?.readyState===1)target.send(JSON.stringify({type:message.type,from:peerId,payload:message.payload}));});
-      socket.on('close',()=>{if(lanes.get(role)===socket)lanes.delete(role);});
-    });
+    const signaling = localSignaling(service, {counters, issueIce:(role,peerId) => {
+      if (!currentCase.turn) return null;
+      const expires=Math.floor(Date.now()/1000)+300, username=`${expires}:fixture:${role}:${peerId}`;
+      const credential=currentCase.invalid?'invalid':createHmac('sha1',secret).update(username).digest('base64');
+      const scheme=currentCase.protocol==='tls'?'turns':'turn'; const turnPort=currentCase.unavailable?3499:currentCase.protocol==='tls'?5349:3478;
+      const url=`${scheme}:${currentCase.protocol==='tls'?'relay.test':'10.77.0.1'}:${turnPort}?transport=${currentCase.protocol==='udp'?'udp':'tcp'}`;
+      return {expires_at:expires*1000,ice_servers:[{urls:[url],username,credential}]};
+    }});
+    const {lanes} = signaling;
     for (const peer of peers) {
       const gateway=child('nsenter',['-t',String(peer.pid),'-n',process.execPath,path.join(root,'tests/native_relay_gateway.mjs'),String(port)]);resources.push(gateway);await delay(80);assert.equal(gateway.exitCode,null,gateway.output);
       const probe=child('nsenter',['-t',String(peer.pid),'-n',process.execPath,'-e',"require('node:net').createServer(socket=>socket.pipe(socket)).listen(49900,'0.0.0.0');const udp=require('node:dgram').createSocket('udp4');udp.on('message',(data,from)=>udp.send(data,from.port,from.address));udp.bind(49900,'0.0.0.0')"]);resources.push(probe);await delay(50);assert.equal(probe.exitCode,null,probe.output);
@@ -184,6 +177,7 @@ async function run() {
       row.passed=true;
       console.log(`${value.name}: PASS ${JSON.stringify({elapsedMs:row.elapsedMs,pair:row.pair,failure:row.failure})}`);
     }
+    await signaling.close();
     report.egress={defaultRoute:command('ip',['route','show','default']).trim(),output:firewall('-L','OUTPUT','-n','-v','-x'),ipv6:command(ip6tables,['-L','OUTPUT','-n','-v','-x']),interfaces:command('ip',['-br','addr']),providerRequests:fixture.provider.requests.length};
     assert.match(report.egress.output,/\b1\s+\d+\s+DROP/u,'the enforced Internet drop rule must count an intentional TEST-NET probe');
     assert.equal(counters.externalBrowserRequests,0,'all browser resources must be explicitly local');

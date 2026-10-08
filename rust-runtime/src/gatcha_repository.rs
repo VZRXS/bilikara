@@ -1,4 +1,5 @@
 mod configured_refresh;
+mod source_order;
 mod source_removal;
 use crate::bilibili_service::{BilibiliHttpClient, BilibiliServiceError};
 use crate::gatcha_refresh::RefreshControl;
@@ -7,6 +8,8 @@ pub(crate) use configured_refresh::execute_configured_refresh;
 pub(crate) use configured_refresh::rebuild_needed;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+pub use source_order::SourceEdit;
+pub(crate) use source_order::validate_edit as validate_source_edit;
 pub(crate) use source_removal::validate_source_removal;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fs;
@@ -50,6 +53,16 @@ pub enum GatchaOperation {
     RemoveSource {
         source: String,
         id: String,
+    },
+    EditSources {
+        source: String,
+        expected_version: String,
+        edit: SourceEdit,
+    },
+    PreviewSourceEdit {
+        source: String,
+        expected_version: String,
+        edit: SourceEdit,
     },
     PoolConfigSnapshot,
     PoolConfigUpdate {
@@ -192,6 +205,19 @@ pub(crate) fn execute_gatcha_controlled(
     if let GatchaOperation::RemoveSource { source, id } = &request.operation {
         validate_source_removal(source, id)?;
     }
+    if let GatchaOperation::EditSources {
+        source,
+        expected_version,
+        edit,
+    }
+    | GatchaOperation::PreviewSourceEdit {
+        source,
+        expected_version,
+        edit,
+    } = &request.operation
+    {
+        validate_source_edit(source, expected_version, edit)?;
+    }
     if !requires_mutation_lock(&request.operation) {
         if matches!(
             request.operation,
@@ -211,7 +237,12 @@ pub(crate) fn execute_gatcha_controlled(
     let _guard = repository_guard()?;
     // A destructive edit must read the existing file strictly, not seed a
     // missing configuration as an incidental effect of deleting a favorite.
-    if !matches!(request.operation, GatchaOperation::RemoveSource { .. }) {
+    if !matches!(
+        request.operation,
+        GatchaOperation::RemoveSource { .. }
+            | GatchaOperation::EditSources { .. }
+            | GatchaOperation::PreviewSourceEdit { .. }
+    ) {
         uid_snapshot(&request.paths.uid_file, &request.default_uids)?;
     }
     execute_gatcha_operation(request, control)
@@ -220,7 +251,10 @@ pub(crate) fn execute_gatcha_controlled(
 fn requires_mutation_lock(operation: &GatchaOperation) -> bool {
     matches!(
         operation,
-        GatchaOperation::PoolConfigUpdate { .. } | GatchaOperation::RemoveSource { .. }
+        GatchaOperation::PoolConfigUpdate { .. }
+            | GatchaOperation::RemoveSource { .. }
+            | GatchaOperation::EditSources { .. }
+            | GatchaOperation::PreviewSourceEdit { .. }
     )
 }
 
@@ -231,6 +265,18 @@ fn repository_guard() -> Result<MutexGuard<'static, ()>, GatchaRepositoryError> 
         .map_err(|_| error("state", "Gacha repository lock is poisoned"))
 }
 
+#[cfg(feature = "native-host")]
+pub(crate) fn preview_source_move(
+    paths: &GatchaPaths,
+    source: &str,
+    expected: &str,
+    id: &str,
+    before: Option<&str>,
+) -> Result<Value, GatchaRepositoryError> {
+    let _guard = repository_guard()?;
+    source_order::move_source_controlled(paths, source, expected, id, before, false)
+}
+
 fn execute_gatcha_operation(
     request: &GatchaRepositoryRequest,
     control: &RefreshControl,
@@ -238,6 +284,46 @@ fn execute_gatcha_operation(
     match &request.operation {
         GatchaOperation::RemoveSource { source, id } => {
             source_removal::remove_source(&request.paths, source, id)
+        }
+        GatchaOperation::EditSources {
+            source,
+            expected_version,
+            edit,
+        } => match edit {
+            SourceEdit::Remove { ids } => {
+                source_removal::remove_sources(&request.paths, source, ids, Some(expected_version))
+            }
+            SourceEdit::Cleanup { ids } => {
+                source_removal::cleanup_sources(&request.paths, source, ids, expected_version)
+            }
+            SourceEdit::Move { id, before_id } => source_order::move_source(
+                &request.paths,
+                source,
+                expected_version,
+                id,
+                before_id.as_deref(),
+            ),
+        },
+        GatchaOperation::PreviewSourceEdit {
+            source,
+            expected_version,
+            edit,
+        } => {
+            if let SourceEdit::Move { id, before_id } = edit {
+                source_order::move_source_controlled(
+                    &request.paths,
+                    source,
+                    expected_version,
+                    id,
+                    before_id.as_deref(),
+                    false,
+                )
+            } else {
+                Err(error(
+                    "invalid_request",
+                    "Only source moves have a read-only preview",
+                ))
+            }
         }
         GatchaOperation::UidSnapshot => {
             uid_snapshot(&request.paths.uid_file, &request.default_uids)
@@ -2237,7 +2323,8 @@ fn browse_uid(
         .take(bounded_limit)
         .collect();
     let next_offset = offset.saturating_add(items.len()).min(matched_count);
-    Ok(json!({
+    let display = source_order::project(paths, "uid", &mut owners, "uid");
+    let mut result = json!({
         "owners": owners,
         "selected_uid": valid_selected,
         "query": query.trim(),
@@ -2248,7 +2335,12 @@ fn browse_uid(
         "next_offset": next_offset,
         "items": items,
         "updated_at": number(&cache, "updated_at"),
-    }))
+    });
+    result
+        .as_object_mut()
+        .unwrap()
+        .extend(display.as_object().unwrap().clone());
+    Ok(result)
 }
 
 fn browse_favlist(
@@ -2346,7 +2438,8 @@ fn browse_favlist(
         .take(bounded_limit)
         .collect();
     let next_offset = offset.saturating_add(items.len()).min(matched_count);
-    Ok(json!({
+    let display = source_order::project(paths, "favlist", &mut folders, "id");
+    let mut result = json!({
         "folders": folders,
         "selected_folder_id": selected,
         "query": query.trim(),
@@ -2357,7 +2450,12 @@ fn browse_favlist(
         "next_offset": next_offset,
         "items": items,
         "updated_at": number(&payload, "updated_at"),
-    }))
+    });
+    result
+        .as_object_mut()
+        .unwrap()
+        .extend(display.as_object().unwrap().clone());
+    Ok(result)
 }
 
 fn candidate_payload(entry: &Map<String, Value>, source: &str, uid: Option<&String>) -> Value {

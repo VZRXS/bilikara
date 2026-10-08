@@ -409,6 +409,45 @@ class RustRuntimeAdapterTest(unittest.TestCase):
                 bilibili.remove_gatcha_source("uid", "42")
         release.assert_called_once_with()
 
+    def test_source_batch_adapter_forwards_once_and_preserves_committed_cleanup_truth(self):
+        from bilikara import bilibili
+        edit = {"action": "remove", "ids": ["42", "43"]}
+        result = {"operation": "remove_sources", "committed": True, "removed_ids": ["42", "43"], "cleanup_pending": ["cache"]}
+        done = Mock()
+        with patch.object(rust_runtime, "try_begin_gatcha_refresh", return_value=True) as begin, \
+                patch.object(rust_runtime, "release_gatcha_refresh") as release, \
+                patch.object(bilibili, "_rust_gatcha_repository", return_value=result) as repository, \
+                patch.object(bilibili, "_set_gatcha_task_status") as status:
+            self.assertEqual(bilibili.edit_gatcha_sources("uid", "a" * 64, edit, on_done=done), result)
+        begin.assert_called_once_with(busy_message=bilibili.GATCHA_TASK_BUSY_MESSAGE, exclusive=True)
+        repository.assert_called_once_with("edit_sources", source="uid", expected_version="a" * 64, edit=edit)
+        status.assert_called_once_with(status="partial", result=result)
+        release.assert_called_once_with()
+        done.assert_called_once_with()
+        with patch.object(rust_runtime, "try_begin_gatcha_refresh", return_value=False), \
+                patch.object(bilibili, "_rust_gatcha_repository") as repository:
+            with self.assertRaises(bilibili.BilibiliError):
+                bilibili.edit_gatcha_sources("uid", "a" * 64, edit)
+        repository.assert_not_called()
+
+    def test_source_order_noop_uses_readonly_rust_preview_without_lease_or_notification(self):
+        from bilikara import bilibili
+        edit = {"action": "move", "id": "42", "before_id": "42"}
+        done = Mock()
+        with patch.object(bilibili, "gatcha_task_snapshot", return_value={"busy": False}), \
+                patch.object(bilibili, "_rust_gatcha_repository", return_value={"changed": False}) as repository, \
+                patch.object(rust_runtime, "try_begin_gatcha_refresh") as begin:
+            self.assertEqual(bilibili.edit_gatcha_sources("uid", "a" * 64, edit, on_done=done), {"changed": False})
+        repository.assert_called_once_with("preview_source_edit", source="uid", expected_version="a" * 64, edit=edit)
+        begin.assert_not_called()
+        done.assert_not_called()
+        for task in ({"busy": True}, {"busy": False, "background_busy": True}):
+            with patch.object(bilibili, "gatcha_task_snapshot", return_value=task), \
+                    patch.object(bilibili, "_rust_gatcha_repository") as repository:
+                with self.assertRaises(bilibili.BilibiliError):
+                    bilibili.edit_gatcha_sources("uid", "a" * 64, edit)
+            repository.assert_not_called()
+
     def test_runtime_load_failure_records_actionable_details(self):
         path = Path("C:/bundle/rust/bilikara_runtime.dll")
         with patch(

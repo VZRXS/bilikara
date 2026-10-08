@@ -51,6 +51,7 @@ function setup(native = true, orientationType = "portrait-primary", width = 412,
   const window={innerWidth:width,innerHeight:850,screen:{orientation},BilikaraLayoutPolicy:{resolveLayout},BilikaraHostWindowPreferences:{client,orientation:platform === "android"},addEventListener:(k,fn)=>{listeners[k]=fn;},matchMedia:()=>({matches:true})};
   const context={window,history,state,elements,clearTimeout:()=>{},t:key=>key,
     document:{querySelectorAll:selector=>selector==='[data-host-workspace]'?workspaceButtons:[],documentElement:root,getElementById:get,querySelector:selector=>selector.includes("settings-workspace-body") ? get("settings-body") : requestTabs,createElement:tag=>new Node(tag),createComment:()=>new Node("anchor"),addEventListener:()=>{}},
+    leaveSourceEditors:()=>{state.sourceEditCancels=(state.sourceEditCancels||0)+1;},
     syncSessionUserControls:()=>{},syncHostAccountPresentation:()=>{},
     syncCachePanelVisibility:()=>{},schedulePersistentStageMeasurement:()=>{},
     setAppMessage:message=>calls.push(message),

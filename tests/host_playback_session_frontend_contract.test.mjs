@@ -1531,6 +1531,7 @@ function replaceHostPlayerView() { forbidden.replace += 1; }
 function apiPostStateSnapshot(path) {
   if (String(path).startsWith("/api/player/")) forbidden.playerRequests += 1;
 }
+function leaveSourceEditors() {}
 function acceptedScenario(phase, presentationActive = false) {
   const playing = phase === "playing";
   const video = {

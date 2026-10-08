@@ -13,7 +13,7 @@
   padding-bottom: 4px;
 }
 
-.request-panel :is(
+.remote-shell .request-panel :is(
   .remote-request-view, .remote-search-mode-panel, .remote-discover-mode-panel,
   .remote-sources-mode-panel, .remote-search-browser-view, .follow-browser,
   .tag-browser, .category-browser, .category-browser-home, .category-browser-detail,
@@ -28,7 +28,7 @@
   overscroll-behavior-y: auto;
 }
 
-.request-panel :is(.search-results, .tag-browser-tags, .follow-up-grid) {
+.remote-shell .request-panel :is(.search-results, .tag-browser-tags, .follow-up-grid) {
   max-height: none;
   padding-bottom: 0;
   overflow: visible;
@@ -36,13 +36,13 @@
 }
 
 /* A paged category home needs the same row gap as the search/source views. */
-.request-panel .category-browser-home:has(> .result-pager) {
+.remote-shell .request-panel .category-browser-home:has(> .result-pager) {
   display: grid;
   gap: 12px;
 }
 
 /* Reserve focus-ring space inside the shared footer gap, not in addition to it. */
-.request-panel .has-result-pages {
+.remote-shell .request-panel .has-result-pages {
   padding-bottom: 2px;
 }
 
@@ -70,7 +70,7 @@
 }
 .is-page-dragging { will-change: transform; user-select: none; }
 
-.request-panel :is(#sources-follow-count, #favlist-browse-count) {
+.remote-shell .request-panel :is(#sources-follow-count, #favlist-browse-count) {
   display: none;
 }
 
@@ -87,6 +87,16 @@
   font-variant-numeric: tabular-nums;
 }
 .result-pager[hidden] { display: none; }
+/* Native panel chrome stays outside the scrolling body, with one 4px inset
+   above/below the existing 44px controls. Remote retains document scrolling. */
+.host-result-pager {
+  --host-result-pager-block-size: 52px;
+  box-sizing: border-box;
+  flex: 0 0 var(--host-result-pager-block-size);
+  min-height: var(--host-result-pager-block-size);
+  margin: 0;
+  padding-block: 4px;
+}
 .result-pager-count, .result-pager-items-total {
   min-width: 0;
   max-width: 100%;

@@ -110,3 +110,30 @@ html[data-host-layout="portrait"] .request-mode-tabs {
   border: 0;
   background: transparent;
 }
+
+/* The same source action row serves Host and Remote. Its text field yields
+   width to the two actions, rather than switching to stacked phone controls. */
+:root .source-action-row:has(> .source-uid-form) { grid-template-columns: minmax(0, 1fr); }
+:root .source-uid-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
+  margin: 0;
+  align-self: start;
+  align-items: stretch;
+  gap: 8px;
+}
+:root .source-uid-form:has(> .source-refresh-button) { grid-template-columns: minmax(0, 1fr) auto auto; }
+:root .source-uid-form > input {
+  min-width: 0;
+  width: 100%;
+  height: 44px;
+}
+:root .source-uid-form > button {
+  min-width: 44px;
+  min-height: 44px;
+  height: 44px;
+  width: auto;
+  padding-inline: 12px;
+  white-space: nowrap;
+}
