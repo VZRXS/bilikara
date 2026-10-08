@@ -328,10 +328,98 @@ fn sanitize_internet_remote_diagnostics(values: &[Value], names: &[String]) -> V
                 "originClass": text("originClass", 16),
                 "errorCode": text("errorCode", 64),
                 "errorMessage": text("errorMessage", 256),
+                "transport": sanitize_internet_transport(source.get("transport")),
             })
         })
         .collect();
     Value::Array(entries)
+}
+
+fn sanitize_internet_transport(value: Option<&Value>) -> Value {
+    let Some(source) = value.and_then(Value::as_object) else {
+        return Value::Null;
+    };
+    let allowed_stages = [
+        "signaling",
+        "waiting_offer",
+        "offer",
+        "transport",
+        "auth",
+        "authentication",
+        "runtime_admission",
+        "initial_state",
+        "sync",
+        "ready",
+        "failed",
+        "closed",
+    ];
+    let failure_codes = [
+        "signaling_timeout",
+        "signaling_unavailable",
+        "host_offline",
+        "room_expired",
+        "transport_timeout",
+        "transport_failed",
+        "auth_timeout",
+        "wrong_password",
+        "auth_throttled",
+        "runtime_admission_failed",
+        "sync_failed",
+        "identity_conflict",
+        "internet_remote_ice_invalid",
+        "internet_remote_ice_expired",
+        "connection_reset",
+        "candidate_exchange_failed",
+        "protocol_error",
+    ];
+    let enumeration = |source: &Map<String, Value>, key: &str, allowed: &[&str]| {
+        Value::String(
+            source
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|value| allowed.contains(value))
+                .unwrap_or("unknown")
+                .to_owned(),
+        )
+    };
+    let stages = source
+        .get("stages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|stage| {
+            let stage = stage.as_object()?;
+            let name = stage.get("stage")?.as_str()?;
+            let elapsed = stage.get("elapsed_ms")?.as_u64()?;
+            (allowed_stages.contains(&name) && elapsed <= 3_600_000)
+                .then(|| json!({"stage":name,"elapsed_ms":elapsed}))
+        })
+        .take(13)
+        .collect::<Vec<_>>();
+    let failure = source
+        .get("failure_code")
+        .and_then(Value::as_str)
+        .filter(|value| failure_codes.contains(value));
+    let selected_pair = source
+        .get("selected_pair")
+        .and_then(Value::as_object)
+        .map(|pair| {
+            json!({
+                "local_type":enumeration(pair,"local_type", &["host","srflx","prflx","relay"]),
+                "remote_type":enumeration(pair,"remote_type", &["host","srflx","prflx","relay"]),
+                "protocol":enumeration(pair,"protocol", &["udp","tcp"]),
+                "relay_protocol":enumeration(pair,"relay_protocol", &["udp","tcp","tls"]),
+            })
+        })
+        .unwrap_or(Value::Null);
+    json!({
+        "stages":stages, "failure_code":failure, "selected_pair":selected_pair,
+        "ice_state":enumeration(source,"ice_state", &["new","checking","connected","completed","disconnected","failed","closed"]),
+        "gathering_state":enumeration(source,"gathering_state", &["new","gathering","complete"]),
+        "connection_state":enumeration(source,"connection_state", &["new","connecting","connected","disconnected","failed","closed"]),
+        "control_state":enumeration(source,"control_state", &["connecting","open","closing","closed"]),
+        "bulk_state":enumeration(source,"bulk_state", &["connecting","open","closing","closed"]),
+    })
 }
 
 fn disk_snapshot(path: &Path, names: &[String]) -> Value {
@@ -637,16 +725,32 @@ fn build_markdown(inputs: MarkdownInputs<'_>) -> String {
         .filter(|entries| !entries.is_empty())
     {
         lines.push(
-            "| Timestamp | Stage | Status | Origin | HTTP | Elapsed | Peers | Error |".to_owned(),
+            "| Timestamp | Stage | Status | Origin | HTTP | Elapsed | Peers | Error | Transport |"
+                .to_owned(),
         );
-        lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |".to_owned());
+        lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- |".to_owned());
         for item in entries {
             let error = item
                 .get("errorMessage")
                 .or_else(|| item.get("errorCode"))
                 .map_or("-".to_owned(), |value| value_label(Some(value)));
+            let transport = item.get("transport").filter(|value| value.is_object())
+                .map(|value| {
+                    format!("ICE {}; gathering {}; connection {}; lanes {}/{}; pair {}/{} {}/{}; failure {}",
+                        value_label(value.get("ice_state")),
+                        value_label(value.get("gathering_state")),
+                        value_label(value.get("connection_state")),
+                        value_label(value.get("control_state")),
+                        value_label(value.get("bulk_state")),
+                        value_label(value.pointer("/selected_pair/local_type")),
+                        value_label(value.pointer("/selected_pair/remote_type")),
+                        value_label(value.pointer("/selected_pair/protocol")),
+                        value_label(value.pointer("/selected_pair/relay_protocol")),
+                        value_label(value.get("failure_code")),
+                    )
+                }).unwrap_or_else(|| "-".to_owned());
             lines.push(format!(
-                "| {} | {} | {} | {} | {} | {} ms | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} ms | {} | {} | {} |",
                 markdown_table_cell(&value_label(item.get("timestamp"))),
                 markdown_table_cell(&value_label(item.get("stage"))),
                 markdown_table_cell(&value_label(item.get("status"))),
@@ -655,6 +759,7 @@ fn build_markdown(inputs: MarkdownInputs<'_>) -> String {
                 markdown_table_cell(&value_label(item.get("elapsedMs"))),
                 markdown_table_cell(&value_label(item.get("peerCount"))),
                 markdown_table_cell(&error),
+                markdown_table_cell(&transport),
             ));
         }
     } else {
@@ -919,5 +1024,60 @@ mod tests {
                 .unwrap()
                 .contains(REDACTED)
         );
+    }
+
+    #[test]
+    fn internet_transport_sanitizer_keeps_evidence_without_addresses_or_credentials() {
+        let transport = json!({
+            "stages":[{"stage":"transport","elapsed_ms":42,"sdp":"private-sdp"},
+                      {"stage":"ready","elapsed_ms":88}],
+            "failure_code":null,
+            "ice_state":"connected", "gathering_state":"complete",
+            "connection_state":"connected", "control_state":"open", "bulk_state":"open",
+            "selected_pair":{"local_type":"relay","remote_type":"relay","protocol":"udp",
+                "relay_protocol":"tls","address":"192.0.2.123","username":"private-turn-user"},
+            "credential":"private-turn-credential", "password":"private-password", "sdp":"private-sdp",
+        });
+        let result = sanitize_internet_remote_diagnostics(&[json!({"transport":transport})], &[]);
+        let sanitized = &result[0]["transport"];
+        assert_eq!(
+            sanitized["stages"],
+            json!([
+                {"stage":"transport","elapsed_ms":42},{"stage":"ready","elapsed_ms":88}
+            ])
+        );
+        assert_eq!(
+            sanitized["selected_pair"],
+            json!({
+                "local_type":"relay","remote_type":"relay","protocol":"udp","relay_protocol":"tls"
+            })
+        );
+        assert_eq!(sanitized["ice_state"], "connected");
+        let encoded = result.to_string();
+        assert!(!encoded.contains("private-"));
+        assert!(!encoded.contains("192.0.2.123"));
+        assert!(!encoded.contains("credential"));
+    }
+
+    #[test]
+    fn internet_transport_sanitizer_caps_timings_and_rejects_non_enumerated_values() {
+        let result = sanitize_internet_transport(Some(&json!({
+            "stages":vec![json!({"stage":"transport","elapsed_ms":10});50],
+            "failure_code":"secret-token", "ice_state":"secret-ip", "control_state":"secret-name",
+            "selected_pair":{"local_type":"private-address","remote_type":"relay",
+                "protocol":"secret-protocol","relay_protocol":"secret-url"},
+        })));
+        assert_eq!(result["stages"].as_array().unwrap().len(), 13);
+        assert_eq!(result["failure_code"], Value::Null);
+        assert_eq!(result["ice_state"], "unknown");
+        assert_eq!(result["selected_pair"]["local_type"], "unknown");
+        assert!(!result.to_string().contains("secret-"));
+        assert!(!result.to_string().contains("private-address"));
+        let invalid = sanitize_internet_transport(Some(&json!({"stages":[
+            {"stage":"Alice","elapsed_ms":10},
+            {"stage":"transport","elapsed_ms":-1},
+            {"stage":"transport","elapsed_ms":3_600_001},
+        ]})));
+        assert_eq!(invalid["stages"], json!([]));
     }
 }

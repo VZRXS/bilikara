@@ -79,9 +79,12 @@ const sandbox = {
   CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init.detail; } },
   dispatchEvent: event => notices.push(event.detail),
   fetch: () => {}, location: {hash: "#room=synthetic", origin: "https://example.test"},
-  localStorage: {getItem: () => "", setItem: () => {}}, URLSearchParams,
+  localStorage: {getItem: () => "", setItem: () => {}, removeItem: () => {}}, URLSearchParams,
+  TextEncoder, crypto: require("node:crypto").webcrypto, btoa, Event,
+  setTimeout: () => 0, clearTimeout: () => {}, clearInterval: () => {},
   addEventListener: () => {}, document: {addEventListener: () => {}, documentElement: {dataset: {}}},
 };
+vm.runInNewContext(fs.readFileSync("static/internet-remote-transport.js", "utf8"), sandbox);
 vm.runInNewContext(source, sandbox);
 const {state, localize, setConnectionStatus, handleDataMessage, connectionMessageKeys} = sandbox.copy;
 for (const messages of Object.values(languages)) {

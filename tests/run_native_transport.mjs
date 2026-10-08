@@ -16,7 +16,7 @@ export async function runTransportBrowser(evidence) {
   mkdirSync(evidence, {recursive: true}); const media = path.join(evidence, 'synthetic.webm');
   const built = await runNative('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=0x224466:s=640x360:r=10:d=60', '-c:v', 'libvpx', '-deadline', 'realtime', '-pix_fmt', 'yuv420p', media]);
   assert.equal(built.status, 0, built.stderr);
-  const fixture = await TransportFixture.start(await buildNativeHost());
+  const fixture = await TransportFixture.start(process.env.BILIKARA_TRANSPORT_HOST || await buildNativeHost());
   try {
     const checked = await runNative(process.execPath, [path.join(root, 'tests/live_transport_concurrency.js'), fixture.host.base, browser, path.resolve(evidence)], {
       ...process.env, BILIKARA_TRANSPORT_BOOTSTRAP: fixture.host.bootstrapUrl,

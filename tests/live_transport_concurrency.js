@@ -15,7 +15,9 @@ async function check(name, operation) {
   catch (error) { checks.push({ name, passed: false, error: error.stack }); }
 }
 async function main() {
-  const browser = await chromium.launch({ executablePath, headless: true, env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toLowerCase().includes('proxy'))), args: ["--no-sandbox", "--disable-background-networking"] });
+  // A disposable offline namespace may block multicast. This explicit fixture
+  // option keeps real host ICE candidates numeric rather than requiring mDNS.
+  const browser = await chromium.launch({ executablePath, headless: true, env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toLowerCase().includes('proxy'))), args: ["--no-sandbox", "--disable-background-networking", ...(process.env.BILIKARA_TRANSPORT_LOCAL_ICE === '1' ? ['--disable-features=WebRtcHideLocalIpsWithMdns'] : [])] });
   try {
     const context = await browser.newContext({ viewport: { width: 1100, height: 800 } });
     assert.ok(process.env.BILIKARA_TRANSPORT_BOOTSTRAP, 'actual Native Host bootstrap required');
@@ -106,8 +108,9 @@ async function main() {
         throw new Error(JSON.stringify({
           remote:await remote.evaluate(()=>({authorized:__remote.state.authorized,pending:__remote.state.pending.size,
             connection:__remote.state.peer?.connectionState,status:__remote.state.connectionMessage,
-            hasCurrent:Boolean(__remote.state.remoteState?.current_item)})),
+            hasCurrent:Boolean(__remote.state.remoteState?.current_item),diagnostic:BilikaraInternetRemoteDiagnostics?.getSnapshot?.()})),
           host:await host.evaluate(()=>[...__host.peers.values()].map(peer=>({authorized:peer.authorized,connection:peer.pc.connectionState}))),
+          hostDiagnostic:await host.evaluate(()=>BilikaraInternetRemoteDiagnostics.getSnapshot()), signals,
         }),{cause:error});
       }
     }

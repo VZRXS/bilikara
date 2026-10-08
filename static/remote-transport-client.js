@@ -7,6 +7,7 @@
   const joinToken = fragment.get("join") || "";
   const internetMode = Boolean(roomId || joinToken);
   const lowLevel = global.BilikaraInternetTransport;
+  const iceProvisioning = lowLevel?.createIceProvisioning();
   const identityStorageKey = "bilikara.internetRemote.identity.v1";
   const identityUserStorageKey = `${identityStorageKey}.${roomId}.userId`;
   const endpointStorageKey = "bilikara.internetRemote.endpoint.v1";
@@ -56,6 +57,13 @@
     identityUserId: localStorage.getItem(identityUserStorageKey) || "",
     password: "",
     authorized: false,
+    sessionReady: false,
+    authSent: false,
+    handshakeTimer: null,
+    signalingCloseTimer: null,
+    invitationExpiryTimer: null,
+    diagnostic: null,
+    lastDiagnostic: null,
     reconnectAttempts: 0,
     reconnectTimer: null,
     disconnectedTimer: null,
@@ -100,6 +108,15 @@
     "正在连接…": "remote.connectionConnecting",
     "正在重新连接…": "remote.connectionReconnecting",
     "等待 Host…": "internetRemote.waitingForHost",
+    "正在建立设备连接…": "internetRemote.connectingTransport",
+    "正在同步状态和身份…": "internetRemote.synchronizing",
+    "设备连接超时。网络可能限制直连，请联系房间管理员检查中继配置。": "internetRemote.transportTimeout",
+    "设备连接失败。请检查网络和房间中继配置。": "internetRemote.transportFailed",
+    "Host 未能接纳此设备，请重新连接。": "internetRemote.admissionFailed",
+    "房间已过期，请向 Host 获取新链接。": "internetRemote.roomExpired",
+    "连接配置无效，请联系房间管理员。": "internetRemote.iceInvalid",
+    "中继凭据已过期，请重新连接。": "internetRemote.iceExpired",
+    "房间密码验证超时，请重新连接。": "internetRemote.authStageTimeout",
     "Host 不在线。": "internetRemote.hostOffline",
     "信令暂时不可用。": "internetRemote.signalingUnavailable",
     "正在认证…": "internetRemote.authenticating",
@@ -246,12 +263,19 @@
     state.socket.send(JSON.stringify({ to: "host", type, payload }));
   }
 
-  function resetPeer() {
+  function resetPeer({ preserveDiagnostic = false } = {}) {
     const wasAuthorized = state.authorized;
     clearTimeout(state.disconnectedTimer);
     state.disconnectedTimer = null;
+    clearTimeout(state.handshakeTimer);
+    clearTimeout(state.signalingCloseTimer);
+    state.handshakeTimer = null;
+    state.signalingCloseTimer = null;
+    clearInvitationExpiry();
     stopHeartbeat();
     state.authorized = false;
+    state.sessionReady = false;
+    state.authSent = false;
     global.dispatchEvent(new Event("remote-invitation-changed"));
     // A first join can fail while fetching an oversized initial snapshot. Keep
     // its unresolved page-startup waiter across retries; retire only fulfilled
@@ -262,13 +286,19 @@
     if (wasAuthorized) {
       for (const listener of [...listeners]) listener({ type: "error" });
     }
-    state.control?.close();
-    state.bulk?.close();
-    state.peer?.close();
+    const control = state.control, bulk = state.bulk, peer = state.peer;
     state.peer = null;
     state.ice = null;
     state.control = null;
     state.bulk = null;
+    if (state.diagnostic && !preserveDiagnostic) {
+      state.lastDiagnostic = state.diagnostic.snapshot();
+      state.diagnostic.dispose();
+      state.diagnostic = null;
+    }
+    control?.close();
+    bulk?.close();
+    peer?.close();
     state.epoch = lowLevel.randomBase64Url(16);
     state.sequences = { control: 0, bulk: 0 };
     state.decoders = { control: new lowLevel.Decoder(), bulk: new lowLevel.Decoder() };
@@ -277,6 +307,15 @@
       pending.reject(new Error("连接已重置"));
     }
     state.pending.clear();
+  }
+
+  function stageDeadline(stage, timeoutMs, message, code) {
+    clearTimeout(state.handshakeTimer);
+    state.diagnostic?.stage(stage);
+    const epoch = state.epoch;
+    state.handshakeTimer = setTimeout(() => {
+      if (state.epoch === epoch && !state.sessionReady) fail(Object.assign(new Error(message), { code }));
+    }, timeoutMs);
   }
 
   function connectSignaling() {
@@ -296,26 +335,45 @@
     state.socket = null;
     previousSocket?.close(1000, "reconnecting");
     resetPeer();
+    iceProvisioning.reset();
+    state.diagnostic = lowLevel.createConnectionDiagnostics();
+    state.diagnostic.stage("signaling");
     setConnectionStatus(state.reconnectAttempts ? "正在重新连接…" : "正在连接…");
     const socket = new WebSocket(signalingUrl(), ["bilikara-v1", `remote.${joinToken}.${peerId}`]);
     state.socket = socket;
+    stageDeadline("signaling", 20_000, "信令暂时不可用。", "signaling_timeout");
     socket.addEventListener("open", () => {
-      if (state.socket === socket) setConnectionStatus("等待 Host…");
+      if (state.socket !== socket) return;
+      setConnectionStatus("等待 Host…");
+      stageDeadline("waiting_offer", 20_000, "Host 不在线。", "host_offline");
     });
     socket.addEventListener("message", (event) => {
       if (state.socket !== socket) return;
       let message;
       try { message = JSON.parse(String(event.data)); } catch { return; }
-      if (message.type === "offer" && message.from) acceptOffer(message.payload).catch(fail);
+      if (!message || typeof message !== "object" || Array.isArray(message)) return;
+      if (message.type === "ice.config" && !Object.hasOwn(message, "from")) {
+        try { iceProvisioning.accept(message.payload); } catch (error) { fail(error); }
+      }
+      else if (message.type === "offer" && message.from) {
+        const operation = acceptOffer(message.payload);
+        const epoch = state.epoch;
+        operation.catch((error) => { if (state.socket === socket && state.epoch === epoch) fail(error); });
+      }
       else if (message.type === "candidate" && message.from && state.ice) {
         const ice = state.ice;
         ice.addCandidate(message.payload).catch((error) => { if (state.ice === ice) fail(error); });
       }
-      else if (message.type === "host.leave" && !state.authorized) setConnectionStatus("Host 不在线。", true);
+      else if (message.type === "host.leave" && !state.sessionReady) fail(Object.assign(new Error("Host 不在线。"), { code: "host_offline" }));
     });
-    socket.addEventListener("close", () => {
+    socket.addEventListener("close", (event) => {
       if (state.socket !== socket) return;
       state.socket = null;
+      if ([4003, 4004].includes(event.code)) {
+        fail(Object.assign(new Error(event.code === 4003 ? "房间已过期，请向 Host 获取新链接。" : "房间链接无效，请重新扫描 Host 二维码。"),
+          { code: event.code === 4003 ? "room_expired" : "protocol_error" }));
+        return;
+      }
       if (!state.authorized && state.password) scheduleReconnect();
     });
     socket.addEventListener("error", () => {
@@ -324,20 +382,31 @@
   }
 
   async function acceptOffer(description) {
-    resetPeer();
-    const peer = new RTCPeerConnection(lowLevel.iceConfiguration);
+    const retainDiagnostic = !state.peer && Boolean(state.diagnostic);
+    resetPeer({ preserveDiagnostic: retainDiagnostic });
+    const peer = new RTCPeerConnection(iceProvisioning.configuration());
     state.peer = peer;
+    state.diagnostic ||= lowLevel.createConnectionDiagnostics();
+    state.diagnostic.attachPeer(peer);
+    setConnectionStatus("正在建立设备连接…");
+    stageDeadline("transport", 20_000, "设备连接超时。网络可能限制直连，请联系房间管理员检查中继配置。", "transport_timeout");
     const ice = lowLevel.createIceCandidateExchange(peer, {
       isCurrent: () => state.peer === peer,
       sendCandidate: (candidate) => { if (!state.authorized) sendSignal("candidate", candidate); },
-      onError: fail,
+      onError: (error) => { if (state.peer === peer) fail(error); },
     });
     state.ice = ice;
-    peer.addEventListener("datachannel", (event) => wireChannel(event.channel));
+    peer.addEventListener("datachannel", (event) => {
+      if (state.peer === peer) wireChannel(event.channel, peer);
+      else event.channel.close();
+    });
     peer.addEventListener("connectionstatechange", () => {
       if (state.peer !== peer) return;
-      if (peer.connectionState === "connected") setConnectionStatus("正在认证…");
-      if (["failed", "closed"].includes(peer.connectionState)) scheduleReconnect();
+      if (peer.connectionState === "connected") void state.diagnostic?.capture();
+      if (["failed", "closed"].includes(peer.connectionState)) {
+        if (state.sessionReady) scheduleReconnect();
+        else fail(Object.assign(new Error("设备连接失败。请检查网络和房间中继配置。"), { code: "transport_failed" }));
+      }
     });
     peer.addEventListener("iceconnectionstatechange", () => {
       if (state.peer !== peer) return;
@@ -348,7 +417,10 @@
     });
     await ice.setRemoteDescription(description);
     if (state.peer !== peer) return;
-    await peer.setLocalDescription(await peer.createAnswer());
+    const answer = await peer.createAnswer();
+    if (state.peer !== peer) return;
+    await peer.setLocalDescription(answer);
+    if (state.peer !== peer) return;
     await lowLevel.waitForIceGathering(peer);
     if (state.peer === peer) {
       sendSignal("answer", peer.localDescription);
@@ -356,33 +428,42 @@
     }
   }
 
-  function wireChannel(channel) {
+  function wireChannel(channel, peer = state.peer) {
     const lane = channel.label === "bilikara-bulk"
       ? "bulk"
       : channel.label === "bilikara-control"
         ? "control"
         : "";
-    if (!lane) {
+    if (!lane || channel.ordered === false || state.peer !== peer || state[lane]) {
       channel.close();
       return;
     }
     state[lane] = channel;
+    state.diagnostic?.channels({ control: state.control, bulk: state.bulk });
     channel.addEventListener("message", (event) => {
-      if (state[lane] !== channel) return;
+      if (state[lane] !== channel || state.peer !== peer) return;
       try {
         for (const message of state.decoders[lane].consume(event.data)) handleDataMessage(message);
       } catch (error) {
         fail(error);
       }
     });
-    channel.addEventListener("open", authenticateIfReady);
+    channel.addEventListener("open", () => {
+      if (state[lane] === channel && state.peer === peer) authenticateIfReady();
+    });
     channel.addEventListener("close", () => {
-      if (state[lane] === channel && state.authorized) scheduleReconnect();
+      if (state[lane] !== channel || state.peer !== peer) return;
+      if (state.sessionReady) scheduleReconnect();
+      else fail(Object.assign(new Error("设备连接失败。请检查网络和房间中继配置。"), { code: "transport_failed" }));
     });
   }
 
   function authenticateIfReady() {
-    if (state.control?.readyState !== "open" || state.bulk?.readyState !== "open") return;
+    if (state.authSent || state.control?.readyState !== "open" || state.bulk?.readyState !== "open") return;
+    state.authSent = true;
+    setConnectionStatus("正在认证…");
+    stageDeadline("auth", 10_000, "房间密码验证超时，请重新连接。", "auth_timeout");
+    void state.diagnostic?.capture();
     lowLevel.send(state.control, { type: "auth", password: state.password, epoch: state.epoch });
   }
 
@@ -396,27 +477,49 @@
       return;
     }
     if (message.type === "auth.failed") {
-      state.connectButton.disabled = false;
-      state.connectButton.removeAttribute("aria-busy");
-      setConnectionStatus(
-        message.reason === "too_many_attempts" ? "尝试过多，请一分钟后再试。" : "房间密码错误。",
-        true,
-      );
+      const throttled = message.reason === "too_many_attempts";
+      const admission = message.reason === "runtime_admission_failed";
+      const password = message.reason === "wrong_password";
+      fail(Object.assign(new Error(throttled ? "尝试过多，请一分钟后再试。"
+        : admission ? "Host 未能接纳此设备，请重新连接。" : password ? "房间密码错误。" : "连接失败"), {
+        code: throttled ? "auth_throttled" : admission ? "runtime_admission_failed" : password ? "wrong_password" : "protocol_error",
+      }));
       return;
     }
     if (message.type === "auth.ok") {
+      if (state.authorized || state.control?.readyState !== "open" || state.bulk?.readyState !== "open") return;
       state.authorized = true;
+      armInvitationExpiry();
       global.dispatchEvent(new Event("remote-invitation-changed"));
       state.reconnectAttempts = 0;
+      const epoch = state.epoch, socket = state.socket;
+      setConnectionStatus("正在同步状态和身份…");
+      stageDeadline("sync", 20_000, "Host 响应超时", "sync_failed");
       (async () => {
         const resumeUserId = state.identityUserId;
         const initial = await request("state.get", {}, "bulk");
-        if (initial?.data) publishState(initial.data.state || initial.data);
+        if (state.epoch !== epoch) return;
+        const snapshot = initial?.data?.state || initial?.data;
+        if (!snapshot || Array.isArray(snapshot) || typeof snapshot !== "object"
+          || !Number.isSafeInteger(snapshot.state_revision ?? snapshot.revision)
+          || (snapshot.state_revision ?? snapshot.revision) < 0) {
+          throw Object.assign(new Error("Host 响应超时"), { code: "sync_failed" });
+        }
+        publishState(snapshot);
         const response = await request(state.remoteState?.session_user_edit_version >= 1 && resumeUserId ? "session.resume" : "session.set_identity",
           state.remoteState?.session_user_edit_version >= 1 && resumeUserId ? { user_id: resumeUserId } : { name: state.identity });
+        if (state.epoch !== epoch) return;
+        if (typeof response.data?.name !== "string" || !response.data.name.trim()) {
+          throw Object.assign(new Error("Host 响应超时"), { code: "sync_failed" });
+        }
         state.identity = String(response.data?.name || state.identity);
         if (response?.data?.state) publishState(response.data.state);
         rememberIdentity();
+        state.sessionReady = true;
+        clearTimeout(state.handshakeTimer);
+        state.handshakeTimer = null;
+        state.diagnostic?.stage("ready");
+        void state.diagnostic?.capture();
         state.overlay.classList.add("hidden");
         document.documentElement.dataset.remoteTransport = "internet";
         state.connectButton.disabled = false;
@@ -425,13 +528,21 @@
         renderConnectionCopy();
         state.readyResolve?.();
         state.readyResolve = null;
-      })().catch(fail);
+        state.signalingCloseTimer = setTimeout(() => {
+          if (state.epoch === epoch && state.socket === socket) socket?.close(1000, "WebRTC connected");
+        }, 1_000);
+      })().catch((error) => {
+        if (state.epoch !== epoch) return;
+        if (error?.phase === "identity") {
+          error.code = "identity_conflict";
+        }
+        fail(error);
+      });
       startHeartbeat();
-      setTimeout(() => state.socket?.close(1000, "WebRTC connected"), 1_000);
       return;
     }
     if (message.type === "state") {
-      publishState(message.data);
+      if (state.authorized) publishState(message.data);
       return;
     }
     if (message.type === "response") {
@@ -449,6 +560,7 @@
         if (message.accepted === false) {
           const error = new Error(errorMessage);
           error.code = String(message.code || "internet_remote_request_rejected");
+          if (["session.set_identity", "session.resume"].includes(pending.kind)) error.phase = "identity";
           if (sizeError) error.completed = message.completed === true;
           if (message.binding) error.payload = { binding: message.binding };
           pending.reject(error);
@@ -1102,14 +1214,28 @@
   }
 
   function fail(error) {
+    const code = String(error?.code || (state.authorized ? "sync_failed" : "protocol_error"));
+    const configurationMessage = code === "internet_remote_ice_invalid" ? "连接配置无效，请联系房间管理员。"
+      : code === "internet_remote_ice_expired" ? "中继凭据已过期，请重新连接。" : "";
+    state.diagnostic?.fail(code);
+    void state.diagnostic?.capture();
+    const socket = state.socket;
+    state.socket = null;
+    clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = null;
+    resetPeer();
+    socket?.close(1000, "Connection failed");
+    state.overlay?.classList.remove("hidden");
     state.connectButton && (state.connectButton.disabled = false);
     state.connectButton?.removeAttribute("aria-busy");
-    setConnectionStatus(String(error?.message || error || "连接失败"), true);
+    setConnectionStatus(configurationMessage || String(error?.message || error || "连接失败"), true);
   }
 
   function scheduleReconnect() {
     const wasAuthorized = state.authorized;
+    state.sessionReady = false;
     stopHeartbeat();
+    clearInvitationExpiry();
     if (state.authorized) {
       state.authorized = false;
       global.dispatchEvent(new Event("remote-invitation-changed"));
@@ -1121,6 +1247,10 @@
     if (!state.password || !navigator.onLine || state.reconnectTimer) return;
     ensureReadyPromise();
     if (state.reconnectAttempts >= 8) {
+      const socket = state.socket;
+      state.socket = null;
+      resetPeer();
+      socket?.close(1000, "Reconnect exhausted");
       state.overlay?.classList.remove("hidden");
       setConnectionStatus("无法自动恢复连接，请重新连接。", true);
       return;
@@ -1132,18 +1262,22 @@
 
   function disconnect() {
     clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = null;
     stopHeartbeat();
     state.password = "";
     state.readyPromise = null;
     state.readyResolve = null;
-    state.socket?.close(1000, "Remote closed");
+    const socket = state.socket;
+    state.socket = null;
     resetPeer();
+    iceProvisioning.reset();
+    socket?.close(1000, "Remote closed");
   }
 
   async function ready() {
     ensureJoinOverlay();
     ensureReadyPromise();
-    if (state.authorized) return;
+    if (state.sessionReady) return;
     return state.readyPromise;
   }
 
@@ -1164,9 +1298,22 @@
     url.hash = new URLSearchParams({ room: roomId, join: joinToken, expires: String(expires) }).toString();
     return { url: url.href, password: state.password };
   }
-  const invitationRemainingMs = Number(fragment.get("expires")) - Date.now();
-  if (invitationRemainingMs > 0 && invitationRemainingMs <= 2_147_483_647) {
-    setTimeout(() => global.dispatchEvent(new Event("remote-invitation-changed")), invitationRemainingMs);
+  function armInvitationExpiry() {
+    clearInvitationExpiry();
+    const remainingMs = Number(fragment.get("expires")) - Date.now();
+    if (!state.authorized || !(remainingMs > 0 && remainingMs <= 2_147_483_647)) return;
+    const epoch = state.epoch;
+    const timer = setTimeout(() => {
+      if (state.invitationExpiryTimer !== timer || state.epoch !== epoch || !state.authorized) return;
+      state.invitationExpiryTimer = null;
+      // Expire the invitation display without disrupting a healthy session.
+      global.dispatchEvent(new Event("remote-invitation-changed"));
+    }, remainingMs);
+    state.invitationExpiryTimer = timer;
+  }
+  function clearInvitationExpiry() {
+    clearTimeout(state.invitationExpiryTimer);
+    state.invitationExpiryTimer = null;
   }
   global.BilikaraRemoteTransport = Object.freeze({
     mode: "internet",
@@ -1177,5 +1324,8 @@
     createStateSource,
     disconnect,
     isSupported: () => Boolean(lowLevel && typeof RTCPeerConnection === "function"),
+  });
+  global.BilikaraInternetRemoteDiagnostics = Object.freeze({
+    getSnapshot: () => state.diagnostic?.snapshot() || state.lastDiagnostic,
   });
 })(globalThis);

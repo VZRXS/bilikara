@@ -189,8 +189,12 @@ not in a URL query. The Remote URL keeps its room ID and join token in the URL
 fragment, which is not sent as part of HTTP requests. The human password is sent
 only after WebRTC DTLS is established. It is neither uploaded to the Worker nor
 stored by the Remote page. The Host allows five failed attempts per peer and 20
-per minute across the room. Unauthenticated or incomplete peers are evicted
-after 20 seconds.
+per minute across the room. Initial SDP gathering retains its eight-second
+bound. After sending the offer, the Host gives transport establishment its own
+20-second deadline; once both channels open, authentication and Runtime
+admission have a separate ten-second deadline. The Remote also bounds signaling,
+waiting for an offer and initial state/identity synchronization independently.
+Gathering and transport waits no longer consume the password/admission budget.
 
 This is an online password gate, not a PAKE. A leaked QR link alone does not
 authorize bilikara commands, but it can consume signaling attempts; the Host can
@@ -206,10 +210,15 @@ eight-second bound, preserving released-client negotiation. Later candidates
 use the Worker's existing `candidate` signal; receivers queue them until the
 remote description is applied and discard retired-peer callbacks. Each peer
 accepts at most 128 such candidates, with a 4 KiB candidate-string bound.
-The current ICE configuration uses Cloudflare STUN without a TURN relay. Room
-creation and successful signaling therefore do not guarantee connectivity
-through every NAT or UDP-blocking firewall; local browser tests do not qualify
-those networks. See [the WebRTC TURN explanation](https://webrtc.org/getting-started/turn-server).
+The default ICE configuration retains Cloudflare STUN and direct candidates.
+An optional trusted signaling-service `ice.config` message provisions bounded,
+short-lived ICE servers before peer negotiation; it does not change the ordered
+DataChannel protocol or expose application commands to the Worker. Released
+Workers may omit this additive message and direct negotiation remains available.
+Room creation and successful signaling do not guarantee connectivity through
+every NAT or UDP-blocking firewall; same-machine success and local browser tests
+do not qualify those networks. See [network diagnosis, TURN deployment and the
+zero-production-traffic test model](internet-remote-network.md).
 Search and state payloads use bulk; playback controls use control. Logical
 messages are capped at 512 KiB (UTF-8 serialized envelope included) and split
 into 12 KiB frames. Chunk sizing accounts for JSON-escaped quotes/backslashes;

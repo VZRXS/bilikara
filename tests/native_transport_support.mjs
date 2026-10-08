@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -12,6 +12,11 @@ import { localCertificate } from './local_tls_certificate.mjs';
 export const transportVideos = ['BV1xx411c7mD', 'BV1z84y1p7oS', 'BV1tPC2BEEjq', 'BV1uq4y1a7Zo'];
 export class TransportFixture {
   static async start(executable) {
+    // Explicit cached real Host for offline transport-only verification. Normal
+    // entrypoints still select the current Cargo compiler artifact. Callers
+    // using this override must record its provenance alongside their evidence.
+    executable ||= process.env.BILIKARA_TRANSPORT_HOST;
+    if (executable) assert.ok(path.isAbsolute(executable) && existsSync(executable), 'BILIKARA_TRANSPORT_HOST must name an actual absolute native executable');
     const fixture = new TransportFixture();
     fixture.home = mkdtempSync(path.join(tmpdir(), 'native transport 中文 $() & '));
     const data = path.join(fixture.home, 'data'); mkdirSync(data);

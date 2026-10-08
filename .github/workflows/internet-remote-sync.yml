@@ -47,6 +47,9 @@ on:
       - scripts/sync_internet_remote_assets.ps1
       - static/**
       - tests/internet_remote_frontend_contract.test.mjs
+      - tests/internet_remote_ice.test.mjs
+      - tests/internet_remote_host_lifecycle.test.mjs
+      - tests/internet_remote_provisioning.test.mjs
       - tests/internet_remote_deployment.test.mjs
       - tests/frontend_contract_support.mjs
       - tests/desktop_construction_support.mjs
@@ -77,7 +80,7 @@ jobs:
       - name: Validate shared Remote contract
         env:
           BILIKARA_REQUIRE_REMOTE_SYNC_TEST: "1"
-        run: node --test tests/internet_remote_frontend_contract.test.mjs tests/internet_remote_deployment.test.mjs
+        run: node --test tests/internet_remote_frontend_contract.test.mjs tests/internet_remote_ice.test.mjs tests/internet_remote_host_lifecycle.test.mjs tests/internet_remote_provisioning.test.mjs tests/internet_remote_deployment.test.mjs
 
       - name: Check browser scripts
         run: |

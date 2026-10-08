@@ -21,6 +21,8 @@ import './host_playback_session_frontend_contract.test.mjs';
 import './host_state_snapshot_frontend_contract.test.mjs';
 import './internet_remote_frontend_contract.test.mjs';
 import './internet_remote_ice.test.mjs';
+import './internet_remote_host_lifecycle.test.mjs';
+import './internet_remote_provisioning.test.mjs';
 import './list_flip_frontend_contract.test.mjs';
 import './player_fullscreen_frontend_contract.test.mjs';
 import './fullscreen_player_interaction.test.mjs';

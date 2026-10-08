@@ -249,15 +249,146 @@
       const done = () => {
         if (settled) return;
         settled = true;
+        clearTimeout(timer);
         peer.removeEventListener("icegatheringstatechange", check);
+        peer.removeEventListener("connectionstatechange", check);
         resolve();
       };
       const check = () => {
-        if (peer.iceGatheringState === "complete") done();
+        if (peer.iceGatheringState === "complete" || peer.connectionState === "closed") done();
       };
       peer.addEventListener("icegatheringstatechange", check);
-      setTimeout(done, timeoutMs);
+      peer.addEventListener("connectionstatechange", check);
+      const timer = setTimeout(done, timeoutMs);
     });
+  }
+
+  function iceProvisioningError(code) {
+    return Object.assign(new Error(code), { code });
+  }
+
+  // Only the authenticated signaling service may supply this payload. The
+  // socket owners reject peer-origin messages before calling accept(). There
+  // is no URL, storage, or user-supplied endpoint configuration surface.
+  function createIceProvisioning({ now = () => Date.now() } = {}) {
+    let configuration = null;
+    let expiresAt = 0;
+    let invalid = false;
+    const exactKeys = (value, keys) => value && typeof value === "object" && !Array.isArray(value)
+      && Object.keys(value).every((key) => keys.includes(key));
+    function accept(payload) {
+      try {
+        if (utf8Bytes(JSON.stringify(payload)) > 16 * 1024
+          || !exactKeys(payload, ["expires_at", "ice_servers"])
+          || !Number.isSafeInteger(payload.expires_at)
+          || payload.expires_at - now() < 30_000 || payload.expires_at - now() > 600_000
+          || !Array.isArray(payload.ice_servers) || !payload.ice_servers.length
+          || payload.ice_servers.length > 4) throw new Error();
+        let urlCount = 0;
+        const servers = payload.ice_servers.map((server) => {
+          if (!exactKeys(server, ["urls", "username", "credential"])
+            || !Array.isArray(server.urls) || !server.urls.length) throw new Error();
+          let turn = false;
+          const urls = server.urls.map((url) => {
+            // RFC 7064/7065 URI grammar, with only the standard transport query.
+            // Disallow userinfo, path, fragments, ambiguous ports and controls.
+            if (typeof url !== "string" || url.length > 512 || ++urlCount > 8) throw new Error();
+            const match = /^(stun|turn|turns):([A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:]+\])(?::([0-9]{1,5}))?(?:\?transport=(udp|tcp))?$/u.exec(url);
+            if (!match || match[2].includes("..") || (match[3] && (+match[3] < 1 || +match[3] > 65535))
+              || (match[1] === "stun" && match[4]) || (match[1] === "turns" && match[4] === "udp")) throw new Error();
+            turn ||= match[1] !== "stun";
+            return url;
+          });
+          if (turn) {
+            if (typeof server.username !== "string" || !server.username.length || server.username.length > 256
+              || typeof server.credential !== "string" || !server.credential.length || server.credential.length > 256
+              || /[\x00-\x20\x7f]/u.test(server.username + server.credential)) throw new Error();
+            return { urls, username: server.username, credential: server.credential };
+          }
+          if (server.username !== undefined || server.credential !== undefined) throw new Error();
+          return { urls };
+        });
+        configuration = { iceServers: servers, iceTransportPolicy: "all", iceCandidatePoolSize: 0 };
+        expiresAt = payload.expires_at;
+        invalid = false;
+      } catch {
+        // A broken advertised relay must not silently become an anonymous or
+        // public relay. A fresh valid service response can recover the store.
+        invalid = true;
+        configuration = null;
+        throw iceProvisioningError("internet_remote_ice_invalid");
+      }
+    }
+    return {
+      accept,
+      configuration() {
+        if (invalid) throw iceProvisioningError("internet_remote_ice_invalid");
+        if (configuration && expiresAt <= now() + 5_000) throw iceProvisioningError("internet_remote_ice_expired");
+        const value = configuration || global.BilikaraInternetTransport.iceConfiguration;
+        return { ...value, iceServers: value.iceServers.map((server) => ({ ...server,
+          urls: Array.isArray(server.urls) ? [...server.urls] : server.urls })) };
+      },
+      reset() { configuration = null; expiresAt = 0; invalid = false; },
+    };
+  }
+
+  const DIAGNOSTIC_STAGES = new Set(["signaling", "waiting_offer", "offer", "transport", "auth", "authentication",
+    "runtime_admission", "initial_state", "sync", "ready", "failed", "closed"]);
+  const FAILURE_CODES = new Set(["signaling_timeout", "signaling_unavailable", "host_offline", "room_expired",
+    "transport_timeout", "transport_failed", "auth_timeout", "wrong_password", "auth_throttled",
+    "runtime_admission_failed", "sync_failed", "identity_conflict", "internet_remote_ice_invalid",
+    "internet_remote_ice_expired", "connection_reset", "candidate_exchange_failed", "protocol_error"]);
+  const enumValue = (value, allowed) => allowed.includes(value) ? value : "unknown";
+
+  function createConnectionDiagnostics(peer = null) {
+    const started = Date.now();
+    const stages = [];
+    let failure = null, selected = null, disposed = false;
+    let channels = {};
+    function snapshot() {
+      return {
+        stages: stages.map((row) => ({ ...row })), failure_code: failure,
+        ice_state: enumValue(peer?.iceConnectionState, ["new", "checking", "connected", "completed", "disconnected", "failed", "closed"]),
+        gathering_state: enumValue(peer?.iceGatheringState, ["new", "gathering", "complete"]),
+        connection_state: enumValue(peer?.connectionState, ["new", "connecting", "connected", "disconnected", "failed", "closed"]),
+        control_state: enumValue(channels.control?.readyState, ["connecting", "open", "closing", "closed"]),
+        bulk_state: enumValue(channels.bulk?.readyState, ["connecting", "open", "closing", "closed"]),
+        selected_pair: selected ? { ...selected } : null,
+      };
+    }
+    return {
+      attachPeer(value) { if (!disposed) peer = value; },
+      stage(name) {
+        if (!disposed && DIAGNOSTIC_STAGES.has(name) && !stages.some((row) => row.stage === name)) {
+          stages.push({ stage: name, elapsed_ms: Math.max(0, Date.now() - started) });
+        }
+      },
+      fail(code) { failure = FAILURE_CODES.has(code) ? code : "protocol_error"; this.stage("failed"); },
+      channels(value) { channels = value; },
+      async capture() {
+        if (!peer?.getStats || disposed) return snapshot();
+        try {
+          const stats = await peer.getStats();
+          if (disposed) return snapshot();
+          const transport = [...stats.values()].find((row) => row.type === "transport" && row.selectedCandidatePairId);
+          // A succeeded pair alone is not proof that it was selected.
+          const pair = transport ? stats.get(transport.selectedCandidatePairId)
+            : [...stats.values()].find((row) => row.type === "candidate-pair" && row.nominated === true && row.state === "succeeded");
+          if (pair) {
+            const local = stats.get(pair.localCandidateId), remote = stats.get(pair.remoteCandidateId);
+            selected = {
+              local_type: enumValue(local?.candidateType, ["host", "srflx", "prflx", "relay"]),
+              remote_type: enumValue(remote?.candidateType, ["host", "srflx", "prflx", "relay"]),
+              protocol: enumValue(local?.protocol, ["udp", "tcp"]),
+              relay_protocol: enumValue(local?.relayProtocol, ["udp", "tcp", "tls"]),
+            };
+          }
+        } catch { /* Unsupported stats remain unknown; never log raw reports. */ }
+        return snapshot();
+      },
+      snapshot,
+      dispose() { disposed = true; },
+    };
   }
 
   // Keep the initial, candidate-bearing SDP for released clients. Candidates
@@ -336,6 +467,8 @@
     createIceCandidateExchange,
     waitForBufferedAmount,
     waitForIceGathering,
+    createIceProvisioning,
+    createConnectionDiagnostics,
     iceConfiguration: {
       iceServers: [{ urls: ["stun:stun.cloudflare.com:3478"] }],
       iceCandidatePoolSize: 0,

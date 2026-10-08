@@ -11,7 +11,7 @@ const event = (type, values) => Object.assign(new Event(type), values);
 
 // Transport boundaries/UI use isolated fixtures. Load the production owners
 // verbatim; actual native dispatch and real RTC have a separate browser gate.
-function ownerFixture(role) {
+function ownerFixture(role, { expires } = {}) {
   class Peer extends EventTarget {
     constructor() {
       super();
@@ -35,18 +35,22 @@ function ownerFixture(role) {
     send(value) { this.frames.push(JSON.parse(value)); }
     close() { this.readyState = 3; }
   }
-  const storage = new Map();
+  const storage = new Map(), timers = [];
   const sandbox = {
     console, crypto: webcrypto, TextEncoder, Event, CustomEvent, URLSearchParams, URL, Response, btoa, performance, AbortController,
     RTCPeerConnection: Peer, WebSocket: Socket,
     fetch: async () => { throw new Error('Unexpected HTTP request'); },
-    location: { hash: `#room=${'R'.repeat(27)}&join=${'J'.repeat(43)}`, href: 'https://remote.example.test/remote.html', origin: 'https://remote.example.test', protocol: 'https:', hostname: 'remote.example.test' },
+    location: { hash: `#room=${'R'.repeat(27)}&join=${'J'.repeat(43)}${expires === undefined ? '' : `&expires=${expires}`}`, href: 'https://remote.example.test/remote.html', origin: 'https://remote.example.test', protocol: 'https:', hostname: 'remote.example.test' },
     localStorage: { getItem: key => storage.get(key) || '', setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
     navigator: { onLine: true }, addEventListener() {}, dispatchEvent() {},
     // Deterministically reach the production gathering deadline; no long timers
     // or authentication retries escape this isolated fixture.
-    setTimeout: (fn, ms) => ms === 8_000 ? setTimeout(fn, 1) : 0,
-    clearTimeout, clearInterval, setInterval: () => 0,
+    setTimeout: (fn, ms) => {
+      if (ms === 8_000) return setTimeout(fn, 1);
+      const timer = {fn, ms, cancelled:false}; timers.push(timer); return timer;
+    },
+    clearTimeout: timer => { if (timer?.fn) timer.cancelled = true; else clearTimeout(timer); },
+    clearInterval, setInterval: () => 0,
     document: { readyState: 'loading', addEventListener() {}, documentElement: { dataset: {} } },
   };
   sandbox.window = sandbox;
@@ -55,14 +59,14 @@ function ownerFixture(role) {
   const host = role === 'host';
   const expose = host
     ? 'render = () => {}; setStatus = () => {}; window.owner = { state, peers, createPeer, connectSignaling, closePeer, queueState, handlePeerMessage }; })();'
-    : 'global.owner = { state, acceptOffer, connectSignaling, resetPeer, request, handleDataMessage }; })(globalThis);';
+    : 'global.owner = { state, acceptOffer, connectSignaling, resetPeer, request, handleDataMessage, wireChannel, authenticateIfReady, scheduleReconnect }; })(globalThis);';
   vm.runInContext(source(host ? 'internet-remote-host.js' : 'remote-transport-client.js')
     .replace(host ? /\}\)\(\);\s*$/u : /\}\)\(globalThis\);\s*$/u, expose), context);
   const owner = sandbox.owner;
   if (host) Object.assign(owner.state, { stopped: false, roomId: 'R'.repeat(27), hostToken: 'H'.repeat(43), hostPeerId: 'P'.repeat(22) });
   else owner.state.connectButton = { disabled: false, dataset: {}, hasAttribute: () => false, removeAttribute() {} };
   owner.connectSignaling();
-  return { owner, sandbox, peerId: 'P'.repeat(22) };
+  return { owner, sandbox, timers, peerId: 'P'.repeat(22) };
 }
 
 for (const role of ['host', 'remote']) {
@@ -552,4 +556,177 @@ test('Initial oversized state can be retried without stranding the page readines
   attach(); owner.handleDataMessage({type:'auth.ok'}); await tick();
   assert.equal(ready,true, 'The original page startup promise must resolve after a successful retry');
   assert.equal(owner.state.pending.size,0);
+});
+
+test('Remote transport deadline closes the initial attempt with a network-stage failure and no retry', async () => {
+  const {owner, sandbox, timers} = ownerFixture('remote', {expires: Date.now() + 3_600_000});
+  owner.state.password = 'test-only';
+  await owner.acceptOffer({type:'offer',sdp:'v=0\r\n'});
+  const socket = owner.state.socket, peer = owner.state.peer;
+  const deadline = timers.findLast(timer => timer.ms === 20_000 && !timer.cancelled);
+  deadline.fn();
+  assert.equal(owner.state.peer, null); assert.equal(peer.connectionState,'closed');
+  assert.equal(socket.readyState,3); assert.equal(owner.state.socket,null);
+  assert.equal(owner.state.reconnectTimer,null); assert.equal(owner.state.handshakeTimer,null);
+  assert.equal(timers.filter(timer => !timer.cancelled && timer.ms > 60_000).length, 0,
+    'a failed join must not retain the invitation expiry timer from the room link');
+  assert.match(owner.state.connectionMessage,/网络可能限制直连/);
+  assert.doesNotMatch(owner.state.connectionMessage,/密码错误/);
+  assert.equal(sandbox.BilikaraInternetRemoteDiagnostics.getSnapshot().failure_code,'transport_timeout');
+});
+
+test('Remote callbacks from an old offer and old channels cannot affect a replacement peer', async () => {
+  const {owner, sandbox} = ownerFixture('remote');
+  const gate = Promise.withResolvers();
+  const original = sandbox.RTCPeerConnection.prototype.setRemoteDescription;
+  let calls = 0;
+  sandbox.RTCPeerConnection.prototype.setRemoteDescription = async function(value) {
+    if (++calls === 1) await gate.promise;
+    return original.call(this,value);
+  };
+  const socket = owner.state.socket;
+  socket.dispatchEvent(event('message',{data:JSON.stringify({type:'offer',from:'host',payload:{type:'offer',sdp:'old'}})}));
+  const oldPeer = owner.state.peer;
+  await owner.acceptOffer({type:'offer',sdp:'new'});
+  const current = owner.state.peer;
+  gate.reject(new Error('old description failure')); await tick();
+  assert.equal(owner.state.peer,current); assert.equal(owner.state.connectionIsError,false);
+  const retiredLane=Object.assign(new EventTarget(),{label:'bilikara-control',readyState:'open',closed:false,close(){this.closed=true;}});
+  oldPeer.dispatchEvent(event('datachannel',{channel:retiredLane}));
+  assert.equal(retiredLane.closed,true); assert.equal(owner.state.control,null);
+  owner.resetPeer();
+});
+
+function attachRemoteLanes(owner) {
+  const frames = [];
+  for (const lane of ['control','bulk']) owner.wireChannel(Object.assign(new EventTarget(),{
+    label:`bilikara-${lane}`, ordered:true, readyState:'open',
+    close(){this.readyState='closed';this.dispatchEvent(new Event('close'));},
+    send(wire){frames.push(JSON.parse(wire));},
+  }));
+  return frames;
+}
+
+async function authorizeRemoteFixture(owner) {
+  owner.state.overlay = {classList:{add(){},remove(){}}};
+  owner.state.identity = 'Fixture';
+  owner.state.password = 'test-only';
+  const frames = attachRemoteLanes(owner);
+  owner.handleDataMessage({type:'auth.ok'}); await tick();
+  const initial = frames.find(frame => frame.envelope?.kind === 'state.get');
+  owner.handleDataMessage({type:'response',request_id:initial.envelope.id,accepted:true,data:{revision:1}});
+  await tick();
+  const identity = frames.find(frame => frame.envelope?.kind === 'session.set_identity');
+  owner.handleDataMessage({type:'response',request_id:identity.envelope.id,accepted:true,data:{name:'Fixture'}});
+  await tick();
+  assert.equal(owner.state.sessionReady, true);
+}
+
+test('Invitation expiry is armed only after authentication and keeps the healthy transport open', async () => {
+  const {owner, sandbox, timers} = ownerFixture('remote', {expires: Date.now() + 3_600_000});
+  assert.equal(timers.filter(timer => !timer.cancelled && timer.ms > 60_000).length, 0);
+  const notifications = [];
+  sandbox.dispatchEvent = value => notifications.push(value.type);
+  await authorizeRemoteFixture(owner);
+  const peer = new sandbox.RTCPeerConnection(); owner.state.peer = peer;
+  const expiry = timers.findLast(timer => !timer.cancelled && timer.ms > 60_000);
+  assert.ok(expiry, 'authenticated sharing still expires without polling');
+  const before = notifications.length;
+  expiry.fn();
+  assert.equal(notifications.length, before + 1);
+  assert.equal(notifications.at(-1), 'remote-invitation-changed');
+  assert.equal(owner.state.sessionReady, true);
+  assert.equal(owner.state.peer, peer);
+  assert.equal(owner.state.control.readyState, 'open');
+  assert.equal(owner.state.bulk.readyState, 'open');
+  assert.equal(owner.state.invitationExpiryTimer, null);
+  sandbox.BilikaraRemoteTransport.disconnect();
+});
+
+test('Invitation timers retire on reconnect, failure and disconnect; stale expiry cannot affect a replacement', async () => {
+  for (const retire of [owner => owner.resetPeer(), owner => owner.scheduleReconnect(),
+    (owner, sandbox) => sandbox.BilikaraRemoteTransport.disconnect(),
+    owner => owner.handleDataMessage({type:'auth.failed',reason:'wrong_password'})]) {
+    const {owner, sandbox, timers} = ownerFixture('remote', {expires: Date.now() + 3_600_000});
+    const notifications = [];
+    sandbox.dispatchEvent = value => notifications.push(value.type);
+    await authorizeRemoteFixture(owner);
+    const retired = timers.findLast(timer => !timer.cancelled && timer.ms > 60_000);
+    assert.ok(retired);
+    retire(owner, sandbox);
+    assert.equal(retired.cancelled, true);
+    assert.equal(owner.state.invitationExpiryTimer, null);
+    const retiredNotifications = notifications.length;
+    retired.fn();
+    assert.equal(notifications.length, retiredNotifications, 'expiry queued before teardown is inert');
+    owner.connectSignaling();
+    await authorizeRemoteFixture(owner);
+    const current = timers.findLast(timer => !timer.cancelled && timer.ms > 60_000);
+    assert.ok(current); assert.notEqual(current, retired);
+    const before = notifications.length;
+    retired.fn();
+    assert.equal(notifications.length, before, 'queued old expiry must not dispatch for a replacement');
+    assert.equal(owner.state.invitationExpiryTimer, current);
+    assert.equal(owner.state.sessionReady, true);
+    sandbox.BilikaraRemoteTransport.disconnect();
+  }
+});
+
+test('Remote readiness requires initial state and identity, and a retired sync cannot hide the gate', async () => {
+  const {owner,sandbox} = ownerFixture('remote');
+  owner.state.overlay = {classList:{add(){assert.fail('obsolete synchronization must not hide the join gate');},remove(){}}};
+  owner.state.identity='Fixture';
+  let ready=false; void sandbox.BilikaraRemoteTransport.ready().then(()=>{ready=true;});
+  const frames=attachRemoteLanes(owner);
+  owner.handleDataMessage({type:'auth.ok'}); await tick();
+  assert.equal(owner.state.authorized,true); assert.equal(owner.state.sessionReady,false);
+  assert.equal(ready,false);
+  const initial=frames.find(frame=>frame.envelope?.kind==='state.get');
+  owner.handleDataMessage({type:'response',request_id:initial.envelope.id,accepted:true,data:{revision:1}});
+  await tick();
+  const identity=frames.find(frame=>frame.envelope?.kind==='session.set_identity');
+  assert.ok(identity); assert.equal(ready,false);
+  const replacement=await owner.acceptOffer({type:'offer',sdp:'new'});
+  const current=owner.state.peer;
+  owner.handleDataMessage({type:'response',request_id:identity.envelope.id,accepted:true,data:{name:'Fixture'}});
+  await tick();
+  assert.equal(owner.state.peer,current); assert.equal(ready,false);
+  assert.equal(owner.state.connectionIsError,false); assert.equal(owner.state.pending.size,0);
+  owner.resetPeer();
+});
+
+test('Remote only submits one auth and does not mark an empty initial reply ready', async () => {
+  const {owner,sandbox}=ownerFixture('remote');
+  owner.state.overlay={classList:{add(){assert.fail('missing state must not be ready');},remove(){}}};
+  const frames=attachRemoteLanes(owner);
+  owner.authenticateIfReady();owner.authenticateIfReady();
+  assert.equal(frames.filter(frame=>frame.type==='auth').length,1);
+  owner.handleDataMessage({type:'auth.ok'}); await tick();
+  const request=frames.find(frame=>frame.envelope?.kind==='state.get');
+  owner.handleDataMessage({type:'response',request_id:request.envelope.id,accepted:true});
+  await tick();
+  assert.equal(owner.state.sessionReady,false);assert.equal(owner.state.authorized,false);
+  assert.equal(owner.state.connectionIsError,true);
+  assert.equal(sandbox.BilikaraInternetRemoteDiagnostics.getSnapshot().failure_code,'sync_failed');
+  assert.equal(owner.state.pending.size,0);
+});
+
+test('Remote distinguishes authentication rejection, Runtime admission and identity from transport failures', async () => {
+  for (const [reason,code,copy] of [['wrong_password','wrong_password',/密码错误/],
+    ['too_many_attempts','auth_throttled',/尝试过多/],['runtime_admission_failed','runtime_admission_failed',/未能接纳/]]) {
+    const {owner,sandbox}=ownerFixture('remote');
+    owner.handleDataMessage({type:'auth.failed',reason});
+    assert.match(owner.state.connectionMessage,copy);
+    assert.equal(sandbox.BilikaraInternetRemoteDiagnostics.getSnapshot().failure_code,code);
+    assert.equal(owner.state.reconnectTimer,null);
+  }
+  const {owner,sandbox}=ownerFixture('remote');
+  owner.state.overlay={classList:{add(){assert.fail('identity rejection must not be ready');},remove(){}}};
+  const frames=attachRemoteLanes(owner);owner.handleDataMessage({type:'auth.ok'});await tick();
+  const initial=frames.find(frame=>frame.envelope?.kind==='state.get');
+  owner.handleDataMessage({type:'response',request_id:initial.envelope.id,accepted:true,data:{revision:1}});await tick();
+  const identity=frames.find(frame=>frame.envelope?.kind==='session.set_identity');
+  owner.handleDataMessage({type:'response',request_id:identity.envelope.id,accepted:false,code:'identity_required',error:'身份已移除'});await tick();
+  assert.equal(sandbox.BilikaraInternetRemoteDiagnostics.getSnapshot().failure_code,'identity_conflict');
+  assert.equal(owner.state.sessionReady,false);
 });

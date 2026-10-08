@@ -11,6 +11,8 @@
 
   const diagnosticEvents = [];
   const DIAGNOSTIC_EVENT_LIMIT = 64;
+  const iceProvisioning = transport.createIceProvisioning();
+  const peerLifecycle = new Map();
 
   const peers = new Map();
   const state = {
@@ -86,6 +88,7 @@
         : null,
       accepted: typeof details.accepted === "boolean" ? details.accepted : null,
       stale: typeof details.stale === "boolean" ? details.stale : null,
+      transport: details.transport || null,
     };
     diagnosticEvents.push(event);
     if (diagnosticEvents.length > DIAGNOSTIC_EVENT_LIMIT) diagnosticEvents.shift();
@@ -93,7 +96,10 @@
 
   window.BilikaraInternetRemoteDiagnostics = Object.freeze({
     getSnapshot() {
-      return diagnosticEvents.map((event) => ({ ...event }));
+      return diagnosticEvents.map((event) => ({
+        ...event,
+        transport: event.transport ? JSON.parse(JSON.stringify(event.transport)) : null,
+      }));
     },
   });
 
@@ -318,9 +324,59 @@
     state.socket.send(JSON.stringify({ to, type, payload }));
   }
 
+  function capturePeerDiagnostic(peer, stage, failureCode = "") {
+    peer.diagnostic.stage(stage);
+    if (failureCode) peer.diagnostic.fail(failureCode);
+    void peer.diagnostic.capture().then(() => {
+      recordDiagnostic("peer.transport", failureCode ? "failed" : stage, {
+        errorCode: failureCode || null,
+        transport: peer.diagnostic.snapshot(),
+      });
+    }).catch(() => {});
+  }
+
+  function enqueuePeerLifecycle(peer, action, body) {
+    const previous = peerLifecycle.get(peer.id);
+    // Close follows any in-flight open and precedes a replacement's open.
+    // Bound new work; cleanup remains allowed even at the admission limit.
+    if (action === "open" && (previous?.pending || 0) >= 16) {
+      return Promise.reject(new Error("Remote 连接更新过于频繁"));
+    }
+    const entry = { pending: (previous?.pending || 0) + 1, tail: null };
+    const operation = (previous?.tail || Promise.resolve()).then(async () => {
+      if (action === "open") {
+        if (peers.get(peer.id) !== peer) return false;
+        peer.admissionStarted = true;
+      }
+      await localPost(`/api/internet-remote/peer/${action}`, body);
+      return true;
+    });
+    entry.tail = operation.catch(() => {});
+    peerLifecycle.set(peer.id, entry);
+    void entry.tail.then(() => {
+      const current = peerLifecycle.get(peer.id);
+      if (current === entry) peerLifecycle.delete(peer.id);
+      else if (current) current.pending = Math.max(0, current.pending - 1);
+    });
+    return operation;
+  }
+
+  function setPeerDeadline(peer, stage, milliseconds) {
+    clearTimeout(peer.deadlineTimer);
+    peer.deadlineTimer = setTimeout(() => {
+      if (peers.get(peer.id) !== peer || peer.authorized) return;
+      const transportFailure = stage === "transport";
+      capturePeerDiagnostic(peer, "failed", transportFailure ? "transport_timeout" : "auth_timeout");
+      setStatus(transportFailure
+        ? tr("internetRemote.transportFailed", "无法建立与 Remote 的传输连接；网络可能限制直连，请检查中继配置。")
+        : tr("internetRemote.authTimeout", "Remote 房间密码验证超时"), "bad");
+      closePeer(peer.id, true, peer);
+    }, milliseconds);
+  }
+
   async function createPeer(peerId) {
     closePeer(peerId, false);
-    const pc = new RTCPeerConnection(transport.iceConfiguration);
+    const pc = new RTCPeerConnection(iceProvisioning.configuration());
     const peer = {
       id: peerId,
       pc,
@@ -328,6 +384,8 @@
       bulk: null,
       decoders: { control: new transport.Decoder(), bulk: new transport.Decoder() },
       authorized: false,
+      admissionStarted: false,
+      authenticationStarted: false,
       epoch: "",
       authFailures: [],
       messageTimes: [],
@@ -343,22 +401,27 @@
       stateSending: false,
       stateTooLarge: false,
     };
+    peer.diagnostic = transport.createConnectionDiagnostics(pc);
+    peer.diagnostic.stage("offer");
     peers.set(peerId, peer);
     peer.ice = transport.createIceCandidateExchange(pc, {
       isCurrent: () => peers.get(peerId) === peer,
       sendCandidate: (candidate) => { if (!peer.authorized) sendSignal(peerId, "candidate", candidate); },
-      onError: () => closePeer(peerId, true, peer),
+      onError: () => {
+        capturePeerDiagnostic(peer, "failed", "candidate_exchange_failed");
+        closePeer(peerId, true, peer);
+      },
     });
-    peer.deadlineTimer = setTimeout(() => {
-      if (!peer.authorized) {
-        setStatus(tr("internetRemote.authTimeout", "Remote 连接或认证超时"), "bad");
-        closePeer(peerId);
-      }
-    }, 20_000);
     wireChannel(peer, pc.createDataChannel("bilikara-control", { ordered: true }), "control");
     wireChannel(peer, pc.createDataChannel("bilikara-bulk", { ordered: true }), "bulk");
+    peer.diagnostic.channels({ control: peer.control, bulk: peer.bulk });
     pc.addEventListener("connectionstatechange", () => {
-      if (["failed", "closed"].includes(pc.connectionState)) closePeer(peerId, true, peer);
+      if (peers.get(peerId) !== peer) return;
+      if (pc.connectionState === "connected") capturePeerDiagnostic(peer, "transport");
+      if (["failed", "closed"].includes(pc.connectionState)) {
+        capturePeerDiagnostic(peer, "failed", "transport_failed");
+        closePeer(peerId, true, peer);
+      }
       render();
     });
     try {
@@ -368,6 +431,8 @@
       if (peers.get(peerId) !== peer) return;
       sendSignal(peerId, "offer", pc.localDescription);
       peer.ice.descriptionSent();
+      peer.diagnostic.stage("transport");
+      setPeerDeadline(peer, "transport", 20_000);
       render();
     } catch (error) {
       if (peers.get(peerId) !== peer) return;
@@ -379,6 +444,7 @@
   function wireChannel(peer, channel, lane) {
     peer[lane] = channel;
     channel.addEventListener("message", (event) => {
+      if (peers.get(peer.id) !== peer) return;
       const now = Date.now();
       peer.messageTimes = recentFailures(peer.messageTimes, now);
       let messages;
@@ -417,18 +483,23 @@
           peer.queuedMessages -= queued.length;
         }
       }).catch((error) => {
+        if (peers.get(peer.id) !== peer) return;
         setStatus(`Remote 消息被拒绝：${error.message}`, "bad");
-        closePeer(peer.id);
+        closePeer(peer.id, true, peer);
       });
     });
     channel.addEventListener("open", () => {
-      if (peer.control?.readyState === "open" && peer.bulk?.readyState === "open") {
+      if (peers.get(peer.id) !== peer) return;
+      if (!peer.authenticationStarted && peer.control?.readyState === "open" && peer.bulk?.readyState === "open") {
+        peer.authenticationStarted = true;
+        capturePeerDiagnostic(peer, "authentication");
+        setPeerDeadline(peer, "authentication", 10_000);
         transport.send(peer.control, { type: "auth.required" });
       }
       render();
     });
     channel.addEventListener("close", () => {
-      if (peers.get(peer.id) === peer && peer.pc.connectionState !== "connected") closePeer(peer.id);
+      if (peers.get(peer.id) === peer) closePeer(peer.id, true, peer);
     });
   }
 
@@ -543,6 +614,7 @@
           }
         }
       } catch (error) {
+        if (peers.get(peer.id) !== peer) return;
         setStatus(`Remote 发送失败：${error.message}`, "bad");
         closePeer(peer.id, true, peer);
       } finally {
@@ -565,7 +637,8 @@
       state.authFailures = recentFailures(state.authFailures, now);
       if (peer.authFailures.length >= 5 || state.authFailures.length >= 20) {
         transport.send(peer.control, { type: "auth.failed", reason: "too_many_attempts" });
-        closePeer(peer.id);
+        capturePeerDiagnostic(peer, "failed", "auth_throttled");
+        closePeer(peer.id, true, peer);
         return;
       }
       const password = String(message.password || "");
@@ -574,19 +647,33 @@
         peer.authFailures.push(now);
         state.authFailures.push(now);
         transport.send(peer.control, { type: "auth.failed", reason: "wrong_password" });
+        capturePeerDiagnostic(peer, "authentication");
+        recordDiagnostic("peer.authentication", "rejected", { errorCode: "wrong_password" });
         return;
       }
-      await localPost("/api/internet-remote/peer/open", {
-        peer_id: peer.id,
-        epoch,
-        profile: "controller",
-      });
+      peer.diagnostic.stage("runtime_admission");
+      try {
+        await enqueuePeerLifecycle(peer, "open", {
+          peer_id: peer.id,
+          epoch,
+          profile: "controller",
+        });
+      } catch {
+        if (peers.get(peer.id) !== peer) return;
+        capturePeerDiagnostic(peer, "failed", "runtime_admission_failed");
+        transport.send(peer.control, { type: "auth.failed", reason: "runtime_admission_failed" });
+        closePeer(peer.id, true, peer);
+        return;
+      }
+      if (peers.get(peer.id) !== peer) return;
       peer.epoch = epoch;
       peer.authorized = true;
       clearTimeout(peer.deadlineTimer);
       peer.deadlineTimer = null;
       await sendPeer(peer, "control", { type: "auth.ok" });
+      capturePeerDiagnostic(peer, "initial_state");
       await publishState(peer);
+      if (peers.get(peer.id) !== peer) return;
       setStatus(tr("internetRemote.running", "公网房间运行中"), "good");
       render();
       return;
@@ -739,14 +826,16 @@
     if (!peer || (expectedPeer && peer !== expectedPeer)) return;
     peers.delete(peerId);
     clearTimeout(peer.deadlineTimer);
+    capturePeerDiagnostic(peer, "closed");
+    peer.diagnostic.dispose();
     if (evictSignal && state.socket?.readyState === WebSocket.OPEN) {
       try { sendSignal(peerId, "leave", {}); } catch { /* signaling is best effort */ }
     }
     peer.control?.close();
     peer.bulk?.close();
     peer.pc.close();
-    if (peer.authorized) {
-      localPost("/api/internet-remote/peer/close", { peer_id: peerId }).catch(() => {});
+    if (peer.authorized || peer.admissionStarted) {
+      void enqueuePeerLifecycle(peer, "close", { peer_id: peerId }).catch(() => {});
     }
     render();
   }
@@ -754,11 +843,14 @@
   function connectSignaling() {
     if (state.stopped || !state.roomId) return;
     recordDiagnostic("signaling.connect", "started");
+    iceProvisioning.reset();
     const socket = new WebSocket(signalUrl(), [
       "bilikara-v1",
       `host.${state.hostToken}.${state.hostPeerId}`,
     ]);
+    const previousSocket = state.socket;
     state.socket = socket;
+    previousSocket?.close(1000, "Host signaling replaced");
     socket.addEventListener("open", () => {
       if (state.socket !== socket) return;
       recordDiagnostic("signaling.connect", "connected");
@@ -768,8 +860,21 @@
       if (state.socket !== socket) return;
       let message;
       try { message = JSON.parse(String(event.data)); } catch { return; }
-      if (message.type === "peer.join" && typeof message.peer_id === "string") {
-        createPeer(message.peer_id).catch((error) => setStatus(error.message, "bad"));
+      if (!message || typeof message !== "object" || Array.isArray(message)) return;
+      if (message.type === "ice.config" && !Object.hasOwn(message, "from")) {
+        try { iceProvisioning.accept(message.payload); }
+        catch (error) {
+          recordDiagnostic("ice.provision", "failed", { errorCode: error.code || "internet_remote_ice_invalid" });
+          setStatus(tr("internetRemote.relayConfigurationFailed", "中继配置无效或已过期，请联系房间管理员。"), "bad");
+        }
+      } else if (message.type === "peer.join" && typeof message.peer_id === "string") {
+        createPeer(message.peer_id).catch((error) => {
+          if (state.socket !== socket) return;
+          recordDiagnostic("peer.transport", "failed", { errorCode: error.code || "offer_failed" });
+          setStatus(error.code?.startsWith("internet_remote_ice_")
+            ? tr("internetRemote.relayConfigurationFailed", "中继配置无效或已过期，请联系房间管理员。")
+            : tr("internetRemote.transportFailed", "无法建立与 Remote 的传输连接；网络可能限制直连，请检查中继配置。"), "bad");
+        });
       } else if (message.type === "answer" && typeof message.from === "string") {
         const peer = peers.get(message.from);
         if (peer) peer.ice.setRemoteDescription(message.payload).catch(() => closePeer(message.from, true, peer));
@@ -951,6 +1056,7 @@
     if (!state.roomId || state.expired) return;
     state.expired = true;
     state.stopped = true;
+    iceProvisioning.reset();
     state.roomFailure = false;
     clearTimeout(state.reconnectTimer);
     state.socket?.close(1000, "room expired");
@@ -964,6 +1070,7 @@
     const roomId = state.roomId;
     const hostToken = state.hostToken;
     state.stopped = true;
+    iceProvisioning.reset();
     clearTimeout(state.reconnectTimer);
     clearTimeout(state.expiryTimer);
     state.reconnectTimer = null;
