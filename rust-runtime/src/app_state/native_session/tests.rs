@@ -625,6 +625,74 @@ fn remote_registration_claim_and_rename_share_the_session_name_policy() {
 }
 
 #[test]
+fn defer_current_keeps_ready_artifacts_but_revokes_old_playhead_and_controls() {
+    let (mut app, host) = setup();
+    let (first, claim) = ready(&mut app);
+    let original = first.current_item.unwrap();
+    let mut second = original.clone();
+    second.id = "second".into();
+    second.bvid = "BV-second".into();
+    app.native_execute(AppStateRequest::AddItem {
+        schema_version: 1,
+        item: second,
+        position: "tail".into(),
+        requester_name: "Alice".into(),
+        requester_user_id: None,
+        reset_av_delay: false,
+        allow_repeat: false,
+        now: 4.0,
+    })
+    .unwrap();
+    app.native_claim(&host, &claim, false).unwrap();
+    let old_status = json!({"item_id":"first","playback_generation":first.playback_generation,
+        "status_sequence":1,"observed_phase":"playing","is_paused":false,"current_time":70.0,"duration":120.0});
+    app.native_player_status(&host, &old_status, 5.0).unwrap();
+    app.native_control(
+        &host,
+        &json!({"item_id":"first","playback_generation":first.playback_generation,
+        "action":"seek-absolute","target_seconds":80.0}),
+        5.0,
+    )
+    .unwrap();
+    app.native_execute(AppStateRequest::DeferCurrentItem {
+        schema_version: 1,
+        item_id: "first".into(),
+        expected_item_incarnation_id: original.item_incarnation_id.clone(),
+        expected_playback_generation: first.playback_generation,
+        expected_playlist_item_ids: vec!["second".into()],
+        target_index: 0,
+        reset_av_delay: false,
+        now: 6.0,
+    })
+    .unwrap();
+    assert!(app.player_control_head().is_none());
+    assert!(app.native_snapshot(false).unwrap()["player_status"].is_null());
+    let next = app.native_core_snapshot().unwrap();
+    app.native_execute(AppStateRequest::AdvanceToNext {
+        schema_version: 1,
+        expected_playback_generation: next.playback_generation,
+        reset_av_delay: false,
+        now: 7.0,
+    })
+    .unwrap();
+    let replay = app.native_core_snapshot().unwrap();
+    let returned = replay.current_item.unwrap();
+    assert_eq!(returned.item_incarnation_id, original.item_incarnation_id);
+    assert_eq!(returned.artifact_set_id, original.artifact_set_id);
+    assert_eq!(returned.audio_variants, original.audio_variants);
+    assert_eq!(returned.video_media_url, original.video_media_url);
+    assert_eq!(
+        returned.selected_audio_variant_id,
+        original.selected_audio_variant_id
+    );
+    assert_eq!(returned.cache_status, "ready");
+    assert!(replay.playback_generation > next.playback_generation);
+    assert!(!replay.current_item_started);
+    assert!(app.native_player_status(&host, &old_status, 8.0).is_err());
+    assert!(app.native_snapshot(false).unwrap()["player_status"].is_null());
+}
+
+#[test]
 fn missing_duration_accepts_status_and_playback_commands_without_history() {
     let (mut app, host) = setup();
     let (snapshot, claim) = ready(&mut app);

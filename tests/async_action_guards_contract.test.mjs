@@ -37,7 +37,7 @@ harness = concatenate(concatenate(concatenate(concatenate(concatenate(concatenat
         function createMockElement(tag) {
           const listeners = {};
           const classes = new Set();
-          return {
+          const element = {
             tagName: tag ? tag.toUpperCase() : "DIV",
             className: "",
             listeners,
@@ -73,6 +73,8 @@ harness = concatenate(concatenate(concatenate(concatenate(concatenate(concatenat
             querySelectorAll() { return []; },
             content: { firstElementChild: { cloneNode() { return createMockElement("div"); } } },
           };
+          Object.defineProperty(element, "ownerDocument", { get() { return global.document; } });
+          return element;
         }
 
         const docElements = {};

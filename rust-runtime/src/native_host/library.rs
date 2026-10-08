@@ -1,6 +1,6 @@
 //! Shared Rust library repository exposed through the existing Host/Remote API.
-//! All Bilibili I/O runs outside AppState. One process-wide task lease protects
-//! manual imports and configured-source refresh after login/credential restore.
+//! All Bilibili I/O runs outside AppState. A startup refresh may overlap one
+//! manual source; ordinary full refresh and local deletion stay exclusive.
 //! No account-wide scan or cloud upload is scheduled here.
 use super::*;
 use crate::gatcha_repository::{
@@ -10,6 +10,8 @@ use crate::status_service::{GachaTaskStatus, GachaTaskUpdate};
 use std::time::Instant;
 mod source_queue;
 pub(crate) use source_queue::SourceQueue;
+#[cfg(test)]
+mod concurrency_tests;
 
 /// Internal, bounded observations, not arbitrary upstream text/URLs or cookies.
 #[derive(Clone, serde::Serialize)]
@@ -54,7 +56,7 @@ fn record(
                 || owner
                     .ticket
                     .as_ref()
-                    .is_some_and(|ticket| !app.native().login.owns_configured_refresh(ticket))
+                    .is_some_and(|ticket| !owner.owns(app.native(), ticket))
         }) {
             return Ok(());
         }
@@ -303,6 +305,7 @@ struct TaskLease {
     trigger: &'static str,
     started: Instant,
     ticket: Option<crate::gatcha_refresh::RefreshTicket>,
+    configured: bool,
     stop: Option<Arc<AtomicBool>>,
 }
 
@@ -340,7 +343,9 @@ fn pending_refresh_ready(session: &crate::app_state::native_session::NativeSessi
     };
     if session.cookie.is_empty()
         || session.library_refresh_active
-        || session.login.gacha_snapshot().busy
+        || session.library_source_exclusive
+        || (session.library_source_active && !automatic_refresh(session, trigger, false))
+        || (session.login.gacha_snapshot().busy && !session.library_source_active)
         || (!automatic_refresh(session, trigger, false)
             && session
                 .library_cooldown_until
@@ -366,9 +371,19 @@ impl TaskLease {
     // Callers never carry an old trigger across transactions or requeue failures.
     fn acquire_current(
         identity: Option<&Identity>,
+        trigger: Option<&'static str>,
+        configured: bool,
+        allow_guest: bool,
+    ) -> Result<(Self, String), ApiError> {
+        Self::acquire_current_parallel(identity, trigger, configured, allow_guest, true)
+    }
+
+    fn acquire_current_parallel(
+        identity: Option<&Identity>,
         mut trigger: Option<&'static str>,
         configured: bool,
         allow_guest: bool,
+        parallel_safe: bool,
     ) -> Result<(Self, String), ApiError> {
         let pending = trigger.is_none();
         let started = Instant::now();
@@ -388,7 +403,17 @@ impl TaskLease {
                 && matches!(trigger, "login_success" | "credential_restore");
             let scope = credential_scope(&session.cookie);
             let automatic = automatic_refresh(session, trigger, identity.is_some());
-            Self::reserve_for(session, automatic, allow_guest, configured)?;
+            if configured && !parallel_safe && session.library_source_active {
+                return Err(ApiError::new(
+                    409,
+                    "library_busy",
+                    "缓存格式维护正在等待拉取结束",
+                ));
+            }
+            let lease = Self::start(session, automatic, trigger, configured, allow_guest)?;
+            if configured {
+                session.library_refresh_parallel &= parallel_safe;
+            }
             if pending {
                 session.pending_library_refresh = None;
             }
@@ -396,36 +421,7 @@ impl TaskLease {
                 session.startup_library_refresh_attempted = true;
                 session.library_credential_scope = scope;
             }
-            let ticket = if configured {
-                // Reserve keeps native authorization/cooldown policy. Transfer
-                // its lease to the shared task owner under the same AppState lock.
-                if !automatic {
-                    session.login.release_gacha_refresh();
-                }
-                session.login.begin_configured_refresh(
-                    !automatic,
-                    GachaTaskUpdate {
-                        status: GachaTaskStatus::Running,
-                        message: "本地曲库更新中".into(),
-                        error: String::new(),
-                        result: None,
-                        blocking: !automatic,
-                    },
-                )
-            } else {
-                None
-            };
-            Ok((
-                Self {
-                    complete: false,
-                    automatic,
-                    trigger,
-                    started,
-                    ticket,
-                    stop: None,
-                },
-                session.cookie.clone(),
-            ))
+            Ok((lease, session.cookie.clone()))
         });
         if let Some(trigger) = trigger {
             match &result {
@@ -440,6 +436,83 @@ impl TaskLease {
             }
         }
         result
+    }
+
+    fn start(
+        session: &mut crate::app_state::native_session::NativeSession,
+        automatic: bool,
+        trigger: &'static str,
+        configured: bool,
+        allow_guest: bool,
+    ) -> Result<Self, ApiError> {
+        let exclusive = trigger == "remove_source";
+        if exclusive && (session.library_refresh_active || session.library_source_active) {
+            return Err(ApiError::new(
+                409,
+                "library_busy",
+                "拉取任务执行中，请等待任务结束",
+            ));
+        }
+        Self::reserve_for(session, automatic, allow_guest, configured)?;
+        let task = GachaTaskUpdate {
+            status: GachaTaskStatus::Running,
+            message: "本地曲库更新中".into(),
+            error: String::new(),
+            result: None,
+            blocking: !automatic,
+        };
+        let ticket = if configured {
+            // Reserve keeps native authorization/cooldown policy. Transfer
+            // its lease to the shared task owner under the same AppState lock.
+            if !automatic {
+                session.login.release_gacha_refresh();
+            }
+            session.login.begin_configured_refresh(!automatic, task)
+        } else {
+            session.library_source_exclusive = exclusive;
+            session.login.begin_source_refresh(task, exclusive)
+        };
+        if ticket.is_none() {
+            if configured {
+                session.library_refresh_active = false;
+                session.library_refresh_parallel = false;
+            } else {
+                session.library_source_active = false;
+                session.library_source_exclusive = false;
+            }
+            return Err(ApiError::new(
+                409,
+                "library_busy",
+                "拉取任务执行中，请等待任务结束",
+            ));
+        }
+        Ok(Self {
+            complete: false,
+            automatic,
+            trigger,
+            started: Instant::now(),
+            ticket,
+            configured,
+            stop: None,
+        })
+    }
+
+    fn owns(
+        &self,
+        session: &crate::app_state::native_session::NativeSession,
+        ticket: &crate::gatcha_refresh::RefreshTicket,
+    ) -> bool {
+        if self.configured {
+            session.login.owns_configured_refresh(ticket)
+        } else {
+            session.login.owns_source_refresh(ticket)
+        }
+    }
+
+    fn control(&self, context: &HostContext) -> Arc<crate::gatcha_refresh::RefreshControl> {
+        let control = self.ticket.as_ref().expect("library task ticket").1.clone();
+        control.follow_host(context.stop.clone());
+        control
     }
 
     #[cfg(test)]
@@ -475,10 +548,19 @@ impl TaskLease {
                 "曲库刚刚更新完成，请稍后再刷新",
             ));
         }
-        // One internal I/O lease still prevents overlapping scans. It is
-        // not the manual/global UI lock: cached Gacha and browsing remain
-        // available during the login/credential-restore background task.
-        if session.library_refresh_active || session.login.gacha_snapshot().busy {
+        let occupied = if configured {
+            session.library_refresh_active
+                || session.library_source_exclusive
+                || (session.library_source_active && !automatic)
+        } else {
+            session.library_source_active
+                || (session.library_refresh_active && !session.library_refresh_parallel)
+        };
+        if occupied
+            || (session.login.gacha_snapshot().busy
+                && !session.library_source_active
+                && !session.library_refresh_active)
+        {
             return Err(ApiError::new(
                 409,
                 "library_busy",
@@ -492,14 +574,19 @@ impl TaskLease {
             result: None,
             blocking: !automatic,
         };
-        if automatic {
-            session.login.set_gacha_task(task);
+        if configured {
+            if automatic {
+                session.login.set_gacha_task(task);
+            } else {
+                session
+                    .login
+                    .try_begin_gacha_refresh("拉取任务执行中，请等待任务结束".into(), Some(task));
+            }
+            session.library_refresh_active = true;
+            session.library_refresh_parallel = automatic;
         } else {
-            session
-                .login
-                .try_begin_gacha_refresh("拉取任务执行中，请等待任务结束".into(), Some(task));
+            session.library_source_active = true;
         }
-        session.library_refresh_active = true;
         session.revision += 1;
         Ok(())
     }
@@ -510,7 +597,7 @@ impl TaskLease {
             return Ok(());
         }
         if let Some(ticket) = &self.ticket {
-            let current = with_app(|app| Ok(app.native().login.owns_configured_refresh(ticket)))?;
+            let current = with_app(|app| Ok(self.owns(app.native(), ticket)))?;
             if !current {
                 self.complete = true;
                 return Ok(());
@@ -561,7 +648,7 @@ impl TaskLease {
                 result
             };
             if let Some(ticket) = &self.ticket {
-                if !session.login.owns_configured_refresh(ticket) {
+                if !self.owns(session, ticket) {
                     return Ok(());
                 }
                 // Native status text/cooldown remain an entry-specific projection.
@@ -569,11 +656,15 @@ impl TaskLease {
                 if let Err(error) = result {
                     task.error.clone_from(&error.message);
                 }
-                session
-                    .login
-                    .finish_configured_refresh(ticket.0, !self.automatic, task);
+                if self.configured {
+                    session
+                        .login
+                        .finish_configured_refresh(ticket.0, !self.automatic, task);
+                } else {
+                    session.login.finish_source_refresh(ticket.0, task);
+                }
             }
-            Self::publish_session(session, result, self.automatic, self.ticket.is_some());
+            Self::publish_session(session, result, self.automatic, self.configured);
             Ok(())
         })
     }
@@ -584,7 +675,16 @@ impl TaskLease {
         automatic: bool,
         configured: bool,
     ) {
-        let mut task = crate::gatcha_refresh::native_task(result.as_ref().ok());
+        let mut task = match result {
+            Ok(value) if value["operation"] == "remove_source" => GachaTaskUpdate {
+                status: GachaTaskStatus::Success,
+                message: "本地来源已删除".into(),
+                error: String::new(),
+                result: Some(value.clone()),
+                blocking: false,
+            },
+            _ => crate::gatcha_refresh::native_task(result.as_ref().ok()),
+        };
         if let Err(error) = result {
             task.error.clone_from(&error.message);
         }
@@ -592,8 +692,14 @@ impl TaskLease {
         if configured && let Ok(value) = result {
             session.library_queue.remember_refresh_result(value);
         }
-        session.library_refresh_active = false;
-        if !automatic {
+        if configured {
+            session.library_refresh_active = false;
+            session.library_refresh_parallel = false;
+        } else {
+            session.library_source_active = false;
+            session.library_source_exclusive = false;
+        }
+        if !automatic && configured {
             session.login.release_gacha_refresh();
         }
         session.login.set_gacha_task(task);
@@ -632,7 +738,21 @@ fn refresh(
     if context.stop.load(Ordering::Acquire) {
         return Err(ApiError::new(503, "stopped", "Host 已停止"));
     }
-    let (mut lease, cookie) = TaskLease::acquire_current(identity, trigger, true, false)?;
+    let rebuild = context
+        .desktop
+        .then(|| crate::gatcha_refresh::RebuildPaths {
+            uid_temp: context.directory.join("gatcha_uids_temp.json"),
+            cache_temp: context.directory.join("gatcha_cache_temp.json"),
+            favlist_temp: context.directory.join("gatcha_favlist_temp.json"),
+            progress: context.directory.join("gatcha_rebuild_progress.json"),
+        });
+    // A legacy multi-file schema conversion is maintenance, not a source pull.
+    // Keep it exclusive so an old checkpoint cannot replace newly imported rows.
+    let parallel_safe = !rebuild.as_ref().is_some_and(|temp| {
+        crate::gatcha_repository::rebuild_needed(&paths(&context.directory), temp)
+    });
+    let (mut lease, cookie) =
+        TaskLease::acquire_current_parallel(identity, trigger, true, false, parallel_safe)?;
     let trigger = lease.trigger;
     lease.stop = Some(context.stop.clone());
     let control = lease
@@ -653,14 +773,7 @@ fn refresh(
             default_uids: default_uids(),
             operation,
         },
-        rebuild: (context.desktop && lease.automatic).then(|| {
-            crate::gatcha_refresh::RebuildPaths {
-                uid_temp: context.directory.join("gatcha_uids_temp.json"),
-                cache_temp: context.directory.join("gatcha_cache_temp.json"),
-                favlist_temp: context.directory.join("gatcha_favlist_temp.json"),
-                progress: context.directory.join("gatcha_rebuild_progress.json"),
-            }
-        }),
+        rebuild: rebuild.filter(|_| lease.automatic),
         catalog: Some(catalog_append::completion()),
     };
     let stop = context.stop.clone();
@@ -781,6 +894,37 @@ pub(super) fn write(
         })?;
         return pool(&context.directory, &key);
     }
+    if path == "/api/gatcha/source/remove" {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Removal {
+            source: String,
+            id: String,
+        }
+        let removal: Removal = serde_json::from_value(body.clone())
+            .map_err(|_| ApiError::invalid("Invalid local Gacha source"))?;
+        crate::gatcha_repository::validate_source_removal(&removal.source, &removal.id)
+            .map_err(|e| ApiError::invalid(e.message))?;
+        // This lease serializes against active network scans without requiring
+        // login, consuming a refresh cooldown, or appending anything to D1.
+        let (lease, _) = TaskLease::acquire(Some(identity), "remove_source", false, true)?;
+        let result = execute(
+            &context.directory,
+            GatchaOperation::RemoveSource {
+                source: removal.source,
+                id: removal.id,
+            },
+        );
+        if let Ok(value) = &result {
+            with_app(|app| {
+                app.native().library_queue.remove_source(value);
+                Ok(())
+            })?;
+            publish_favorites_timestamp(&context.directory);
+        }
+        lease.finish(&result)?;
+        return result;
+    }
     // Validate the route/body before acquiring a lease or beginning any I/O.
     network_operation(path, body, "")?;
     if path == "/api/gatcha/refresh" {
@@ -804,26 +948,78 @@ pub(super) fn write(
     if body["queue"] == true {
         return source_queue::enqueue(identity, path, body);
     }
-    let (lease, cookie) = TaskLease::acquire(
+    let (mut lease, cookie) = TaskLease::acquire(
         Some(identity),
         "manual_source",
         false,
         path.starts_with("/api/gatcha/favlist"),
     )?;
+    lease.stop = Some(context.stop.clone());
+    let control = lease.control(context);
     let operation = network_operation(path, body, &cookie)?;
-    let result = execute(&context.directory, operation);
-    publish_favorites_timestamp(&context.directory);
-    lease.finish(&result)?;
-    let mut value = result?;
+    let mut result = crate::gatcha_repository::execute_gatcha_controlled(
+        &GatchaRepositoryRequest {
+            schema_version: 1,
+            paths: paths(&context.directory),
+            default_uids: default_uids(),
+            operation,
+        },
+        &control,
+    )
+    .map_err(|e| ApiError::new(400, &e.kind, e.message));
     // Restore preview.1's post-write moderation append, stripping candidates
-    // from the response before it can be forwarded through HTTP/Remote.
-    catalog_append::source_result(&mut value);
-    Ok(value)
+    // before HTTP/Remote. Keep the credential-fenced lease through publication.
+    if let Ok(value) = &mut result
+        && let Err(error) = control.commit(|| {
+            catalog_append::source_result(value);
+            Ok(())
+        })
+    {
+        result = Err(ApiError::new(409, &error.kind, error.message));
+    }
+    if control.check().is_ok() {
+        publish_favorites_timestamp(&context.directory);
+    }
+    lease.finish(&result)?;
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn removal_lease_blocks_refresh_without_login_or_cooldown_cost() {
+        let _owned = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let until = Instant::now() + Duration::from_secs(60);
+        with_app(|app| {
+            *app.native() = crate::app_state::native_session::NativeSession::default();
+            app.native().library_cooldown_until = Some(until);
+            Ok(())
+        })
+        .unwrap();
+        let (lease, cookie) = TaskLease::acquire(None, "remove_source", false, true).unwrap();
+        assert!(cookie.is_empty());
+        assert_eq!(
+            TaskLease::acquire(None, "remove_source", false, true)
+                .err()
+                .unwrap()
+                .code,
+            "library_busy"
+        );
+        let result = json!({"operation":"remove_source","source":"uid","id":"42"});
+        lease.finish(&Ok(result.clone())).unwrap();
+        with_app(|app| {
+            let session = app.native();
+            assert_eq!(session.library_cooldown_until, Some(until));
+            assert!(!session.library_refresh_active);
+            assert_eq!(session.login.gacha_snapshot().last_result, Some(result));
+            *session = crate::app_state::native_session::NativeSession::default();
+            Ok(())
+        })
+        .unwrap();
+    }
     #[test]
     fn configured_native_http_uses_shared_task_and_stopped_lease_cannot_publish() {
         let _owned = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK

@@ -186,6 +186,7 @@ const state = {
   playerFullscreenLastPointerType: "",
   playerFullscreenTransitioning: false,
   playerFullscreenRevision: 0,
+  playerFullscreenInteraction: null,
   presentationSettingsOpen: false,
   presentationDisplayRefreshTimer: null,
   presentationDisplayRefreshPending: false,
@@ -249,6 +250,7 @@ const state = {
   tauriMediaSessionOwner: null,
   lastTauriMediaSessionPositionAt: 0,
   dragItemId: "",
+  immediateDeferTransition: null,
   dragTargetId: "",
   dragTargetAfter: false,
   confirmIntent: null,
@@ -1944,6 +1946,7 @@ function applyPresentationCompositionDom(generation, composition) {
     && state.presentationSession.mode === "localDualScreen"
     && ["activating", "active"].includes(state.presentationSession.phase);
   state.presentationAppliedComposition = active ? "stageOnly" : "combined";
+  state.playerFullscreenInteraction?.sync();
   state.presentationCompositionGeneration = generation;
   document.body?.classList.toggle("is-presentation-control-host", active);
   document.body?.classList.remove("is-presentation-stage-only");
@@ -3495,6 +3498,7 @@ async function togglePlayerFullscreen() {
     setAppMessage(t("player.fullscreenFailed"), true);
   } finally {
     state.playerFullscreenTransitioning = false;
+    state.playerFullscreenInteraction?.sync();
     renderPlayerFullscreenButton();
   }
 }
@@ -3579,16 +3583,23 @@ function scheduleMountedPlayerControlsHide() {
       return;
     }
     state.localPlayerControlsHideTimer = null;
+    if (state.playerFullscreenInteraction?.holdingPointer()) {
+      scheduleMountedPlayerControlsHide();
+      return;
+    }
     hidePlayerControls(video);
   }, playerControlsAutoHideMs);
   state.localPlayerControlsHideTimer = hideTimer;
 }
 
-function revealMountedPlayerControlsForUserInteraction() {
-  if (presentationCompositionActive() || isPlayerPanelFullscreen() || state.playerFullscreenTransitioning) {
+function revealMountedPlayerControlsForUserInteraction(event) {
+  if (presentationCompositionActive() || state.playerFullscreenTransitioning) {
     hideMountedPlayerControls();
     return;
   }
+  // Incidental focus/hover is not permission to show controls, but must not
+  // dismiss controls already revealed by the preceding pointerdown either.
+  if (isPlayerPanelFullscreen() && !state.playerFullscreenInteraction?.allowsReveal(event)) return;
   const video = mountedLocalVideoElement();
   if (!video) {
     return;
@@ -8944,10 +8955,31 @@ function followOwnerDisplayName(owner) {
   return stateOwnerName || ownerName || `UID ${uid}`;
 }
 
+const sourceRemovalEditors = new Map();
+function sourceRemovalEditor(source) {
+  if (!sourceRemovalEditors.has(source)) {
+    sourceRemovalEditors.set(source, window.BilikaraSourceRemoval?.create(
+      source === "uid" ? elements.followUpGrid : elements.favlistGrid, {
+        source, translate: t, reportError: message => setAppMessage(message, true),
+        remove: async target => {
+          await apiPost("/api/gatcha/source/remove", target);
+          state.gatchaCandidate = null;
+          renderGatchaWorkspace();
+          if (source === "uid") await loadFollowBrowse({ uid: "", query: "" });
+          else await loadFavlistBrowse({ folderId: "", query: "" });
+          setAppMessage(t("sources.removedLocal"));
+        },
+      },
+    ));
+  }
+  return sourceRemovalEditors.get(source);
+}
+
 function renderFollowBrowse() {
   if (!elements.followUpGrid || !elements.followSongResults) {
     return;
   }
+  sourceRemovalEditor("uid")?.sync();
   const owners = Array.isArray(state.followBrowseData?.owners) ? state.followBrowseData.owners : [];
   const items = Array.isArray(state.followBrowseData?.items) ? state.followBrowseData.items : [];
   const hasSelectedUid = Boolean(state.followBrowseSelectedUid);
@@ -9012,7 +9044,8 @@ function renderFollowBrowse() {
           button.append(avatar);
         }
 
-        elements.followUpGrid.appendChild(button);
+        elements.followUpGrid.appendChild(sourceRemovalEditor("uid")?.card(button,
+          { id: button.dataset.uid, title: button.title, placeholder: owner.placeholder }) || button);
       });
     }
     setFollowBrowseMessage("");
@@ -9062,7 +9095,7 @@ async function loadFollowBrowse({ uid = state.followBrowseSelectedUid, query = "
       return;
     }
     state.followBrowseData = nextData;
-    state.followBrowseSelectedUid = String(nextData.selected_uid || state.followBrowseSelectedUid || "");
+    state.followBrowseSelectedUid = String(nextData.selected_uid ?? state.followBrowseSelectedUid ?? "");
     if (!keepQuery && elements.followSearchQuery) {
       elements.followSearchQuery.value = String(nextData.query || "");
     }
@@ -9098,6 +9131,7 @@ function renderFavlistBrowse() {
   if (!elements.favlistGrid || !elements.favlistSongResults) {
     return;
   }
+  sourceRemovalEditor("favlist")?.sync();
   const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
   const items = Array.isArray(state.favlistBrowseData?.items) ? state.favlistBrowseData.items : [];
   const placeholders = window.BilikaraSourceStatus?.queuedSources?.(state.data?.gatcha, "favorites",
@@ -9166,7 +9200,8 @@ function renderFavlistBrowse() {
           button.append(avatar);
         }
 
-        elements.favlistGrid.appendChild(button);
+        elements.favlistGrid.appendChild(sourceRemovalEditor("favlist")?.card(button,
+          { id: folderId, title, placeholder: folder.placeholder }) || button);
       });
     }
     setFavlistBrowseMessage("");
@@ -9222,7 +9257,7 @@ async function loadFavlistBrowse({
     }
     state.favlistBrowseData = nextData;
     state.favlistBrowseSelectedFolderId = String(
-      nextData.selected_folder_id || state.favlistBrowseSelectedFolderId || "",
+      nextData.selected_folder_id ?? state.favlistBrowseSelectedFolderId ?? "",
     );
     if (!keepQuery && elements.favlistSearchQuery) {
       elements.favlistSearchQuery.value = String(nextData.query || "");
@@ -9744,7 +9779,8 @@ function syncGatchaTaskTerminalMessage() {
         : status === "partial"
           ? t("gatcha.refreshPartial")
           : t("gatcha.refreshFailed");
-    const message = localizedGatchaTaskMessage(task.last_message, status) || fallback;
+    const message = task.last_result?.operation === "remove_source"
+      ? t("sources.removedLocal") : localizedGatchaTaskMessage(task.last_message, status) || fallback;
     const detail = task.last_error ? `${message} ${task.last_error}` : message;
     setGatchaUidMessage(detail, status !== "success");
   }
@@ -11632,7 +11668,10 @@ function syncPresentationPanelVisibility() {
   }
 }
 
+let currentQueueDefer = null;
+
 function renderQueueCurrent(currentItem) {
+  currentQueueDefer?.sync();
   if (!currentItem) {
     const signature = `empty|${state.language}`;
     if (signature === state.queueCurrentRenderSignature) {
@@ -12442,6 +12481,19 @@ function showSongTransitionOverlayForData(
 }
 
 function maybeShowSongTransitionOverlay(previousData, nextData, { force = false, generation = 0 } = {}) {
+  const defer = state.immediateDeferTransition;
+  if (defer
+    && previousData?.playback_generation === defer.playback_generation
+    && nextData?.playback_generation > defer.playback_generation
+    && nextData.current_item?.id === defer.expected_playlist_item_ids[0]
+    && nextData.playlist?.some(item => item.id === defer.item_id
+      && item.item_incarnation_id === defer.expected_item_incarnation_id)) {
+    // This explicit gesture starts B immediately, even if ordinary Next uses
+    // a countdown. Admission precedes the POST so an SSE-first response works.
+    state.immediateDeferTransition = null;
+    clearLocalAdvanceDelay({ resetInFlight: true });
+    return;
+  }
   if (!nextData) {
     return;
   }
@@ -15939,15 +15991,16 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   ["pointerenter", "pointermove", "pointerdown", "touchstart", "focus"].forEach((eventName) => {
-    addMountedPlayerListener(video, eventName, () => {
-      revealMountedPlayerControlsForUserInteraction();
+    addMountedPlayerListener(video, eventName, (event) => {
+      revealMountedPlayerControlsForUserInteraction(event);
     }, { passive: true });
   });
 
   addMountedPlayerListener(video, "pointerleave", (event) => {
     // Touch pointers leave at finger-up (and when entering a UA seek control),
     // unlike a desktop hover. Removing controls here cancels native scrubbing.
-    if (isAndroidNativePlaybackRuntime() && event.pointerType === "touch") return;
+    if (event.pointerType === "touch" && (isAndroidNativePlaybackRuntime() || isPlayerPanelFullscreen())) return;
+    if (state.playerFullscreenInteraction?.holdingPointer()) return;
     hideMountedPlayerControls();
   });
 
@@ -20423,6 +20476,12 @@ const fullscreenControlHover = window.BilikaraFullscreenControls.bind(elements.p
   onEnter: syncPlayerFullscreenExpandedWidth,
 });
 
+state.playerFullscreenInteraction = window.BilikaraFullscreenControls.bindPlayer(elements.playerPanel, {
+  active: () => isPlayerPanelFullscreen() && !presentationCompositionActive(),
+  transitioning: () => state.playerFullscreenTransitioning,
+  revealControls: revealMountedPlayerControlsForUserInteraction,
+});
+
 elements.playerFullscreenButton?.addEventListener("pointerdown", (event) => {
   state.playerFullscreenLastPointerType = String(event.pointerType || "");
 });
@@ -20462,7 +20521,7 @@ elements.playerFrame?.addEventListener("click", (event) => {
     // playback toggle while the user is trying to grab the seekbar. Leave
     // default actions intact so native play/seek controls still work.
     clearPlayerFrameClickTimer();
-    revealMountedPlayerControlsForUserInteraction();
+    revealMountedPlayerControlsForUserInteraction(event);
     return;
   }
   const { video, audio } = activeLocalPlayerElements();
@@ -20471,7 +20530,7 @@ elements.playerFrame?.addEventListener("click", (event) => {
     if (video && audio) {
       requestSplitPlaybackStartFromUserGesture(video, audio, "tauri-video-click-start-intent");
     }
-    revealMountedPlayerControlsForUserInteraction();
+    revealMountedPlayerControlsForUserInteraction(event);
     return;
   }
   if (
@@ -20480,7 +20539,7 @@ elements.playerFrame?.addEventListener("click", (event) => {
     && requestSplitPlaybackStartFromUserGesture(video, audio, "host-video-click-start-intent")
   ) {
     clearPlayerFrameClickTimer();
-    revealMountedPlayerControlsForUserInteraction();
+    revealMountedPlayerControlsForUserInteraction(event);
     return;
   }
   queuePlayerFrameSingleClick();
@@ -20495,7 +20554,7 @@ elements.playerFrame?.addEventListener("dblclick", (event) => {
     event.preventDefault();
     clearPlayerFrameClickTimer();
     toggleMountedLocalPlayback();
-    revealMountedPlayerControlsForUserInteraction();
+    revealMountedPlayerControlsForUserInteraction(event);
     return;
   }
   handlePlayerFrameDoubleClick().catch(() => {});
@@ -21374,6 +21433,7 @@ function handleFullscreenChange() {
   const isFullscreen = isPlayerPanelFullscreen();
   fullscreenControlHover.reset();
   hideMountedPlayerControls();
+  state.playerFullscreenInteraction?.sync();
   if (!isFullscreen) {
     setPlayerFullscreenRemotePinned(false);
     hideFullscreenRequestToast();
@@ -21390,6 +21450,29 @@ function handleFullscreenChange() {
 
 document.addEventListener("fullscreenchange", handleFullscreenChange);
 document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
+
+async function deferCurrentSong(payload) {
+  state.immediateDeferTransition = payload;
+  try {
+    return await apiPostStateSnapshot("/api/playlist/defer-current", payload);
+  } finally {
+    if (state.immediateDeferTransition === payload) state.immediateDeferTransition = null;
+  }
+}
+
+currentQueueDefer = window.BilikaraQueueDefer?.mount({
+  handle: elements.queueCurrentProgressBadge,
+  card: elements.queueCurrent,
+  list: elements.playlist,
+  getSnapshot: () => state.data,
+  submit: deferCurrentSong,
+  started: () => closeCacheAdvancedInfo(),
+  changed: () => { render(); setFormMessage(t("queue.deferred")); },
+  failed: error => {
+    render();
+    setFormMessage(error.code === "defer_current_conflict" ? t("queue.deferConflict") : error.message, true);
+  },
+});
 
 elements.playlist.addEventListener("dragstart", (event) => {
   const item = event.target.closest(".song-item");

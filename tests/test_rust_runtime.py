@@ -385,6 +385,30 @@ class RustRuntimeAdapterTest(unittest.TestCase):
         self.assertEqual(library.request["service"], "gatcha_repository")
         self.assertTrue(library.request["request"]["paths"]["uid_file"].endswith("uids.json"))
 
+    def test_source_removal_is_only_an_exclusive_native_transport(self):
+        from bilikara import bilibili
+        result = {"operation": "remove_source", "source": "uid", "id": "42", "removed": True}
+        done = Mock()
+        with patch.object(rust_runtime, "try_begin_gatcha_refresh", return_value=True) as begin, \
+                patch.object(rust_runtime, "release_gatcha_refresh") as release, \
+                patch.object(bilibili, "_rust_gatcha_repository", return_value=result) as repository, \
+                patch.object(bilibili, "_set_gatcha_task_status") as status, \
+                patch.object(bilibili, "append_catalog_entries_in_background") as append:
+            self.assertEqual(bilibili.remove_gatcha_source("uid", "42", on_done=done), result)
+        begin.assert_called_once_with(busy_message=bilibili.GATCHA_TASK_BUSY_MESSAGE, exclusive=True)
+        repository.assert_called_once_with("remove_source", source="uid", id="42")
+        status.assert_called_once_with(status="success", result=result)
+        release.assert_called_once_with()
+        done.assert_called_once_with()
+        append.assert_not_called()
+        # Rust failure is surfaced without a Python fallback, releasing the lease.
+        with patch.object(rust_runtime, "try_begin_gatcha_refresh", return_value=True), \
+                patch.object(rust_runtime, "release_gatcha_refresh") as release, \
+                patch.object(bilibili, "_rust_gatcha_repository", side_effect=rust_runtime.RustRuntimeUnavailableError("unavailable")):
+            with self.assertRaises(rust_runtime.RustRuntimeUnavailableError):
+                bilibili.remove_gatcha_source("uid", "42")
+        release.assert_called_once_with()
+
     def test_runtime_load_failure_records_actionable_details(self):
         path = Path("C:/bundle/rust/bilikara_runtime.dll")
         with patch(

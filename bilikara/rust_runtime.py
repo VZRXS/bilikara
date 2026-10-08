@@ -854,6 +854,7 @@ def try_begin_gatcha_refresh(
     *,
     busy_message: str,
     task: dict[str, Any] | None = None,
+    exclusive: bool = False,
 ) -> bool:
     request: dict[str, Any] = {
         "command": "gacha_try_begin",
@@ -861,6 +862,8 @@ def try_begin_gatcha_refresh(
     }
     if task is not None:
         request["task"] = _gatcha_task_update(task)
+    if exclusive:
+        request["exclusive"] = True
     result = _call_status_service(request)
     if not isinstance(result.get("started"), bool):
         raise RustStatusServiceError("Rust status service returned an invalid lease result")

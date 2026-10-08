@@ -1,0 +1,66 @@
+.source-removal-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 0 6px;
+}
+.source-removal-toolbar .source-removal-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--red);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: none;
+  cursor: pointer;
+  transition: background-color 120ms, border-color 120ms, color 120ms;
+}
+.source-removal-card { position: relative; min-width: 0; }
+.source-removal-card > .follow-up-button { width: 100%; height: 100%; -webkit-touch-callout: none; user-select: none; }
+.source-removal-card.is-editing > .follow-up-button .follow-up-name { padding-right: 32px; }
+.source-removal-card .source-removal-delete {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  min-width: 44px;
+  max-width: 44px;
+  height: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--red);
+  box-shadow: none;
+  transform: none;
+  cursor: pointer;
+  transition: background-color 120ms, border-color 120ms, color 120ms;
+}
+.source-removal-card .source-removal-delete[hidden] { display: none; }
+:is(.source-removal-toggle, .source-removal-delete) svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.source-removal-toggle[aria-pressed="true"] { border-color: currentColor; }
+:is(.source-removal-toggle, .source-removal-delete):focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+:is(.source-removal-toggle, .source-removal-delete):active:not(:disabled) { background: var(--danger-btn-hover-bg); }
+.source-removal-delete:disabled { cursor: wait; opacity: .5; }
+@media (prefers-reduced-motion: reduce) {
+  :is(.source-removal-toolbar .source-removal-toggle, .source-removal-card .source-removal-delete) { transition: none; }
+}

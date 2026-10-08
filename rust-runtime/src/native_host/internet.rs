@@ -314,6 +314,7 @@ fn effect(
         "gatcha_pool_config_set"
         | "gatcha_uid_preview"
         | "gatcha_uid_add"
+        | "gatcha_source_remove"
         | "gatcha_refresh"
         | "gatcha_favlist_preview"
         | "gatcha_favlist_refresh" => {
@@ -321,6 +322,7 @@ fn effect(
                 "gatcha_pool_config_set" => "/api/gatcha/pool-config",
                 "gatcha_uid_preview" => "/api/gatcha/uids/preview",
                 "gatcha_uid_add" => "/api/gatcha/uids/add",
+                "gatcha_source_remove" => "/api/gatcha/source/remove",
                 "gatcha_refresh" => "/api/gatcha/refresh",
                 "gatcha_favlist_preview" => "/api/gatcha/favlist/preview",
                 _ => "/api/gatcha/favlist",
@@ -484,6 +486,9 @@ fn public_data(value: &Value) -> Value {
 // a refresh. Never forward the rest of the internal task result (paths/errors).
 fn public_source_status(value: &Value) -> Value {
     let mut result = public_data(value);
+    if value["last_result"]["operation"] == "remove_source" {
+        result["last_result"]["operation"] = json!("remove_source");
+    }
     if value["source_queue"].is_object() {
         result["source_queue"] = value["source_queue"].clone();
     }
@@ -736,6 +741,15 @@ mod tests {
         );
         assert!(!projected.to_string().contains("secret"));
         assert!(!projected.to_string().contains("private"));
+    }
+    #[test]
+    fn public_source_removal_keeps_completion_marker_without_private_metadata() {
+        let projected = public_source_status(&json!({"last_status":"success", "last_result":{
+            "operation":"remove_source","source":"uid","id":"42","path":"private","cookie":"secret"
+        }}));
+        assert_eq!(projected["last_result"]["operation"], "remove_source");
+        assert!(!projected.to_string().contains("private"));
+        assert!(!projected.to_string().contains("secret"));
     }
     #[test]
     fn rating_state_keeps_previous_eligibility_without_exporting_private_records() {

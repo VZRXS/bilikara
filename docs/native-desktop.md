@@ -915,9 +915,10 @@ credentials. `test:catalog-maintenance` checks the CLI against isolated services
 
 Cache tasks append to `logs/<source>/<item_id>.log` under the data directory,
 where source is `native`, `bbdown` or `downkyi`. Lines use local timestamps and
-start with the song title. Logs are not merged or truncated at 1 MiB; orphaned
-song logs are removed after the item leaves the current song/playlist and its
-worker has drained. AppState snapshots and
+start with the song title. Logs are not merged or truncated at 1 MiB. Song logs
+remain for the whole Host run, including items that already left the current
+song/playlist, so failed or slow downloads stay diagnosable; Host shutdown
+removes them. AppState snapshots and
 typed Internet Remote projections include aggregate downloaded/total bytes and
 ordered per-track progress. An unknown total remains zero until all track sizes
 are known. These transient fields are reset with a new attempt, terminal event
@@ -1232,3 +1233,97 @@ clients share serialized state frames per revision and role. Checkpoint writes
 still serialize and durably publish under AppState's commit lock; the redundant
 whole-state JSON tree has been removed, but history cloning/chunk rewriting is
 not an append-only persistence engine.
+
+## Experimental current-song deferral
+
+In the Host queue, drag the current song's circular playback badge into the
+waiting list. The insertion line shows the selected position. With A playing
+and B/C/D waiting, dropping A after C immediately promotes B and leaves C/A/D
+waiting. Dropping at either edge of B leaves A next after B. When A returns,
+it starts from zero, not its interrupted playhead. This explicit gesture skips
+the ordinary next-song countdown; the existing Next button is unchanged.
+
+The badge also opens a translated explanation on click/tap. Dragging starts
+after 6px of movement, supports mouse and touch, and scrolls long queues at
+their edges. Release outside the list, Escape, capture loss, backgrounding or
+a changed playback/queue identity cancels the gesture. An empty waiting list
+disables it. The handle stays busy until the command settles. Desktop and
+Android Host use the same implementation; Remote gains no new control.
+
+`POST /api/playlist/defer-current` is Host-only in the native server. Its one
+Rust AppState mutation validates the current item/incarnation, playback
+generation and captured waiting order before promoting B and inserting A.
+Progress-only revisions do not invalidate the gesture. A stale command returns
+409 without changing state; a persistence failure retains the original state.
+The original request, selected tracks and cache identity survive, without a
+second request/history count. Playback segments retain existing export-threshold
+semantics. Ordinary cache-window eviction still applies. New playback generations
+revoke old seeks/status observations, so A cannot resume its previous playhead.
+The existing per-song pitch/volume/delay reset policy is reused.
+
+Architecture: this is Rust-owned stateful policy in `rust-runtime`, not a new
+pure `rust/` rule. Python changes are only command/HTTP/cache-sync adapters;
+there is no Python policy mirror, new FFI symbol or external service operation.
+The gesture is vanilla JavaScript and adds no third-party dependency.
+
+### Deferral change and validation record (2026-10-03)
+
+Complete changed-file inventory:
+
+- Runtime: `rust-runtime/src/app_state.rs`,
+  `rust-runtime/src/app_state/native_session.rs`,
+  `rust-runtime/src/native_host/api.rs`.
+- Compatibility transport: `bilikara/server.py`, `bilikara/store.py`.
+- Host UI: `static/app.js`, `static/index.html`, `static/styles.css`,
+  `static/i18n.json`, new `static/queue-defer.js`.
+- Tests: `rust-runtime/src/app_state/native_persistence.rs`,
+  `rust-runtime/src/app_state/native_session/tests.rs`,
+  `rust-runtime/tests/native_host_http.rs`, `tests/test_app_state_store.py`,
+  `tests/test_host_playback_session_frontend.py`, new `tests/browser/queue_defer.cjs`.
+- Documentation: `docs/native-desktop.md`.
+
+The following exact commands were run in **each** of `rust/`, `rust-runtime/`
+and `src-tauri/`: `cargo fmt --check`,
+`cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`,
+`cargo build --release --locked`. Formatting, Clippy and release compilation
+passed for all three. Core tests: 233 passed. Tauri tests: 105 passed, one ignored
+after rerunning with native-window access outside the sandbox. Runtime's full
+test gate remains failing in the unchanged live Windows gateway comparison;
+`cargo test --manifest-path rust-runtime/Cargo.toml --locked --lib` reproduced
+it outside the sandbox (340 passed, one failed, eight ignored).
+
+Additional root-directory commands:
+
+| Command | Result |
+| --- | --- |
+| `cargo clippy --manifest-path rust-runtime/Cargo.toml --all-targets --features native-host --locked -- -D warnings` | Passed (also run from the crate directory without `--manifest-path`). |
+| `cargo test --manifest-path rust-runtime/Cargo.toml --features native-host --locked` | Full run failed in the gateway comparison and `isolated_root_never_enrolls_existing_data` (`\\?\` Windows path-prefix expectation). Neither path was modified. |
+| `cargo test --manifest-path rust-runtime/Cargo.toml --locked --features native-host --lib defer_current` | Passed. |
+| `cargo test --manifest-path rust-runtime/Cargo.toml --locked --features native-host --test native_host_http` | Passed, including Host admission, Remote rejection, stale/invalid drops. |
+| `cargo test --manifest-path rust-runtime/Cargo.toml --locked --features native-host -- --skip live_windows_gateways_match_net_ip_configuration --skip isolated_root_never_enrolls_existing_data` | 467 unit and two integration tests passed; eight unit/one integration ignored. Diagnostic isolation run only, not a full-gate pass. |
+| `cargo test --manifest-path src-tauri/Cargo.toml --locked windows_fullscreen::native_tests::tauri_native_fullscreen_preserves_normal_and_maximized_placement -- --exact` | Passed outside the sandbox, followed by a passing full Tauri rerun. |
+| `$env:BILIKARA_REQUIRE_RUST_LIB='1'; python -m unittest tests.test_app_state_store tests.test_host_playback_session_frontend tests.test_async_action_guards tests.test_list_flip_frontend tests.test_host_build_review_repair -v` | 115 passed. Covers atomic persistence, zero playhead on A's return, stale observations, SSE-first delivery, and unchanged ordinary countdown. |
+| `$env:BILIKARA_REQUIRE_RUST_LIB='1'; python -m unittest discover -s tests -v` | 1811 tests: seven failures, one error, 129 skipped on the final rerun; see below. |
+| `python -m compileall -q bilikara` | Passed. |
+| `python -m py_compile start_bilikara.py build_bundle.py` | Passed. |
+| `node --check static/app.js` and `node --check static/queue-defer.js` | Passed. |
+| `node tests/browser/queue_defer.cjs .tmp/queue-defer-browser` | Passed: 1440/700px mouse, 700px mixed input, 393px touch; visible insertion markers, jitter, cancellation, duplicate/pending guards, long-list autoscroll. Screenshots inspected. |
+| `npm ci` | Passed; lockfiles/dependencies unchanged. |
+| `npm run build` | Native Host compiled, then staging failed: `Prepare the pinned BBDown vendor before packaging`. No installable package verified. |
+| `git diff --check` | Passed. |
+
+Browser validation used the existing test-only Playwright installation through
+`NODE_PATH=C:\Users\kevin\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\node_modules`
+and installed Edge; it did not add a runtime dependency. Windows temporary-file,
+browser and native-window checks required execution outside the sandbox.
+The remaining Python failures are in unchanged bundle/cache paths: two
+ffprobe resolution tests disagree with the required pinned libav prefix, and
+six BBDown lookup/update tests find the local vendor instead of their temporary
+fixtures. The initial new persistence-test fixture used the obsolete `state.json`
+path; it was corrected to the adapter's backup file and passes in both the
+115-test targeted suite and the final full rerun.
+Physical Android, native WebView drag/drop and audible playback acceptance remain
+unverified. Ignored tests require explicitly provisioned real media/companion
+fixtures, public YouTube access, staged packages, Linux TLS trust/POSIX or macOS;
+these existing gates were not weakened. Full release acceptance is **not** claimed.
+These local validation results predate the requested commit/push and CI dispatch.

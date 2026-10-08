@@ -59,6 +59,8 @@ enum StatusServiceCommand {
         busy_message: String,
         #[serde(default)]
         task: Option<GachaTaskUpdate>,
+        #[serde(default)]
+        exclusive: bool,
     },
     GachaSet {
         task: GachaTaskUpdate,
@@ -328,8 +330,16 @@ pub unsafe extern "C" fn bilikara_runtime_status_service(
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let result = match command {
             StatusServiceCommand::GachaSnapshot => json!(service.gacha_snapshot()),
-            StatusServiceCommand::GachaTryBegin { busy_message, task } => {
-                let started = service.try_begin_gacha_refresh(busy_message, task);
+            StatusServiceCommand::GachaTryBegin {
+                busy_message,
+                task,
+                exclusive,
+            } => {
+                let started = if exclusive {
+                    service.try_begin_gacha_source_removal(busy_message)
+                } else {
+                    service.try_begin_gacha_refresh(busy_message, task)
+                };
                 json!({"started": started, "snapshot": service.gacha_snapshot()})
             }
             StatusServiceCommand::GachaSet { task, busy_message } => {

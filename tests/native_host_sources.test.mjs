@@ -25,6 +25,52 @@ function publicPeer(host, peer = 'fixture-peer') {
   return { async open(profile = 'controller') { await host.api('/api/internet-remote/peer/open', { peer_id: peer, epoch, profile }); }, async dispatch(kind, body) { const result = await host.api('/api/internet-remote/dispatch', { peer_id: peer, lane: 'control', message: JSON.stringify({ v: 1, lane: 'control', epoch, seq: ++seq, id: randomUUID(), kind, body }) }); assert.ok(!('_host_effect' in result)); assert.ok(!('entries' in (result.data || {}))); return result.data; } };
 }
 
+test('startup refresh overlaps foreground UP/favorites, shares a source and preserves both cache commits', { skip: process.platform !== 'linux' ? 'local TLS trust fixture requires native Linux' : false, timeout: 60000 }, async () => {
+  const {home, data} = seed(); let host, backgroundEntered = false, releaseBackground;
+  const background = new Promise(resolve => {releaseBackground = resolve;});
+  writeFileSync(path.join(data, 'gatcha_uids.json'), JSON.stringify({schema_version:2,uids:['11'],profiles:{'11':{uid:'11',name:'Background',space_url:'https://space.bilibili.com/11'}}}));
+  writeFileSync(path.join(data, 'BBDown.data'), 'SESSDATA=fixture; bili_jct=fixture', {mode:0o600});
+  const fetched = [];
+  const provider = await videoFixture(async target => {
+    const url = new URL(target, 'https://api.bilibili.com'), uid = url.searchParams.get('mid');
+    if(url.pathname.endsWith('/nav')) return nav;
+    if(url.pathname.endsWith('/acc/info')) return {code:0,data:{mid:Number(uid),name:`UP ${uid}`,face:''}};
+    if(url.pathname.endsWith('/arc/search')) {
+      fetched.push(uid);
+      if(uid==='11') {backgroundEntered=true; await background;}
+      return {code:0,data:{list:{vlist:[{bvid:`BVTEST0000${uid}`,title:`karaoke ${uid}`,author:`UP ${uid}`,length:'1:30'}]}}};
+    }
+    if(url.pathname.endsWith('/list-all')) return {code:0,data:{list:[{id:456,title:'karaoke favorites',attr:0,media_count:1}]}};
+    if(url.pathname.endsWith('/resource/list')) return {code:0,data:{medias:[{bvid:'BVFAV0000456',title:'Favorite',duration:90,upper:{mid:22,name:'UP 22'}}],has_more:false}};
+    assert.fail(`unexpected overlap route ${url.pathname}`);
+  });
+  try {
+    host = await RunningHost.start(executable,home,['--headless','--port','0','--data-dir',data,'--static-dir',path.join(root,'static')],{...isolatedEnvironment(home),...provider.environment,BILIKARA_CF_API_URL:provider.base});
+    await waitFor(()=>backgroundEntered,'startup source did not enter',5000);
+    await host.api('/api/gatcha/uids/add',{uid:'22',queue:true});
+    await waitFor(async()=> (await host.api('/api/gatcha/browse?uid=22')).items.length===1,'manual UP waited behind the whole startup batch',5000);
+    const peer=publicPeer(host,'parallel-source-peer'); await peer.open(); await peer.dispatch('session.set_identity',{name:'Concurrent user'});
+    await peer.dispatch('gatcha.favlist_refresh',{uid:'22',folder_ids:['456']});
+    await waitFor(()=>JSON.parse(readFileSync(path.join(data,'gatcha_favlist.json'))).items.length===1,'public favorites waited behind startup',5000);
+    let state=await host.api('/api/state');
+    assert.equal(state.gatcha.background_busy,true);
+    assert.equal(state.gatcha.last_result.rebuild.current_uid,'11','foreground completion hid background progress');
+    await assert.rejects(host.api('/api/gatcha/refresh',{}),{status:409});
+    await assert.rejects(host.api('/api/gatcha/source/remove',{source:'uid',id:'22'}),{status:409});
+    await host.api('/api/gatcha/uids/add',{uid:'11',queue:true});
+    await waitFor(async()=> (await host.api('/api/state')).gatcha.source_queue.active?.uid==='11','same-source follower was not admitted',5000);
+    releaseBackground(); state=await idle(host);
+    assert.deepEqual(fetched,['11','22'],'same startup/manual source was fetched twice');
+    const saved=JSON.parse(readFileSync(path.join(data,'gatcha_cache.json')));
+    assert.equal(saved.uids['11'][0].bvid,'BVTEST000011'); assert.equal(saved.uids['22'][0].bvid,'BVTEST000022');
+    await waitFor(()=>provider.posts.flatMap(([,body])=>body.records||[]).length>=3,'missing independent source deltas',5000);
+    const rows=provider.posts.flatMap(([,body])=>body.records||[]);
+    for(const bvid of ['BVTEST000011','BVTEST000022','BVFAV0000456']) assert.equal(rows.filter(row=>row.bvid===bvid).length,1,'a reused source appended twice');
+    assert.equal((await host.api('/api/gatcha/refresh',{})).started,true,'startup consumed manual cooldown'); await idle(host);
+    await assert.rejects(host.api('/api/gatcha/refresh',{}),{status:429});
+  } finally {releaseBackground(); if(host)await host.close(); await provider.close(); rmSync(home,{recursive:true,force:true});}
+});
+
 test('real UID/favorites preview and explicit selection preserve independent cached metadata and public folder boundaries', {skip:process.platform!=='linux'?'verified Linux local TLS fixture':false,timeout:60000},async()=>{
   const {home,data}=seed();let host;
   const profile={uid:'42',name:'example-up',space_url:'https://space.bilibili.com/42',avatar_url:'https://example.com/avatar.jpg'};

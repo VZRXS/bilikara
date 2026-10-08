@@ -3842,7 +3842,8 @@ function syncGatchaTaskTerminalMessage() {
         : status === "partial"
           ? t("gatcha.refreshPartial")
           : t("gatcha.refreshFailed");
-    const message = localizedGatchaTaskMessage(task.last_message, status) || fallback;
+    const message = task.last_result?.operation === "remove_source"
+      ? t("sources.removedLocal") : localizedGatchaTaskMessage(task.last_message, status) || fallback;
     const detail = task.last_error ? `${message} ${task.last_error}` : message;
     setGatchaUidMessage(detail, status !== "success");
   }
@@ -4250,6 +4251,26 @@ function renderRemoteGridPages(container, items, key, renderPage, {loading = fal
     loading, emptyText, language:state.language});
 }
 
+const sourceRemovalEditors = new Map();
+function sourceRemovalEditor(source) {
+  if (!sourceRemovalEditors.has(source)) {
+    sourceRemovalEditors.set(source, window.BilikaraSourceRemoval?.create(
+      source === "uid" ? elements.sourcesFollowGrid : elements.favlistGrid, {
+        source, translate: t, reportError: message => setAppMessage(message, true),
+        remove: async target => {
+          await apiPost("/api/gatcha/source/remove", target);
+          state.gatchaCandidate = null;
+          renderGatchaView();
+          if (source === "uid") await loadFollowBrowse({ uid: "", query: "" });
+          else await loadFavlistBrowse({ folderId: "", query: "" });
+          setAppMessage(t("sources.removedLocal"));
+        },
+      },
+    ));
+  }
+  return sourceRemovalEditors.get(source);
+}
+
 function renderSourceCardPage(container, entries, emptyText, favorites = false) {
   container.replaceChildren();
   if (!entries.length) {
@@ -4289,7 +4310,8 @@ function renderSourceCardPage(container, entries, emptyText, favorites = false) 
       button.append(avatar);
     }
     window.BilikaraSourceStatus?.syncCard(button, state.data?.gatcha, t);
-    container.append(button);
+    container.append(sourceRemovalEditor(favorites ? "favlist" : "uid")?.card(button,
+      { id, title, placeholder: entry.placeholder }) || button);
   }
 }
 
@@ -4948,6 +4970,7 @@ function renderFavlistBrowse() {
   if (!elements.favlistGrid || !elements.favlistSongResults) {
     return;
   }
+  sourceRemovalEditor("favlist")?.sync();
   const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
   const items = Array.isArray(state.favlistBrowseData?.items) ? state.favlistBrowseData.items : [];
   const hasMore = Boolean(state.favlistBrowseData?.has_more);
@@ -5074,7 +5097,7 @@ async function loadFavlistBrowse({
       items: mergeBrowseItems(previousItems, nextData.items),
     };
     state.favlistBrowseSelectedFolderId = String(
-      nextData.selected_folder_id || state.favlistBrowseSelectedFolderId || "",
+      nextData.selected_folder_id ?? state.favlistBrowseSelectedFolderId ?? "",
     );
     if (!keepQuery && elements.favlistSearchQuery) {
       elements.favlistSearchQuery.value = String(nextData.query || "");
@@ -5329,6 +5352,7 @@ function renderSourcesFollowBrowse() {
   if (!elements.sourcesFollowGrid || !elements.sourcesFollowResults) {
     return;
   }
+  sourceRemovalEditor("uid")?.sync();
 
   const owners = Array.isArray(state.followBrowseData?.owners) ? state.followBrowseData.owners : [];
   const items = Array.isArray(state.followBrowseData?.items) ? state.followBrowseData.items : [];
@@ -5463,7 +5487,7 @@ async function loadFollowBrowse({
       ...nextData,
       items: mergeBrowseItems(previousItems, nextData.items),
     };
-    state.followBrowseSelectedUid = String(nextData.selected_uid || state.followBrowseSelectedUid || "");
+    state.followBrowseSelectedUid = String(nextData.selected_uid ?? state.followBrowseSelectedUid ?? "");
     if (!keepQuery && elements.sourcesFollowSearchQuery) {
       elements.sourcesFollowSearchQuery.value = String(nextData.query || "");
     }

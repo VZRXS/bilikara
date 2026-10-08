@@ -29,7 +29,7 @@ pub(super) fn start_pump(context: Arc<HostContext>) -> Result<(), ApiError> {
                 last_error=error.to_string();let _=with_app(|app|{app.native_diagnostic(&json!({"event":"native-cache-error","kind":error.code,"message":error.message}),now());Ok(())});
             }
             if last_cleanup.elapsed() >= Duration::from_secs(10) {
-                if maintenance::collect(&context.cache_root, false).is_err() || collect_logs(&context.directory).is_err() {
+                if maintenance::collect(&context.cache_root, false).is_err() {
                     let _=with_app(|app|{app.native_diagnostic(&json!({"event":"native-cache-cleanup-failed"}),now());Ok(())});
                 }
                 last_cleanup=std::time::Instant::now();
@@ -331,7 +331,6 @@ fn tick(
             }
         }
     }
-    collect_logs(&context.directory)?;
     *last_fingerprint = fingerprint;
     Ok(())
 }
@@ -378,33 +377,9 @@ fn project_problem(item: &PlaylistItem, message: &str, failed: bool) -> Result<(
     })
 }
 
-fn collect_logs(directory: &Path) -> Result<(), ApiError> {
-    let runtime = execute_cache_runtime(CacheRuntimeCommand::Snapshot {}).map_err(cache_error)?;
-    visit_song_logs(directory, |path, id| {
-        // Recheck live ownership immediately before unlinking. Active workers
-        // may still append after cancellation, so retain their logs until drained.
-        with_app(|app| {
-            let snapshot = app.native_core_snapshot()?;
-            let retained = app.native_session_choice_pending()
-                || snapshot
-                    .current_item
-                    .iter()
-                    .chain(snapshot.playlist.iter())
-                    .any(|item| item.id == id)
-                || ["active_item_ids", "pending_ids"].iter().any(|key| {
-                    runtime[*key]
-                        .as_array()
-                        .is_some_and(|ids| ids.iter().any(|value| value.as_str() == Some(id)))
-                });
-            if !retained {
-                std::fs::remove_file(path)
-                    .map_err(|_| ApiError::new(503, "cache_log", "无法清理缓存日志"))?;
-            }
-            Ok(())
-        })
-    })
-}
-
+// Song logs stay for the whole Host run, including songs that already left the
+// queue, so failed or slow downloads can still be diagnosed. Only shutdown
+// clears them.
 fn visit_song_logs(
     directory: &Path,
     mut visit: impl FnMut(&Path, &str) -> Result<(), ApiError>,

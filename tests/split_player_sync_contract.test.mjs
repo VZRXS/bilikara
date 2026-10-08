@@ -252,8 +252,9 @@ class FakeMedia {
     listeners.push(listener);
     this.listeners.set(eventName, listeners);
   }
-  dispatchMediaEvent(eventName) {
-    for (const listener of this.listeners.get(eventName) || []) listener();
+  dispatchMediaEvent(eventName, properties = {}) {
+    const event = { type: eventName, target: this, pointerType: "mouse", ...properties };
+    for (const listener of this.listeners.get(eventName) || []) listener(event);
   }
   play() { this.paused = false; this.playCalls += 1; return Promise.resolve(); }
   pause() { this.paused = true; this.pauseCalls += 1; }
@@ -4189,7 +4190,7 @@ assert.ok(contains("video.controls = false", mount));
 assert.ok(contains("video.removeAttribute(\"controls\")", mount));
 assert.ok(contains("video.tabIndex = 0", mount));
 assert.ok(!contains("showMountedPlayerControls", this.source));
-assert.deepEqual(countOccurrences(this.source, "revealMountedPlayerControlsForUserInteraction"), 6);
+assert.deepEqual(countOccurrences(this.source, "revealMountedPlayerControlsForUserInteraction"), 7);
 for (const source of iterableValues(automatic_sources)) {
 assert.ok(!contains("revealMountedPlayerControlsForUserInteraction", source));
 }

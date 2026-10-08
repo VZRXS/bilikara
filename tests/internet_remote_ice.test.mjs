@@ -368,6 +368,24 @@ test('Localized list notices coalesce progress, retain totals and reject stale s
   }
 });
 
+test('Remote local-source deletion sends only the typed Host operation for UPs and favorites', async () => {
+  const { owner, sandbox } = ownerFixture('remote'), frames = [];
+  Object.assign(owner.state, { authorized: true, control: { readyState: 'open', send: wire => frames.push(JSON.parse(wire)) } });
+  for (const target of [{ source: 'uid', id: '42' }, { source: 'favlist', id: '42:10' }]) {
+    const response = sandbox.fetch('/api/gatcha/source/remove', { method: 'POST', body: JSON.stringify(target) });
+    await tick();
+    const frame = frames.at(-1);
+    assert.equal(frame.envelope.kind, 'gatcha.source_remove');
+    assert.deepEqual(frame.envelope.body, target);
+    owner.handleDataMessage({ type: 'response', request_id: frame.envelope.id, accepted: true, data: { removed: true } });
+    const result = await response;
+    assert.equal(result.status, 200);
+    assert.equal((await result.json()).data.removed, true);
+    assert.equal(owner.state.pending.size, 0);
+  }
+  assert.equal(frames.length, 2, 'deletion must not trigger catalog or Bilibili RPCs');
+});
+
 test('Remote rejects oversized request parameters before sending and releases pending work', async () => {
   const { owner, sandbox } = ownerFixture('remote'), frames = [], notices = [];
   Object.assign(owner.state, { authorized: true, bulk: { readyState: 'open', send: wire => frames.push(wire) } });

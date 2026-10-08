@@ -37,6 +37,9 @@ pub(crate) struct NativeSession {
     pub ui_language: Option<crate::native_host::preferences::UiLanguage>,
     pub library_cooldown_until: Option<std::time::Instant>,
     pub library_refresh_active: bool,
+    pub library_refresh_parallel: bool,
+    pub library_source_active: bool,
+    pub library_source_exclusive: bool,
     pub library_queue: crate::native_host::SourceQueue,
     // Written with credential commits; read/consumed with task admission.
     // Failed or delayed callers must never write an intent back afterward.
@@ -572,6 +575,7 @@ impl AppState {
         if self.native_session.desktop {
             match &mut command {
                 AppStateRequest::AdvanceToNext { reset_av_delay, .. }
+                | AppStateRequest::DeferCurrentItem { reset_av_delay, .. }
                 | AppStateRequest::MoveToFront { reset_av_delay, .. }
                 | AppStateRequest::SetCurrentItem { reset_av_delay, .. } => {
                     *reset_av_delay = self.native_session.cache_policy.reset_offset_on_next

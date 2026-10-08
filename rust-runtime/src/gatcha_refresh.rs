@@ -11,6 +11,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+mod source_tasks;
+pub(crate) use source_tasks::SourceTasks;
 
 #[derive(Debug, Default)]
 pub(crate) struct RefreshControl(Mutex<ControlState>);
@@ -20,9 +22,32 @@ struct ControlState {
     stopped: bool,
     retry_failed: bool,
     host_stop: Option<Arc<std::sync::atomic::AtomicBool>>,
+    sources: Option<Arc<SourceTasks>>,
 }
 
 impl RefreshControl {
+    pub(crate) fn share_sources(&self, sources: Arc<SourceTasks>) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).sources = Some(sources);
+    }
+
+    pub(crate) fn source(
+        &self,
+        key: String,
+        action: impl FnOnce() -> Result<Value, GatchaRepositoryError>,
+    ) -> Result<(Value, bool), GatchaRepositoryError> {
+        let sources = self
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .sources
+            .clone();
+        if let Some(sources) = sources {
+            sources.run(self, key, action)
+        } else {
+            self.check()?;
+            action().map(|value| (value, false))
+        }
+    }
     #[cfg(feature = "native-host")]
     pub(crate) fn retry_failed_sources(&self) {
         self.0
@@ -224,6 +249,12 @@ pub(crate) fn added_entries(cache: &Value) -> Vec<Value> {
         .as_array()
         .cloned()
         .unwrap_or_default();
+    // Capture deltas at each serialized commit. Re-reading the first N rows of
+    // the final cache can accidentally select another concurrent task's rows.
+    if let Some(added) = cache["added_entries"].as_array() {
+        entries.extend(added.iter().cloned());
+        return entries;
+    }
     for row in cache["refresh_summary"]["uids"]
         .as_array()
         .into_iter()
@@ -296,6 +327,24 @@ pub(crate) type RefreshTicket = (u64, Arc<RefreshControl>);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completion_delta_does_not_reselect_a_concurrent_tasks_latest_rows() {
+        let value = json!({"refresh_summary":{"uids":[{"uid":"1","added_count":1}]},
+            "uids":{"1":[{"bvid":"BVOTHER"},{"bvid":"BVOWN"}]},
+            "added_entries":[{"bvid":"BVOWN"}],"favlist_entries":[{"bvid":"BVFAV"}]});
+        assert_eq!(
+            added_entries(&value),
+            vec![json!({"bvid":"BVFAV"}), json!({"bvid":"BVOWN"})]
+        );
+        let mut reused = value;
+        reused["added_entries"] = json!([]);
+        reused["favlist_entries"] = json!([]);
+        assert!(
+            added_entries(&reused).is_empty(),
+            "shared completion must not fall back to cache rows"
+        );
+    }
 
     #[cfg(feature = "native-host")]
     #[test]

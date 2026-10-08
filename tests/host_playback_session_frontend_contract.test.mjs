@@ -467,6 +467,82 @@ completed = (await runNodeScript(script, 10 * 1000, root));
 assert.deepEqual(completed.status, 0, completed.stderr);
 return JSON.parse(completed.stdout);
 },
+async test_deferred_item_returns_with_fresh_zero_time_media_not_its_old_playhead() {
+const result = await this.run_foundation(`
+const a = item();
+const b = item({ itemId: 'song-b', incarnation: 'i-b', artifactId: 'a-b' });
+installSnapshot(7, a);
+const first = reconcileHostPlaybackSession(a);
+first.session.readyCommitted = true;
+first.session.logicalPlayIntent = true;
+first.video.currentTime = 70;
+first.audio.currentTime = 70;
+installSnapshot(8, b);
+const second = reconcileHostPlaybackSession(b);
+installSnapshot(9, a);
+const replay = reconcileHostPlaybackSession(a);
+process.stdout.write(JSON.stringify({
+  retired: first.session.phase,
+  newVideo: replay.video !== first.video,
+  newAudio: replay.audio !== first.audio,
+  videoTime: Number(replay.video.currentTime || 0),
+  audioTime: Number(replay.audio.currentTime || 0),
+  restore: replay.session.playbackRestore,
+  playing: replay.session.logicalPlayIntent,
+  counts: counts(),
+}));
+`);
+assert.deepEqual(result, {
+  retired: "retired", newVideo: true, newAudio: true,
+  videoTime: 0, audioTime: 0, restore: null,
+  playing: true, counts: {video: 1, audio: 1},
+});
+},
+async test_defer_gesture_skips_only_its_own_countdown_including_sse_first() {
+const overlay = await this.source_slice("function maybeShowSongTransitionOverlay", "function hasPendingSongTransitionOverlayForItem");
+const submit = await this.source_slice("async function deferCurrentSong", "currentQueueDefer = window.BilikaraQueueDefer");
+const script = `
+const assert = require('node:assert/strict');
+const state = {};
+let clears = 0, holds = 0;
+function clearLocalAdvanceDelay() { clears++; }
+function currentItemIdFromData(data) { return data?.current_item?.id || ''; }
+function hasLocalAdvanceDelayOverlay() { return false; }
+function manualTransitionOverlaySeconds() { return 3; }
+function registerManualTransitionHold() { return ++holds; }
+const payload = {item_id:'a',expected_item_incarnation_id:'i-a',playback_generation:7,expected_playlist_item_ids:['b','c']};
+const before = {playback_generation:7,current_item:{id:'a'}};
+const after = {playback_generation:8,current_item:{id:'b'},playlist:[{id:'a',item_incarnation_id:'i-a'},{id:'c'}]};
+async function apiPostStateSnapshot(url, body) {
+  assert.equal(url, '/api/playlist/defer-current');
+  assert.equal(body, payload);
+  assert.equal(state.immediateDeferTransition, payload);
+  // SSE commits before the HTTP acknowledgement returns.
+  maybeShowSongTransitionOverlay(before, after);
+  return true;
+}
+` + overlay + submit + `
+(async () => {
+  await deferCurrentSong(payload);
+  assert.equal(clears, 1); assert.equal(holds, 0);
+  assert.equal(state.immediateDeferTransition, null);
+  // Coalesced SSE can already contain B's ready-artifact generation.
+  state.immediateDeferTransition = payload;
+  maybeShowSongTransitionOverlay(before, {...after, playback_generation:9});
+  assert.equal(clears, 2); assert.equal(holds, 0);
+  // Normal Next still observes the configured countdown, even with a pending
+  // defer request, because A was NOT retained by that transition.
+  state.immediateDeferTransition = payload;
+  maybeShowSongTransitionOverlay(before, {...after, playlist:[{id:'c'}]});
+  assert.equal(clears, 2); assert.equal(holds, 1);
+  apiPostStateSnapshot = async () => { throw Error('fixture failure'); };
+  await assert.rejects(deferCurrentSong(payload));
+  assert.equal(state.immediateDeferTransition, null);
+})().catch(error => {console.error(error); process.exitCode = 1;});
+`;
+const completed = await runNodeScript(script, 10 * 1000, root);
+assert.equal(completed.status, 0, completed.stderr);
+},
 async test_session_state_machine_owns_one_exact_pair() {
 let boundary, rerender, result;
 result = (await this.run_foundation(`
@@ -1579,6 +1655,8 @@ assert.deepEqual(result["forbidden"], {["mount"]: 0, ["replace"]: 0, ["claim"]: 
 }
 };
 test("HostPlaybackSessionFrontendTest.test_audio_variant_request_uses_only_the_observed_item_incarnation", async () => { const instance = Object.create(HostPlaybackSessionFrontendTest); await instance.setUpClass(); await instance.test_audio_variant_request_uses_only_the_observed_item_incarnation(); });
+test("HostPlaybackSessionFrontendTest.test_deferred_item_returns_with_fresh_zero_time_media_not_its_old_playhead", async () => { const instance = Object.create(HostPlaybackSessionFrontendTest); await instance.setUpClass(); await instance.test_deferred_item_returns_with_fresh_zero_time_media_not_its_old_playhead(); });
+test("HostPlaybackSessionFrontendTest.test_defer_gesture_skips_only_its_own_countdown_including_sse_first", async () => { const instance = Object.create(HostPlaybackSessionFrontendTest); await instance.setUpClass(); await instance.test_defer_gesture_skips_only_its_own_countdown_including_sse_first(); });
 test("HostPlaybackSessionFrontendTest.test_stale_variant_and_retry_accept_authority_without_success_ownership", async () => { const instance = Object.create(HostPlaybackSessionFrontendTest); await instance.setUpClass(); await instance.test_stale_variant_and_retry_accept_authority_without_success_ownership(); });
 test("HostPlaybackSessionFrontendTest.test_session_state_machine_owns_one_exact_pair", async () => { const instance = Object.create(HostPlaybackSessionFrontendTest); await instance.setUpClass(); await instance.test_session_state_machine_owns_one_exact_pair(); });
 test("HostPlaybackSessionFrontendTest.test_exact_retirement_acknowledges_once_after_media_detachment", async () => { const instance = Object.create(HostPlaybackSessionFrontendTest); await instance.setUpClass(); await instance.test_exact_retirement_acknowledges_once_after_media_detachment(); });

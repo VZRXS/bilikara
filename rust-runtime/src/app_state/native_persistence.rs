@@ -866,6 +866,53 @@ mod tests {
     }
 
     #[test]
+    fn defer_current_storage_failure_retains_both_songs_and_can_retry() {
+        let directory = TestDirectory::new();
+        let mut state = AppState::default();
+        snapshot(state.initialize_native(&directory.0, seed()));
+        for id in ["a", "b"] {
+            snapshot(state.execute(AppStateRequest::AddItem {
+                schema_version: 1,
+                item: item(id),
+                position: "tail".into(),
+                requester_name: "Alice".into(),
+                requester_user_id: None,
+                reset_av_delay: false,
+                allow_repeat: true,
+                now: 11.0,
+            }));
+        }
+        let before = snapshot(state.execute(AppStateRequest::Snapshot { schema_version: 1 }));
+        let original = before.current_item.as_ref().unwrap();
+        let command = AppStateRequest::DeferCurrentItem {
+            schema_version: 1,
+            item_id: original.id.clone(),
+            expected_item_incarnation_id: original.item_incarnation_id.clone(),
+            expected_playback_generation: before.playback_generation,
+            expected_playlist_item_ids: vec!["b".into()],
+            target_index: 0,
+            reset_av_delay: false,
+            now: 12.0,
+        };
+        let pending = directory.0.join("host-state.pending");
+        fs::create_dir(&pending).unwrap();
+        assert_eq!(
+            state.execute(command.clone()).error().unwrap().kind,
+            "native_storage_invalid"
+        );
+        assert_eq!(
+            snapshot(state.execute(AppStateRequest::Snapshot { schema_version: 1 })),
+            before
+        );
+        assert_eq!(saved(&directory).current_item.unwrap().id, "a");
+        fs::remove_dir(pending).unwrap();
+        let after = snapshot(state.execute(command));
+        assert_eq!(after.current_item.unwrap().id, "b");
+        assert_eq!(after.playlist[0].id, "a");
+        assert_eq!(saved(&directory).playlist[0].id, "a");
+    }
+
+    #[test]
     fn failed_replace_keeps_old_checkpoint_state_and_identity_allocator_then_allows_retry() {
         let directory = TestDirectory::new();
         let mut state = AppState::default();

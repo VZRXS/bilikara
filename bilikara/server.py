@@ -763,6 +763,17 @@ class AppContext:
         self.store.resort_playlist_by_cycle()
         self.cache_manager.sync_with_playlist()
 
+    def defer_current_item(self, body: dict) -> None:
+        self.store.defer_current_item(
+            body.get("item_id"),
+            expected_item_incarnation_id=body.get("expected_item_incarnation_id"),
+            expected_playback_generation=body.get("playback_generation"),
+            expected_playlist_item_ids=body.get("expected_playlist_item_ids"),
+            target_index=body.get("index"),
+            reset_av_delay=self.cache_manager.reset_offset_on_next,
+        )
+        self.cache_manager.sync_with_playlist()
+
     def move_to_next(self, item_id: str) -> None:
         self.store.move_to_next(item_id)
         self.cache_manager.sync_with_playlist()
@@ -2274,6 +2285,11 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 )
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
+            if route == "/api/playlist/defer-current":
+                self._require_id(body)
+                CONTEXT.defer_current_item(body)
+                self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
             if route == "/api/playlist/resort":
                 CONTEXT.resort_playlist_by_cycle()
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
@@ -2402,6 +2418,13 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 )
                 CONTEXT._notify_state_changed()
                 self._write_json({"ok": True, "data": {**gatcha_pool_config_detail(), **result}})
+                return
+            if route == "/api/gatcha/source/remove":
+                from .bilibili import remove_gatcha_source
+                result = remove_gatcha_source(
+                    body.get("source"), body.get("id"), on_done=CONTEXT._notify_state_changed,
+                )
+                self._write_json({"ok": True, "data": result})
                 return
             if route == "/api/gatcha/uids/add":
                 result = add_gatcha_uid(

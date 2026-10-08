@@ -14,6 +14,7 @@
   <link rel="stylesheet" href="/remote-access.css" />
   <link rel="stylesheet" href="/host-layout.css" />
   <link rel="stylesheet" href="/status-indicators.css" />
+  <link rel="stylesheet" href="/source-removal.css" />
   <link rel="stylesheet" href="/volume-control.css" />
   <link rel="stylesheet" href="/request-tabs.css" />
   <link rel="stylesheet" href="/ui-surfaces.css" />
@@ -1409,12 +1410,15 @@
         <div class="list-stage" id="list-stage">
           <section class="queue-current hidden" id="queue-current">
               <div class="queue-current-side">
-                <div class="queue-current-progress-badge" id="queue-current-progress-badge">
+                <div class="cache-advanced-info queue-current-drag-info">
+                <button type="button" class="queue-current-progress-badge queue-current-drag-handle cache-advanced-info-button" id="queue-current-progress-badge"
+                  disabled aria-expanded="false" aria-describedby="queue-defer-help"
+                  aria-label="拖回待播队列（实验）" data-i18n-aria-label="queue.deferCurrent">
                   <svg class="badge-loader circular" viewBox="25 25 50 50">
                     <circle class="path-fancy" cx="50" cy="50" r="20" fill="none" stroke-width="1.5"
                       stroke-miterlimit="10" pathLength="100" />
                   </svg>
-                  <div class="queue-current-icon-wrap" id="queue-current-icon-wrap">
+                  <span class="queue-current-icon-wrap" id="queue-current-icon-wrap">
                     <svg class="playing-icon icon-play" viewBox="0 0 24 24" fill="currentColor">
                       <path d="M8 5v14l11-7z" />
                     </svg>
@@ -1426,7 +1430,9 @@
                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                       <path d="M18 6L6 18M6 6l12 12" />
                     </svg>
-                  </div>
+                  </span>
+                </button>
+                <span class="cache-advanced-tooltip" id="queue-defer-help" role="tooltip" data-i18n="queue.deferHint">实验功能：将此徽标拖到待播队列的位置，立即播放下一首；当前歌曲保留在该位置，之后从头播放。</span>
                 </div>
                 <button type="button" class="cache-retry-button queue-current-retry hidden" id="queue-current-retry"
                   title="重新下载缓存" aria-label="重新下载缓存" data-i18n-title="cache.retryDownload"
@@ -1894,6 +1900,7 @@
   <script src="/pitch-player.js" defer></script>
   <script src="/export-guard.js" defer></script>
   <script src="/source-status.js" defer></script>
+  <script src="/source-removal.js" defer></script>
   <script src="/browse-search.js" defer></script>
   <script src="/export-download.js" defer></script>
   <script src="/diagnostics-copy.js" defer></script>
@@ -1909,6 +1916,7 @@
   <script src="/incoming-request.js"></script>
   <script src="/presentation-feedback.js"></script>
   <script src="/fullscreen-controls.js"></script>
+  <script src="/queue-defer.js" defer></script>
   <script src="/session-user-editor.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/desktop-platform.js" defer></script>

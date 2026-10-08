@@ -41,6 +41,8 @@ $files = @(
     "song-detail.js",
     "status-indicators.css",
     "source-status.js",
+    "source-removal.js",
+    "source-removal.css",
     "volume-control.css",
     "volume-control.js"
 )
