@@ -1,7 +1,7 @@
 "use strict";
 // Real HTTP -> scheduler -> supervised child -> media -> artifact -> AppState.
 const assert=require("node:assert/strict"),fs=require("node:fs/promises"),path=require("node:path");
-module.exports=async({api,okay,capture,browser,evidence,directory,getPage,restart,shutdown})=>{
+async function runCase({api,okay,capture,browser,evidence,directory,getPage,restart,shutdown}){
   const root=process.env.BILIKARA_BBDOWN_FIXTURE_ROOT;
   let page=getPage();const errors=[],warnings=[];
   function watch(){page.on("pageerror",e=>errors.push(e.message));page.on("console",m=>{
@@ -128,27 +128,34 @@ module.exports=async({api,okay,capture,browser,evidence,directory,getPage,restar
   assert.equal((await current()).cache_status,'failed');
   const outcomes=[];
   for(const failure of ["missing","invalid","exit"]){
-    await mode(failure);const beforeFiles=await starts(),before=beforeFiles.length;await retry();
+    await mode(failure);const beforeFiles=await starts(),before=beforeFiles.length,beforeItem=await current();await retry();
     await until(async()=> (await starts()).length>before && (await current()).cache_status==="failed" && (await running()).length===0);
     await reaped(await running());await sleep(1800);
     const after=(await starts()).length;
-    if (after-before>2) {
-      const added=(await starts()).filter(file=>!beforeFiles.includes(file));
-      const children=await Promise.all(added.slice(0,8).map(async file=>({file,receipt:await fs.readFile(path.join(root,file),'utf8')})));
-      await fs.writeFile(path.join(evidence,'bbdown-unexpected-retries.json'),JSON.stringify({failure,children,current:await current()},null,2));
+    const added=(await starts()).filter(file=>!beforeFiles.includes(file));
+    const receipt=await require('./bbdown_fixture_evidence.cjs').retryEvidence({root,directory,failure,before:beforeItem,after:await current(),files:added});
+    if (after-before>2 || after===before) {
+      await fs.writeFile(path.join(evidence,'bbdown-unexpected-retries.json'),JSON.stringify(receipt,null,2));
+      console.error('BBDown retry diagnostics: '+JSON.stringify(receipt));
     }
     assert.ok(after>before && after-before<=2,`${failure}: retry explosion ${after-before}`);
+    assert.deepEqual(receipt.children.map(child=>child.kind).sort(),['audio','video']);
+    assert.ok(receipt.children.every(child=>child.mode===failure && child.page===1 && child.item_incarnation_id===beforeItem.item_incarnation_id));
+    assert.equal(new Set(receipt.children.map(child=>child.artifact_set_id)).size,1,'both tracks belong to the same admitted retry');
     for(let n=0;n<5;n++)await okay("/api/state");await sleep(1000);assert.equal((await starts()).length,after);
     const failed=await current();assert.ok(!failed.cache_message.includes("synthetic-secret-output"));
-    outcomes.push({failure,children:after-before,message:failed.cache_message});
+    outcomes.push({failure,children:after-before,message:failed.cache_message,receipt});
   }
-  page=await failureContext.newPage();watch();await page.goto(failureUrl);
-  await page.waitForFunction(()=>state.hasValidStateResponse);
-  await capture("bbdown-failed-desktop.png",page);
   const beforeUnsupported=(await starts()).length;
   await fetch(process.env.DESKTOP_FIXTURE_CONTROL+"/fixture/bbdown-no-dash");
   await mode("success");await retry();await until(async()=> (await current()).cache_status==="failed");
   await sleep(1500);assert.equal((await starts()).length,beforeUnsupported,"Unsupported segmented source must not start BBDown's legacy merger");
+  // A reopened player reports capabilities and may legitimately request a
+  // preference replacement. Keep it closed through the no-new-child rejection
+  // assertion, just as through the explicit failed-attempt bounds above.
+  page=await failureContext.newPage();watch();await page.goto(failureUrl);
+  await page.waitForFunction(()=>state.hasValidStateResponse);
+  await capture("bbdown-failed-desktop.png",page);
   await fetch(process.env.DESKTOP_FIXTURE_CONTROL+"/fixture/bbdown-dash");
   // Retry supersedes an active attempt. Old results cannot become ready.
   await mode("slow");await retry();await until(async()=> (await running()).length>=2);
@@ -195,13 +202,9 @@ module.exports=async({api,okay,capture,browser,evidence,directory,getPage,restar
   await until(async()=> (await running()).length>=2);const removedPids=await running();
   await okay("/api/playlist/remove",{item_id:queued.id});await reaped(removedPids);await sleep(1000);
   assert.ok(!(await okay("/api/state")).playlist.some(v=>v.id===queued.id));
-  await until(async()=>{
-    for(const source of ["native","bbdown","downkyi"]){
-      try{await fs.stat(path.join(directory,"logs",source,queued.id+".log"));return false;}
-      catch(error){if(error.code!=="ENOENT")throw error;}
-    }
-    return true;
-  });
+  const removedLog=path.join(directory,"logs/bbdown",queued.id+".log");
+  const removedLogBytes=await fs.readFile(removedLog);
+  assert.ok(removedLogBytes.length>0,"Removed songs retain diagnostics during the Host run");
   // Multi-page command selection preserves audio variant ordering and identity.
   await mode("success");
   await okay("/api/playlist/add",{url:"https://www.bilibili.com/video/BV1xx411c7mE",requester_name:"Alice",selected_video_page:1,selected_audio_pages:[1,2]});
@@ -217,6 +220,7 @@ module.exports=async({api,okay,capture,browser,evidence,directory,getPage,restar
   await capture("bbdown-remote-375.png",remote);await remoteContext.close();
   await mode("slow");await retry();await until(async()=> (await running()).length>=2);const shutdownPids=await running();
   await shutdown();await reaped(shutdownPids);
+  await assert.rejects(fs.stat(removedLog),{code:"ENOENT"},"Shutdown clears the retained song log");
   // A missing configured tool on restart must not silently substitute Native.
   process.env.BILIKARA_BBDOWN_ACTIVE=path.join(root,"missing-BBDown");
   // restart's common stop is idempotently skipped by the harness after shutdown.
@@ -227,4 +231,24 @@ module.exports=async({api,okay,capture,browser,evidence,directory,getPage,restar
   assert.ok(!/synthetic-secret-output|synthetic-import|synthetic-csrf/.test(initialLog));
   assert.deepEqual(errors,[]);
   await fs.writeFile(path.join(evidence,"bbdown-summary.json"),JSON.stringify({passed:true,fixtureChild:true,providerDownloadTested:false,pythonBackend:false,applicationPathEmpty:true,choices,success:true,hiresFlac:true,multiPageAudio:true,sourceReplacement:true,lateOldStagingResult:true,nonDashRejectedBeforeChild:true,userRetry:true,disablement:true,windowShrink:true,removal:true,shutdown:true,unavailable:true,outcomes,consoleErrors:errors,browserWarnings:warnings},null,2));
+}
+
+module.exports=async options=>{
+  try {return await runCase(options);}
+  catch(error){
+    // Surface only bounded synthetic identities before either enclosing harness
+    // removes its working directories. Cover later rejection/cleanup failures too.
+    try {
+      const root=process.env.BILIKARA_BBDOWN_FIXTURE_ROOT;
+      const files=(await fs.readdir(root)).filter(file=>/^\d+\.started$/.test(file))
+        .sort((a,b)=>Number(a.split('.')[0])-Number(b.split('.')[0]));
+      let after;
+      try {after=(await options.okay('/api/state')).current_item;}catch{}
+      const receipt=await require('./bbdown_fixture_evidence.cjs').retryEvidence({root,directory:options.directory,failure:'case',after,files:files.slice(-8)});
+      receipt.total_children=files.length;
+      await fs.writeFile(path.join(options.evidence,'bbdown-failure-children.json'),JSON.stringify(receipt,null,2));
+      console.error('BBDown failure diagnostics: '+JSON.stringify(receipt));
+    }catch{console.error('BBDown child diagnostics unavailable; original failure retained');}
+    throw error;
+  }
 };

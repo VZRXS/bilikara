@@ -953,37 +953,48 @@ impl CacheRuntime {
             if self.completed_artifacts_ready(&job, cache_root) {
                 continue;
             }
-            let manual = {
-                let state = lock_state(&self.shared);
-                state.manual_front.as_ref().is_some_and(|(id, generation)| {
-                    id == &job.item_id
-                        && state.jobs.get(id).is_some_and(|queued| {
-                            queued.generation == *generation
-                                && queued.spec.item_incarnation_id == job.item_incarnation_id
-                        })
-                })
-            };
+            let mut state = lock_state(&self.shared);
+            // A worker can fail after the Host reads its pending/downloading
+            // projection, but before this admission. Keep that failure terminal
+            // until explicit Retry or a different item incarnation. Check and
+            // submit under the same lock; a second unlocked snapshot still races.
+            if !state.jobs.contains_key(&job.item_id)
+                && !state.active.contains_key(&job.item_id)
+                && state
+                    .terminal_events
+                    .get(&job.item_id)
+                    .is_some_and(|event| {
+                        event.kind == "failed"
+                            && event.payload["item_incarnation_id"] == job.item_incarnation_id
+                    })
+            {
+                continue;
+            }
+            let manual = state.manual_front.as_ref().is_some_and(|(id, generation)| {
+                id == &job.item_id
+                    && state.jobs.get(id).is_some_and(|queued| {
+                        queued.generation == *generation
+                            && queued.spec.item_incarnation_id == job.item_incarnation_id
+                    })
+            });
             let replace = !manual && !preempt_item_id.is_empty() && job.item_id == preempt_item_id;
-            let attempt = if replace {
-                let mut state = lock_state(&self.shared);
-                let attempt = Self::submit_locked(
-                    &mut state,
-                    job.clone(),
-                    CacheJobPriority::Normal,
-                    true,
-                    |id, incarnation| self.reserve_attempt(id, incarnation),
-                )?;
+            let attempt = Self::submit_locked(
+                &mut state,
+                job.clone(),
+                CacheJobPriority::Normal,
+                replace,
+                |id, incarnation| self.reserve_attempt(id, incarnation),
+            )?;
+            if replace {
                 Self::queued_message_locked(
                     &mut state,
                     &job.item_id,
                     attempt.generation,
                     &format!("等待优先缓存: {priority_title}"),
                 );
-                self.shared.wake.notify_all();
-                attempt
-            } else {
-                self.submit(job.clone(), CacheJobPriority::Normal, false)?
-            };
+            }
+            drop(state);
+            self.shared.wake.notify_all();
             generations.insert(job.item_id.clone(), json!(attempt.generation));
             cache_attempt_tokens.insert(job.item_id, json!(attempt.cache_attempt_token));
         }
@@ -1434,16 +1445,20 @@ fn settle_job_locked(state: &mut RuntimeState, job: &QueuedJob, outcome: JobOutc
             "cancelled",
             json!({"reason": cancellation_reason}),
         ),
-        JobOutcome::Failed(error) => push_event_locked(
-            state,
-            job.generation,
-            job.cache_attempt_token,
-            &job.spec.item_id,
-            "failed",
-            serde_json::to_value(&error).unwrap_or_else(|_| {
+        JobOutcome::Failed(error) => {
+            let mut payload = serde_json::to_value(&error).unwrap_or_else(|_| {
                 json!({"kind": "invalid_response", "message": "cache error serialization failed"})
-            }),
-        ),
+            });
+            payload["item_incarnation_id"] = json!(job.reservation.item_incarnation_id);
+            push_event_locked(
+                state,
+                job.generation,
+                job.cache_attempt_token,
+                &job.spec.item_id,
+                "failed",
+                payload,
+            );
+        }
     }
 }
 
@@ -4157,6 +4172,104 @@ pathlib.Path(name).write_bytes(b'truncated' if n == 1 else (root/'valid.mp4').re
         assert_eq!(result["snapshot"]["pending_ids"], json!([]));
         runtime.shutdown();
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sync_does_not_readmit_a_failure_before_host_event_projection() {
+        let root = publication_root("failed-before-projection");
+        fs::create_dir_all(&root).unwrap();
+        let reserved = Arc::new(AtomicU64::new(0));
+        let counter = Arc::clone(&reserved);
+        let runtime = CacheRuntime::new_without_workers(Arc::new(move |id, incarnation| {
+            let token = counter.fetch_add(1, Ordering::Relaxed) + 1;
+            Ok(reservation_for(token, id, incarnation))
+        }));
+        let spec = job(&root);
+        let first = runtime
+            .submit(spec.clone(), CacheJobPriority::Normal, false)
+            .unwrap();
+        {
+            let mut state = lock_state(&runtime.shared);
+            let queued = state.jobs[&spec.item_id].clone();
+            remove_queued_locked(&mut state, &spec.item_id);
+            settle_job_locked(
+                &mut state,
+                &queued,
+                JobOutcome::Failed(CacheRuntimeError::new("subprocess", "fixture exit 7")),
+            );
+        }
+        // The pump read a pending/downloading projection before the worker's
+        // failure. Sync must not interpret that stale job as another admission.
+        for _ in 0..3 {
+            let result = runtime
+                .sync(
+                    &root,
+                    current_item_incarnations(&spec),
+                    vec![spec.item_id.clone()],
+                    vec![spec.clone()],
+                    vec![spec.item_id.clone()],
+                    "",
+                )
+                .unwrap();
+            assert_eq!(
+                reserved.load(Ordering::Relaxed),
+                1,
+                "automatic Sync re-admitted a terminal failed attempt"
+            );
+            assert_eq!(result["generations"], json!({}));
+            assert_eq!(result["snapshot"]["pending_ids"], json!([]));
+        }
+        let retry = runtime
+            .submit(spec.clone(), CacheJobPriority::Urgent, true)
+            .unwrap();
+        assert!(retry.generation > first.generation);
+        assert_eq!(
+            reserved.load(Ordering::Relaxed),
+            2,
+            "explicit retry remains allowed"
+        );
+        let coalesced = runtime
+            .sync(
+                &root,
+                current_item_incarnations(&spec),
+                vec![spec.item_id.clone()],
+                vec![spec.clone()],
+                vec![spec.item_id.clone()],
+                "",
+            )
+            .unwrap();
+        assert_eq!(coalesced["generations"][&spec.item_id], retry.generation);
+        assert_eq!(reserved.load(Ordering::Relaxed), 2);
+        {
+            let mut state = lock_state(&runtime.shared);
+            let queued = state.jobs[&spec.item_id].clone();
+            remove_queued_locked(&mut state, &spec.item_id);
+            settle_job_locked(
+                &mut state,
+                &queued,
+                JobOutcome::Failed(CacheRuntimeError::new("subprocess", "fixture exit 7")),
+            );
+        }
+        let mut replacement = spec.clone();
+        replacement.item_incarnation_id = reservation(99).item_incarnation_id;
+        let result = runtime
+            .sync(
+                &root,
+                current_item_incarnations(&replacement),
+                vec![spec.item_id.clone()],
+                vec![replacement],
+                vec![spec.item_id.clone()],
+                "",
+            )
+            .unwrap();
+        assert_eq!(
+            reserved.load(Ordering::Relaxed),
+            3,
+            "reusing an item ID does not inherit its old incarnation's failure"
+        );
+        assert!(result["generations"][&spec.item_id].as_u64().unwrap() > retry.generation);
+        runtime.shutdown();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
