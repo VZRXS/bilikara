@@ -49,6 +49,15 @@ Room lifetimes follow the shared 1–24-hour UI (default 12) and the expiration
 returned by the deployed signaling Worker. This work does not deploy a Worker.
 The catalog Worker must support the documented cursor-pagination contract.
 
+The APK bundles the shared libav/Signalsmith companion, built with NDK
+27.0.12077973 for the selected 64-bit ABI. Startup admits only the installed
+`ApplicationInfo.nativeLibraryDir` companion and validates L0/L1 capability
+before starting Host workers; missing or incompatible libraries fail explicitly.
+Local playback continues in WebView. Native libraries, licenses and the complete
+rebuild kit are assembled by `app/media.gradle.kts`; see the
+[media rebuild contract](../media-libav/REBUILD.md#android). This establishes
+software availability, not physical receiver qualification.
+
 ## Android System WebView compatibility
 
 Android's `minSdk = 24` describes the native OS API floor, not the installed
@@ -163,3 +172,13 @@ test installation expecting its local data to transfer into a new release app.
 Implementation and acceptance here make no production D1 queries or fabricated
 song/rating submissions. Hardware and real release-pipeline results must be
 recorded separately from local regression results.
+
+### 实验性网络媒体播放的 Android 资源
+
+电视输出仍由共享 Rust OutputController 和 libav L1 执行。选择输出必须在 Host 明确确认；Android shell 只根据已提交的状态提供媒体播放前台服务、通知与系统资源。服务不导出，声明 `mediaPlayback`、`FOREGROUND_SERVICE` 和 Android 14+ 的 `FOREGROUND_SERVICE_MEDIA_PLAYBACK`，不随开机或系统重启自动恢复。首次开始要求 Activity 在前台；已有前台服务可在暂停后接受 Remote 恢复。通知中的停止或服务被系统关闭会停止网络输出，不恢复本地播放。
+
+播放时持有 PARTIAL_WAKE_LOCK、Wi-Fi 低延迟锁（API 29+；更早使用 HIGH_PERF）和多播锁；暂停时释放这些锁，保留前台服务以供显式恢复；退出输出、空队列、错误和 Host 关闭释放服务。低延迟 Wi-Fi 锁仅在连接 Wi-Fi、屏幕亮起且应用前台时由系统启用，不能将持锁视为后台网络保证。API 29+ 每 15 秒采样热状态，API 30+ 采样 thermal headroom；未知/NaN 投影为 null。达到 CRITICAL 时停止输出并要求降温后显式重试。热状态不构成设备性能验收。
+
+当前 targetSdk 36 使用 INTERNET 获得局域网访问；按照 Android 官方要求，尚不声明或请求 targetSdk 37 的 ACCESS_LOCAL_NETWORK。升级目标 SDK 时必须重新检查局域网权限流程。Android 的 `HostMediaPlaybackTest` instrumentation 验证实际服务声明、前台准入、锁的获取/释放与暂停恢复；需要连接设备执行。没有设备时只能报告 APK/测试编译，不得以桌面或 Kotlin 单元测试替代 G4 后台、网络切换、两小时播放与温升记录。
+
+参考：[前台服务类型](https://developer.android.com/develop/background-work/services/fgs/service-types)、[Wi-Fi 锁](https://developer.android.com/reference/android/net/wifi/WifiManager)、[热状态采样](https://developer.android.com/reference/android/os/PowerManager#getThermalHeadroom(int))、[局域网权限](https://developer.android.com/privacy-and-security/local-network-permission)。

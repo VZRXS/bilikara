@@ -1,6 +1,7 @@
 /* Shared panel surfaces; Remote modal backgrounds provide extra separation. */
 /* Remote queue numbering and presentation previews share one badge surface. */
 :root {
+  --settings-group-bg: #ffffff;
   --queue-order-bg: rgba(255, 255, 255, 0.96);
   --queue-order-border: 1.4px solid rgba(109, 98, 88, 0.18);
   --queue-order-color: rgba(91, 78, 69, 0.92);
@@ -9,6 +10,7 @@
   --queue-ready-shadow: 0 0 0 3px rgba(43, 123, 96, 0.07);
 }
 :root[data-theme="dark"] {
+  --settings-group-bg: #302925;
   --queue-order-bg: rgba(30, 26, 23, 0.96);
   --queue-order-border: 1.4px solid rgba(246, 241, 235, 0.15);
   --queue-order-color: var(--ink);
@@ -17,6 +19,7 @@
   --queue-ready-shadow: 0 0 0 3px rgba(45, 212, 191, 0.1);
 }
 :root[data-theme="blue"] {
+  --settings-group-bg: #1e293b;
   --queue-order-bg: rgba(8, 18, 32, 0.96);
   --queue-order-border: 1.4px solid rgba(148, 202, 233, 0.18);
   --queue-order-color: var(--ink);
@@ -427,8 +430,11 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   font-size: 16px;
 }
 
+/* Experimental markers share one quiet inline label on both clients. */
+:root .experimental-label { color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.2; white-space: nowrap; }
+
 /* Small playback setting headings share one quiet label treatment. */
-:root :is(.av-sync-copy .section-tag, .volume-copy .section-tag,
+:root :is(.media-output-heading, .av-sync-copy .section-tag, .volume-copy .section-tag,
   .remote-setting-header .panel-tag, .automatic-volume-row [data-auto-label]) {
   color: var(--muted);
   font-size: 12px;

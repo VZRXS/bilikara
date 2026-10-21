@@ -9,6 +9,8 @@ import androidx.annotation.Keep
 class MainActivity : TauriActivity() {
   companion object {
     @JvmStatic @Keep
+    fun updateNetworkPlayback(context: android.content.Context, mode: Int): Int = HostMediaPlayback.update(context, mode)
+    @JvmStatic @Keep
     fun renderRemoteExport(spec: String, destination: String): Int = PlaylistExport.renderRemote(spec, destination)
   }
   private val webViewDiagnostics = HostWebViewDiagnostics(this)
@@ -51,6 +53,7 @@ class MainActivity : TauriActivity() {
 
   override fun onResume() {
     super.onResume()
+    HostMediaPlayback.foreground = true
     hostPresentation.setForeground(true)
   }
 
@@ -60,6 +63,7 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onPause() {
+    HostMediaPlayback.foreground = false
     hostPresentation.setForeground(false)
     super.onPause()
   }

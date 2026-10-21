@@ -190,6 +190,42 @@ static void windows_long_path_tests(void) {
 }
 #endif
 
+/* Exercise the real bounded PCM history across multiple wraps and reads. */
+static void l1_history_tests(void) {
+    BmL1Request request={.tracks=1};
+    L1Audio audio={.request=&request};
+    L1Source *s=&audio.sources[0];
+    s->cache=av_malloc_array(L1_CACHE*2,sizeof(float));
+    s->converted=av_malloc_array(L1_CONVERT*2,sizeof(float));
+    assert(s->cache && s->converted);
+    for(int64_t start=0;start<L1_CACHE*3;start+=10001) {
+        for(int n=0;n<10001;n++) {
+            s->converted[n*2]=(float)(start+n);
+            s->converted[n*2+1]=-(float)(start+n);
+        }
+        assert(l1_append(s,start,10001)==0);
+        assert(s->count<=L1_CACHE);
+    }
+    s->done=1; /* The declared stream has ended: reads must not seek forward. */
+    float samples[16384*2];
+    int64_t end=s->base+s->count;
+    for(int64_t start=s->base;start+16384<end;start+=8191) {
+        assert(l1_read(&audio,0,start,16384,samples)==BM_OK);
+        for(int n=0;n<16384;n++) {
+            assert(samples[n*2]==(float)(start+n));
+            assert(samples[n*2+1]==-(float)(start+n));
+        }
+    }
+    assert(l1_read(&audio,0,end-32,64,samples)==BM_OK);
+    for(int n=0;n<64;n++) assert(samples[n*2]==(n<32?(float)(end-32+n):0));
+    assert(l1_read(&audio,0,end+L1_CACHE,64,samples)==BM_OK);
+    for(int n=0;n<128;n++) assert(samples[n]==0);
+    assert(l1_read(&audio,1,0,64,samples)==BM_INVALID_REQUEST);
+    s->converted[0]=NAN;
+    assert(l1_append(s,end,1)==AVERROR_INVALIDDATA);
+    av_free(s->cache);av_free(s->converted);
+}
+
 int main(void) {
     assert(flac_time_matches(95856, (AVRational){1, 96000}, 96000, 96000));
     assert(flac_time_matches(95712, (AVRational){1, 96000}, 96000, 96000));
@@ -257,6 +293,7 @@ int main(void) {
     assert(reopen_staging(context, NULL, output.path, AVIO_FLAG_WRITE, NULL) == AVERROR(EACCES));
     assert(output.denied_open);
     avformat_free_context(context);
-    puts("shim: 4 groups passed (error mapping, negotiation, cancellation/cleanup, subordinate-open denial)");
+    l1_history_tests();
+    puts("shim: 5 groups passed (error mapping, negotiation, cancellation/cleanup, subordinate-open denial, bounded L1 PCM history)");
     return 0;
 }

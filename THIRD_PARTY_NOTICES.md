@@ -65,6 +65,17 @@ bundled in the desktop product.
 - The source README and `scripts/vendor_signalsmith.mjs` identify and reproduce
   the JavaScript lifecycle adaptation. The compiled DSP is unchanged.
 
+### Native media output DSP
+
+The optional libav companion also compiles the native C++ Signalsmith Stretch
+1.3.2 source from that same commit. It uses Signalsmith Linear 0.6.6, commit
+`7bb1c8f36794d6980080ce817c91f8da8fe56a66`, under MIT
+([upstream](https://github.com/Signalsmith-Audio/linear)). Source headers, both
+licenses and exact Git/SHA-256 provenance are in `media-libav/signalsmith/`
+and the desktop rebuild kit at
+`license/THIRD_PARTY_SOURCES/media-libav/signalsmith/`. The native wrapper is
+`media-libav/stretch.cpp`; the browser WebAssembly module remains independent.
+
 ## 1. bilikara
 
 - Project: bilikara
@@ -161,3 +172,32 @@ legacy product, rather than making them dependencies of the native package.
 These services are independent third parties. bilikara is not affiliated with, endorsed by, sponsored by, or officially associated with them.
 
 Use of these services may be subject to their own terms, rate limits, access restrictions, privacy policies, and legal requirements. bilikara does not grant any license to platform content, media, accounts, APIs, paid access, or service names and trademarks.
+
+## ChunK-Helper / Pure K room protocol integration
+
+The room QR validation, device-authorization SOAP flow and SSDP announcement
+format were adapted from [FMPeach/ChunK-Helper](https://github.com/FMPeach/ChunK-Helper),
+revision `e223fac61e3991689bf7ef7125297583f5b56b9e`.
+No upstream binary or .NET runtime is included.
+
+MIT License
+
+Copyright (c) 2026 键盘Office
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

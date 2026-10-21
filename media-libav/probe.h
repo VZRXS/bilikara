@@ -1,6 +1,9 @@
 #ifndef BILIKARA_LIBAV_PROBE_H
 #define BILIKARA_LIBAV_PROBE_H
 #include <stdint.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /* Project ABI v1. No FFmpeg types/enums cross this boundary.
  * All arrays have explicit byte lengths (UTF-8, no required trailing NUL).
@@ -158,10 +161,56 @@ BM_EXPORT uint32_t bm_copy_remux_mp4_v1(const BmRemuxRequest *request, BmRemuxRe
 BM_EXPORT uint32_t bm_flac_info_v1(uint32_t size, BmRemuxInfo *info);
 BM_EXPORT uint32_t bm_copy_flac_v1(const BmRemuxRequest *request, BmRemuxResult **result);
 BM_EXPORT void bm_remux_release_v1(BmRemuxResult *result);
+/* P1: optional, independently negotiated live H.264/AAC MPEG-TS copy muxer.
+ * Descriptors/callback contexts remain borrowed until the synchronous call ends.
+ * visit receives bounded TS bytes in decode order; key marks the first bytes
+ * of a video random-access unit including fresh PAT/PMT. Nonzero cancels.
+ * No paths, network, process, encoder or application state in this interface. */
+typedef struct { uint32_t schema, request_size, result_size; } BmLiveInfo;
+typedef struct {
+    BmRequest video, audio;
+    int64_t start_us;
+    int32_t (*visit)(void *opaque, const uint8_t *bytes, uint32_t size,
+                     int64_t time_us, uint32_t key);
+    void *opaque;
+} BmLiveRequest;
+typedef struct { uint32_t status, complete; uint64_t packets, bytes; } BmLiveResult;
+BM_EXPORT uint32_t bm_live_info_v1(uint32_t size, BmLiveInfo *info);
+BM_EXPORT uint32_t bm_live_ts_v1(const BmLiveRequest *request, BmLiveResult *result);
+typedef struct {
+    uint32_t status, complete;
+    uint64_t packets[2];
+    int64_t first_dts[2], last_dts[2], min_pts[2], max_pts[2]; /* microseconds */
+} BmLiveCheck;
+BM_EXPORT uint32_t bm_live_check_v1(const BmRequest *request, uint32_t size, BmLiveCheck *result);
+/* Independently negotiated L1 ABI. Audio callbacks are synchronous, with
+ * bounded interleaved f32 stereo at 48 kHz. Source positions use sample units. */
+typedef int32_t (*BmAudioRead)(void *, uint32_t track, int64_t start, uint32_t frames, float *out);
+typedef int32_t (*BmAudioRender)(void *, BmAudioRead, void *decoder,
+                               int64_t source_us, int64_t frame, uint32_t frames, float *out);
+typedef struct {
+    BmLiveRequest live;
+    BmRequest audio[2];
+    uint32_t tracks;
+    BmAudioRender render;
+    void *opaque;
+} BmL1Request;
+BM_EXPORT uint32_t bm_l1_info_v1(uint32_t size, BmLiveInfo *info);
+BM_EXPORT uint32_t bm_live_l1_v1(const BmL1Request *request, BmLiveResult *result);
+/* Native Signalsmith voice, never Web Audio/WASM. All calls on owning thread. */
+BM_EXPORT void *bm_stretch_new_v1(void);
+BM_EXPORT void bm_stretch_free_v1(void *);
+BM_EXPORT uint32_t bm_stretch_latency_v1(void *);
+BM_EXPORT int32_t bm_stretch_prime_v1(void *, const float *input, uint32_t frames, float semitones);
+BM_EXPORT int32_t bm_stretch_process_v1(void *, const float *input, uint32_t input_frames,
+                                     float *output, uint32_t output_frames, float semitones);
 #if defined(_WIN32)
 /* Additive Windows adapter. Duplicate a borrowed read-only disk HANDLE into
  * the companion/FFmpeg shared /MD CRT; close only that owned descriptor. */
 BM_EXPORT int32_t bm_fd_from_handle_v1(void *handle);
 BM_EXPORT void bm_fd_close_v1(int32_t fd);
+#endif
+#ifdef __cplusplus
+}
 #endif
 #endif

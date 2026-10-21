@@ -17,6 +17,7 @@ async function artifact(args, name, test) {
 export const buildMediaDriver = () => artifact(['build', '--example', 'libav_metadata'], 'libav_metadata', false);
 export const buildCatalogMaintenance = () => artifact(['build', '--bin', 'bilikara-catalog-refresh'], 'bilikara-catalog-refresh', false);
 export const buildMediaTests = () => artifact(['test', '--lib', '--no-run'], 'bilikara_runtime', true);
+export const buildPurekTests = () => artifact(['test', '--features', 'native-host', '--lib', '--no-run'], 'bilikara_runtime', true);
 export const buildNativeHost = () => artifact(['build', '--features', 'native-host', '--bin', 'bilikara-desktop-host'], 'bilikara-desktop-host', false);
 export const buildNativeHostHttp = () => artifact(['test', '--features', 'native-host', '--test', 'native_host_http', '--no-run'], 'native_host_http', true);
 export const buildNativeAlpha = () => artifact(['build', '--features', 'native-host', '--example', 'native_host_alpha'], 'native_host_alpha', false);

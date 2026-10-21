@@ -398,7 +398,7 @@ impl Import {
         }
         let pending = directory.join("desktop-import.pending");
         write_new(&pending, b"desktop-import-v1\n")?;
-        preferences::save(directory, &self.cache, None)
+        preferences::save(directory, &self.cache, None, false)
             .map_err(|_| failure("destination preferences"))?;
         if let Some(cookie) = self.cookie {
             desktop_login::save_cookie(&directory.join("BBDown.data"), &cookie)

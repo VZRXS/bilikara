@@ -29,7 +29,7 @@ impl tokio::io::AsyncRead for LeasedReader {
     }
 }
 
-fn safe_relative(value: &str) -> Option<PathBuf> {
+pub(super) fn safe_relative(value: &str) -> Option<PathBuf> {
     if value.is_empty() || value.contains(['\\', '%', '\0']) || value.starts_with('/') {
         return None;
     }

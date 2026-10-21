@@ -382,6 +382,9 @@ cargo build --release --locked
 cd ..
 
 # 1c. Desktop Construction Contracts (Node 24, pinned host-native xtask)
+# Native feature coverage includes the Pure K receiver probe and AppState leases.
+cargo clippy --manifest-path rust-runtime/Cargo.toml --features native-host --all-targets --locked -- -D warnings
+cargo test --manifest-path rust-runtime/Cargo.toml --features native-host --locked
 npm run test:desktop-build
 # Shell wrapper checks; recording commands, not library qualification
 npm run test:libav-wrapper
@@ -390,6 +393,19 @@ BILIKARA_TEST_LIBAV_COMPANION=/absolute/prefix/bin/libbilikara_media_libav.so np
 npm run test:frontend
 # Rendered Host/Remote interactions, including shared layout and audience relay
 npm run test:host-experience
+# Shared experimental output UI: desktop first, Android-sized browser and Remote.
+npm run test:media-output
+# Pure K Host-only API and rendered authorization/capability/retry controls.
+# Physical receiver gates remain separate; simulated receivers cannot qualify DLNA.
+npm run test:purek
+# Actual P1 companion is required; explicitly runs real L0 and native Host tests.
+BILIKARA_TEST_LIBAV_COMPANION=/absolute/prefix/bin/libbilikara_media_libav.so npm run test:purek-output
+# L1 requires the current C/C++ companion; executes native DSP, TS and Host edits.
+BILIKARA_TEST_LIBAV_COMPANION=/absolute/prefix/bin/libbilikara_media_libav.so npm run test:purek-l1
+# P3 controller exercises shared commands, URI replacement, receiver EOF and failure hold.
+BILIKARA_TEST_LIBAV_COMPANION=/absolute/prefix/bin/libbilikara_media_libav.so npm run test:purek-controller
+# Android shared media construction: actual pinned NDK and private C cache.
+BILIKARA_TEST_ANDROID_NDK=/absolute/sdk/ndk/27.0.12077973 BILIKARA_TEST_ANDROID_LIBAV_CACHE=/absolute/cache npm run test:android-libav
 npm run test:remote-sync
 npm run test:auxiliary
 npm run test:native-qr

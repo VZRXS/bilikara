@@ -1,6 +1,11 @@
 //! Application media routing. The optional backend is a capability, independent
 //! of mandatory AppState. No source selection, cache ownership, or retry loop.
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 use crate::MediaProbe;
 use crate::experimental_libav::{CopyProfile, ProbeError};
 use crate::media_backend::{self, MediaNormalizeRequest, MediaNormalizeResult, MediaPathRequest};
@@ -31,6 +36,11 @@ static CONFIGURATION: OnceLock<Configuration> = OnceLock::new();
 
 #[cfg(feature = "native-host")]
 pub(crate) fn loudness_companion() -> Option<&'static Path> {
+    capability(CONFIGURATION.get()?).ok()
+}
+
+#[cfg(feature = "native-host")]
+pub(crate) fn output_companion() -> Option<&'static Path> {
     capability(CONFIGURATION.get()?).ok()
 }
 
@@ -123,6 +133,7 @@ fn capability(config: &Configuration) -> Result<&Path, Reason> {
         return Err(Reason::LegacyOverride);
     }
     if !cfg!(any(
+        target_os = "android",
         target_os = "linux",
         target_os = "macos",
         target_os = "windows"
@@ -226,7 +237,12 @@ fn finish_cli(
     {
         return Err(failed(error("invalid_request"), d));
     }
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[cfg(any(
+        target_os = "android",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows"
+    ))]
     if q.operation == Operation::Validate
         && matches!(e.container.as_str(), "mp4" | "mov,mp4,m4a,3gp,3g2,mj2")
     {
@@ -339,7 +355,12 @@ fn inspect_with_config(
                     .and_then(|s| s.to_str())
                     .is_some_and(|s| ["mp4", "m4a"].iter().any(|ext| s.eq_ignore_ascii_case(ext)));
             if q.operation == Operation::PacketScan {
-                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+                #[cfg(any(
+                    target_os = "android",
+                    target_os = "linux",
+                    target_os = "macos",
+                    target_os = "windows"
+                ))]
                 if mp4 {
                     validate_mp4(&q.source, None, flag).map_err(|e| {
                         failed(
@@ -362,7 +383,12 @@ fn inspect_with_config(
             // The retained MP4 implementation already supplies stricter sample
             // traversal. Do it once; its own failure cannot launch a third backend.
             let d = diagnostic(q.operation.name(), Backend::PureRust, Some(reason));
-            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            #[cfg(any(
+                target_os = "android",
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "windows"
+            ))]
             if q.operation == Operation::Validate {
                 // The historical probe can enumerate samples without mdat.
                 // Strict validation still requires the accepted S3 envelope;
@@ -396,7 +422,12 @@ fn inspect_with_config(
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 fn inspect_libav(
     q: &InspectRequest,
     path: &Path,
@@ -465,7 +496,12 @@ fn inspect_libav(
         }],
     })
 }
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+)))]
 fn inspect_libav(
     _: &InspectRequest,
     _: &Path,
@@ -475,7 +511,12 @@ fn inspect_libav(
     Err(ProbeError::Unavailable("platform not packaged".into()))
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 fn validate_mp4(
     path: &Path,
     codec: Option<&str>,
@@ -581,7 +622,12 @@ fn normalize_with_config(
         .map_err(|e| failed(e.into(), d))
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 fn normalize_libav(
     q: &MediaNormalizeRequest,
     profile: CopyProfile,
@@ -672,7 +718,12 @@ fn normalize_libav(
         )?,
     })
 }
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+)))]
 fn normalize_libav(
     _: &MediaNormalizeRequest,
     _: CopyProfile,

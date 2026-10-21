@@ -779,6 +779,7 @@
       session_users_version: String(remoteState.session_users_version || ""),
       remote_session_id: identitySessionId(),
       automatic_volume: remoteState.automatic_volume || null,
+      media_output: remoteState.media_output || null,
       player_settings: {
         av_offset_ms: Number(remoteState.player_settings?.effective_av_delay_ms || 0),
         av_delay: {
@@ -1121,6 +1122,9 @@
         response = await request("playback.next", {
           playback_generation: Number(body.playback_generation),
         });
+      } else if (method === "POST" && url.pathname === "/api/player/output") {
+        if (Object.keys(body).length !== 1 || !["splice", "gradual"].includes(body.offset_mode)) return jsonResponse({ok:false,code:"host_only"},403);
+        response = await request("output.set_offset_mode", {offset_mode: body.offset_mode});
       } else if (method === "POST" && url.pathname === "/api/player/key-shift") {
         response = await request("player.set_key_shift", { key_shift: Number(body.key_shift || 0) });
       } else if (method === "POST" && url.pathname === "/api/player/volume") {

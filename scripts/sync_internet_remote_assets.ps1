@@ -30,6 +30,8 @@ $files = @(
     "remote-queue.css",
     "remote-queue.js",
     "remote-transport-client.js",
+    "media-output.js",
+    "media-output.css",
     "remote.css",
     "remote.html",
     "remote.js",

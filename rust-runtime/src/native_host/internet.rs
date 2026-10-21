@@ -9,6 +9,7 @@ fn public_state(app: &mut AppState) -> Result<Value, ApiError> {
         .native_execute(AppStateRequest::InternetRemoteState { schema_version: 1 })?["remote_state"]
         .clone();
     let snapshot = app.native_snapshot(false)?;
+    state["media_output"] = snapshot["media_output"].clone();
     state["song_ratings"] = snapshot["song_ratings"].clone();
     // Rating navigation needs only the current/previous plays. Explicitly
     // project public fields; catalog projection wraps arrays and omits eligibility.
@@ -211,6 +212,10 @@ fn effect(
     ];
     let result = match kind {
         "sync_cache" => return Ok(reply), // Native pump observes committed AppState.
+        "output_mode" => {
+            purek::controller::command(identity, &json!({"offset_mode":effect["offset_mode"]}))?;
+            return Ok(reply);
+        }
         "player_control" => {
             with_app(|app| app.native_control(identity, &effect, now()))?;
             return Ok(reply);

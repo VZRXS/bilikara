@@ -22,6 +22,8 @@
   <link rel="stylesheet" href="/ui-surfaces.css" />
   <link rel="stylesheet" href="/incoming-request.css" />
   <link rel="stylesheet" href="/announcements.css" />
+  <link rel="stylesheet" href="/purek-room.css" />
+  <link rel="stylesheet" href="/media-output.css" />
   <link rel="stylesheet" href="/webview-legacy.css" />
   <script src="/webview83.js"></script>
 </head>
@@ -317,6 +319,10 @@
               </div>
               <div class="presentation-display-list" id="presentation-host-display-list" aria-live="polite"></div>
             </div>
+            <div class="purek-output" id="purek-output" hidden>
+              <span id="purek-output-name"></span>
+              <button type="button" class="toolbar-button settings-tool-button" id="purek-output-manage" data-i18n="purek.manage">管理设备</button>
+            </div>
           </div>
         </div>
         <div class="status-chip" id="cache-settings">
@@ -546,6 +552,7 @@
               <h2 id="current-title">
                 <span id="current-title-text" class="current-title-text" data-i18n="player.noSong">还没有歌曲</span>
               </h2>
+              <div data-media-output="console" hidden></div>
             </div>
             <div class="stage-actions">
               <div class="fullscreen-action-control" id="player-fullscreen-control">
@@ -760,6 +767,7 @@
                   <span class="cache-advanced-tooltip" id="host-av-sync-info" role="tooltip"
                     data-i18n="player.avSyncHint">正数表示画面提前，负数表示画面延后。</span>
                 </span>
+                <span data-media-output-latency hidden></span>
               </div>
             </div>
             <div class="av-sync-controls">
@@ -1033,10 +1041,22 @@
                   </div>
                 </div>
               </div>
+            </section>
+            <section class="settings-section settings-section-card purek-settings" id="purek-settings" aria-labelledby="purek-title" hidden>
+              <div class="settings-section-heading purek-heading cache-contextual-info-region">
+                <h3 id="purek-title" data-i18n="purek.title">投屏设备</h3>
+                <span class="cache-advanced-info">
+                  <button type="button" class="cache-advanced-info-button" aria-expanded="false" aria-describedby="purek-info" data-i18n-aria-label="common.moreInfo" aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+                  <span class="cache-advanced-tooltip" id="purek-info" role="tooltip" data-i18n="purek.help">实验性功能。纯 K 使用房间投屏二维码并在微信中完成官方授权；普通 DLNA 使用局域网设备描述地址，无需纯 K 授权。</span>
+                </span>
+                <span class="experimental-label" data-i18n="purek.experimental">实验性</span>
+                <button type="button" class="toolbar-button cache-update-button settings-tool-button purek-primary" id="purek-open" data-i18n="purek.connectShort" data-i18n-aria-label="purek.connect" aria-label="连接设备">连接</button>
+              </div>
+              <div data-media-output="settings" hidden></div>
+            </section>
               <div class="cache-panel-footer">
                 <span class="cache-panel-version" id="cache-panel-version">bilikara</span>
               </div>
-            </section>
           </div>
         </section>
 
@@ -1926,6 +1946,53 @@
     </div>
   </div>
 
+  <div class="selection-modal hidden" id="purek-modal" role="dialog" aria-modal="true" aria-labelledby="purek-dialog-title">
+    <div class="selection-modal-card purek-card">
+      <div class="selection-modal-head">
+        <div class="purek-dialog-heading cache-contextual-info-region">
+          <h2 id="purek-dialog-title" data-i18n="purek.connectTitle">连接投屏设备</h2>
+          <span class="cache-advanced-info">
+            <button type="button" class="cache-advanced-info-button" id="purek-dialog-help" aria-expanded="false" aria-describedby="purek-dialog-info" data-i18n-aria-label="common.moreInfo" aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+            <span class="cache-advanced-tooltip" id="purek-dialog-info" role="tooltip">
+              <span id="purek-input-hint"><span data-i18n="purek.inputHint">连接设备所在 Wi-Fi，导入纯 K 投屏二维码，或粘贴二维码链接／DLNA 设备描述地址（如 http://192.168.1.10:8200/description.xml）。</span> <span id="purek-drop-hint" data-i18n="purek.dropHint">也可将二维码图片拖入此窗口。</span></span>
+              <span id="purek-auth-hint" data-i18n="purek.authHint" hidden>首次连接需要在微信中完成官方授权。完成后返回，点击“检查连接”。</span>
+              <span id="purek-output-details" hidden></span>
+              <span id="purek-output-hint" data-i18n="purek.outputHint" hidden>实验性媒体输出尚未通过实机验证。系统扩展显示器仍可从双屏菜单选择。</span>
+            </span>
+          </span>
+        </div>
+        <button type="button" class="banner-close" id="purek-close" data-i18n-aria-label="common.close" aria-label="关闭"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
+      </div>
+      <div class="purek-body">
+        <div id="purek-input-step">
+          <div class="purek-image-source" id="purek-image-source">
+            <div class="purek-image-actions">
+              <button type="button" class="toolbar-button purek-action" id="purek-camera" data-i18n="purek.camera" hidden>拍照识别</button>
+              <button type="button" class="toolbar-button purek-action" id="purek-import" data-i18n="purek.import">导入二维码图片</button>
+            </div>
+          </div>
+          <input type="file" accept="image/*" id="purek-image" hidden />
+          <input type="file" accept="image/*" capture="environment" id="purek-camera-image" hidden />
+          <input id="purek-url" aria-label="二维码链接或 DLNA 描述地址" data-i18n-aria-label="purek.qrUrl" class="host-text-input" type="url" autocomplete="off" spellcheck="false" maxlength="32768" data-i18n-placeholder="purek.paste" placeholder="二维码链接或 DLNA 设备描述地址" />
+        </div>
+        <div id="purek-authorization-step" hidden>
+          <div class="purek-room-line">
+            <div class="purek-room-title"><strong id="purek-room-name"></strong><span id="purek-output-status" role="status" hidden></span></div>
+            <button type="button" class="toolbar-button purek-action" id="purek-reidentify" data-i18n="purek.reidentify">重新识别</button>
+            <button type="button" class="toolbar-button purek-action" id="purek-probe" data-i18n="purek.output.probe" hidden>重新检查</button>
+          </div>
+          <button type="button" class="toolbar-button purek-action" id="purek-authorize"><span data-i18n="purek.authorize">打开授权页面</span> ↗</button>
+          <div id="purek-media-controls" hidden><div data-media-output="room" hidden></div></div>
+        </div>
+        <p id="purek-error" role="alert" hidden></p>
+      </div>
+      <div class="selection-modal-actions purek-actions">
+        <button type="button" class="toolbar-button purek-action" id="purek-cancel" data-i18n="common.cancel">取消</button>
+        <button type="button" class="toolbar-button purek-primary purek-action" id="purek-submit" data-i18n="purek.continue">继续</button>
+      </div>
+    </div>
+  </div>
+
   <script src="/part-selector.js" defer></script>
   <script src="/request-input.js" defer></script>
   <script src="/pitch-player.js" defer></script>
@@ -1954,7 +2021,9 @@
   <script src="/desktop-platform.js" defer></script>
   <script src="/android-platform.js" defer></script>
   <script src="/host-updates.js" defer></script>
+  <script src="/media-output.js" defer></script>
   <script src="/app.js" defer></script>
+  <script src="/purek-room.js" defer></script>
   <script src="/android-export.js" defer></script>
   <script src="/android-playback.js" defer></script>
   <script src="/native-session.js" defer></script>

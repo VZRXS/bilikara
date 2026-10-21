@@ -52,7 +52,8 @@ assert.ok(contains("#remote-av-sync-panel .remote-input-wrap input[type=\"number
 },
 async test_host_and_remote_contextual_info_markup_is_accessible_and_audited() {
 let advanced, metadata_popover, playback_controls, playback_sheet, volume_panel;
-advanced = this.host_html.slice(sourceIndex(this.host_html, "id=\"cache-advanced-inline-view\""), sourceIndex(this.host_html, "class=\"cache-panel-footer\""));
+const advancedStart = sourceIndex(this.host_html, "id=\"cache-advanced-inline-view\"");
+advanced = this.host_html.slice(advancedStart, this.host_html.indexOf("</section>", advancedStart));
 assert.deepEqual(countOccurrences(advanced, "class=\"cache-advanced-info-button\""), 4);
 assert.deepEqual(countOccurrences(advanced, "class=\"contextual-info-glyph\" aria-hidden=\"true\">i</span>"), 4);
 assert.deepEqual(countOccurrences(advanced, "data-i18n-aria-label=\"common.moreInfo\""), 4);

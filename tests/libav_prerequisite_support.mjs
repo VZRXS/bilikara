@@ -15,7 +15,7 @@ export const libraryVersions = [
 ];
 export const runtimeNames = ['libbilikara_media_libav.so', 'libavcodec.so.63', 'libavformat.so.63', 'libavutil.so.61', 'libswresample.so.7'].sort();
 export const systemImports = new Set(['libc.so.6', 'libm.so.6', 'libpthread.so.0', 'libdl.so.2', 'librt.so.1', 'libresolv.so.2',
-  'libgcc_s.so.1', 'ld-linux-x86-64.so.2', 'ld-linux-aarch64.so.1']);
+  'libgcc_s.so.1', 'libstdc++.so.6', 'ld-linux-x86-64.so.2', 'ld-linux-aarch64.so.1']);
 export const json = file => JSON.parse(readFileSync(file, 'utf8'));
 
 export function ownedDirectory(label) { return realpathSync(mkdtempSync(path.join(tmpdir(), `${label} 中文 $() & `))); }

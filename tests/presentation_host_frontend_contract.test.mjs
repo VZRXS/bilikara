@@ -1,3 +1,4 @@
+import {hostOutputGuards} from './frontend_contract_support.mjs';
 import { readSourceText as readFileSync } from './frontend_contract_support.mjs';
 // Existing frontend checks transferred to node:test; no Python execution.
 import assert from 'node:assert/strict';
@@ -25,7 +26,7 @@ return this.source.slice(start_index, sourceIndex(this.source, end, start_index)
 },
 async run_node(script) {
 let completed;
-completed = (await runNative(this.node, ["-e", script], process.env, 5 * 1000, root));
+completed = (await runNative(this.node, ["-e", hostOutputGuards()+script], process.env, 5 * 1000, root));
 assert.deepEqual(completed.status, 0, completed.stderr);
 return JSON.parse(completed.stdout);
 },

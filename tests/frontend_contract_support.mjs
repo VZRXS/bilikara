@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { isDeepStrictEqual } from 'node:util';
 import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { root, runNative } from './desktop_construction_support.mjs';
 
 // Large, generated player fixtures exceed Windows' command-line limit. Node
@@ -14,6 +15,15 @@ export function runNodeScript(script, timeout = 10_000, cwd = root, environment 
 export function readSourceText(file, encoding = 'utf8') {
   assert.ok(encoding === 'utf8' || encoding === 'utf-8', 'Source text requires UTF-8');
   return readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
+}
+
+// Isolated legacy player fixtures need the production output guards, too.
+// Keep these functions intact; the new browser/native suites exercise TV mode.
+export function hostOutputGuards() {
+  const source=readSourceText(path.join(root,'static/app.js'));
+  const part=(start,end)=>{const a=source.indexOf(start),b=source.indexOf(end,a);assert.ok(a>=0&&b>a);return source.slice(a,b);};
+  return part('function networkOutputOwnsPlayback()', 'function syncMediaOutputComponents()')
+    + part('function holdLocalPlaybackForNetworkOutput()', 'function renderPlayer(currentItem, playbackMode)');
 }
 
 // Frontend fixtures return strings, JSON collections and booleans. Keep their

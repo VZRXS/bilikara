@@ -118,3 +118,4 @@ dependencies {
 }
 
 apply(from = "tauri.build.gradle.kts")
+apply(from = "media.gradle.kts")

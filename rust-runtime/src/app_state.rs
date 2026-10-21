@@ -4556,6 +4556,15 @@ impl AppState {
                     false,
                 );
             }
+            RemoteRequestV1::OutputSetOffsetMode { offset_mode } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    json!(project_remote_state(&snapshot)),
+                    Some(json!({"kind":"output_mode","offset_mode":offset_mode})),
+                    false,
+                );
+            }
             RemoteRequestV1::PlayerSetVolume {
                 volume_percent,
                 expected_item_incarnation_id,
@@ -5309,6 +5318,9 @@ impl AppState {
                     Err(error) => return execute_error_response(error),
                 };
                 let now = request.now();
+                #[cfg(feature = "native-host")]
+                let output_audio_selection =
+                    matches!(&request, AppStateRequest::SetAudioVariant { .. });
                 let replaces_live_items = matches!(
                     &request,
                     AppStateRequest::RestoreBackup { .. }
@@ -5431,6 +5443,14 @@ impl AppState {
                     );
                     if clears_controls {
                         self.player_controls.clear();
+                        // L1 follows selected audio in place. Its source lifetime
+                        // still changes on every other playback-program commit,
+                        // including a restart that retains the same item/files.
+                        #[cfg(feature = "native-host")]
+                        if !output_audio_selection {
+                            self.native_session.purek.program_epoch =
+                                self.native_session.purek.program_epoch.wrapping_add(1);
+                        }
                     }
                     self.data = Some(next);
                     #[cfg(feature = "native-host")]

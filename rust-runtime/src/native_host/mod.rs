@@ -24,8 +24,10 @@ mod admin;
 mod maintenance;
 mod monthly;
 mod network;
+pub mod output_platform;
 mod owner_enrichment;
 pub(crate) mod preferences;
+pub(crate) mod purek;
 pub(crate) mod ratings;
 pub(crate) mod updates;
 
@@ -59,6 +61,27 @@ pub type AssetSource = Arc<dyn Fn(&str) -> Option<Asset> + Send + Sync>;
 /// Platform rendering only. Receives a validated immutable export specification
 /// and a server-generated private temporary path, never a client-supplied path.
 pub type RemoteExportRenderer = Arc<dyn Fn(&str, &Path) -> Result<(), String> + Send + Sync>;
+
+/// Android shell startup only: the path comes from ApplicationInfo's native
+/// library directory, never HTTP, environment search, PATH or the current cwd.
+#[cfg(target_os = "android")]
+pub fn configure_android_media(companion: &Path) -> Result<(), String> {
+    if !companion.is_absolute() || !companion.is_file() {
+        return Err("Android media libraries are missing; reinstall the complete APK".into());
+    }
+    // SAFETY: the platform shell selected installed, package-owned native code.
+    let probe = unsafe { crate::experimental_libav::LibavMetadataProbe::load(companion) }
+        .map_err(|_| "Android media libraries are incompatible; reinstall the complete APK")?;
+    if !probe.live_ts_available() || !probe.live_l1_available() {
+        return Err("Android media companion lacks required L0/L1 capabilities".into());
+    }
+    crate::media_routing::configure(crate::media_routing::Configuration {
+        mode: crate::media_routing::Mode::Default,
+        companion: Some(companion.to_owned()),
+    })
+    .map_err(|_| "Cannot configure Android media libraries".to_owned())?;
+    Ok(())
+}
 
 #[derive(Debug)]
 pub(crate) struct ApiError {
@@ -408,6 +431,7 @@ fn start(
         }
         session.cache_policy = saved_preferences.cache;
         session.ui_language = saved_preferences.language;
+        session.purek.auto_discovery = saved_preferences.purek_auto_discovery;
         session.remote_access = remote_access;
         Ok(())
     })?;
@@ -523,6 +547,16 @@ fn start(
                 .map_err(|_| ApiError::new(503, "runtime", "无法创建工具检查线程"))?;
         }
     }
+    let room_context = context.clone();
+    context
+        .spawn("purek-room", move || purek::maintain(room_context))
+        .map_err(|_| ApiError::new(503, "runtime", "无法创建房间连接线程"))?;
+    let output_context = context.clone();
+    context
+        .spawn("purek-output-controller", move || {
+            purek::controller::maintain(output_context)
+        })
+        .map_err(|_| ApiError::new(503, "runtime", "无法创建播放输出线程"))?;
     Ok(host)
 }
 
@@ -798,7 +832,14 @@ async fn handle_inner(
         }
         let bytes = tokio::time::timeout(
             Duration::from_secs(5),
-            to_bytes(request.into_body(), 64 * 1024),
+            to_bytes(
+                request.into_body(),
+                if host && path == "/api/purek/decode" {
+                    512 * 1024
+                } else {
+                    64 * 1024
+                },
+            ),
         )
         .await
         .map_err(|_| ApiError::new(408, "timeout", "请求接收超时"))?

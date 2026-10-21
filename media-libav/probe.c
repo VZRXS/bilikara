@@ -376,3 +376,5 @@ void bm_scan_release_v1(BmScanResult *result) { free(result); }
 /* Uses the same discovery context, buffered packets, accounting and cleanup. */
 #include "remux.c"
 #include "pcm.c"
+#include "live_ts.c"
+#include "live_audio.c"

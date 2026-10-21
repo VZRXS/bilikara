@@ -437,6 +437,7 @@ pub fn companion_commands(
             arg("/I", &prefix.join("include")),
             "/I.".into(),
             source.join("probe.c").into(),
+            out.join("stretch.obj").into(),
             "/Fo.\\".into(),
             "/link".into(),
             if platform.arm {
@@ -450,6 +451,7 @@ pub fn companion_commands(
             "avformat.lib".into(),
             "avcodec.lib".into(),
             "avutil.lib".into(),
+            "swresample.lib".into(),
             "kernel32.lib".into(),
             link_output(&output),
         ]
@@ -478,6 +480,7 @@ pub fn companion_commands(
             arg("-I", &prefix.join("include")),
             arg("-I", out),
             source.join("probe.c").into(),
+            out.join("stretch.o").into(),
             arg("-L", &prefix.join("lib")),
         ];
         if platform.os == Os::Linux {
@@ -490,6 +493,14 @@ pub fn companion_commands(
             "-lavformat".into(),
             "-lavcodec".into(),
             "-lavutil".into(),
+            "-lswresample".into(),
+            if platform.os == Os::Macos {
+                "-lc++"
+            } else {
+                "-lstdc++"
+            }
+            .into(),
+            "-lm".into(),
             "-o".into(),
             output.clone().into(),
         ]);
@@ -545,6 +556,51 @@ pub fn companion_commands(
     Ok(commands)
 }
 
+pub fn stretch_command(config: &Config, out: &Path, sanitize: bool) -> Vec<OsString> {
+    let source = config.root.join("media-libav/stretch.cpp");
+    if config.platform.os == Os::Windows {
+        vec![
+            "cl.exe".into(),
+            "/nologo".into(),
+            "/std:c++17".into(),
+            "/O2".into(),
+            "/MD".into(),
+            "/EHsc".into(),
+            "/W3".into(),
+            "/c".into(),
+            source.into(),
+            "/Fostretch.obj".into(),
+        ]
+    } else {
+        let mut command = vec![
+            config
+                .env
+                .get("CXX")
+                .filter(|v| !v.is_empty())
+                .unwrap_or(OsStr::new("c++"))
+                .to_owned(),
+            "-std=c++17".into(),
+            "-O2".into(),
+            "-g".into(),
+            "-fPIC".into(),
+            "-fvisibility=hidden".into(),
+            "-Wall".into(),
+            "-Wextra".into(),
+            "-Werror".into(),
+            "-c".into(),
+            source.into(),
+            "-o".into(),
+            out.join("stretch.o").into(),
+        ];
+        if sanitize {
+            command.extend([
+                "-fsanitize=address,undefined".into(),
+                "-fno-omit-frame-pointer".into(),
+            ]);
+        }
+        command
+    }
+}
 pub fn companion(
     config: &Config,
     prefix: &Path,
@@ -574,7 +630,17 @@ pub fn companion(
         )
         .as_bytes(),
     )?;
+    let object = out.join(if config.platform.os == Os::Windows {
+        "stretch.obj"
+    } else {
+        "stretch.o"
+    });
+    if object.is_symlink() || (object.exists() && !object.is_file()) {
+        return Err("Unsafe native DSP object destination".into());
+    }
+    run_companion_commands(&out, &[stretch_command(config, &out, sanitize)])?;
     run_companion_commands(&out, &commands)?;
+    fs::remove_file(object)?;
     libav::binary_imports(&out.join(config.platform.companion()), config.platform)?;
     atomic_json(&info, &facts)?;
     println!("{}", out.join(config.platform.companion()).display());
@@ -621,6 +687,8 @@ pub(crate) fn companion_output(config: &Config, prefix: &Path, out: &Path) -> Re
                     || name.starts_with("test_shim.")
                     || name == "test_shim"
                     || name.starts_with("probe.")
+                    || name == "stretch.o"
+                    || name == "stretch.obj"
                     || name.starts_with("bilikara_media_libav.")
                     || name.starts_with("bilikara_media_libav_test."))
             {
@@ -674,6 +742,7 @@ pub fn system_import(name: &str, platform: Platform) -> bool {
             | "librt.so.1"
             | "libresolv.so.2"
             | "libgcc_s.so.1"
+            | "libstdc++.so.6"
             | "ld-linux-x86-64.so.2"
             | "ld-linux-aarch64.so.1"
     )

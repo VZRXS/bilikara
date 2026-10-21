@@ -1,3 +1,4 @@
+import {hostOutputGuards} from './frontend_contract_support.mjs';
 import { readSourceText as readFileSync, runNodeScript } from './frontend_contract_support.mjs';
 // Existing frontend checks transferred to node:test; no Python execution.
 import assert from 'node:assert/strict';
@@ -27,6 +28,7 @@ const feedback = await this.source_slice("function showPresentationOperationFeed
 completed = (await runNodeScript(`(async () => {
 globalThis.window ||= globalThis;
 ${feedback}
+${hostOutputGuards()}
 function applyFreshStateSnapshot(snapshot) { state.data = snapshot; return true; }
 async function apiPostStateSnapshot(url, payload) { return applyFreshStateSnapshot(await apiPost(url, payload)); }
 async function apiPostExactStateCommand(url, payload) { const snapshot = await apiPost(url, payload); return { snapshotAccepted: applyFreshStateSnapshot(snapshot), commandApplied: true }; }
@@ -630,7 +632,7 @@ function maybeShowIncomingRequestToast() {}
   }));
 })().catch((error) => { process.stderr.write(String(error)); process.exit(1); });
 `);
-completed = (await runNodeScript(script, 10 * 1000, root));
+completed = (await runNodeScript(hostOutputGuards()+script, 10 * 1000, root));
 assert.deepEqual(completed.status, 0, completed.stderr);
 result = JSON.parse(completed.stdout);
 assert.deepEqual(result, {["applied"]: false, ["responseSnapshotAccepted"]: true, ["reconciledGeneration"]: 10, ["reconciledItem"]: "A", ["playable"]: true, ["heldBeforeResponse"]: true, ["holdItem"]: "", ["holdGeneration"]: 0, ["pendingItem"]: "", ["pendingGeneration"]: 0, ["delayItem"]: "", ["deadline"]: 0, ["delayTimer"]: null, ["countdownTimer"]: null, ["inFlight"]: false, ["shouldPlay"]: true, ["reconciliationCount"]: 1, ["nextRequests"]: 1, ["renderCount"]: 0, ["syncCalls"]: 0});

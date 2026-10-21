@@ -5690,6 +5690,7 @@ function render() {
   }
   const playbackMode = frontendPlaybackMode(data.playback_mode);
 
+  window.BilikaraMediaOutput?.sync(data,{host:false,t,request:apiPost,bindHelp:bindRemoteContextualInfo,onError:message=>setFormMessage(message,true),accept:snapshot=>{if(applyStateSnapshot(snapshot))render();}});
   renderRemoteIdentity();
   renderCurrentItem(data.current_item, playbackMode);
   renderCurrentRatingButton(data.current_item);

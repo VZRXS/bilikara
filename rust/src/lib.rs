@@ -13,6 +13,8 @@ mod filename;
 mod internet_remote_protocol;
 mod media_download_candidate_planning;
 mod media_page_selection;
+pub mod output_audio;
+pub mod output_controller;
 mod platform;
 mod playlist_planning;
 mod preferred_audio_source_binding;

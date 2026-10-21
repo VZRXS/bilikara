@@ -15,7 +15,7 @@ after(() => {
   try { assert.deepEqual(inventory(inputs.prefix), inputs.before, 'the supplied prepared prefix must remain unchanged'); }
   finally { rmSync(inputs.directory, { recursive: true, force: true }); }
 });
-const shimSuccess = 'shim: 4 groups passed (error mapping, negotiation, cancellation/cleanup, subordinate-open denial)';
+const shimSuccess = 'shim: 5 groups passed (error mapping, negotiation, cancellation/cleanup, subordinate-open denial, bounded L1 PCM history)';
 
 test('actual AVC remux preserves a positive presentation start and negative decode timestamps', { timeout: 400_000 }, async () => {
   const binary = await buildMediaTests();

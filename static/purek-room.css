@@ -1,0 +1,43 @@
+/* One settings group owns its surface; dialog actions retain ordinary sizing. */
+.purek-settings[hidden], #purek-modal [hidden] { display: none !important; }
+.purek-heading { justify-content: flex-start; gap: 6px; }
+.purek-heading h3 { margin: 0; }
+#purek-open {margin-inline-start:auto;}
+:root .purek-action { min-width: 0; height: 44px; min-height: 44px; padding: 0 16px; border-radius: var(--host-control-radius, 14px); font-size: 16px; line-height: 1; font-weight: 400; }
+:root .purek-primary:not(:disabled) { background: var(--accent); color: var(--on-accent); }
+:root .purek-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.purek-image-source { display: grid; gap: 8px; border-radius: 14px; }
+.purek-image-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.purek-image-actions > .purek-action { flex: 1 1 auto; }
+.purek-image-source.is-drag-over { outline: 2px dashed var(--accent); outline-offset: 4px; }
+.purek-settings.android-my-card { margin-top: 18px; margin-bottom: 0; }
+.android-my-card.purek-settings h3 { margin: 0; }
+#purek-modal { padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+#purek-modal .purek-card { width: min(440px, 100%); max-height: calc(var(--legacy-vh, 1vh) * 90); max-height: 90dvh; box-sizing: border-box; display: grid; grid-template-rows: auto minmax(0,1fr) auto; gap: 16px; }
+#purek-modal .selection-modal-head { margin: 0; padding: 0; border: 0; display: flex; justify-content: space-between; gap: 12px; }
+.purek-dialog-heading {display:flex;align-items:flex-start;gap:8px;min-width:0;}
+.purek-dialog-heading h2 {min-width:0;overflow-wrap:anywhere;}
+.purek-dialog-heading > .cache-advanced-info {margin-top:3px;flex-shrink:0;}
+#purek-dialog-info > span {display:block;}
+#purek-dialog-info > span:not([hidden])~span:not([hidden]) {margin-top:8px;}
+#purek-modal .purek-body { min-height: 0; overflow: auto; overscroll-behavior: contain; }
+#purek-input-step, #purek-authorization-step { display: grid; gap: 14px; }
+#purek-modal p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+#purek-url { width: 100%; min-width: 0; }
+.purek-room-line { display: flex; flex-wrap:wrap; justify-content: space-between; align-items: center; gap: 12px; }
+.purek-room-line strong { min-width: 0; overflow-wrap: anywhere; font-size: 16px; }
+.purek-room-title {display:flex;flex:1 1 140px;flex-wrap:wrap;align-items:baseline;gap:4px 8px;min-width:0;}
+.purek-room-line > .purek-action {max-width:100%;margin-inline-start:auto;}
+#purek-output-status {color:var(--muted);font-size:13px;line-height:1.45;}
+#purek-modal .purek-actions { padding: 0; margin: 0; border: 0; display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+#purek-error:not([hidden]) { color: var(--danger-text, var(--accent)); margin-top: 14px; }
+@media (hover: hover) and (pointer: fine) {
+  .purek-action:not(:disabled):hover { transform: translateY(-1px); }
+}
+.purek-action:not(:disabled):active { transform: none; }
+@media (prefers-reduced-motion: reduce) { .purek-action { transition: none !important; } }
+.purek-output { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 14px 20px 0; padding-top: 14px; border-top: 1px solid var(--line); }
+.purek-output[hidden] { display: none; }
+#purek-output-name { min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
+.purek-settings .purek-heading { display: flex; flex-wrap:wrap; align-items: center; gap: 6px; margin:0; }
+.purek-settings .purek-heading h3 { margin: 0; }

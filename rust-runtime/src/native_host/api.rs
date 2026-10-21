@@ -38,6 +38,10 @@ pub(super) fn dispatch(
     body: Value,
 ) -> Result<Value, ApiError> {
     with_app(|app| app.native_authorize(identity, false))?;
+    if path.starts_with("/api/purek/") {
+        with_app(|app| app.native_authorize(identity, true))?;
+        return purek::route(context, method, path, &body);
+    }
     if context.desktop {
         if path.starts_with("/api/app/") {
             with_app(|app| app.native_authorize(identity, true))?;
@@ -324,6 +328,9 @@ pub(super) fn dispatch(
         )?;
         return with_app(|app| app.native_snapshot(host));
     }
+    if path == "/api/player/output" {
+        return purek::controller::command(identity, &body);
+    }
     with_app(|app| {
         let now = now();
         match path {
@@ -432,6 +439,11 @@ pub(super) fn dispatch(
                 command["key"] = json!(key);
             }
             "/api/player/next" => {
+                if app.native().purek.controller.owns_playback {
+                    let facts = app.native_output_audio_facts()?;
+                    app.native_control(identity,&json!({"action":"next-track","item_id":facts.source.0,"playback_generation":body["playback_generation"]}),now)?;
+                    return app.native_snapshot(host);
+                }
                 command["command"] = json!("advance_to_next");
                 command["expected_playback_generation"] =
                     json!(positive(&body, "playback_generation")?);

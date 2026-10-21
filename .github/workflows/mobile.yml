@@ -59,8 +59,11 @@ jobs:
         with:
           packages: platform-tools
 
-      - name: Install pinned Android signing tools
-        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - name: Install pinned Android signing and media tools
+        run: |
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
+          sudo apt-get update
+          sudo apt-get install -y make gnupg gpgv
 
       - name: Setup repository Rust toolchain
         uses: ./.github/actions/rust-toolchain
@@ -74,6 +77,23 @@ jobs:
             ./rust-runtime -> target
           cache-workspace-crates: true
           shared-key: android-test-workspace-v1
+
+      - name: Resolve Android libav C cache
+        id: media-key
+        shell: bash
+        run: |
+          echo "BILIKARA_TEST_ANDROID_NDK=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "BILIKARA_TEST_ANDROID_LIBAV_CACHE=$RUNNER_TEMP/bilikara-android-libav-cache" >> "$GITHUB_ENV"
+          cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- android-libav --ndk "$ANDROID_HOME/ndk/27.0.12077973" --abi arm64-v8a --out "$RUNNER_TEMP/android-media-output" --cache "$RUNNER_TEMP/bilikara-android-libav-cache" --cache-key >> "$GITHUB_OUTPUT"
+
+      - name: Restore Android libav C cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/bilikara-android-libav-cache
+          key: ${{ steps.media-key.outputs.key }}
+
+      - name: Verify actual Android media libraries and cache
+        run: npm run test:android-libav
 
       - name: Validate native Host and Android packaging contract
         run: |
@@ -136,7 +156,7 @@ jobs:
       - name: Prepare native YouTube binding generator
         run: |
           sudo apt-get update
-          sudo apt-get install -y libclang-dev
+          sudo apt-get install -y libclang-dev make gnupg gpgv
 
       - name: Install pinned Android tools
         run: |
@@ -162,6 +182,19 @@ jobs:
           cache-workspace-crates: true
           shared-key: android-apk-workspace-v1
           key: android-36-ndk-27.0.12077973
+
+      - name: Resolve Android libav C cache
+        id: media-key
+        shell: bash
+        run: |
+          echo "BILIKARA_ANDROID_LIBAV_CACHE=$RUNNER_TEMP/bilikara-android-libav-cache" >> "$GITHUB_ENV"
+          cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- android-libav --ndk "$ANDROID_HOME/ndk/27.0.12077973" --abi arm64-v8a --out "$RUNNER_TEMP/android-media-output" --cache "$RUNNER_TEMP/bilikara-android-libav-cache" --cache-key >> "$GITHUB_OUTPUT"
+
+      - name: Restore Android libav C cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/bilikara-android-libav-cache
+          key: ${{ steps.media-key.outputs.key }}
 
       - name: Cache Gradle dependencies
         uses: gradle/actions/setup-gradle@v5
@@ -194,6 +227,12 @@ jobs:
             npm exec -- tauri android build --debug --apk --target "${{ matrix.tauri_target }}" --ci
           fi
 
+      - name: Compile Android playback service tests
+        working-directory: src-tauri/gen/android
+        run: |
+          ./gradlew :app:compileArm64DebugAndroidTestKotlin :app:testArm64DebugUnitTest \
+            -PabiList=arm64-v8a -x :app:rustBuildArm64Debug --console=plain
+
       - name: Stage and verify APK
         env:
           APK_NAME: ${{ steps.android.outputs.apk }}
@@ -208,6 +247,7 @@ jobs:
           cat "$RUNNER_TEMP/android-apk-signature.txt"
           node scripts/android_release.mjs --verify-signature "$RUNNER_TEMP/android-apk-signature.txt" "$APK_SIGNING_MODE"
           "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 -v 4 "${apks[0]}"
+          cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- verify-android-apk --ndk "$ANDROID_HOME/ndk/27.0.12077973" --abi "arm64-v8a" --apk "$(realpath "${apks[0]}")"
           cp "${apks[0]}" "$APK_NAME"
 
       - name: Upload APK test artifact

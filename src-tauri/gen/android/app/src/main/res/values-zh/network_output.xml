@@ -1,0 +1,6 @@
+<resources>
+    <string name="network_output_channel">网络播放</string>
+    <string name="network_output_playing">实验性电视输出正在播放</string>
+    <string name="network_output_paused">电视输出已暂停或等待中</string>
+    <string name="network_output_stop">停止输出</string>
+</resources>

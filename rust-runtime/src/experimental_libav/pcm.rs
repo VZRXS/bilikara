@@ -34,11 +34,21 @@ impl LoudnessMeasurement {
 
 impl LibavMetadataProbe {
     pub fn loudness_available(&self) -> bool {
-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        #[cfg(any(
+            target_os = "android",
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "windows"
+        ))]
         {
             self.pcm.is_ok()
         }
-        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        #[cfg(not(any(
+            target_os = "android",
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "windows"
+        )))]
         {
             false
         }
@@ -49,11 +59,21 @@ impl LibavMetadataProbe {
         source: &Path,
         cancelled: &AtomicBool,
     ) -> Result<LoudnessMeasurement, ProbeError> {
-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        #[cfg(any(
+            target_os = "android",
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "windows"
+        ))]
         {
             self.decode_loudness(source, cancelled)
         }
-        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        #[cfg(not(any(
+            target_os = "android",
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "windows"
+        )))]
         {
             let _ = (source, cancelled);
             Err(ProbeError::Unavailable(
@@ -63,7 +83,12 @@ impl LibavMetadataProbe {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 mod native {
     use super::*;
     use crate::experimental_libav::{
@@ -250,7 +275,12 @@ mod native {
         }
     }
 }
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 pub(super) use native::Capability;
 
 #[cfg(test)]

@@ -200,6 +200,9 @@ pub fn stage(config: &Config, prefix: &Path, layout: &files::Layout) -> Result<(
         "probe.c",
         "remux.c",
         "pcm.c",
+        "live_ts.c",
+        "live_audio.c",
+        "stretch.cpp",
         "test_shim.c",
         "windows_io.h",
         "xtask.sh",
@@ -221,6 +224,11 @@ pub fn stage(config: &Config, prefix: &Path, layout: &files::Layout) -> Result<(
             &sources.join("media-libav").join(name),
         )?;
     }
+    files::tree(
+        &config.root.join("media-libav/signalsmith"),
+        &sources.join("media-libav/signalsmith"),
+        false,
+    )?;
     // The migrated wrappers need this independent tool in the source kit.
     // Include its locked sources, never a compiled tool or application Runtime.
     for name in ["Cargo.toml", "Cargo.lock"] {

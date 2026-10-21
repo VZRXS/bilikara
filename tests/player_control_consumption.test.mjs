@@ -1,3 +1,4 @@
+import {hostOutputGuards} from './frontend_contract_support.mjs';
 // Actual production consumer with held/rejected ACKs; no backend policy mirror.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -13,7 +14,7 @@ test('failed ACK retries its head without applying a relative seek twice or send
   assert.ok(start >= 0 && end > start);
   const state = {data:{playback_generation:1},hostPlaybackSession:{playbackGeneration:1},lastAppliedPlayerControlSeq:0,localShouldBePlaying:false};
   const video = {currentTime:0,duration:60,paused:true}; let applied=0,calls=0,rejectAck,resolveAck;
-  const apply = runInNewContext(source.slice(start,end)+'; applyRemotePlayerControl;',{
+  const apply = runInNewContext(hostOutputGuards()+source.slice(start,end)+'; applyRemotePlayerControl;',{
     state,elements:{playerFrame:{querySelector:selector=>selector==='video'?video:null}},
     isCurrentHostPlaybackSession:session=>session===state.hostPlaybackSession,
     setMediaCurrentTime:(media,time)=>{applied++;media.currentTime=time;},
@@ -38,7 +39,7 @@ for (const [action, timing, expected] of [
     lastAppliedPlayerControlSeq: 0, localShouldBePlaying: true};
   const video = {currentTime: 0, duration: NaN, paused: true}, audio = {};
   const seeks = [], acknowledgements = [];
-  const apply = runInNewContext(source.slice(start, end) + '; applyRemotePlayerControl;', {
+  const apply = runInNewContext(hostOutputGuards()+source.slice(start, end) + '; applyRemotePlayerControl;', {
     state, elements: {playerFrame: {querySelector: selector => selector === 'video' ? video : audio}},
     isCurrentHostPlaybackSession: session => session === state.hostPlaybackSession,
     isTauriWebKitRuntime: () => false,

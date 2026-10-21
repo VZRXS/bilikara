@@ -8,7 +8,6 @@
   --ink: #1d1a18;
   --muted: #6d6258;
   --panel: rgba(255, 251, 245, 0.82);
-  --settings-group-bg: #ffffff;
   --line: rgba(87, 63, 43, 0.12);
   --update-available-dot: var(--accent);
   --on-accent: #ffffff;
@@ -7298,7 +7297,6 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   --ink: #f6f1eb;
   --muted: #b5a89e;
   --panel: rgba(30, 26, 23, 0.85);
-  --settings-group-bg: #302925;
   --line: rgba(246, 241, 235, 0.15);
   --green: #5fca9d;
   --shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
@@ -7673,7 +7671,6 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   --ink: #f0f4f8;
   --muted: #8b9bb4;
   --panel: rgba(17, 25, 40, 0.85);
-  --settings-group-bg: #1e293b;
   --line: rgba(255, 255, 255, 0.1);
   --green: #00ffa3;
   --red: #ff3366;
@@ -10458,6 +10455,8 @@ body.is-presentation-stage-only .left-column {
   gap: 8px;
 }
 
+/* Ordinary Host fields share geometry and theme treatment across input types. */
+.host-text-input,
 .source-action-row input,
 .source-action-row button {
   box-sizing: border-box;
@@ -10471,6 +10470,7 @@ body.is-presentation-stage-only .left-column {
   line-height: 1;
 }
 
+.host-text-input,
 .source-action-row input {
   padding-inline: 13px;
   border: 1px solid var(--line);
@@ -10478,6 +10478,7 @@ body.is-presentation-stage-only .left-column {
   color: var(--ink);
 }
 
+.host-text-input:focus,
 .source-action-row input:focus {
   border-color: var(--focus-border-color);
   outline: none;

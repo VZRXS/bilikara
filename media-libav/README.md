@@ -26,6 +26,7 @@ Operation contracts and verification commands:
 - [Packet scanning](PACKET_SCAN.md): selected-stream enumeration and EOF policy.
 - [MP4 copy-remux](COPY_REMUX.md): staging, timestamps and encoded content.
 - [FLAC normalization](FLAC_NORMALIZATION.md): continuous samples and PCM checks.
+- [Pure K L0/L1](../docs/purek-media-output.md): descriptor-only live TS, native DSP, resampling and continuous AAC.
 
 Application routing and package requirements are documented in
 [native desktop](../docs/native-desktop.md); these driver interfaces do not
@@ -57,6 +58,13 @@ cargo run --manifest-path rust-runtime/Cargo.toml --locked --example libav_metad
 
 `xtask libav-companion` uses only the explicit prefix, without pkg-config, and
 builds the C companion and private shim outside application Cargo build graphs.
+The companion also compiles `stretch.cpp` with C++17 (MSVC `/MD /EHsc`, or
+`CXX`/`c++` with PIC). Its vendored Signalsmith Stretch/Linear headers and MIT
+licenses are pinned in `signalsmith/sources.json`. Link dependencies now include
+swresample and the platform C++ runtime. Upstream FFmpeg cache artifacts remain
+C-only; the current companion is rebuilt after every cache restore. The source
+kit includes all native DSP headers and licenses. L1 exports are additive and
+independently negotiated; older companions remain usable for older operations.
 The fixture generator creates PCM WAV, uses the test CLI for AAC/FLAC encoding
 and remuxing, and stream-copies the supplied H.264 source. Generated media,
 binaries, reports and per-run signature/dependency evidence stay outside Git.

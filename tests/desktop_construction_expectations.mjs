@@ -126,9 +126,10 @@ export function expectedPackage(fixture, environment, { development, prefix, mac
       if (process.platform !== 'win32' || path.extname(name).toLowerCase() === '.asc') copy(path.join(prefix, 'source', name), `${docs}/THIRD_PARTY_SOURCES/${name}`);
     }
     const recipes = process.platform === 'win32' ? ['build-windows.sh', 'build-windows-libraries.sh', 'prepare-windows.ps1'] : ['build-posix.sh', 'build-posix-libraries.sh'];
-    for (const name of ['probe.h', 'probe.c', 'pcm.c', 'remux.c', 'test_shim.c', 'windows_io.h', 'xtask.sh', 'REBUILD.md', 'fixtures/synthetic.h264', ...recipes]) {
+    for (const name of ['probe.h', 'probe.c', 'pcm.c', 'remux.c', 'live_ts.c', 'live_audio.c', 'stretch.cpp', 'test_shim.c', 'windows_io.h', 'xtask.sh', 'REBUILD.md', 'fixtures/synthetic.h264', ...recipes]) {
       copy(path.join(root, 'media-libav', name), `${docs}/THIRD_PARTY_SOURCES/media-libav/${name}`);
     }
+    tree(path.join(root, 'media-libav/signalsmith'), `${docs}/THIRD_PARTY_SOURCES/media-libav/signalsmith`);
     for (const name of ['Cargo.toml', 'Cargo.lock']) copy(path.join(root, 'xtask', name), `${docs}/THIRD_PARTY_SOURCES/xtask/${name}`);
     tree(path.join(root, 'xtask/src'), `${docs}/THIRD_PARTY_SOURCES/xtask/src`);
     copy(path.join(root, 'LICENSE'), `${docs}/THIRD_PARTY_SOURCES/xtask/LICENSE`);

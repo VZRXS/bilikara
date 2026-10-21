@@ -21,6 +21,7 @@
   <link rel="stylesheet" href="/volume-control.css" />
   <link rel="stylesheet" href="/request-tabs.css" />
   <link rel="stylesheet" href="/ui-surfaces.css" />
+  <link rel="stylesheet" href="/media-output.css" />
 </head>
   <body>
     <main class="remote-shell" id="remote-shell">
@@ -963,6 +964,7 @@
 
           <section class="playback-sheet-secondary" aria-label="设置" data-i18n-aria-label="settings.title">
             <div class="playback-sheet-settings-card">
+              <section class="remote-setting-panel" data-media-output="remote" hidden></section>
               <section id="remote-av-sync-panel" class="remote-setting-panel">
                 <div class="remote-setting-copy">
                   <div class="remote-setting-header remote-contextual-info-region">
@@ -974,6 +976,7 @@
                       <div class="remote-tooltip-bubble" id="remote-av-sync-info" role="tooltip"
                         data-i18n="player.avSyncHint">正数表示画面提前，负数表示画面延后。</div>
                     </div>
+                    <span data-media-output-latency hidden></span>
                   </div>
                 </div>
                 <div class="remote-setting-controls">
@@ -1113,6 +1116,7 @@
     <script src="/request-input.js" defer></script>
     <script src="/playback-restart.js" defer></script>
     <script src="/playback-sheet-gestures.js" defer></script>
+    <script src="/media-output.js" defer></script>
     <script src="/remote.js" defer></script>
     <script src="/remote-queue.js" defer></script>
   </body>

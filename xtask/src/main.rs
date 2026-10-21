@@ -1,5 +1,7 @@
 //! Independent desktop construction and prerequisite tool;
 //! neither links the application Runtime nor executes project Python.
+mod android_apk;
+mod android_libav;
 mod bbdown;
 mod compliance;
 mod config;
@@ -50,6 +52,12 @@ fn run() -> Result<()> {
     }
     if action == "prepare-bbdown" {
         return bbdown::run(args.collect());
+    }
+    if action == "verify-android-apk" {
+        return android_apk::run(args.collect());
+    }
+    if action == "android-libav" {
+        return android_libav::run(args.collect());
     }
     if action.starts_with("libav-") {
         return libav_prepare::run(action, args.collect());

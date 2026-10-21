@@ -58,7 +58,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf ffmpeg
+          sudo apt-get install -y g++ libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf ffmpeg
 
       - name: Setup repository Rust toolchain
         uses: ./.github/actions/rust-toolchain
@@ -172,6 +172,11 @@ jobs:
         run: |
           set -euo pipefail
           npm run test:libav-prerequisites
+          # Uses this job's actual rebuilt companion and an isolated Rust Host.
+          # A synthetic renderer does not qualify physical G2/G2b support.
+          npm run test:purek-output
+          npm run test:purek-l1
+          npm run test:purek-controller
 
       - name: Run unit tests
         run: |
@@ -208,6 +213,8 @@ jobs:
           npm run test:native-users
           npm run test:native-ratings
           npm run test:host-experience
+          npm run test:purek
+          npm run test:media-output
           npm run test:app-updates
           npm run test:native-transport
           npm run test:native-media

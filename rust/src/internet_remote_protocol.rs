@@ -98,6 +98,7 @@ pub enum RemoteOperation {
     PlayerSetVolume,
     PlayerSetMuted,
     PlayerSetKeyShift,
+    OutputSetOffsetMode,
     PlayerSetAudioVariant,
     PlayerSetAvDelay,
     SessionSetIdentity,
@@ -136,6 +137,7 @@ impl RemoteOperation {
             Self::PlayerSetVolume
             | Self::PlayerSetMuted
             | Self::PlayerSetKeyShift
+            | Self::OutputSetOffsetMode
             | Self::PlayerSetAudioVariant
             | Self::PlayerSetAvDelay => RemoteCapability::PlayerSettingsWrite,
             Self::SessionSetIdentity | Self::SessionRename | Self::SessionResume => {
@@ -353,6 +355,8 @@ pub enum RemoteRequestV1 {
     PlayerSetMuted { is_muted: bool },
     #[serde(rename = "player.set_key_shift")]
     PlayerSetKeyShift { key_shift: i8 },
+    #[serde(rename = "output.set_offset_mode")]
+    OutputSetOffsetMode { offset_mode: String },
     #[serde(rename = "player.set_audio_variant")]
     PlayerSetAudioVariant {
         item_id: String,
@@ -422,6 +426,7 @@ impl RemoteRequestV1 {
             Self::PlayerSetVolume { .. } => RemoteOperation::PlayerSetVolume,
             Self::PlayerSetMuted { .. } => RemoteOperation::PlayerSetMuted,
             Self::PlayerSetKeyShift { .. } => RemoteOperation::PlayerSetKeyShift,
+            Self::OutputSetOffsetMode { .. } => RemoteOperation::OutputSetOffsetMode,
             Self::PlayerSetAudioVariant { .. } => RemoteOperation::PlayerSetAudioVariant,
             Self::PlayerSetAvDelay { .. } => RemoteOperation::PlayerSetAvDelay,
             Self::PlayerAvDelayAction(_) => RemoteOperation::PlayerSetAvDelay,
@@ -675,6 +680,12 @@ struct VolumeBody {
 #[serde(deny_unknown_fields)]
 struct MutedBody {
     is_muted: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OutputModeBody {
+    offset_mode: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -991,6 +1002,9 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
         }
         RemoteRequestV1::PlayerSetMuted { .. } => true,
         RemoteRequestV1::PlayerSetKeyShift { key_shift } => (-6..=6).contains(key_shift),
+        RemoteRequestV1::OutputSetOffsetMode { offset_mode } => {
+            matches!(offset_mode.as_str(), "splice" | "gradual")
+        }
         RemoteRequestV1::PlayerSetAudioVariant {
             item_id,
             variant_id,
@@ -1307,6 +1321,12 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
             let body: MutedBody = body(value)?;
             RemoteRequestV1::PlayerSetMuted {
                 is_muted: body.is_muted,
+            }
+        }
+        "output.set_offset_mode" => {
+            let body: OutputModeBody = body(value)?;
+            RemoteRequestV1::OutputSetOffsetMode {
+                offset_mode: body.offset_mode,
             }
         }
         "player.set_key_shift" => {
@@ -2252,6 +2272,11 @@ mod tests {
             ),
             request("player.set_volume", json!({"volume_percent": 501})),
             request("player.set_key_shift", json!({"key_shift": 7})),
+            request("output.set_offset_mode", json!({"offset_mode":"unsafe"})),
+            request(
+                "output.set_offset_mode",
+                json!({"offset_mode":"gradual","target":"purek"}),
+            ),
             request("rating.submit", json!({"play_id": "p", "score": 0})),
         ];
         for message in cases {

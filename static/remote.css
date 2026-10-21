@@ -4764,7 +4764,7 @@ body.remote-identity-modal-open {
   background: transparent;
 }
 
-.playback-sheet-secondary .remote-setting-panel + .remote-setting-panel {
+.playback-sheet-secondary .remote-setting-panel:not([hidden]):not(.hidden) ~ .remote-setting-panel:not([hidden]):not(.hidden) {
   border-top: 1px solid var(--line);
 }
 
