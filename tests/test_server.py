@@ -1336,7 +1336,7 @@ class AppContextPlayerStatusTest(unittest.TestCase):
         self.assertEqual(context.store.authoritative_snapshot(), before_rust)
         self.assertEqual(context._state_revision, revision_after_replacement)
         self.assertFalse(context.store.current_item_started)
-        self.assertFalse(context.store.session_played[0].threshold_reached)
+        self.assertEqual(context.store.session_played, [])
 
         current = self.report(
             context,

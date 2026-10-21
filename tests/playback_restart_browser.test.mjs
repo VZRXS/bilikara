@@ -678,3 +678,63 @@ async function verifyNextRaster(page,context,anchor,evidence,transition) {
   // over 200 in the reproduced broken build. This checks raster, not CSS.
   assert.ok(differences.every(frame=>frame.maximum<=8),'Next glyph survives every actual capsule entry/exit frame');
 }
+
+// Keep timestamp ownership separate from the restart component's visual checks.
+test('real native playback records its first start after blocked media loading', {
+  skip:process.platform!=='linux' && 'Linux native/browser fixture; native device acceptance is separate', timeout:120000,
+},async t=>{
+  const home=mkdtempSync(path.join(tmpdir(),'bilikara-played-start-'));
+  let host,browser;
+  const gate=Promise.withResolvers(),requested=Promise.withResolvers();let blocked=true;
+  t.after(async()=>{gate.resolve();await browser?.close();await host?.close();rmSync(home,{recursive:true,force:true});});
+  for(const [file,args] of [
+    ['video.mp4',['-f','lavfi','-i','color=c=0x224466:s=640x360:r=10:d=30','-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p']],
+    ['audio.m4a',['-f','lavfi','-i','sine=frequency=220:sample_rate=48000:duration=30','-c:a','aac']],
+  ]) {
+    const result=await runNative('ffmpeg',['-hide_banner','-loglevel','error','-y',...args,path.join(home,file)],process.env,30000);
+    assert.equal(result.status,0,result.stderr);
+  }
+  host=await RunningHost.start(process.env.BILIKARA_TEST_NATIVE_ALPHA_BINARY || await buildNativeAlpha(),home,
+    [home,path.join(root,'static'),path.join(home,'video.mp4'),path.join(home,'audio.m4a'),'1'],isolatedEnvironment(home),true);
+  browser=await chromium.launch({headless:true,args:['--autoplay-policy=no-user-gesture-required']});
+  const context=await browser.newContext({viewport:{width:1000,height:800}});
+  await context.addCookies([...host.cookies].map(([name,value])=>({name,value,url:host.base})));
+  await context.addInitScript(()=>localStorage.setItem('bilikara.update.automatic','false'));
+  await context.route('**/*',async route=>{
+    const u=new URL(route.request().url());
+    if(u.origin!==host.base)return route.abort();
+    if(u.pathname.startsWith('/media/')&&blocked){requested.resolve();await gate.promise;}
+    return route.continue();
+  });
+  const page=await context.newPage(),errors=[];
+  page.on('pageerror',e=>errors.push(e.message));
+  await page.goto(host.base,{waitUntil:'domcontentloaded'});
+  await requested.promise;
+  const pending=await host.api('/api/state');
+  assert.ok(pending.current_item);
+  assert.equal(pending.current_item_started,false);
+  assert.deepEqual(pending.session_played,[],'Selection and media loading are not a playback start');
+  const evidence=process.env.BILIKARA_RESTART_SCREENSHOTS;
+  if(evidence){mkdirSync(evidence,{recursive:true});await page.screenshot({path:path.join(evidence,'played-start-waiting.png')});}
+  const earliest=Date.now()/1000;
+  blocked=false;gate.resolve();
+  await page.waitForFunction(()=>state.data?.player_status?.observed_phase==='playing'&&state.data.session_played?.length===1);
+  const started=await host.api('/api/state'),stamp=started.session_played[0].played_at;
+  assert.ok(stamp>=earliest&&stamp<=Date.now()/1000,'Use actual playback confirmation, excluding the media wait');
+  const checkpoint=JSON.parse(readFileSync(path.join(home,'host-state.json'),'utf8'));
+  const persisted=JSON.parse(Buffer.concat(checkpoint.records.session_played.map(name=>readFileSync(path.join(home,'host-records',name)))));
+  assert.equal(persisted[0].played_at,stamp);
+  const identity={item_id:started.current_item.id,playback_generation:started.playback_generation};
+  for(const [action,phase] of [['pause','paused'],['play','playing']]){
+    await host.api('/api/player/control',{...identity,action});
+    await page.waitForFunction(value=>state.data?.player_status?.observed_phase===value,phase);
+    const current=await host.api('/api/state');
+    assert.equal(current.session_played.length,1);
+    assert.equal(current.session_played[0].played_at,stamp,'Pause/resume must retain the first start');
+  }
+  assert.deepEqual(errors,[]);
+  if(evidence){
+    await page.screenshot({path:path.join(evidence,'played-start-confirmed.png')});
+    writeFileSync(path.join(evidence,'played-start-result.json'),JSON.stringify({passed:true,pendingRecords:pending.session_played,earliest,playedAt:stamp,persistedAt:persisted[0].played_at,errors,browser:await browser.version()},null,2)+'\n','utf8');
+  }
+});

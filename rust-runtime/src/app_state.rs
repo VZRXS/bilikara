@@ -2402,6 +2402,24 @@ fn mark_session_played_ended(data: &mut AppStateData, item_id: &str, now: f64) {
     }
 }
 
+fn mark_current_playback_started(data: &mut AppStateData, now: f64) -> Result<(), ExecuteError> {
+    let Some(item) = data.current_item.clone() else {
+        return Ok(());
+    };
+    // Queue selection can precede media readiness by minutes. Record the first
+    // confirmed start, retaining an existing open entry across player resets
+    // and native checkpoint restoration rather than changing its timestamp.
+    if !data
+        .session_played
+        .iter()
+        .any(|entry| entry.item_id == item.id && entry.ended_at.is_none())
+    {
+        record_session_played(data, &item, now)?;
+    }
+    data.current_item_started = true;
+    Ok(())
+}
+
 fn archive_current(data: &mut AppStateData, now: f64) -> Result<(), ExecuteError> {
     let Some(item) = data.current_item.clone() else {
         return Ok(());
@@ -2952,7 +2970,6 @@ fn apply_mutation(
             requester_user_id,
             reset_av_delay,
             allow_repeat,
-            now,
             ..
         } => {
             validate_item(&item)?;
@@ -3022,7 +3039,6 @@ fn apply_mutation(
                 if reset_av_delay {
                     reset_local_av_delay(data);
                 }
-                record_session_played(data, &item, now)?;
                 data.current_item = Some(item);
                 data.current_item_started = false;
             } else if position == "next" {
@@ -3146,9 +3162,6 @@ fn apply_mutation(
             if data.current_item.is_some() && reset_av_delay {
                 reset_local_av_delay(data);
             }
-            if let Some(item) = data.current_item.clone() {
-                record_session_played(data, &item, now)?;
-            }
             rebuild_playlist_order(data, None)?;
             Ok(MutationResult::changed(mutation_value(true), true))
         }
@@ -3191,7 +3204,6 @@ fn apply_mutation(
             // its playback segment without inflating the history request count.
             mark_session_played_ended(data, &deferred.id, now);
             let next = data.playlist.remove(0);
-            record_session_played(data, &next, now)?;
             data.current_item = Some(next);
             data.current_item_started = false;
             data.player_settings.key_shift = 0;
@@ -3305,7 +3317,6 @@ fn apply_mutation(
             if reset_av_delay {
                 reset_local_av_delay(data);
             }
-            record_session_played(data, &item, now)?;
             data.current_item = Some(item);
             data.current_item_started = false;
             rebuild_playlist_order(data, None)?;
@@ -3333,7 +3344,6 @@ fn apply_mutation(
                 if reset_av_delay {
                     reset_local_av_delay(data);
                 }
-                record_session_played(data, &item, now)?;
                 data.current_item = Some(item);
                 data.current_item_started = false;
                 rebuild_playlist_order(data, None)?;
@@ -3846,6 +3856,7 @@ fn apply_mutation(
             is_paused,
             current_time,
             duration,
+            now,
             ..
         } => {
             if expected_playback_generation != data.playback_generation {
@@ -3889,7 +3900,7 @@ fn apply_mutation(
             let started_changed =
                 duration > 0.0 && (!is_paused || current_time > 0.0) && !data.current_item_started;
             if started_changed {
-                data.current_item_started = true;
+                mark_current_playback_started(data, now)?;
             }
             let threshold_reached =
                 duration > 0.0 && current_time / duration >= PLAYER_STATUS_THRESHOLD_RATIO;
@@ -3914,7 +3925,7 @@ fn apply_mutation(
                 Ok(MutationResult::unchanged(result))
             }
         }
-        AppStateRequest::MarkCurrentItemStarted { item_id, .. } => {
+        AppStateRequest::MarkCurrentItemStarted { item_id, now, .. } => {
             if data.current_identity() != Some(item_id.trim()) {
                 return Ok(MutationResult::unchanged(mutation_value(false)));
             }
@@ -3923,7 +3934,7 @@ fn apply_mutation(
                     json!({"changed": false, "found": true}),
                 ));
             }
-            data.current_item_started = true;
+            mark_current_playback_started(data, now)?;
             Ok(MutationResult::changed(
                 json!({"changed": true, "found": true}),
                 false,
@@ -6076,7 +6087,7 @@ mod tests {
             assert!(after.history.is_empty());
             assert!(after.session_history.is_empty());
             assert_eq!(after.session_played[0].ended_at, Some(20.0));
-            assert_eq!(after.session_played[1].item_id, "b");
+            assert_eq!(after.session_played.len(), 1);
             let committed = state.data.clone();
             assert_eq!(
                 failure(state.execute(command)).error.kind,
@@ -8832,6 +8843,162 @@ mod tests {
             advanced.playback_generation,
             program_b.playback_generation + 1
         );
+    }
+
+    #[test]
+    fn played_timestamp_waits_for_first_playback_after_every_current_selection() {
+        for transition in ["add", "next", "defer", "front", "set"] {
+            let mut state = AppState::default();
+            let mut initial = seed();
+            if transition != "add" {
+                initial.current_item = Some(item("a", "BV-a", "Alice"));
+                initial.current_item_started = true;
+                initial.session_played = vec![played("a", "Alice")];
+                initial.playlist = vec![item("b", "BV-b", "Bob")];
+            }
+            let mounted = initialize(&mut state, initial);
+            let current = mounted.current_item.as_ref();
+            let command = match transition {
+                "add" => AppStateRequest::AddItem {
+                    schema_version: 1,
+                    item: item("b", "BV-b", "Bob"),
+                    requester_user_id: None,
+                    position: "tail".into(),
+                    requester_name: "Bob".into(),
+                    reset_av_delay: false,
+                    allow_repeat: false,
+                    now: 20.0,
+                },
+                "next" => AppStateRequest::AdvanceToNext {
+                    schema_version: 1,
+                    expected_playback_generation: mounted.playback_generation,
+                    reset_av_delay: false,
+                    now: 20.0,
+                },
+                "defer" => AppStateRequest::DeferCurrentItem {
+                    schema_version: 1,
+                    item_id: "a".into(),
+                    expected_item_incarnation_id: current.unwrap().item_incarnation_id.clone(),
+                    expected_playback_generation: mounted.playback_generation,
+                    expected_playlist_item_ids: vec!["b".into()],
+                    target_index: 0,
+                    reset_av_delay: false,
+                    now: 20.0,
+                },
+                "front" => AppStateRequest::MoveToFront {
+                    schema_version: 1,
+                    item_id: "b".into(),
+                    reset_av_delay: false,
+                    now: 20.0,
+                },
+                _ => AppStateRequest::SetCurrentItem {
+                    schema_version: 1,
+                    item_id: Some("b".into()),
+                    reset_av_delay: false,
+                    now: 20.0,
+                },
+            };
+            let selected = success(state.execute(command)).snapshot.unwrap();
+            assert_eq!(selected.current_item.as_ref().unwrap().id, "b");
+            assert!(!selected.current_item_started);
+            assert!(
+                selected.session_played.iter().all(|e| e.item_id != "b"),
+                "{transition}: selecting a downloading song is not playback"
+            );
+            // Neither unavailable media nor metadata on a paused player is a start.
+            for (duration, now) in [(0.0, 40.0), (100.0, 60.0)] {
+                success(apply_player_status_observation(
+                    &mut state,
+                    selected.playback_generation,
+                    "b",
+                    true,
+                    0.0,
+                    duration,
+                    now,
+                ));
+                assert!(
+                    state
+                        .data
+                        .as_ref()
+                        .unwrap()
+                        .session_played
+                        .iter()
+                        .all(|e| e.item_id != "b")
+                );
+            }
+            let started = success(apply_player_status_observation(
+                &mut state,
+                selected.playback_generation,
+                "b",
+                false,
+                0.0,
+                100.0,
+                120.0,
+            ));
+            assert!(started.effects.write_session_played);
+            let snapshot = started.snapshot.unwrap();
+            let entry = snapshot
+                .session_played
+                .iter()
+                .find(|e| e.item_id == "b")
+                .unwrap();
+            assert_eq!(
+                entry.played_at, 120.0,
+                "{transition}: exclude download wait"
+            );
+            assert_eq!(entry.requester_name, "Bob");
+            for (paused, now) in [(true, 121.0), (false, 122.0)] {
+                success(apply_player_status_observation(
+                    &mut state,
+                    selected.playback_generation,
+                    "b",
+                    paused,
+                    1.0,
+                    100.0,
+                    now,
+                ));
+            }
+            let entries: Vec<_> = state
+                .data
+                .as_ref()
+                .unwrap()
+                .session_played
+                .iter()
+                .filter(|e| e.item_id == "b")
+                .collect();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(
+                entries[0].played_at, 120.0,
+                "pause, resume and repeated reports retain the first start"
+            );
+        }
+    }
+
+    #[test]
+    fn skipping_an_unstarted_song_never_creates_a_played_record() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.playlist = vec![item("a", "BV-a", "Alice"), item("b", "BV-b", "Bob")];
+        let mounted = initialize(&mut state, initial);
+        let selected = success(state.execute(AppStateRequest::AdvanceToNext {
+            schema_version: 1,
+            expected_playback_generation: mounted.playback_generation,
+            reset_av_delay: false,
+            now: 20.0,
+        }))
+        .snapshot
+        .unwrap();
+        let skipped = success(state.execute(AppStateRequest::AdvanceToNext {
+            schema_version: 1,
+            expected_playback_generation: selected.playback_generation,
+            reset_av_delay: false,
+            now: 30.0,
+        }))
+        .snapshot
+        .unwrap();
+        assert_eq!(skipped.current_item.as_ref().unwrap().id, "b");
+        assert!(skipped.session_played.is_empty());
+        assert!(skipped.history.is_empty());
     }
 
     #[test]

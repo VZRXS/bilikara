@@ -693,6 +693,62 @@ fn defer_current_keeps_ready_artifacts_but_revokes_old_playhead_and_controls() {
 }
 
 #[test]
+fn native_played_timestamp_uses_first_accepted_playing_observation() {
+    let (mut app, host) = setup();
+    let (snapshot, claim) = ready(&mut app);
+    assert!(
+        snapshot.session_played.is_empty(),
+        "cache readiness is not playback"
+    );
+    app.native_claim(&host, &claim, false).unwrap();
+    let mut status = json!({"item_id":"first","playback_generation":snapshot.playback_generation,
+        "status_sequence":1,"observed_phase":"starting","is_paused":true,"current_time":0.0,"duration":120.0});
+    app.native_player_status(&host, &status, 30.0).unwrap();
+    assert!(
+        app.native_core_snapshot()
+            .unwrap()
+            .session_played
+            .is_empty()
+    );
+    status["status_sequence"] = json!(2);
+    status["observed_phase"] = json!("playing");
+    status["is_paused"] = json!(false);
+    app.native_player_status(&host, &status, 90.0).unwrap();
+    let started = app.native_core_snapshot().unwrap();
+    assert!(started.current_item_started);
+    assert_eq!(started.session_played.len(), 1);
+    assert_eq!(started.session_played[0].played_at, 90.0);
+    assert_eq!(started.session_played[0].requester_name, "Alice");
+    assert_eq!(
+        app.native_player_status(&host, &status, 95.0).unwrap()["duplicate"],
+        true
+    );
+    let mut stale = status.clone();
+    stale["status_sequence"] = json!(1);
+    assert!(app.native_player_status(&host, &stale, 96.0).is_err());
+    status["status_sequence"] = json!(3);
+    status["current_time"] = json!(5.0);
+    status["observed_phase"] = json!("paused");
+    status["is_paused"] = json!(true);
+    app.native_player_status(&host, &status, 100.0).unwrap();
+    // A reset/recovered renderer must not replace a previously confirmed start.
+    app.native_execute(AppStateRequest::ResetPlayer {
+        schema_version: 1,
+        now: 110.0,
+    })
+    .unwrap();
+    app.native_execute(AppStateRequest::MarkCurrentItemStarted {
+        schema_version: 1,
+        item_id: "first".into(),
+        now: 120.0,
+    })
+    .unwrap();
+    let recovered = app.native_core_snapshot().unwrap();
+    assert_eq!(recovered.session_played.len(), 1);
+    assert_eq!(recovered.session_played[0].played_at, 90.0);
+}
+
+#[test]
 fn missing_duration_accepts_status_and_playback_commands_without_history() {
     let (mut app, host) = setup();
     let (snapshot, claim) = ready(&mut app);

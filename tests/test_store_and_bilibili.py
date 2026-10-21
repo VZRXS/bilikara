@@ -567,6 +567,7 @@ class PlaylistStoreTest(unittest.TestCase):
         item_b = self.make_item("b", song_key="song-b")
         item_b.cover_url = "https://example.com/b.jpg"
         self.store.add_item(item_b, requester_name="B")
+        self.mark_started("a")
 
         payload = json.loads(self.store.session_played_file.read_text(encoding="utf-8"))
         self.assertRegex(self.store.session_played_file.name, r"^played-\d{4}-\d{2}-\d{2}_")
@@ -576,6 +577,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertIsNone(payload["items"][0]["ended_at"])
 
         self.advance_to_next()
+        self.mark_started("b")
         payload = json.loads(self.store.session_played_file.read_text(encoding="utf-8"))
         self.assertEqual([entry["item_id"] for entry in payload["items"]], ["a", "b"])
         self.assertIsInstance(payload["items"][0]["ended_at"], float)
@@ -590,30 +592,36 @@ class PlaylistStoreTest(unittest.TestCase):
         with patch("bilikara.store.time.time", return_value=1000.25):
             self.add_item("a", requester_name="A", song_key="song-a")
         self.add_item("b", requester_name="B", song_key="song-b")
-        self.mark_started("a")
+        with patch("bilikara.store.time.time", return_value=1005.5):
+            self.mark_started("a")
 
         with patch("bilikara.store.time.time", return_value=1012.75):
             self.advance_to_next()
 
+        self.assertEqual(len(self.store.session_played), 1)
+        with patch("bilikara.store.time.time", return_value=1015.5):
+            self.mark_started("b")
+
         payload = json.loads(self.store.session_played_file.read_text(encoding="utf-8"))
-        self.assertEqual(payload["items"][0]["played_at"], 1000.25)
+        self.assertEqual(payload["items"][0]["played_at"], 1005.5)
         self.assertEqual(payload["items"][0]["ended_at"], 1012.75)
-        self.assertEqual(payload["items"][1]["played_at"], 1012.75)
+        self.assertEqual(payload["items"][1]["played_at"], 1015.5)
         self.assertIsNone(payload["items"][1]["ended_at"])
         self.assertEqual(self.store.session_played_snapshot()[0]["ended_at"], 1012.75)
 
-    def test_session_played_end_timestamp_is_recorded_when_unstarted_item_is_skipped(self):
+    def test_unstarted_item_is_not_recorded_when_skipped(self):
         self.add_item("a", requester_name="A", song_key="song-a")
 
         with patch("bilikara.store.time.time", return_value=2025.5):
             self.advance_to_next()
 
-        payload = json.loads(self.store.session_played_file.read_text(encoding="utf-8"))
-        self.assertEqual(payload["items"][0]["ended_at"], 2025.5)
+        self.assertEqual(self.store.session_played, [])
+        self.assertFalse(self.store.session_played_file.exists())
         self.assertEqual(self.store.session_history, [])
 
     def test_restore_backup_accepts_session_entries_without_end_timestamp(self):
         self.add_item("a", requester_name="A", song_key="song-a")
+        self.mark_started("a")
         played_payload = json.loads(self.store.session_played_file.read_text(encoding="utf-8"))
         played_payload["items"][0].pop("ended_at")
         self.store.session_played_file.write_text(
@@ -632,6 +640,7 @@ class PlaylistStoreTest(unittest.TestCase):
 
     def test_session_played_threshold_reached_persists_and_exports(self):
         self.add_item("a", requester_name="A")
+        self.mark_started("a")
 
         exported = self.store.session_played_snapshot()
         self.assertEqual(len(exported), 1)
@@ -690,6 +699,7 @@ class PlaylistStoreTest(unittest.TestCase):
         restored_store.add_item(
             self.make_item("b", song_key="song-b"), requester_name="B"
         )
+        restored_store.mark_item_playback_started("b")
         payload = json.loads(original_played_file.read_text(encoding="utf-8"))
         self.assertEqual([entry["item_id"] for entry in payload["items"]], ["a", "b"])
 
@@ -707,6 +717,7 @@ class PlaylistStoreTest(unittest.TestCase):
         restored_store.add_item(
             self.make_item("b", song_key="song-b"), requester_name="B"
         )
+        restored_store.mark_item_playback_started("b")
 
         self.assertFalse(restored_store.continue_previous_session())
         self.assert_previous_session_cleared(restored_store)
@@ -753,6 +764,7 @@ class PlaylistStoreTest(unittest.TestCase):
     def test_previous_session_cache_clears_across_backup_lifecycle(self):
         self.add_item("a", requester_name="A", song_key="song-a")
         self.add_item("b", requester_name="B", song_key="song-b")
+        self.mark_started("a")
 
         restored_store = PlaylistStore(
             state_file=self.state_file,
@@ -819,6 +831,7 @@ class PlaylistStoreTest(unittest.TestCase):
     def test_restore_backup_continues_existing_played_session_archive(self):
         self.add_item("a", requester_name="A", song_key="song-a")
         self.add_item("b", requester_name="B", song_key="song-b")
+        self.mark_started("a")
         original_played_file = self.store.session_played_file
         backup_payload = json.loads(self.backup_file.read_text(encoding="utf-8"))
         self.assertEqual(backup_payload["played_session"]["file"], original_played_file.name)
@@ -838,12 +851,14 @@ class PlaylistStoreTest(unittest.TestCase):
 
         restored_store.mark_item_playback_started("a")
         self.advance_to_next(restored_store)
+        restored_store.mark_item_playback_started("b")
 
         payload = json.loads(original_played_file.read_text(encoding="utf-8"))
         self.assertEqual([entry["item_id"] for entry in payload["items"]], ["a", "b"])
 
     def test_discard_restored_backup_starts_new_played_session_archive(self):
         self.add_item("a", requester_name="A", song_key="song-a")
+        self.mark_started("a")
         original_played_file = self.store.session_played_file
 
         restored_store = PlaylistStore(
@@ -860,6 +875,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertNotEqual(restored_store.session_played_file, original_played_file)
 
         restored_store.add_item(self.make_item("c", song_key="song-c"), requester_name="C")
+        restored_store.mark_item_playback_started("c")
 
         new_payload = json.loads(restored_store.session_played_file.read_text(encoding="utf-8"))
         old_payload = json.loads(original_played_file.read_text(encoding="utf-8"))
@@ -912,6 +928,7 @@ class PlaylistStoreTest(unittest.TestCase):
         first = self.make_item("a", song_key="song-a")
         first.selected_pages = [2, 0, -1, 1, 2]
         self.store.add_item(first, requester_name="A")
+        self.mark_started("a")
 
         matching = self.make_item("matching", song_key="song-a")
         matching.selected_pages = [2, 1, 2]
@@ -1005,6 +1022,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.add_item("b", requester_name="B", song_key="song-b")
         self.mark_started("a")
         self.advance_to_next()
+        self.mark_started("b")
         key = self.store.history[0].key
         self.assertEqual([entry.item_id for entry in self.store.session_played], ["a", "b"])
         self.assertEqual(len(self.store.session_history), 1)
@@ -1131,6 +1149,7 @@ class PlaylistStoreTest(unittest.TestCase):
     def test_rename_session_user_preserves_request_records_and_changes_future_requests(self):
         self.add_item("a1", requester_name="A")
         self.add_item("b1", requester_name="B")
+        self.mark_started("a1")
         self.advance_to_next()
         before = self.store.snapshot()
         original_id = next(user["id"] for user in before["session_user_entries"] if user["name"] == "A")

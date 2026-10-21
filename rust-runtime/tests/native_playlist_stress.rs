@@ -324,6 +324,11 @@ fn lifecycle(seeds: usize, steps: usize) {
         let mut admitted = BTreeMap::<String, Value>::new();
         let mut serial = 0;
         for step in 0..steps {
+            // This conservation scenario plays every selected song. An
+            // unstarted skip is covered separately and has no played record.
+            if let Some(id) = session.snapshot()["current_item"]["id"].as_str() {
+                session.call("mark_current_item_started", json!({"item_id":id}));
+            }
             let before = session.snapshot();
             let queue = rows(&before["playlist"]);
             let users = rows(&before["session_users"]);
@@ -649,6 +654,11 @@ fn concurrent_lifecycle(seed: u64) {
                 6=>("add_item",json!({"item":item(&id,&id),"requester_name":if users.is_empty(){json!(name)}else{users[random.pick(users.len())].clone()},"position":if random.pick(2)==0{"tail"}else{"next"},"allow_repeat":false,"reset_av_delay":false})),
                 _=>("advance_to_next",json!({"expected_playback_generation":before["playback_generation"],"reset_av_delay":false})),
             };
+            if command=="advance_to_next" && let Some(id)=before["current_item"]["id"].as_str() {
+                // Keep the exact-generation race: only an accepted Next can
+                // retire this explicitly started song; stale Next still fails.
+                session.call("mark_current_item_started",json!({"item_id":id}));
+            }
             let response=session.attempt(command,fields);
             if response["status"]!="completed"{assert!(["duplicate_session_user","too_many_session_users","session_user_required","session_user_not_found","playback_generation_mismatch","queue_item_missing"].iter().any(|kind|response["error"]["kind"]==*kind),"{response}");continue;}
             if choice==6{successes.insert(id);}
@@ -784,8 +794,11 @@ fn empty_full_roster_duplicates_and_started_history_reject_atomically() {
             json!({"expected_playback_generation":session.snapshot()["playback_generation"]}),
         );
         let after = session.snapshot();
-        assert_eq!(after["session_played"][0]["item_id"], "a0");
-        assert!(!after["session_played"][0]["ended_at"].is_null());
+        assert_eq!(rows(&after["session_played"]).len(), usize::from(started));
+        if started {
+            assert_eq!(after["session_played"][0]["item_id"], "a0");
+            assert!(!after["session_played"][0]["ended_at"].is_null());
+        }
         assert_eq!(rows(&after["session_history"]).len(), usize::from(started));
         let fields = json!({"item":item("b0","same"),"requester_name":"B","position":"tail"});
         if started {

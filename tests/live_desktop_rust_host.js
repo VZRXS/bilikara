@@ -250,10 +250,22 @@ async function capture(name, target) {
   await page.evaluate(()=>downloadHistoryExport("csv","history",50));
   assert.ok((await download).suggestedFilename().endsWith(".csv"));
   await capture("desktop-queue.png",page);
-  // Real history records through the metadata/add route, enough to exercise ZIP.
+  // Real played records through metadata/add and browser playback, enough for ZIP.
+  // Merely making a downloading song current must not create a played record.
   for(let n=0;n<51;n++) await okay("/api/playlist/add",{url:`https://www.bilibili.com/video/BV1xx411c7${String(n).padStart(2,"0")}`,requester_name:"Desktop Fixture"});
   let queue=await okay("/api/state");
-  for(let n=0;n<51;n++) queue=await okay("/api/player/next",{playback_generation:queue.playback_generation});
+  const advanceDelay=queue.player_settings.song_advance_delay_seconds;
+  // The bulk export setup needs real starts, not 51 ordinary inter-song waits.
+  await okay("/api/player/advance-delay",{delay_seconds:0});
+  for(let n=0;n<51;n++) {
+    await page.waitForFunction(id=>state.data?.current_item?.id===id
+      && state.data.current_item_started
+      && state.data.session_played.some(entry=>entry.item_id===id)
+      && document.querySelector("video")?.currentTime>0.1,queue.current_item.id,{timeout:25000});
+    queue=await okay("/api/player/next",{playback_generation:queue.playback_generation});
+  }
+  await okay("/api/player/advance-delay",{delay_seconds:advanceDelay});
+  assert.ok(queue.session_played.length>=51);
   const zip=await host.request.get(ready.baseUrl+"/api/playlist/export?format=image&source=played&page_size=50");
   assert.equal(zip.status(),200);assert.equal(zip.headers()["content-type"],"application/zip");
   const zipBytes=await zip.body();assert.equal(zipBytes.subarray(0,4).toString("hex"),"504b0304");
