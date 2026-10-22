@@ -5287,20 +5287,73 @@ function setStageControlTrayOpen(open, { restoreFocus = false, moveFocus = true 
   }
 }
 
+// Shared by desktop and Android: wrap only complete titles, otherwise use
+// the existing short-overflow motion or continuous long-title loop.
+function measureCurrentTitle({allowTwoLines, titleHeightSlack}) {
+  const titleNode = elements.currentTitle;
+  const titleTextNode = elements.currentTitleText || titleNode;
+  const titleStyle = titleNode ? window.getComputedStyle(titleNode) : null;
+  const titleTextStyle = titleTextNode ? window.getComputedStyle(titleTextNode) : null;
+  const titlePaintPadding = (parseFloat(titleTextStyle?.paddingTop) || 0)
+    + (parseFloat(titleTextStyle?.paddingBottom) || 0);
+  const titleLineHeight = parseFloat(titleStyle?.lineHeight || "0") || 0;
+  const titleAvailableWidth = titleNode?.clientWidth || 0;
+  const titleNaturalWidth = titleTextNode?.scrollWidth || 0;
+  const titleOverflowDistance = Math.max(0, titleNaturalWidth - titleAvailableWidth);
+  const titleOverflowsSingleLine = titleOverflowDistance > 1;
+  let titleNaturalWrappedHeight = titleLineHeight;
+  if (allowTwoLines && titleOverflowsSingleLine && titleNode && titleTextNode) {
+    titleNode.classList.add("is-measuring-two-line");
+    titleNaturalWrappedHeight = titleTextNode.scrollHeight - titlePaintPadding;
+    titleNode.classList.remove("is-measuring-two-line");
+  }
+  const titleFitsWithinTwoLines = titleNaturalWrappedHeight <= (titleLineHeight * 2) + 1;
+  const titleCanUseTwoLines = allowTwoLines
+    && titleOverflowsSingleLine
+    && titleFitsWithinTwoLines
+    && titleLineHeight > 0
+    && titleHeightSlack >= titleLineHeight + 4;
+  titleNode?.classList.toggle("is-two-line", titleCanUseTwoLines);
+  if (titleNode) {
+    titleNode.dataset.visibleLines = titleCanUseTwoLines ? "2" : "1";
+    titleNode.dataset.singleLineOverflow = String(titleOverflowsSingleLine);
+    titleNode.dataset.fitsWithinTwoLines = String(titleFitsWithinTwoLines);
+    titleNode.dataset.naturalWrappedHeight = String(Math.round(titleNaturalWrappedHeight * 100) / 100);
+    titleNode.dataset.heightSlack = String(Math.round(titleHeightSlack * 100) / 100);
+  }
+  if (titleOverflowsSingleLine && !titleCanUseTwoLines && titleNode) {
+    const durationSeconds = Math.max(6, Math.min(16, 3 + (titleOverflowDistance / 28)));
+    titleNode.style.setProperty("--host-current-title-marquee-offset", `${-titleOverflowDistance}px`);
+    titleNode.style.setProperty("--host-current-title-marquee-duration", `${durationSeconds}s`);
+    titleNode.classList.add("is-scrolling");
+    globalThis.BilikaraTextMarquee?.configure(titleNode, titleTextNode, titleAvailableWidth, titleNaturalWidth);
+  } else {
+    globalThis.BilikaraTextMarquee?.reset(titleNode, titleTextNode);
+  }
+  return titleCanUseTwoLines;
+}
+
 function measurePersistentStage() {
   state.stageMeasureFrame = null;
   if (!elements.appShell || !elements.leftColumn || !elements.playerPanel) {
     return "compact";
   }
+  const titleNode = elements.currentTitle;
+  titleNode?.classList.remove("is-two-line", "is-scrolling");
+  titleNode?.style.removeProperty("--host-current-title-marquee-offset");
+  titleNode?.style.removeProperty("--host-current-title-marquee-duration");
+  if (titleNode) {
+    titleNode.dataset.visibleLines = "1";
+  }
   if (globalThis.BilikaraHostLayout?.isPortrait()) {
-    globalThis.BilikaraTextMarquee?.reset(elements.currentTitle, elements.currentTitleText);
+    // Phone controls scroll independently, leaving room for a complete two-line title.
+    measureCurrentTitle({allowTwoLines: true, titleHeightSlack: Infinity});
     const changed = elements.appShell.dataset.stageControlsLayout !== "inline";
     elements.appShell.dataset.stageMode = "portrait";
     elements.appShell.dataset.stageControlsLayout = "inline";
     elements.appShell.dataset.stageControlDensity = "compact";
     elements.playerPanel.style.removeProperty("--stage-frame-inline-size");
     elements.playerPanel.style.removeProperty("--stage-frame-block-size");
-    elements.currentTitle?.classList.remove("is-two-line", "is-scrolling");
     if (changed || !state.stageControlTrayOpen) {
       clearStageControlTrayPosition();
       setStageControlTrayOpen(true, {moveFocus: false});
@@ -5309,14 +5362,6 @@ function measurePersistentStage() {
     return "portrait";
   }
   const narrowShell = Boolean(window.matchMedia?.("(max-width: 1179px)")?.matches);
-  const titleNode = elements.currentTitle;
-  const titleTextNode = elements.currentTitleText || titleNode;
-  titleNode?.classList.remove("is-two-line", "is-scrolling");
-  titleNode?.style.removeProperty("--host-current-title-marquee-offset");
-  titleNode?.style.removeProperty("--host-current-title-marquee-duration");
-  if (titleNode) {
-    titleNode.dataset.visibleLines = "1";
-  }
   const presentationActive = presentationCompositionActive();
   const presentationContextChanged = state.stageMeasuredPresentationActive !== presentationActive;
   state.stageMeasuredPresentationActive = presentationActive;
@@ -5384,22 +5429,6 @@ function measurePersistentStage() {
           ? fullFrameWithInlineControlsFits && inlineFitSlack >= fitHysteresis
           : fullFrameWithInlineControlsFits;
   const controlLayout = inlineControls ? "inline" : "popup";
-  const titleStyle = titleNode ? window.getComputedStyle(titleNode) : null;
-  const titleTextStyle = titleTextNode ? window.getComputedStyle(titleTextNode) : null;
-  const titlePaintPadding = (parseFloat(titleTextStyle?.paddingTop) || 0)
-    + (parseFloat(titleTextStyle?.paddingBottom) || 0);
-  const titleLineHeight = parseFloat(titleStyle?.lineHeight || "0") || 0;
-  const titleAvailableWidth = titleNode?.clientWidth || 0;
-  const titleNaturalWidth = titleTextNode?.scrollWidth || 0;
-  const titleOverflowDistance = Math.max(0, titleNaturalWidth - titleAvailableWidth);
-  const titleOverflowsSingleLine = titleOverflowDistance > 1;
-  let titleNaturalWrappedHeight = titleLineHeight;
-  if (!narrowShell && titleOverflowsSingleLine && titleNode && titleTextNode) {
-    titleNode.classList.add("is-measuring-two-line");
-    titleNaturalWrappedHeight = titleTextNode.scrollHeight - titlePaintPadding;
-    titleNode.classList.remove("is-measuring-two-line");
-  }
-  const titleFitsWithinTwoLines = titleNaturalWrappedHeight <= (titleLineHeight * 2) + 1;
   const popupHeightSlack = innerHeight - (
     headerHeight
       + variantHeight
@@ -5409,28 +5438,7 @@ function measurePersistentStage() {
       + (panelGap * persistentRowGapCount)
   );
   const titleHeightSlack = inlineControls ? inlineHeightSlack : popupHeightSlack;
-  const titleCanUseTwoLines = !narrowShell
-    && titleOverflowsSingleLine
-    && titleFitsWithinTwoLines
-    && titleLineHeight > 0
-    && titleHeightSlack >= titleLineHeight + 4;
-  titleNode?.classList.toggle("is-two-line", titleCanUseTwoLines);
-  if (titleNode) {
-    titleNode.dataset.visibleLines = titleCanUseTwoLines ? "2" : "1";
-    titleNode.dataset.singleLineOverflow = String(titleOverflowsSingleLine);
-    titleNode.dataset.fitsWithinTwoLines = String(titleFitsWithinTwoLines);
-    titleNode.dataset.naturalWrappedHeight = String(Math.round(titleNaturalWrappedHeight * 100) / 100);
-    titleNode.dataset.heightSlack = String(Math.round(titleHeightSlack * 100) / 100);
-  }
-  if (titleOverflowsSingleLine && !titleCanUseTwoLines && titleNode) {
-    const durationSeconds = Math.max(6, Math.min(16, 3 + (titleOverflowDistance / 28)));
-    titleNode.style.setProperty("--host-current-title-marquee-offset", `${-titleOverflowDistance}px`);
-    titleNode.style.setProperty("--host-current-title-marquee-duration", `${durationSeconds}s`);
-    titleNode.classList.add("is-scrolling");
-    globalThis.BilikaraTextMarquee?.configure(titleNode, titleTextNode, titleAvailableWidth, titleNaturalWidth);
-  } else {
-    globalThis.BilikaraTextMarquee?.reset(titleNode, titleTextNode);
-  }
+  const titleCanUseTwoLines = measureCurrentTitle({allowTwoLines: !narrowShell, titleHeightSlack});
   if (titleCanUseTwoLines) {
     headerHeight = elements.playerPanel.querySelector(".panel-head")?.getBoundingClientRect().height || headerHeight;
   }
@@ -20478,6 +20486,8 @@ async function restartHostPlayback(context) {
   setFormMessage(t("player.restartSent"));
 }
 playbackRestartMenu = globalThis.BilikaraPlaybackRestart?.create({
+  extraHintControls: [{button: elements.playerFullscreenButton,
+    enabled: () => document.documentElement.dataset.hostPlatform === "android" && !isPlayerPanelFullscreen()}],
   hoverHints: true,
   alwaysInline: true,
   firstUse: globalThis.BilikaraPlaybackRestart.firstUseStore?.("host", tauriInvoke("presentation")) || null,

@@ -80,8 +80,9 @@ again and uses standard mode automatically when it qualifies.
 
 On Chromium 83–90, the same authored CSS is compiled using pinned Lightning CSS,
 including selector/inset/focus/overflow syntax. Scoped runtime adapters supply
-flex spacing and aspect ratios. CSS transitions/animations are immediate in this
-mode; JavaScript Web Animations retain real finish/cancel completion. The pinned
+flex spacing and aspect ratios. Panel CSS transitions/animations are immediate in
+this mode; the current-song title retains shared scrolling and respects reduced
+motion. JavaScript Web Animations retain real finish/cancel completion. The pinned
 Signalsmith wrapper has a generated syntax-compatible module with identical
 embedded DSP/WASM bytes. No `eval`, runtime compiler, provider installation or
 second UI is used. After shared CSS changes run `npm run prepare:webview83`;

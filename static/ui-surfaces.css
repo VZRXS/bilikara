@@ -222,6 +222,111 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
 }
 :root .selection-modal-head.host-peer-head > :not(.host-peer-heading) { align-self: start; }
 :root .pool-config-head-actions { align-items: start; }
+/* Source bulk selection is a compact settings tool on every client. Keep
+   titles readable; wrap the action group as a unit when translation needs it. */
+:root .pool-config-list-head {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+:root .pool-config-list-head > h3 {
+  flex: 1 1 100px;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 24px;
+}
+:root .pool-config-bulk-actions {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  margin-inline-start: auto;
+}
+:root .pool-config-bulk-actions > :is(.toolbar-button, .ghost-button) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+:root .pool-config-list-head + :is(.selection-option-list, .pool-config-option-list) { margin-top: 0; }
+@media (max-width: 600px) {
+  :root .selection-modal-grid.pool-config-source-list {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+}
+/* Respect the modal container's gutters instead of overflowing its grid track. */
+:root[data-host-platform="android"] .selection-modal {
+  grid-template-columns: minmax(0, 1fr);
+}
+:root[data-host-platform="android"] .selection-modal-card {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Android keeps the Host dialog shell, with Remote's unframed pool sections. */
+:root[data-host-platform="android"] .gatcha-pool-config-card {
+  display: flex;
+  flex-direction: column;
+}
+:root[data-host-platform="android"] .gatcha-pool-config-card > :not(.pool-config-source-list) {
+  flex: 0 0 auto;
+}
+:root[data-host-platform="android"] .pool-config-weight-row { margin-top: 18px; }
+:root[data-host-platform="android"] .selection-modal-grid.pool-config-source-list {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
+  margin-top: 18px;
+  padding-right: 0;
+}
+:root[data-host-platform="android"] .pool-config-column {
+  grid-template-rows: auto auto;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+:root:is([data-host-platform="android"], [data-ui-client="remote"])
+  :is(#gatcha-pool-uid-options, #gatcha-pool-favlist-options) {
+  max-height: clamp(130px, 22vh, 230px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+}
+:root:is([data-host-platform="android"], [data-ui-client="remote"]) .pool-config-option {
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(67, 53, 41, 0.08);
+}
+:root:is([data-host-platform="android"], [data-ui-client="remote"]):is([data-theme="dark"], [data-theme="blue"]) .pool-config-option {
+  background: var(--dark-control-bg);
+  border-color: var(--dark-surface-border-color);
+}
+:root[data-host-platform="android"] .pool-config-option .selection-option-title {
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.35;
+}
+:root[data-host-platform="android"] #gatcha-pool-config-message:empty { display: none; }
+:root[data-host-platform="android"] .gatcha-pool-config-card .selection-modal-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 18px;
+  padding-top: 14px;
+}
+:root[data-host-platform="android"] .gatcha-pool-config-card .selection-modal-actions > button {
+  height: 44px;
+  min-height: 44px;
+  font-size: 16px;
+}
+
 /* Header pills and close controls reuse ordinary secondary-button colors.
    Center 32px controls on the title's 24px first line, while
    preserving the header's flow height and its horizontal insets. */
@@ -670,7 +775,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
-/* Host and small anchored controls keep invisible click-away targets. */
+/* Desktop Host and small anchored controls keep invisible click-away targets. */
 :root, :root[data-theme] { --modal-backdrop-bg: transparent; }
 :root :is(.selection-modal-backdrop, .rating-modal-backdrop, .binding-sheet-backdrop,
   .remote-identity-backdrop, .song-detail-backdrop, .playback-sheet-backdrop,
@@ -686,17 +791,17 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
 .song-detail-surface { position: relative; z-index: 1; pointer-events: none; }
 .song-detail-card { pointer-events: auto; }
 
-/* Dim the stacked Remote page behind large panels; anchored controls keep shadow only. */
-:root[data-ui-client="remote"] {
-  --remote-modal-backdrop-bg: rgba(29, 26, 24, 0.24);
+/* Remote and Android share dimming behind large panels and the panel shadow above. */
+:root:is([data-ui-client="remote"], [data-host-platform="android"]) {
+  --modal-dim-bg: rgba(29, 26, 24, 0.24);
 }
-:root[data-ui-client="remote"][data-theme="blue"] {
-  --remote-modal-backdrop-bg: rgba(2, 6, 23, 0.38);
+:root:is([data-ui-client="remote"], [data-host-platform="android"])[data-theme="blue"] {
+  --modal-dim-bg: rgba(2, 6, 23, 0.38);
 }
-:root[data-ui-client="remote"] :is(.remote-identity-backdrop, .song-detail-backdrop,
+:root:is([data-ui-client="remote"], [data-host-platform="android"]) :is(.selection-modal-backdrop, .remote-identity-backdrop, .song-detail-backdrop,
   .rating-modal-backdrop, .binding-sheet-backdrop, .playback-sheet-backdrop),
-:root[data-ui-client="remote"] .history-export-dialog::backdrop {
-  background: var(--remote-modal-backdrop-bg);
+:root:is([data-ui-client="remote"], [data-host-platform="android"]) .history-export-dialog::backdrop {
+  background: var(--modal-dim-bg);
 }
 @media (orientation: portrait) and (max-width: 699px) {
   :root[data-ui-client="remote"] .playback-sheet .playback-sheet-panel {
@@ -704,8 +809,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   }
 }
 
-/* Fade the Remote backdrop independently of panel motion.
-   Host backgrounds stay transparent. */
+/* Fade mobile backdrops independently of panel motion. */
 @keyframes remote-backdrop-in {
   from { opacity: 0; }
   to { opacity: 1; }
@@ -714,22 +818,22 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   from { opacity: 1; }
   to { opacity: 0; }
 }
-:root[data-ui-client="remote"] :is(.remote-identity-backdrop, .song-detail-backdrop, .rating-modal-backdrop),
-:root[data-ui-client="remote"] .history-export-dialog[open]::backdrop {
+:root:is([data-ui-client="remote"], [data-host-platform="android"]) :is(.selection-modal-backdrop, .remote-identity-backdrop, .song-detail-backdrop, .rating-modal-backdrop),
+:root:is([data-ui-client="remote"], [data-host-platform="android"]) .history-export-dialog[open]::backdrop {
   animation: remote-backdrop-in 200ms ease-out both;
 }
-:root[data-ui-client="remote"] .closing :is(.remote-identity-backdrop, .song-detail-backdrop, .rating-modal-backdrop),
-:root[data-ui-client="remote"] .history-export-dialog.closing::backdrop {
+:root:is([data-ui-client="remote"], [data-host-platform="android"]) .closing :is(.selection-modal-backdrop, .remote-identity-backdrop, .song-detail-backdrop, .rating-modal-backdrop),
+:root:is([data-ui-client="remote"], [data-host-platform="android"]) .history-export-dialog.closing::backdrop {
   animation: remote-backdrop-out 200ms ease-out forwards;
 }
-:root[data-ui-client="remote"] .song-detail-view { animation: none; }
+:root:is([data-ui-client="remote"], [data-host-platform="android"]) .song-detail-view { animation: none; }
 :root[data-ui-client="remote"] :is(.binding-sheet-backdrop, .playback-sheet-backdrop) {
   transition-property: opacity;
 }
 @media (prefers-reduced-motion: reduce) {
-  :root[data-ui-client="remote"] :is(.remote-identity-backdrop, .song-detail-backdrop,
+  :root:is([data-ui-client="remote"], [data-host-platform="android"]) :is(.selection-modal-backdrop, .remote-identity-backdrop, .song-detail-backdrop,
     .rating-modal-backdrop, .binding-sheet-backdrop, .playback-sheet-backdrop),
-  :root[data-ui-client="remote"] .history-export-dialog::backdrop {
+  :root:is([data-ui-client="remote"], [data-host-platform="android"]) .history-export-dialog::backdrop {
     animation-duration: 1ms !important;
     transition-duration: 1ms !important;
   }
@@ -998,8 +1102,10 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
 }
 
 /* Large overflow moves left continuously; small overflow keeps its existing
-   back-and-forth motion. The second copy is visual only, never announced. */
+   back-and-forth motion. The second copy is visual only, never announced.
+   The explicit Host target preserves specificity in the legacy :any adapter. */
 :root .is-text-marquee-loop { position: relative; }
+:root #current-title.is-text-marquee-loop > .text-marquee-loop-track,
 :root :is(#current-title, .playback-dock-title, .playback-dock-requester, .playback-metadata-field, .request-card-title-remainder).is-text-marquee-loop > .text-marquee-loop-track {
   animation: text-marquee-loop var(--text-marquee-loop-duration) linear infinite;
   animation-play-state: var(--text-marquee-play-state, running);
@@ -1017,6 +1123,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   to { transform: translateX(calc(-1 * var(--text-marquee-loop-distance))); }
 }
 @media (prefers-reduced-motion: reduce) {
+  :root #current-title.is-text-marquee-loop > .text-marquee-loop-track,
   :root :is(#current-title, .playback-dock-title, .playback-dock-requester, .playback-metadata-field, .request-card-title-remainder).is-text-marquee-loop > .text-marquee-loop-track { animation: none; }
   :root .is-text-marquee-loop > .text-marquee-copy { display: none; }
 }
