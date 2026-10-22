@@ -2,6 +2,24 @@
   "schema_version": 1,
   "announcements": [
     {
+      "id": "shared-catalog-quota-20261022",
+      "kind": "notice",
+      "published_at": "2026-10-22T17:45:03+09:00",
+      "starts_at": "2026-10-22T17:45:03+09:00",
+      "ends_at": "2026-10-23T09:00:00+09:00",
+      "platforms": [],
+      "title": {
+        "zh": "共享曲库服务暂时受限",
+        "en": "Shared catalog service temporarily limited",
+        "ja": "共有楽曲データベースの一時的な利用制限"
+      },
+      "body_markdown": {
+        "zh": "由于旧版本（v0.8.0 之前）的设计问题，Cloudflare 共享服务的可用配额已耗尽。共享曲库搜索，以及类别、作品、歌手等依赖共享数据库的功能可能暂时无法使用；Google Sheets 备用数据源也可能不可用。\n\n预计于 **2026 年 10 月 23 日 09:00（日本时间，UTC+9）** 恢复。\n\n给大家带来不便，敬请谅解。",
+        "en": "A design issue in versions before v0.8.0 has exhausted the available Cloudflare quota for our shared services. Shared catalog search and database-backed browsing, including categories, works and artists, may be temporarily unavailable. The Google Sheets fallback may also be unavailable.\n\nService is expected to resume at **09:00 on October 23, 2026 (Japan time, UTC+9)**.\n\nWe apologize for the inconvenience.",
+        "ja": "v0.8.0 より前のバージョンの設計上の問題により、共有サービスで利用している Cloudflare の利用枠を使い切りました。共有楽曲検索、およびカテゴリ・作品・歌手など共有データベースに依存する機能が一時的に利用できない場合があります。Google Sheets の代替データソースも利用できない可能性があります。\n\n**2026 年 10 月 23 日 09:00（日本時間、UTC+9）** に復旧する見込みです。\n\nご不便をおかけし、申し訳ありません。"
+      }
+    },
+    {
       "id": "release-v0.8.0",
       "kind": "release",
       "version": "v0.8.0",
