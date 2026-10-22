@@ -1177,6 +1177,14 @@ inherit the job; if shutdown hangs after shell death, a five-second watchdog
 exits the Host so the owning Job handle closes. The explicitly detached update
 installer can finish after Host exit. Windows process behavior and native dialogs still require platform testing.
 
+On Linux, supervised BBDown/aria2c processes receive a kernel parent-death
+signal before executing. A parent check closes the startup race, so Host crashes
+and forced termination also stop the tools when Rust cleanup cannot run. Normal
+cancellation and timeouts still terminate and reap the owned process group. This
+protection is limited to these supervised download tools; the detached update
+installer retains its separate lifetime. Windows retains the Job Object policy
+above; this Linux mechanism does not establish macOS crash-cleanup behavior.
+
 The supported HTTP surface follows this repository's Host/Remote callers.
 Registered LAN Remote actions include remove/play-now/move-next in the
 queue, recent-session listing, and exporting current or archived sessions. Raw

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
@@ -108,6 +108,38 @@ test('native tool probe does not hold readiness/diagnostics; selection and resta
   } finally { writeFileSync(path.join(directory, 'release'), ''); await host.close(); }
   host = await start(directory, env);
   try { const policy = (await host.api('/api/state')).cache_policy; assert.equal(policy.download_source, 'downkyi'); assert.equal(policy.enabled, true); assert.deepEqual(readFileSync(path.join(directory, 'calls'), 'utf8').trim().split('\n'), ['--version', '--help=#all', '--version', '--help=#all']); } finally { await host.close(); }
+});
+
+test('Linux native Host shutdown and forced death retire an active supervised tool', {
+  skip: process.platform !== 'linux' && 'Linux parent-death protection; Windows Job acceptance is separate', timeout: 60000,
+}, async t => {
+  for (const signal of [null, 'SIGTERM', 'SIGKILL']) {
+    const directory = home(t), tool = path.join(directory, 'aria2c');
+    const compiled = await runNative('rustc', ['--edition=2024', '--target', nativeTarget(), path.join(root, 'tests/fixtures/startup_aria2.rs'), '-o', tool]);
+    assert.equal(compiled.status, 0, compiled.stderr);
+    const host = await start(directory, {...isolatedEnvironment(directory), ARIA2C_PATH: tool});
+    let pid;
+    try {
+      pid = await waitFor(() => {
+        const file = path.join(directory, 'probe.pid');
+        if (!existsSync(file)) return undefined;
+        const value = Number(readFileSync(file, 'utf8'));return Number.isInteger(value) && value > 1 ? value : undefined;
+      }, 'actual supervised tool did not start', 5000);
+      assert.equal(readlinkSync(`/proc/${pid}/exe`), tool);
+      if (signal) {
+        // Kill only the Host PID: test helpers must not clean the tool for it.
+        host.process.kill(signal);
+        const result = await host.finished;
+        assert.deepEqual(result, signal === 'SIGKILL' ? {status:null,signal} : {status:0,signal:null});
+      } else await host.close();
+      await waitFor(() => !existsSync(`/proc/${pid}/exe`), `tool survived Host ${signal || 'shutdown'}`, 3000);
+    } finally {
+      host.kill();await host.finished;
+      // Bounded cleanup if a future regression leaves the fixture orphaned.
+      try { if (pid && readlinkSync(`/proc/${pid}/exe`) === tool) process.kill(pid, 'SIGKILL'); }
+      catch (error) { if (!['ENOENT','ESRCH'].includes(error.code)) throw error; }
+    }
+  }
 });
 
 test('real administration rejects unauthorized/invalid writes, isolates Remote and supervises monthly jobs', async t => {
