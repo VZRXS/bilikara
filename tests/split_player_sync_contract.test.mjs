@@ -297,9 +297,10 @@ let result;
 result = (await this.run_node(`
 const video = new FakeMedia(7); const audio = new FakeMedia(10);
 video.paused = false; audio.paused = false;
+video.readyState = 2;
 state.localVideoPlaybackBlocked = true;
 const waitingAction = syncSplitPlayer(video, audio, 0.25, false);
-state.localVideoPlaybackBlocked = false; nowMs += 1000;
+video.readyState = 3; nowMs += 1000;
 const recoveryAction = syncSplitPlayer(video, audio, 0.25, true);
 console.log(JSON.stringify({ waitingAction, recoveryAction, audioTime: audio.currentTime,
   videoTime: video.currentTime, audioPauseCalls: audio.pauseCalls,
@@ -776,6 +777,37 @@ console.log(JSON.stringify({
 }));
 `, this.clear_seek_source, this.seek_lifecycle_source, this.sync_source));
 assert.deepEqual(result, {["settled"]: true, ["audioBlocked"]: false, ["shouldPlay"]: true, ["videoPaused"]: false, ["audioPaused"]: false, ["videoPlayCalls"]: 1, ["audioPlayCalls"]: 1});
+},
+async test_buffered_video_cannot_leave_audio_paused_after_stalled_or_old_waiting() {
+const result = await this.run_node(`
+const video = new FakeMedia(30), audio = new FakeMedia(30);
+mountedVideo = video; mountedAudio = audio;
+video.paused = false; audio.paused = false;
+// Network stalled does not imply that the already-buffered frame is missing.
+video.networkState = 2; video.readyState = 3;
+state.localVideoPlaybackBlocked = true;
+const action = syncSplitPlayer(video, audio, 0, false);
+console.log(JSON.stringify({action,blocked:state.localVideoPlaybackBlocked,
+  videoPaused:video.paused,audioPaused:audio.paused,videoSeeks:video.seekWrites,audioSeeks:audio.seekWrites}));
+`, this.sync_source);
+assert.deepEqual(result,{action:'none',blocked:false,videoPaused:false,audioPaused:false,videoSeeks:0,audioSeeks:0});
+},
+async test_desktop_native_scrub_pause_preserves_intent_but_explicit_pause_replaces_it() {
+const result = await this.run_node(`
+global.document = {hidden:false};
+const currentItem = {id:'item'}, video = new FakeMedia(30), audio = new FakeMedia(30);
+const session=state.hostPlaybackSession;
+function reportCurrentVideoStatus() {}
+mountedVideo=video;mountedAudio=audio;
+video.paused=true;video.seeking=true;audio.paused=false;
+${this.pause_event_source}
+video.dispatchMediaEvent('pause');
+const afterNative={intent:state.hostPlaybackSession.logicalPlayIntent,shouldPlay:state.localShouldBePlaying};
+setSplitPlaybackIntent(video,audio,false,{source:'remote-pause-intent'});
+console.log(JSON.stringify({afterNative,afterExplicit:{intent:state.hostPlaybackSession.logicalPlayIntent,
+  shouldPlay:state.localShouldBePlaying,audioPaused:audio.paused}}));
+`, this.sync_source);
+assert.deepEqual(result,{afterNative:{intent:true,shouldPlay:true},afterExplicit:{intent:false,shouldPlay:false,audioPaused:true}});
 },
 async test_transition_hold_prevents_any_audio_or_video_start() {
 let result;
@@ -4958,6 +4990,8 @@ test("SplitPlayerSyncTest.test_av_delay_resync_does_not_enter_coordinated_video_
 test("SplitPlayerSyncTest.test_av_delay_change_while_paused_realigns_audio_and_stays_paused", async () => { const instance = Object.create(SplitPlayerSyncTest); await instance.setUpClass(); await instance.test_av_delay_change_while_paused_realigns_audio_and_stays_paused(); });
 test("SplitPlayerSyncTest.test_audio_waiting_holds_video_without_seeking_it", async () => { const instance = Object.create(SplitPlayerSyncTest); await instance.setUpClass(); await instance.test_audio_waiting_holds_video_without_seeking_it(); });
 test("SplitPlayerSyncTest.test_rapid_host_seek_recovers_audio_when_readiness_event_is_lost", async () => { const instance = Object.create(SplitPlayerSyncTest); await instance.setUpClass(); await instance.test_rapid_host_seek_recovers_audio_when_readiness_event_is_lost(); });
+test("SplitPlayerSyncTest.test_buffered_video_cannot_leave_audio_paused_after_stalled_or_old_waiting", async () => { const instance = Object.create(SplitPlayerSyncTest); await instance.setUpClass(); await instance.test_buffered_video_cannot_leave_audio_paused_after_stalled_or_old_waiting(); });
+test("SplitPlayerSyncTest.test_desktop_native_scrub_pause_preserves_intent_but_explicit_pause_replaces_it", async () => { const instance = Object.create(SplitPlayerSyncTest); await instance.setUpClass(); await instance.test_desktop_native_scrub_pause_preserves_intent_but_explicit_pause_replaces_it(); });
 test("SplitPlayerSyncTest.test_transition_hold_prevents_any_audio_or_video_start", async () => { const instance = Object.create(SplitPlayerSyncTest); await instance.setUpClass(); await instance.test_transition_hold_prevents_any_audio_or_video_start(); });
 test("SplitPlayerSyncTest.test_positive_and_negative_delay_preserve_startup_boundaries", async () => { const instance = Object.create(SplitPlayerSyncTest); await instance.setUpClass(); await instance.test_positive_and_negative_delay_preserve_startup_boundaries(); });
 test("SplitPlayerSyncTest.test_video_timeline_seek_maps_to_audio_with_delay", async () => { const instance = Object.create(SplitPlayerSyncTest); await instance.setUpClass(); await instance.test_video_timeline_seek_maps_to_audio_with_delay(); });

@@ -5637,11 +5637,24 @@ function initializeWindowChrome() {
     elements.windowClose?.addEventListener("click", () => appWindow.close().catch(() => {}));
     syncWindowFrameState();
   }
+  let nativeDragDoubleClick = false;
+  elements.topbar?.addEventListener("mousedown", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    // Tauri handles the second press, before dblclick. Maximizing can move
+    // the drag region away from the pointer, retargeting release/dblclick to
+    // the header. Keep the press's owner instead of toggling a second time.
+    // Every new press clears this even when the OS consumed the old release.
+    nativeDragDoubleClick = event.button === 0 && event.detail === 2
+      && Boolean(target?.closest("[data-tauri-drag-region]"));
+  }, true);
   elements.topbar?.addEventListener("dblclick", (event) => {
+    const nativeOwned = nativeDragDoubleClick;
+    nativeDragDoubleClick = false;
     const target = event.target instanceof Element ? event.target : null;
     if (
       event.button !== 0
       || platform !== "windows"
+      || nativeOwned
       || target?.closest("[data-tauri-drag-region]")
       || target?.closest("button, a, input, select, textarea, [role='button']")
     ) {
@@ -14545,9 +14558,13 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
     return reportAction("pause");
   }
 
-  // waiting/stalled can be queued by a seek that has already been superseded.
-  // Reconcile the sticky event flag with the live media state so a missed
-  // canplay event cannot leave an otherwise-ready audio track paused forever.
+  // waiting can outlive its seek; stalled describes network progress, not
+  // decoder starvation. Reconcile both sticky flags with live readiness: a
+  // buffered video may keep playing without another canplay/playing event,
+  // otherwise its old flag would keep the independent audio paused forever.
+  if (!video.seeking && video.readyState >= 3) {
+    state.localVideoPlaybackBlocked = false;
+  }
   if (!audio.seeking && audio.readyState >= 3) {
     state.localAudioPlaybackBlocked = false;
   }
@@ -16089,10 +16106,10 @@ function renderPlayer(currentItem, playbackMode) {
     if (session.seekResumePending) {
       return;
     }
-    // Android's native timeline pauses before dispatching `seeking`. That
-    // temporary pause is not a new user intent: the existing seek lifecycle
-    // must retain whether playback should resume when the seek settles.
-    if (isAndroidNativePlaybackRuntime() && video.seeking) {
+    // Native timelines can pause before dispatching `seeking`, including
+    // Chromium/WebView2 desktop controls. Preserve the seek's play intent;
+    // explicit Host/Remote pauses still use setSplitPlaybackIntent directly.
+    if (video.seeking) {
       return;
     }
     if (video.ended && !audio.ended) {
