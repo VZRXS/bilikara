@@ -159,23 +159,28 @@ html[data-host-layout="portrait"] .left-column > .player-panel:not(:fullscreen):
   overflow: hidden;
 }
 
+/* Keep title wrapping and marquee states owned by the shared stage measure. */
 html[data-host-layout="portrait"] #current-title {
-  white-space: normal;
   font-size: 18px;
   line-height: 1.4;
-  max-height: 2.8em;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
 }
 
-html[data-host-layout="portrait"] #current-title-text {
-  white-space: normal;
-  overflow-wrap: anywhere;
-  animation: none;
-  transform: none;
+/* Android's normal-stage action is one ordinary square icon target. */
+html[data-host-platform="android"] .player-panel:not(:fullscreen):not(.is-tauri-fullscreen) #player-fullscreen-button {
+  width: var(--host-control-height, 44px);
+  min-width: var(--host-control-height, 44px);
+  max-width: var(--host-control-height, 44px);
+  height: var(--host-control-height, 44px);
+  min-height: var(--host-control-height, 44px);
+  padding: 0;
+  border-radius: var(--host-control-radius, 14px);
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
 }
+html[data-host-platform="android"] .player-panel:not(:fullscreen):not(.is-tauri-fullscreen) .player-fullscreen-label { display: none; }
 
 html[data-host-layout="portrait"] .left-column .player-frame { width: 100%; }
 html[data-host-layout="portrait"] .app-shell .stage-control-tray {

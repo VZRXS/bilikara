@@ -45,7 +45,7 @@
   }
 
   function create({ anchor, iconSource, getContext, label, onRestart, onBusy, onError,
-    firstUse = null, canShowHint = () => true, alwaysInline = false, hoverHints = false }) {
+    firstUse = null, canShowHint = () => true, alwaysInline = false, hoverHints = false, extraHintControls = [] }) {
     if (!anchor || !iconSource) return null;
     const icon = createRestartIcon(iconSource);
     if (!icon) return null;
@@ -77,6 +77,7 @@
     group.prepend(popup);
     anchor.dataset.playbackRestartAnchor = "";
     const controls = anchor.closest(".player-control-row, .presentation-host-transport-row") || group;
+    const hintRoots = [controls, ...extraHintControls.map(entry => entry.button).filter(Boolean)];
     const controlSelector = "button.player-transport-button, button.presentation-host-seek-button, button.presentation-host-play, button.presentation-host-next, button.playback-restart-action";
     const bubble = document.createElement("div");
     bubble.id = `${popup.id}-hint`;
@@ -95,11 +96,13 @@
     const listen = (target, type, handler, options = {}) => target.addEventListener(type, handler, { ...options, signal: listeners.signal });
     const current = () => captured && getContext()?.key === captured.key;
     const hintControl = node => {
-      const button = node?.closest?.(controlSelector);
-      return button && controls.contains(button) && button.querySelector("svg") ? button : null;
+      const extra = extraHintControls.find(entry => entry.button?.contains(node));
+      const button = extra?.button || node?.closest?.(controlSelector);
+      return button && (extra || controls.contains(button)) && button.querySelector("svg") ? button : null;
     };
     const hintControlEnabled = button => button && !button.disabled && button.getClientRects().length
-      && !button.closest("[hidden], [inert], .hidden") && canShowHint();
+      && !button.closest("[hidden], [inert], .hidden") && canShowHint()
+      && extraHintControls.find(entry => entry.button === button)?.enabled?.() !== false;
     function unlinkControlHint() {
       if (!hintAnchor) return;
       const ids = (hintAnchor.getAttribute("aria-describedby") || "").split(/\s+/).filter(id => id && id !== bubble.id);
@@ -321,7 +324,7 @@
       anchor.setAttribute("aria-expanded", "true");
       if (keyboard) (action.disabled ? anchor : action).focus({ preventScroll: true });
     }
-    listen(controls, "pointerdown", event => {
+    for (const root of hintRoots) listen(root, "pointerdown", event => {
       if (!event.isPrimary || event.button !== 0) return;
       const button = hintControl(event.target);
       if (!hintControlEnabled(button)) return;
@@ -386,7 +389,7 @@
       if (event.detail !== 0 && performance.now() < suppressUntil) { event.preventDefault(); event.stopImmediatePropagation(); }
       else close();
     }, { capture: true });
-    listen(controls, "contextmenu", event => {
+    for (const root of hintRoots) listen(root, "contextmenu", event => {
       if (hintControl(event.target) && (hold || event.pointerType === "touch")) event.preventDefault();
     });
     listen(anchor, "contextmenu", event => { event.preventDefault(); if (!hold?.fired) open(); });
@@ -483,7 +486,7 @@
     };
     listen(action, "click", () => activate(action, captured));
     listen(inlineAction, "click", () => activate(inlineAction, getContext()));
-    if (hoverHints) for (const button of [action, inlineAction]) {
+    if (hoverHints) for (const button of [action, inlineAction, ...extraHintControls.map(entry => entry.button).filter(Boolean)]) {
       listen(button, "pointerenter", event => {
         if (event.pointerType !== "mouse" || !matchMedia("(hover: hover) and (pointer: fine)").matches) return;
         window.clearTimeout(hoverTimer);

@@ -70,6 +70,36 @@ test('actual Chromium 83 loads the authenticated shared Host, missing APIs, layo
     await evaluate('setLanguage('+JSON.stringify(language)+')');await evaluate('document.fonts.ready');
     await wait(`(function(){var rows=Array.from(document.querySelectorAll('.android-host-dock>button')).map(function(n){return n.getBoundingClientRect()});return rows.length===5&&rows.every(function(r){return r.width>0&&r.height>=44&&r.right<=innerWidth+1&&r.bottom<=innerHeight+1&&Math.abs(r.y-rows[0].y)<1})})()`);
   }
+  await evaluate(`setLanguage('zh');document.querySelector('[data-android-page="playback"]').click();state.eventSource?.close();fetchState=async()=>{}`);
+  await wait('document.documentElement.dataset.hostPage==="playback"');
+  await send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'no-preference'}]});
+  assert.equal(await evaluate('matchMedia("(prefers-reduced-motion: reduce)").matches'),false);
+  const titleModes=await evaluate(`(function(){
+    var n=elements.currentTitle,track=elements.currentTitleText;
+    track.textContent='短标题';measurePersistentStage();
+    var s=getComputedStyle(track),c=document.createElement('canvas').getContext('2d');
+    c.font=s.fontWeight+' '+s.fontSize+' '+s.fontFamily;
+    var w=n.clientWidth,word='W'.repeat(Math.max(1,Math.floor(w*.58/c.measureText('W').width)));
+    return ['春'.repeat(Math.floor(w*1.35/c.measureText('春').width)),[word,word,word].join(' '),'很长的歌曲标题 gypqj '.repeat(40)].map(function(text){
+      track.textContent=text;measurePersistentStage();
+      return {two:n.classList.contains('is-two-line'),loop:n.classList.contains('is-text-marquee-loop'),animation:getComputedStyle(track).animationName};
+    });
+  })()`);
+  assert.deepEqual(titleModes,[{two:true,loop:false,animation:'none'},
+    {two:false,loop:false,animation:'host-current-title-marquee'},
+    {two:false,loop:true,animation:'text-marquee-loop'}]);
+  const positionBefore=await evaluate('getComputedStyle(elements.currentTitleText).transform');
+  await evaluate('new Promise(function(resolve){setTimeout(resolve,180)})');
+  assert.notEqual(await evaluate('getComputedStyle(elements.currentTitleText).transform'),positionBefore,'The genuine old engine actually advances the title animation');
+  await send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
+  assert.equal(await evaluate('getComputedStyle(elements.currentTitleText).animationName'),'none');
+  await send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'no-preference'}]});
+  assert.deepEqual(await evaluate(`(function(){var n=document.getElementById('player-fullscreen-button'),r=n.getBoundingClientRect();return [r.width,r.height,getComputedStyle(n).borderRadius,getComputedStyle(document.getElementById('player-fullscreen-label')).display]})()`),[44,44,'14px','none']);
+  if(process.env.BILIKARA_ANDROID_UI_SCREENSHOTS){
+    const {data}=await send('Page.captureScreenshot',{format:'png'});
+    const output=path.resolve(process.env.BILIKARA_ANDROID_UI_SCREENSHOTS);mkdirSync(output,{recursive:true});
+    writeFileSync(path.join(output,'android-chromium83-long.png'),Buffer.from(data,'base64'));
+  }
   await evaluate('cover.remove()');
   await wait('fixtureResizeObservers.every(function(targets){return !targets.has(cover)})');
   await evaluate(`window.dispatchEvent(new Event('pagehide'))`);

@@ -7,9 +7,10 @@
   compatibility.adapters.push("CSS 83 syntax", "simplified CSS motion");
   root.setAttribute("data-legacy-engine", "83");
   // CSS animation enumeration and completion arrived after this engine. Keep
-  // transitions immediate, while real JS Web Animations still settle/cancel.
+  // panel transitions immediate. Title marquees have no completion lifecycle,
+  // so they retain shared CSS motion and its reduced-motion rule.
   var motion = document.createElement("style");
-  motion.textContent = 'html[data-legacy-engine="83"] *,html[data-legacy-engine="83"] *::before,html[data-legacy-engine="83"] *::after{animation:none!important;transition:none!important}*{--legacy-aspect-ratio:auto}';
+  motion.textContent = 'html[data-legacy-engine="83"] *:not(.current-title-text),html[data-legacy-engine="83"] *::before,html[data-legacy-engine="83"] *::after{animation:none!important;transition:none!important}*{--legacy-aspect-ratio:auto}';
   document.head.appendChild(motion);
   var gapProbe = document.createElement("div");
   gapProbe.style.cssText = "position:absolute;visibility:hidden;display:flex;flex-direction:column;row-gap:1px;padding:0;border:0";

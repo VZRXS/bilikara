@@ -998,8 +998,10 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
 }
 
 /* Large overflow moves left continuously; small overflow keeps its existing
-   back-and-forth motion. The second copy is visual only, never announced. */
+   back-and-forth motion. The second copy is visual only, never announced.
+   The explicit Host target preserves specificity in the legacy :any adapter. */
 :root .is-text-marquee-loop { position: relative; }
+:root #current-title.is-text-marquee-loop > .text-marquee-loop-track,
 :root :is(#current-title, .playback-dock-title, .playback-dock-requester, .playback-metadata-field, .request-card-title-remainder).is-text-marquee-loop > .text-marquee-loop-track {
   animation: text-marquee-loop var(--text-marquee-loop-duration) linear infinite;
   animation-play-state: var(--text-marquee-play-state, running);
@@ -1017,6 +1019,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   to { transform: translateX(calc(-1 * var(--text-marquee-loop-distance))); }
 }
 @media (prefers-reduced-motion: reduce) {
+  :root #current-title.is-text-marquee-loop > .text-marquee-loop-track,
   :root :is(#current-title, .playback-dock-title, .playback-dock-requester, .playback-metadata-field, .request-card-title-remainder).is-text-marquee-loop > .text-marquee-loop-track { animation: none; }
   :root .is-text-marquee-loop > .text-marquee-copy { display: none; }
 }

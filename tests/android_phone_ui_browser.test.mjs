@@ -382,3 +382,84 @@ test('Android search and discovery use Remote result pages, swipe, exact jumps a
   await tagGrid.locator('button').first().click();const songs=page.locator('#request-discover-artist [data-d1-browse-results]');await songs.locator('.search-result-item').first().waitFor();assert.equal(await songs.locator('.search-result-item').count(),6);
   await page.locator('#request-discover-artist [data-d1-browse-back]').click();assert.equal(await songs.locator('..').locator('..').isVisible(),false,'Returning to tags hides the old result footer too');
 });
+
+
+for(const engine of [chromium,webkit])test(`${engine.name()} Android stage uses shared complete-title wrapping and marquee modes`,{timeout:90000,skip:process.platform!=='linux'},async t=>{
+  const {page}=await open(t,engine);await go(page,'playback');
+  await page.evaluate(()=>{state.eventSource?.close();fetchState=async()=>{};});
+  const title=page.locator('#current-title');
+  const inspect=n=>{const text=n.querySelector('#current-title-text'),s=getComputedStyle(text),r=n.getBoundingClientRect();return {
+    two:n.classList.contains('is-two-line'),scrolling:n.classList.contains('is-scrolling'),loop:n.classList.contains('is-text-marquee-loop'),
+    animation:s.animationName,width:n.clientWidth,natural:text.scrollWidth,height:r.height,line:parseFloat(s.lineHeight),
+    copies:n.querySelectorAll('.text-marquee-copy').length,text:text.textContent,
+  };};
+  for(const width of [320,393]){
+    await page.setViewportSize({width,height:850});
+    const samples=await page.evaluate(()=>{
+      BilikaraTextMarquee.reset(elements.currentTitle,elements.currentTitleText);
+      elements.currentTitleText.textContent='短标题';measurePersistentStage();
+      const s=getComputedStyle(elements.currentTitleText),c=document.createElement('canvas').getContext('2d');
+      c.font=`${s.fontWeight} ${s.fontSize} ${s.fontFamily}`;
+      const w=elements.currentTitle.clientWidth;
+      return {two:'春'.repeat(Math.floor(w*1.35/c.measureText('春').width)),
+        small:Array(3).fill('W'.repeat(Math.max(1,Math.floor(w*.58/c.measureText('W').width)))).join(' '),
+        long:'很长的歌曲标题 gypqj '.repeat(40)};
+    });
+    for(const [mode,text] of Object.entries(samples)){
+      await page.evaluate(text=>{elements.currentTitleText.textContent=text;measurePersistentStage();},text);
+      const result=await title.evaluate(inspect);assert.equal(result.text,text);
+      if(mode==='two'){
+        assert.equal(result.two,true,JSON.stringify(result));assert.equal(result.scrolling,false);assert.equal(result.copies,0);
+        assert.ok(result.height>=result.line*2-1&&result.height<=result.line*2+8,JSON.stringify(result));
+      }else{
+        assert.equal(result.two,false,JSON.stringify(result));assert.equal(result.scrolling,true);
+        assert.equal(result.loop,mode==='long');assert.equal(result.copies,mode==='long'?1:0);
+        assert.equal(result.animation,mode==='long'?'text-marquee-loop':'host-current-title-marquee');
+        assert.ok(result.height<result.line*2,JSON.stringify(result));
+        if(mode==='small')assert.ok(result.natural>result.width&&result.natural<result.width*2,JSON.stringify(result));
+      }
+      if(process.env.BILIKARA_ANDROID_UI_SCREENSHOTS&&engine===chromium){
+        const out=path.resolve(process.env.BILIKARA_ANDROID_UI_SCREENSHOTS);mkdirSync(out,{recursive:true});
+        await page.screenshot({animations:'disabled',path:path.join(out,`android-${width}-${mode}.png`)});
+      }
+    }
+    const full=page.locator('#player-fullscreen-button');
+    assert.deepEqual(await full.evaluate(n=>{const s=getComputedStyle(n),r=n.getBoundingClientRect();return {width:r.width,height:r.height,radius:s.borderRadius};}),{width:44,height:44,radius:'14px'});
+    assert.equal(await page.locator('#player-fullscreen-label').isVisible(),false);
+    assert.equal(await full.locator('.fullscreen-enter-icon').isVisible(),true);
+    assert.ok(await full.getAttribute('aria-label'));
+    await page.emulateMedia({reducedMotion:'reduce'});
+    assert.equal(await title.evaluate(n=>getComputedStyle(n.firstElementChild).animationName),'none');
+    await page.evaluate(()=>{elements.currentTitleText.textContent='短标题';measurePersistentStage();});
+    assert.equal(await title.locator('.text-marquee-copy').count(),0);
+    await page.emulateMedia({reducedMotion:'no-preference'});
+  }
+  assert.equal(await page.evaluate(()=>phoneMedia.every(n=>n.isConnected)),true);
+});
+
+
+for(const engine of [chromium,webkit])test(`${engine.name()} Android fullscreen icon shares held hints without activating on release`,{timeout:60000,skip:process.platform!=='linux'},async t=>{
+  const {page}=await open(t,engine);await go(page,'playback');
+  await page.evaluate(()=>{
+    state.eventSource?.close();fetchState=async()=>{};
+    state.data.current_item={id:'hint-fixture',display_title:'全屏按钮说明',cache_status:'pending'};
+    window.phoneFullscreenTaps=0;togglePlayerFullscreen=async()=>{phoneFullscreenTaps++;};
+    renderPlayerFullscreenButton();
+  });
+  const full=page.locator('#player-fullscreen-button');assert.equal(await full.isEnabled(),true);
+  const box=await full.boundingBox(),x=box.x+box.width/2,y=box.y+box.height/2;
+  await page.mouse.move(x,y);await page.mouse.down();
+  const bubble=page.locator('.playback-control-hint.is-visible');await bubble.waitFor();
+  assert.equal(await bubble.textContent(),await full.getAttribute('aria-label'));
+  assert.deepEqual(await bubble.evaluate(n=>{const s=getComputedStyle(n);return [s.fontSize,s.fontWeight,s.borderRadius];}),['13px','400','12px']);
+  assert.ok((await full.getAttribute('aria-describedby')).includes(await bubble.getAttribute('id')));
+  assert.equal(await bubble.evaluate(n=>{const r=n.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight;}),true);
+  if(process.env.BILIKARA_ANDROID_UI_SCREENSHOTS&&engine===chromium){
+    const out=path.resolve(process.env.BILIKARA_ANDROID_UI_SCREENSHOTS);mkdirSync(out,{recursive:true});
+    await page.screenshot({animations:'disabled',path:path.join(out,'android-fullscreen-held-hint.png')});
+  }
+  await page.mouse.up();await page.locator('.playback-control-hint.is-visible').waitFor({state:'hidden'});
+  assert.equal(await page.evaluate(()=>phoneFullscreenTaps),0,'Releasing a held hint must not toggle fullscreen');
+  await full.click();assert.equal(await page.evaluate(()=>phoneFullscreenTaps),1,'A fresh deliberate tap still works');
+  await full.focus();await page.keyboard.press('Enter');assert.equal(await page.evaluate(()=>phoneFullscreenTaps),2,'Keyboard activation stays available');
+});
