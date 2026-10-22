@@ -497,3 +497,40 @@ test("ResultPaginationFrontendTest.test_last_page_warms_backward_search_window_w
 test("ResultPaginationFrontendTest.test_jump_during_prefetch_still_warms_the_new_neighbors", async () => { const instance = Object.create(ResultPaginationFrontendTest); await instance.setUpClass(); await instance.test_jump_during_prefetch_still_warms_the_new_neighbors(); });
 test("ResultPaginationFrontendTest.test_prefetch_failure_is_quiet_bounded_and_stale_results_are_discarded", async () => { const instance = Object.create(ResultPaginationFrontendTest); await instance.setUpClass(); await instance.test_prefetch_failure_is_quiet_bounded_and_stale_results_are_discarded(); });
 test("ResultPaginationFrontendTest.test_real_remote_adapter_preserves_source_filters_counts_and_legacy_limits", async () => { const instance = Object.create(ResultPaginationFrontendTest); await instance.setUpClass(); await instance.test_real_remote_adapter_preserves_source_filters_counts_and_legacy_limits(); });
+
+test('source refresh retains a distant page, invalidates its cache and rejects retired reads', async () => {
+  const instance=Object.create(ResultPaginationFrontendTest);await instance.setUpClass();await instance.run_case(`
+const calls=[],errors=[];let release;
+const load=async range=>{calls.push(range);return {items:items(range.offset,range.limit),offset:range.offset,matched_count:612,has_more:true,next_offset:range.offset+range.limit};};
+const pages=new Pages(()=>{},error=>errors.push(error.message));
+const options=initial({positionKey:'uids:42:query',key:'read-1',load});
+pages.update(options);await pages.goTo(35);
+const oldItems=pages.items;
+pages.update({...options,key:'read-2',loading:true});
+assert.equal(pages.page,35);assert.equal(pages.loading,true);assert.equal(pages.items,oldItems);
+pages.update({...options,key:'read-2',items:items(0,100),load:range=>new Promise(resolve=>{release=()=>resolve({items:items(range.offset,range.limit).map(item=>({...item,fresh:true})),offset:range.offset,matched_count:612,has_more:true,next_offset:range.offset+range.limit});})});
+assert.equal(pages.page,35);assert.equal(pages.loading,true);assert.equal(pages.cache.has(35),false);
+release();await new Promise(resolve=>setImmediate(resolve));
+assert.equal(pages.items[0].id,204);assert.equal(pages.items[0].fresh,true);assert.equal(pages.loading,false);
+pages.update({...options,key:'read-3',items:items(0,100),load:()=>new Promise(resolve=>{release=resolve;})});
+pages.update({...options,key:'new-query',positionKey:'uids:42:other-query',items:items(0,100)});
+release({items:items(204,6),offset:204,matched_count:612,has_more:true,next_offset:210});
+await new Promise(resolve=>setImmediate(resolve));
+assert.equal(pages.page,1);assert.equal(pages.items[0].id,0);assert.deepEqual(errors,[]);
+`);
+});
+
+test('source refresh clamps a shorter list and a failed retained-page read never loops on renders', async () => {
+  const instance=Object.create(ResultPaginationFrontendTest);await instance.setUpClass();await instance.run_case(`
+const errors=[];let reads=0;
+const load=async range=>({items:items(range.offset,range.limit),offset:range.offset,matched_count:612,has_more:true,next_offset:range.offset+range.limit});
+const pages=new Pages(()=>{},error=>errors.push(error.message));
+const options=initial({positionKey:'uids:42',key:1,load});pages.update(options);await pages.goTo(35);
+const failed={...options,key:2,items:items(0,100),load:async()=>{reads++;throw new Error('offline');}};
+pages.update(failed);await new Promise(resolve=>setImmediate(resolve));
+for(let i=0;i<10;i++)pages.update(failed);
+assert.equal(reads,1);assert.equal(pages.page,35);assert.equal(pages.loading,false);assert.deepEqual(errors,['offline']);
+pages.update({...options,key:3,items:items(0,12),total:12,hasMore:false});
+assert.equal(pages.page,2);assert.equal(pages.items[0].id,6);assert.equal(pages.items.length,6);
+`);
+});

@@ -7784,7 +7784,7 @@ function hideAndroidBrowsePages(container) {
 }
 function androidBrowseOptions(container, items, emptyText) {
   const owner = requestDetailOriginForContainer(container)?.key;
-  let data = {}, key = owner, loading = false, load = null;
+  let data = {}, key = owner, loading = false, load = null, positionKey;
   if (owner === "shared" || owner === "local") {
     const mode = state.searchModeState[owner];
     data = mode.pageData || {}; loading = mode.loading;
@@ -7810,12 +7810,13 @@ function androidBrowseOptions(container, items, emptyText) {
     const selected = favorites ? state.favlistBrowseSelectedFolderId : state.followBrowseSelectedUid;
     const query = String(data.query || ""); loading = favorites ? state.favlistBrowseLoading : state.followBrowseLoading;
     key = JSON.stringify([owner, selected, query, favorites ? state.favlistBrowseSeq : state.followBrowseSeq]);
+    positionKey = JSON.stringify([owner, selected, query]);
     if (typeof data.has_more === "boolean") load = page => (favorites ? fetchGatchaFavlistBrowse : fetchGatchaBrowse)(selected, query, page);
   }
   const limited = !load;
   const total = !limited && Number.isSafeInteger(data.matched_count) && data.matched_count >= 0
     ? data.matched_count : limited || data.has_more === false ? items.length : null;
-  return {key, items, emptyText, total, hasMore:Boolean(data.has_more), limited, load, loading, language:state.language,
+  return {key, positionKey, items, emptyText, total, hasMore:Boolean(data.has_more), limited, load, loading, language:state.language,
     readSize:["shared","local"].includes(owner) ? 72 : undefined};
 }
 function androidGridPages(container, items, key, renderPage, {loading = false, emptyText = ""} = {}) {

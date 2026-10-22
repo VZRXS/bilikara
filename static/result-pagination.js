@@ -35,8 +35,9 @@
   }
 
   class Pages {
-    constructor(onChange = () => {}) {
+    constructor(onChange = () => {}, onError = () => {}) {
       this.onChange = onChange;
+      this.onError = onError;
       this.version = 0;
       this.cache = new Map();
       this.page = 1;
@@ -51,7 +52,12 @@
     update(options) {
       const size = Number.isSafeInteger(options.pageSize) && options.pageSize >= 1 && options.pageSize <= 48 ? options.pageSize : pageSize;
       const sameSource = this.sourceKey === options.key && this.initialItems === options.items;
+      // A refreshed read has a new generation (old requests must retire), but
+      // it need not be a new browsing destination. Retain only an explicit,
+      // matching UP/folder/query identity; never reuse its old page cache.
+      const samePosition = options.positionKey !== undefined && options.positionKey === this.positionKey;
       const firstItem = (this.page - 1) * this.pageSize;
+      const previousItems = this.items;
       const changed = !sameSource || this.pageSize !== size;
       this.pageSize = size;
       this.load = options.load;
@@ -65,6 +71,7 @@
         this.busy = false;
         this.prefetchPending = null;
         this.prefetchAttempt = null;
+        this.reloadAttempted = false;
       }
       this.externalBusy = Boolean(options.loading);
       if (changed) {
@@ -73,9 +80,13 @@
         this.total = count(options.total);
         this.hasMore = Boolean(options.hasMore);
         this.initialHasMore = this.hasMore;
-        this.page = sameSource ? Math.floor(firstItem / size) + 1 : 1;
+        this.page = sameSource || samePosition ? Math.floor(firstItem / size) + 1 : 1;
+        this.page = Math.min(this.page, this.lastPage);
         this.direction = 1;
-        this.items = options.items.slice((this.page - 1) * size, this.page * size);
+        const start = (this.page - 1) * size;
+        const needsRead = this.page > 1 && typeof this.load === "function"
+          && (start >= options.items.length || (start + size > options.items.length && this.hasMore));
+        this.items = needsRead ? previousItems : options.items.slice(start, start + size);
         this.cache.clear();
         for (let start = 0; start < options.items.length; start += size) {
           const items = options.items.slice(start, start + size);
@@ -84,10 +95,14 @@
           }
         }
         // The first page stays available even when a provider returns a short page.
-        this.remember(this.page, this.items);
+        if (!needsRead) this.remember(this.page, this.items);
       }
+      this.positionKey = options.positionKey;
       this.onChange();
-      void this.prefetch();
+      if (!this.loading && !this.cache.has(this.page) && !this.reloadAttempted) {
+        this.reloadAttempted = true;
+        void this.goTo(this.page).catch(error => this.onError(error));
+      } else void this.prefetch();
     }
 
     remember(page, items) {
@@ -177,7 +192,7 @@
 
     async goTo(page) {
       const pageSize = this.pageSize;
-      if (this.loading || page === this.page) return false;
+      if (this.loading || (page === this.page && this.cache.has(page))) return false;
       if (!Number.isSafeInteger(page) || page < 1 || page > this.lastPage) {
         throw new RangeError("page_out_of_range");
       }
@@ -439,6 +454,9 @@
       element.title = exact;
     }
 
+    const pageErrorMessage = error => error instanceof RangeError
+      ? translate("pagination.invalidPage")
+      : error.message === "invalid_result_page" ? translate("pagination.invalidResponse") : error.message;
     const model = new Pages(() => {
       pager.setAttribute("aria-label", translate("pagination.label"));
       pager.setAttribute("aria-busy", String(model.loading));
@@ -486,6 +504,8 @@
       }
       pager.hidden = container.classList.contains("hidden") || !model.items.length;
       scheduleLayout();
+    }, error => {
+      if (pager.getClientRects().length) reportError(pageErrorMessage(error));
     });
 
     function clearSwipe() {
@@ -548,7 +568,11 @@
       closeEditor();
       const ticket = ++navigationVersion;
       const direction = Math.sign(page - model.page);
-      showDots();
+      if (distance !== null) showDots();
+      else {
+        clearTimeout(idleTimer);
+        pager.classList.remove("is-interacting");
+      }
       try {
         if (distance !== null && !await settleSwipe(distance, -direction * pageStride(), ticket)) return;
         if (!container.getClientRects().length) return;
@@ -565,11 +589,7 @@
         if (ticket !== navigationVersion) return;
         input.value = String(model.page);
         if (!pager.getClientRects().length) return;
-        const message = error instanceof RangeError
-          ? translate("pagination.invalidPage")
-          : error.message === "invalid_result_page"
-            ? translate("pagination.invalidResponse") : error.message;
-        reportError(message);
+        reportError(pageErrorMessage(error));
       } finally {
         if (ticket === navigationVersion) {
           clearSwipe();
@@ -621,6 +641,7 @@
         if (ticket === navigationVersion) {
           clearSwipe();
           settling = false;
+          rest();
         }
       }
     }
@@ -751,6 +772,7 @@
         model.version += 1;
         cancelNavigation();
         model.busy = false;
+        model.reloadAttempted = false;
         renderedItems = null;
         clearTimeout(idleTimer);
         pager.classList.remove("is-interacting");

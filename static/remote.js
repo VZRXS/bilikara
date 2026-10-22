@@ -4174,7 +4174,7 @@ function createSearchResultRow(item, { eagerCover = false } = {}) {
 
 function remoteResultPaginationOptions(container, items, emptyText) {
   const owner = requestDetailOwnerForContainer(container);
-  let data = {}, load = null, loading = false, key = owner;
+  let data = {}, load = null, loading = false, key = owner, positionKey;
   if (owner === "uids" || owner === "favorites") {
     const favorites = owner === "favorites";
     data = (favorites ? state.favlistBrowseData : state.followBrowseData) || {};
@@ -4182,6 +4182,7 @@ function remoteResultPaginationOptions(container, items, emptyText) {
     const query = String(data.query || "");
     loading = favorites ? state.favlistBrowseLoading : state.followBrowseLoading;
     key = JSON.stringify([owner, selected, query, favorites ? state.favlistBrowseSeq : state.followBrowseSeq]);
+    positionKey = JSON.stringify([owner, selected, query]);
     load = page => favorites
       ? fetchGatchaFavlistBrowse(selected, query, page)
       : fetchGatchaBrowse(selected, query, page);
@@ -4214,7 +4215,7 @@ function remoteResultPaginationOptions(container, items, emptyText) {
     ? data.matched_count : (limited || data.has_more === false ? items.length : null);
   const readAhead = ["name", "artist", "categories", "shared"].includes(owner) ? 2 : 0;
   const readSize = ["shared", "local"].includes(owner) ? 72 : undefined;
-  return { key, items, total, hasMore: Boolean(data.has_more), limited, load, loading, readAhead, readSize,
+  return { key, positionKey, items, total, hasMore: Boolean(data.has_more), limited, load, loading, readAhead, readSize,
     emptyText, language: state.language, prefetch: readAhead > 0 };
 }
 
