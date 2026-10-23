@@ -113,6 +113,10 @@ for(const [engine,android] of [[chromium,false],[webkit,false],[chromium,true],[
     const switchGeometry=n=>{const s=getComputedStyle(n);return Object.fromEntries(['width','height','borderRadius'].map(k=>[k,s[k]]));};
     assert.deepEqual(await settings.locator('.cache-preview-switch').evaluate(switchGeometry),await page.locator('label[for="update-automatic-checkbox"] .cache-preview-switch').evaluate(switchGeometry),'DLNA uses the existing settings switch geometry');
     assert.ok(await settings.locator('.media-output-targets').evaluate(n=>n.getBoundingClientRect().height>=44));
+    const runtimeSelectStyle=n=>{const s=getComputedStyle(n);return [s.height,s.minHeight,s.borderRadius,s.fontSize,s.fontWeight,s.appearance];};
+    assert.deepEqual(await settings.locator('select').evaluate(runtimeSelectStyle),await page.locator('#cache-quality-select').evaluate(runtimeSelectStyle),'inline output choice shares the runtime select definition');
+    assert.deepEqual(await settings.locator('select').evaluate(runtimeSelectStyle),['34px','34px','999px','13px','700','auto']);
+    assert.equal(await settings.locator('.runtime-settings-select-shell').evaluate(n=>{const s=getComputedStyle(n),a=n.getBoundingClientRect(),b=n.firstElementChild.getBoundingClientRect();return s.overflow==='hidden'&&s.borderRadius==='999px'&&Math.abs(a.width-b.width)<1;}),true,'native select paint is clipped to the visible pill without clipping its text');
     assert.equal(await settings.locator('.media-output-mode').evaluate(n=>{const a=n.firstElementChild.getBoundingClientRect(),b=n.lastElementChild.getBoundingClientRect();return Math.abs((a.top+a.bottom-b.top-b.bottom)/2)<1;}),true,'delay mode label and select share one row');
     await page.locator(android?'[data-android-page="playback"]':'#work-rail-playback').count().then(async count=>{if(count)await page.locator(android?'[data-android-page="playback"]':'#work-rail-playback').click();});
     await page.locator('[data-media-output="console"]').waitFor({state:'visible'});
@@ -215,7 +219,8 @@ for(const [engine,android] of [[chromium,false],[webkit,false],[chromium,true],[
             assert.equal(await card.locator('.experimental-label').textContent(),await remote.evaluate(()=>t('purek.experimental')));
             assert.equal(await card.locator('.media-output-status').textContent(),await remote.evaluate(()=>t('mediaOutput.status.streaming')));
             assert.doesNotMatch(await card.locator('.media-output-status').textContent(),/[()（）]/);
-            assert.deepEqual(await card.locator('select').evaluate(n=>{const s=getComputedStyle(n);return [s.height,s.borderRadius,s.fontSize,s.fontWeight];}),['44px','14px','16px','400']);
+            assert.deepEqual(await card.locator('select').evaluate(n=>{const s=getComputedStyle(n);return [s.height,s.borderRadius,s.fontSize,s.fontWeight,s.appearance];}),['34px','999px','13px','700','auto']);
+            assert.equal(await card.locator('.runtime-settings-select-shell').evaluate(n=>{const s=getComputedStyle(n),a=n.getBoundingClientRect(),b=n.firstElementChild.getBoundingClientRect();return s.overflow==='hidden'&&s.borderRadius==='999px'&&Math.abs(a.width-b.width)<1;}),true,'Remote clips the native paint to the same pill');
             assert.equal(await card.evaluate(n=>n.scrollWidth<=n.clientWidth+1),true);
           }
         }

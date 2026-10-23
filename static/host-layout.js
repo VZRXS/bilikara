@@ -3,6 +3,45 @@
 (() => {
   "use strict";
   const root = document.documentElement;
+  // Runtime settings share content-based wrapping on desktop and Android.
+  const sourceRow = document.getElementById?.("cache-source-row");
+  let sourceRowFrame = null;
+  function scheduleSourceRowLayout() {
+    if (sourceRowFrame !== null || !sourceRow?.clientWidth) return;
+    sourceRowFrame = window.requestAnimationFrame(() => {
+      sourceRowFrame = null;
+      if (!sourceRow?.clientWidth) return;
+      const style = getComputedStyle(sourceRow);
+      const labels = Array.from(sourceRow.querySelectorAll(".cache-panel-label"));
+      const widths = labels.map(label => {
+        // Measure the full translated label even while the narrow layout wraps it.
+        const measure = label.cloneNode(true);
+        measure.removeAttribute("data-i18n");
+        measure.setAttribute("aria-hidden", "true");
+        measure.style.cssText = "position:absolute;visibility:hidden;white-space:nowrap;width:max-content;max-width:none;pointer-events:none";
+        label.after(measure);
+        const width = measure.getBoundingClientRect().width;
+        measure.remove();
+        return width;
+      });
+      const required = Math.max(widths[0], parseFloat(style.getPropertyValue("--cache-source-control-width")))
+        + Math.max(widths[1], sourceRow.querySelector(".cache-hires-switch").getBoundingClientRect().width)
+        + parseFloat(style.getPropertyValue("--cache-source-inline-gap"));
+      const layout = Math.ceil(required) > sourceRow.clientWidth ? "stacked" : "inline";
+      if (sourceRow.dataset.layout !== layout) sourceRow.dataset.layout = layout;
+    });
+  }
+
+  if (sourceRow && typeof ResizeObserver === "function") {
+    const observer = new ResizeObserver(scheduleSourceRowLayout);
+    observer.observe(sourceRow);
+    sourceRow.querySelectorAll(".cache-panel-label").forEach(label => observer.observe(label));
+  }
+  document.addEventListener("bilikara:i18n", scheduleSourceRowLayout);
+  document.fonts?.ready.then(scheduleSourceRowLayout);
+  document.fonts?.addEventListener?.("loadingdone", scheduleSourceRowLayout);
+  window.addEventListener("resize", scheduleSourceRowLayout);
+  scheduleSourceRowLayout();
   if (root.dataset.nativeHost !== "true") return;
   // Desktop keeps its existing narrow workspace/rail layout. Phone navigation
   // belongs to Android, not to every native WebView below the width threshold.
@@ -234,6 +273,7 @@
     }
   }
 
+
   function navigate(next, {openSettings = false, remember = true} = {}) {
     if (!portrait || !pages.has(next)) return;
     finishSettingsTransition?.();
@@ -252,6 +292,7 @@
     const workspace = page === "queue" ? queueView : page === "request" ? requestView : defaultWorkspaces.get(page);
     if (workspace) activateHostWorkspace(workspace, {inputOrigin: "host-navigation"});
     syncVisibility();
+    scheduleSourceRowLayout();
     schedulePersistentStageMeasurement();
     if (remember && changed) saveRoute();
     if (slide) {
@@ -461,7 +502,11 @@
   for (const id of ["av-offset-input", "key-shift-input"]) {
     byId(id).addEventListener("input", syncPlayerFieldWidths);
   }
-  window.addEventListener("resize", updateOrientation);
+  window.addEventListener("resize", () => {
+    updateOrientation();
+    if (typeof ResizeObserver !== "function") scheduleSourceRowLayout();
+  });
+
   window.addEventListener("pagehide", () => finishSettingsTransition?.());
   window.addEventListener("bilikara:ime", event => {
     const pixels = Math.max(0, Number(event.detail?.bottom) || 0);

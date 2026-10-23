@@ -288,6 +288,12 @@ WebView. Its native background follows the Host surface color on theme changes.
 Spare toolbar content also supports Tauri dragging; buttons, links,
 menus and help retain their own pointer interactions. Windows retains its
 separate native caption row and double-click owner.
+Runtime selects on macOS retain native HTML select popup and keyboard behavior,
+while CSS paints the closed 34px/13px field as the shared pill with a
+non-interactive arrow. Keep their wrapper unclipped for focus geometry. Other
+desktop WebViews retain their existing native painting. Shared surfaces declare `color-scheme`
+explicitly: light for the light theme, dark for dark/blue. Native form controls
+and popup choices follow the app's selected theme even when the system differs.
 
 `npm run test:playback-restart` separately checks the shared restart affordances
 against an actual isolated native Host, Chromium and short synthetic media.

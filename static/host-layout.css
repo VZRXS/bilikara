@@ -584,6 +584,9 @@ html[data-host-layout="portrait"] #android-settings-slot .cache-panel-row { flex
 html[data-host-layout="portrait"] #android-settings-slot .cache-slider-row { min-width: 0; width: 100%; }
 html[data-host-layout="portrait"] #android-settings-slot .cache-quality-select { max-width: 100%; }
 html[data-host-layout="portrait"] #android-settings-slot #cache-quality-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+/* Keep the original pair until the measured labels and controls no longer fit. */
+html[data-host-layout="portrait"] #android-settings-slot #cache-source-row .cache-panel-label { justify-self: start; letter-spacing: normal; text-transform: none; white-space: nowrap; }
+html[data-host-layout="portrait"] #android-settings-slot #cache-source-row[data-layout="stacked"] .cache-panel-label { white-space: normal; }
 html[data-host-layout="portrait"] #android-settings-slot .cache-panel-row { flex-direction: row; }
 html[data-host-layout="portrait"] #android-settings-slot .cache-limit-slider { width: 100%; min-height: 32px; }
 /* The range already supplies touch height; avoid stacking its desktop margins
@@ -771,10 +774,11 @@ html[data-host-layout="portrait"] #android-request-tabs > .request-mode-head { b
 html[data-host-layout="portrait"] #android-request-tabs .request-mode-back { flex: none; }
 html[data-host-layout="portrait"] .queue-toolbar,
 html[data-host-layout="portrait"] .queue-subview-actions { width: auto; flex: 0 0 auto; justify-content: flex-end; }
-html[data-host-layout="portrait"] #cache-usage-row > div:first-child { min-width: 0; flex: 1; }
+html[data-host-layout="portrait"] #cache-usage-row > div:first-child { min-width: 0; }
 html[data-host-layout="portrait"] #cache-usage-row .cache-panel-label { display: none; }
 html[data-host-layout="portrait"] #cache-usage-detail { display: block; margin: 0; }
-html[data-host-layout="portrait"] #cache-usage-row { align-items: center; }
+html[data-host-layout="portrait"] #cache-usage-detail > span { white-space: nowrap; }
+html[data-host-layout="portrait"] #cache-usage-row { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: center; }
 html[data-host-layout="portrait"] #cache-usage-row .cache-panel-side { min-width: 0; }
 html[data-host-layout="portrait"] .bbdown-login-hover-label { display: none; }
 html[data-host-layout="portrait"] .bbdown-login-badge.is-logged:focus-visible .bbdown-login-label { opacity: 1; }

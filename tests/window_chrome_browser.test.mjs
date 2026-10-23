@@ -40,6 +40,32 @@ for(const engine of [chromium,webkit])test(`${engine.name()} macOS native titleb
   }finally{await browser.close();}
 });
 
+for(const engine of [chromium,webkit])test(`${engine.name()} macOS runtime selects share pill painting and retain native keyboard selection`,async()=>{
+  const browser=await engine.launch();
+  try{
+    const page=await browser.newPage({viewport:{width:700,height:600}});
+    await page.setContent(`<style>${styles}</style><span class="runtime-settings-select-shell"><select class="runtime-settings-select"><option>Original</option><option>Instrumental</option></select></span>`);
+    await page.evaluate(()=>document.documentElement.dataset.tauriPlatform='macos');
+    const shell=page.locator('.runtime-settings-select-shell'),select=page.locator('select');
+    for(const systemTheme of ['dark','light']){
+      await page.emulateMedia({colorScheme:systemTheme});
+      for(const theme of ['light','dark','blue']){
+        await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
+        assert.equal(await shell.evaluate(n=>getComputedStyle(n).overflow),'visible','AppKit painting and native focus must not be clipped');
+        assert.deepEqual(await select.evaluate(n=>{const s=getComputedStyle(n);return [s.height,s.fontSize,s.fontWeight,s.appearance,s.borderRadius];}),['34px','13px','700','none','999px']);
+        assert.equal(await shell.evaluate(n=>getComputedStyle(n,'::after').pointerEvents),'none','the custom closed-field arrow must not intercept native select activation');
+        assert.equal(await select.evaluate(n=>getComputedStyle(n).colorScheme),theme==='light'?'light':'dark',
+          'native menu colors follow the selected app theme when the system theme differs');
+      }
+    }
+    await select.focus();await page.keyboard.press('ArrowDown');await page.keyboard.press('Tab');
+    assert.equal(await select.inputValue(),'Instrumental');
+    await page.evaluate(()=>document.documentElement.dataset.tauriPlatform='windows');
+    assert.equal(await shell.evaluate(n=>getComputedStyle(n).overflow),'hidden','other WebViews retain their pill painting correction');
+    assert.equal(await select.evaluate(n=>getComputedStyle(n).appearance),'auto');
+  }finally{await browser.close();}
+});
+
 test('Windows drag-region double click retains one owner when resize retargets its release', async () => {
   const browser = await chromium.launch();
   try {

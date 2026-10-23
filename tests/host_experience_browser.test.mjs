@@ -1388,3 +1388,33 @@ test('actual local-library HTTP search counts and renders unique videos across o
   assert.deepEqual(await page.evaluate(() => state.searchModeState.local.items.map(item => item.bvid)), ['BV1xx411c7mD', 'BV1z84y1p7oS', 'BV0000000001']);
   assert.equal(await page.locator('#search-results .search-result-item').count(), 3);
 });
+
+for(const [name,engine] of Object.entries({chromium,webkit}))test(`${name} desktop runtime source settings fit translated labels before wrapping into aligned rows`,{
+  skip:nativeLimit,timeout:60000,
+},async t=>{
+  const {page}=await open(t,engine,'host',{},true);
+  for(const width of [700,1024]) {
+    await page.setViewportSize({width,height:800});
+    for(const [language,layout] of [['en','stacked'],['zh','inline'],['ja','stacked']]) {
+      await page.evaluate(language=>setLanguage(language),language);
+      if(await page.locator('#cache-settings-toggle').getAttribute('aria-expanded')!=='true')await page.locator('#cache-settings-toggle').click();
+      await page.waitForFunction(layout=>document.getElementById('cache-source-row').dataset.layout===layout,layout);
+      const bounds=await page.locator('#cache-source-row').evaluate(row=>{
+        const outer=row.getBoundingClientRect(),labels=[...row.children].map(n=>n.getBoundingClientRect()),
+          select=row.querySelector('select').getBoundingClientRect(),toggle=row.querySelector('.cache-hires-switch').getBoundingClientRect();
+        const text=[...row.querySelectorAll('.cache-panel-label')].map(n=>{
+          const range=document.createRange();range.selectNodeContents(n);return range.getBoundingClientRect();
+        });
+        return {inside:labels.every(r=>r.left>=outer.left-1&&r.right<=outer.right+1)
+          &&select.right<=outer.right+1&&toggle.right<=outer.right+1,
+          aligned:Math.abs(text[0].left-text[1].left)<1&&Math.abs(select.right-toggle.right)<1,
+          sameRow:Math.abs(labels[0].top-labels[1].top)<1,
+          separateRows:labels[1].top>=labels[0].bottom};
+      });
+      assert.equal(bounds.inside,true,JSON.stringify({width,language,bounds}));
+      if(layout==='stacked')assert.ok(bounds.aligned&&bounds.separateRows,JSON.stringify({width,language,bounds}));
+      else assert.equal(bounds.sameRow,true);
+      await page.keyboard.press('Escape');
+    }
+  }
+});

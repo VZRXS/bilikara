@@ -10,7 +10,7 @@
   function create(root, options) {
     root.classList.add("media-output-card");
     const heading = options.host?'<span class="media-output-heading"></span>':'<p class="media-output-heading panel-tag"></p>';
-    root.innerHTML = heading+'<span class="media-output-status" role="status"></span><p class="media-output-note"></p><label class="cache-preview-field media-output-targets"><span>DLNA</span><input type="checkbox" role="switch" class="media-output-toggle" /><span class="cache-preview-switch" aria-hidden="true"><span class="cache-preview-switch-thumb"></span></span></label><button type="button" class="media-output-retry" hidden></button><label class="media-output-mode"><span></span><select><option value="splice"></option><option value="gradual"></option></select></label><p class="media-output-error" role="alert" hidden></p>';
+    root.innerHTML = heading+'<span class="media-output-status" role="status"></span><p class="media-output-note"></p><label class="cache-preview-field media-output-targets"><span>DLNA</span><input type="checkbox" role="switch" class="media-output-toggle" /><span class="cache-preview-switch" aria-hidden="true"><span class="cache-preview-switch-thumb"></span></span></label><button type="button" class="media-output-retry" hidden></button><label class="media-output-mode"><span></span><span class="runtime-settings-select-shell"><select class="runtime-settings-select"><option value="splice"></option><option value="gradual"></option></select></span></label><p class="media-output-error" role="alert" hidden></p>';
     const find = s => root.querySelector(s);
     const nodes = {heading:find(".media-output-heading"),status:find(".media-output-status"),note:find(".media-output-note"),targets:find(".media-output-targets"),toggle:find(".media-output-toggle"),retry:find(".media-output-retry"),mode:find(".media-output-mode"),select:find("select"),error:find(".media-output-error")};
     const header = document.createElement("div"), help = document.createElement("span");
@@ -70,7 +70,7 @@
       text(nodes.retry,t(nodes.retry.hasAttribute("aria-busy")?"mediaOutput.working":"mediaOutput.retry"));
       nodes.retry.disabled=pending||output.busy||!output.authorized||!output.available;
       nodes.mode.hidden = !network || root.dataset.mediaOutput === "console";
-      text(nodes.mode.querySelector("span"),t("mediaOutput.mode"));
+      text(nodes.mode.firstElementChild,t("mediaOutput.mode"));
       text(nodes.select.options[0],t("mediaOutput.splice"));text(nodes.select.options[1],t("mediaOutput.gradual"));
       if (!nodes.select.hasAttribute("aria-busy")) nodes.select.value=output.offset_mode||"splice";
       nodes.select.setAttribute("aria-label",t("mediaOutput.mode"));nodes.select.disabled = pending || output.busy;

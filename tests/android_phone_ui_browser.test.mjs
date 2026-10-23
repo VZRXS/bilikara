@@ -279,8 +279,8 @@ test('Android audience QR follows Host open/close over ordered envelopes without
   assert.equal(latest.payload.remoteMenuVisible,false);assert.deepEqual(errors,[]);
 });
 
-test('Android My keeps its scroll frame, cache lines, login link and settings animation geometry', {timeout:90000,skip:process.platform!=='linux'}, async t=>{
-  const {page,host}=await open(t,chromium);await go(page,'my');
+for(const engine of [chromium,webkit])test(`${engine.name()} Android My keeps its scroll frame, cache lines, login link and settings animation geometry`, {timeout:90000,skip:process.platform!=='linux'}, async t=>{
+  const {page,host}=await open(t,engine);await go(page,'my');
   await page.evaluate(()=>{
     fetchState=async()=>{};state.eventSource?.close();
     state.data.bbdown.login={state:'waiting',logged_in:false,message:'请使用哔哩哔哩 App 扫码登录',login_url:'https://account.bilibili.com/fixture-login?key=synthetic',qr_image:'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNjgiIGhlaWdodD0iMTY4Ij48cmVjdCB3aWR0aD0iMTY4IiBoZWlnaHQ9IjE2OCIgZmlsbD0id2hpdGUiLz48L3N2Zz4='};
@@ -298,6 +298,23 @@ test('Android My keeps its scroll frame, cache lines, login link and settings an
       const qr=n.querySelector('.bbdown-login-qr-code').getBoundingClientRect(),details=n.querySelector('.bbdown-login-qr-details').getBoundingClientRect();
       return {inside:details.top>=qr.top-1&&details.bottom<=qr.bottom+1,right:details.left>=qr.right,alternative:!n.querySelector('.bbdown-login-alternative').hidden};
     });assert.ok(bounds.inside&&bounds.right,JSON.stringify({width,language,bounds}));assert.equal(bounds.alternative,true);
+    await page.evaluate(()=>renderCacheUsageDetail(t('service.cacheUsageDetail',{usage:'12.5 GB',count:9999})));
+    const usage=await page.locator('#cache-usage-row').evaluate(row=>{
+      const detail=row.querySelector('#cache-usage-detail'),side=row.querySelector('.cache-panel-side');
+      const singleLines=[...detail.children].every(n=>{const range=document.createRange();range.selectNodeContents(n);return range.getClientRects().length===1;});
+      const a=detail.getBoundingClientRect(),b=side.getBoundingClientRect(),r=row.getBoundingClientRect();
+      return {singleLines,separate:a.right<=b.left,inside:a.left>=r.left&&b.right<=r.right+1,overflow:row.scrollWidth>row.clientWidth+1};
+    });assert.deepEqual(usage,{singleLines:true,separate:true,inside:true,overflow:false},JSON.stringify({width,language,usage}));
+    await page.waitForFunction(width=>document.getElementById('cache-source-row').dataset.layout===(width===320?'stacked':'inline'),width);
+    const source=await page.locator('#cache-source-row').evaluate(row=>{
+      const [download,reset]=row.children,[a,b]=[download,reset].map(n=>n.getBoundingClientRect());
+      const labels=[download,reset].map(n=>n.firstElementChild.getBoundingClientRect());
+      const controls=[download.querySelector('.runtime-settings-select-shell'),reset.querySelector('.cache-hires-switch')].map(n=>n.getBoundingClientRect());
+      const stacked=row.dataset.layout==='stacked';
+      return {aligned:stacked?a.bottom<=b.top&&Math.abs(labels[0].left-labels[1].left)<1&&Math.abs(controls[0].right-controls[1].right)<1:
+        Math.abs(labels[0].top-labels[1].top)<1&&Math.abs((controls[0].top+controls[0].bottom-controls[1].top-controls[1].bottom)/2)<1,
+        separate:labels.every((r,i)=>stacked?r.right<=controls[i].left:r.bottom<=controls[i].top),targets:[a,b].every(r=>r.height>=44),overflow:row.scrollWidth>row.clientWidth+1};
+    });assert.deepEqual(source,{aligned:true,separate:true,targets:true,overflow:false},JSON.stringify({width,language,source}));
   }
   await page.setViewportSize({width:393,height:736});await page.evaluate(()=>setLanguage('zh'));
   const lines=await page.locator('#cache-usage-detail').evaluate(n=>{const [size,count]=n.children;return {size:size.getBoundingClientRect().toJSON(),count:count.getBoundingClientRect().toJSON()};});

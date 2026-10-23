@@ -2186,21 +2186,6 @@ html:not([data-host-layout="portrait"]) .current-title-text {
   cursor: pointer;
 }
 
-.cache-quality-select {
-  width: 100%;
-  height: var(--cache-control-height);
-  border: none;
-  border-radius: 999px;
-  padding: 0 30px 0 12px;
-  background: var(--quality-select-bg);
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 700;
-  outline: none;
-  box-shadow: var(--quality-select-shadow);
-  cursor: pointer;
-}
-
 .cache-quality-select:disabled {
   opacity: 0.62;
   cursor: wait;
@@ -11449,11 +11434,12 @@ body.is-presentation-stage-only #player-fullscreen-button {
   color: var(--ink);
 }
 
-/* The native select needs enough intrinsic width for "Downkyi (aria2c)";
-   the sibling runtime field can continue using the remaining space. */
+/* Reserve the source field's intrinsic width before sharing the runtime row. */
+.cache-quality-field[for="cache-download-source-select"] {
+  min-width: min(160px, 100%);
+}
 #cache-download-source-select {
-  width: max-content;
-  min-width: 160px;
+  width: 100%;
   max-width: 100%;
 }
 
