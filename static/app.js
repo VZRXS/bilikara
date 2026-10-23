@@ -463,6 +463,7 @@ const state = {
   presentationOutputChannel: null,
   presentationOutputSenderId: `host-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
   presentationOutputSequence: 0,
+  presentationOutputLastPublication: null,
   presentationOutputRelayPending: null,
   presentationOutputRelayInFlight: false,
   presentationHostControlBusy: false,
@@ -1391,7 +1392,7 @@ function isAndroidNativePlaybackRuntime() {
     && /Android/i.test(navigator.userAgent || "");
 }
 
-function clearAndroidAudioClockRecovery(session = state.hostPlaybackSession) {
+function clearSplitAudioClockRecovery(session = state.hostPlaybackSession) {
   if (!session) {
     return;
   }
@@ -1753,6 +1754,9 @@ function presentationSyncApi() {
   return window.BilikaraPresentationSync || null;
 }
 
+const presentationOutputClockIntervalMs = 250;
+const presentationOutputHeartbeatMs = 1000;
+
 function ensurePresentationOutputChannel() {
   const sync = presentationSyncApi();
   if (!sync) {
@@ -1767,7 +1771,7 @@ function ensurePresentationOutputChannel() {
       previous = candidate;
       // The initial scene can precede the new window's session initialization.
       // Replay after readiness, including when no song/state changes follow.
-      publishPresentationOutputState();
+      publishPresentationOutputState(undefined, { force: true });
     };
     state.presentationOutputReadyListener = ready;
     window.addEventListener("storage", event => {
@@ -1788,11 +1792,11 @@ function ensurePresentationOutputChannel() {
 function relayPresentationOutputState(envelope) {
   const invoke = tauriInvoke("presentation");
   if (typeof invoke !== "function") {
-    return;
+    return false;
   }
   state.presentationOutputRelayPending = { generation: state.presentationSession.generation, envelope };
   if (state.presentationOutputRelayInFlight) {
-    return;
+    return true;
   }
   const next = state.presentationOutputRelayPending;
   state.presentationOutputRelayPending = null;
@@ -1808,9 +1812,10 @@ function relayPresentationOutputState(envelope) {
         state.presentationOutputRelayPending = null;
       }
     });
+  return true;
 }
 
-function publishPresentationOutputState(session = state.hostPlaybackSession) {
+function publishPresentationOutputState(session = state.hostPlaybackSession, { force = false } = {}) {
   const sync = presentationSyncApi();
   if (
     !sync
@@ -1820,17 +1825,18 @@ function publishPresentationOutputState(session = state.hostPlaybackSession) {
     return false;
   }
   const video = session?.video || activePrimaryVideoElement();
+  const now = Date.now();
   const scene = currentPresentationScene();
   const internetQrImage = String(state.internetRemoteDisplay?.qr_image || "");
   const clock = {
     itemIdentity: scene.currentItemIdentity,
     mediaTime: Math.max(0, Number(video?.currentTime || 0)),
-    sampledAt: Date.now(),
+    sampledAt: now,
     paused: !video || Boolean(video.paused),
     playbackRate: Math.max(0.1, Number(video?.playbackRate || 1)),
     seeking: Boolean(video?.seeking),
   };
-  const envelope = sync.makeEnvelope("master-state", {
+  const payload = {
     scene,
     clock,
     language: state.language,
@@ -1848,16 +1854,34 @@ function publishPresentationOutputState(session = state.hostPlaybackSession) {
         ? internetQrImage.slice(0, 524_288)
         : "",
     },
-  }, {
+  };
+  // Only the media clock needs periodic transport. Metadata and explicit
+  // playback changes must bypass that cadence, including an unchanged replay
+  // requested by a newly opened audience window.
+  const signature = JSON.stringify({
+    ...payload,
+    clock: { ...clock, mediaTime: undefined, sampledAt: undefined },
+  });
+  const previous = state.presentationOutputLastPublication;
+  const clockJumped = previous && Math.abs(
+    sync.predictedMediaTime(previous.clock, now) - clock.mediaTime,
+  ) > sync.softSyncThresholdSeconds;
+  const interval = clock.paused ? presentationOutputHeartbeatMs : presentationOutputClockIntervalMs;
+  if (!force && previous?.signature === signature && !clockJumped
+    && now - previous.sentAt < interval) return false;
+  state.presentationOutputLastPublication = { signature, clock, sentAt: now };
+  const envelope = sync.makeEnvelope("master-state", payload, {
     senderId: state.presentationOutputSenderId,
     sequence: ++state.presentationOutputSequence,
-    sentAt: Date.now(),
+    sentAt: now,
   });
   if (window.BilikaraAndroidPresentation) {
     window.BilikaraAndroidPresentation.postMaster(envelope);
     return true;
   }
-  relayPresentationOutputState(envelope);
+  // Native WebViews have an explicit relay. Repeating the same large scene
+  // through browser storage synchronously blocks both windows for no benefit.
+  if (relayPresentationOutputState(envelope)) return true;
   ensurePresentationOutputChannel()?.postMessage(envelope);
   try {
     localStorage.setItem(sync.storageKey, JSON.stringify(envelope));
@@ -3058,11 +3082,15 @@ function renderPresentationHostAnnouncement() {
     return null;
   }
   overlay.classList.add("presentation-host-next-song-overlay");
-  renderer.renderOverlay(overlay, presentationHostAnnouncementSnapshot(), {
-    manageVisibility: true,
-    now: 0,
-    primaryIndex: state.data?.playlist?.length ? 1 : null,
-  });
+  const model = presentationHostAnnouncementSnapshot();
+  if (overlay.bilikaraPresentationModel !== model) {
+    renderer.renderOverlay(overlay, model, {
+      manageVisibility: true,
+      now: 0,
+      primaryIndex: state.data?.playlist?.length ? 1 : null,
+    });
+    overlay.bilikaraPresentationModel = model;
+  }
   return overlay;
 }
 
@@ -3192,7 +3220,7 @@ function renderPresentationHostSurface(session = state.hostPlaybackSession) {
   playbackRestartMenu?.refresh();
 }
 
-function publishPresentationPlaybackState(session = state.hostPlaybackSession) {
+function publishPresentationPlaybackState(session = state.hostPlaybackSession, { force = false } = {}) {
   const invoke = tauriInvoke("presentation");
   const capturedVideo = session?.video;
   const capturedAudio = session?.audio;
@@ -3218,9 +3246,9 @@ function publishPresentationPlaybackState(session = state.hostPlaybackSession) {
     generation: state.presentationSession.generation,
     playbackGeneration: session?.playbackGeneration ?? null,
     playbackProgram: session?.playbackProgram ?? null,
-    playbackState,
+    playbackState: { ...playbackState, currentTimeSeconds: Math.floor(playbackState.currentTimeSeconds) },
   });
-  if (signature === state.presentationPlaybackPublishSignature) {
+  if (!force && signature === state.presentationPlaybackPublishSignature) {
     return state.presentationPlaybackPublishPromise || Promise.resolve(null);
   }
   state.presentationPlaybackPublishSignature = signature;
@@ -3232,6 +3260,7 @@ function publishPresentationPlaybackState(session = state.hostPlaybackSession) {
     .then(() => {
       if (
         state.presentationSession.generation !== generation
+        || state.presentationPlaybackPublishSignature !== signature
         || (
           session
             ? !isCurrentHostPlaybackSession(session, capturedVideo, capturedAudio)
@@ -3340,7 +3369,7 @@ async function initializeLocalPresentation() {
     // A newly loaded audience page asks for the current output through the shell.
     const unlistenOutputRequest = await listen("bilikara-presentation-output-request", (event) => {
       if (Number(event?.payload?.generation) === state.presentationSession.generation) {
-        publishPresentationOutputState();
+        publishPresentationOutputState(undefined, { force: true });
       }
     });
     state.presentationUnlisteners.push(
@@ -12379,7 +12408,7 @@ function clearLocalPlayerSyncTimer(session = state.hostPlaybackSession) {
   if (!session) {
     return;
   }
-  clearAndroidAudioClockRecovery(session);
+  clearSplitAudioClockRecovery(session);
   if (session.syncTimer) {
     window.clearInterval(session.syncTimer);
     session.syncTimer = null;
@@ -12454,7 +12483,7 @@ function takeLocalPlayerSeekCompletion(session) {
 }
 
 function clearLocalPlayerSeekState(session = state.hostPlaybackSession) {
-  clearAndroidAudioClockRecovery(session);
+  clearSplitAudioClockRecovery(session);
   const completion = takeLocalPlayerSeekCompletion(session);
   if (typeof completion === "function") {
     try {
@@ -13411,7 +13440,7 @@ function holdVideoForAudio(video) {
   }
 }
 
-function scheduleAndroidAudioClockRecovery(video, audio) {
+function scheduleSplitAudioClockRecovery(video, audio) {
   const session = state.hostPlaybackSession;
   if (session.audioClockRecoveryFrame != null) {
     return;
@@ -13754,7 +13783,7 @@ function setSplitPlaybackIntent(
   if (!nextIntent) {
     session.presentationFeedbackPlayPending = false;
     audio.bilikaraPitch?.reset();
-    clearAndroidAudioClockRecovery(session);
+    clearSplitAudioClockRecovery(session);
   }
   if (!session.readyCommitted) {
     state.localShouldBePlaying = shouldHoldCurrentItemForTransition(itemId)
@@ -14526,7 +14555,7 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
     return "none";
   }
   if (audio.ended) {
-    clearAndroidAudioClockRecovery();
+    clearSplitAudioClockRecovery();
     return "none";
   }
 
@@ -14549,9 +14578,24 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
   const isWebKit = isWebKitPlaybackRuntime();
 
   const isAndroid = isAndroidNativePlaybackRuntime();
+  const session = state.hostPlaybackSession;
+  let videoAdvancing = false, audioAdvancing = false;
+  if (isWebKit) {
+    const sampledAt = Date.now();
+    const clockAdvancing = (media, previous) => {
+      if (!previous || previous.seeking || media.seeking || media.paused || media.readyState < 2) return false;
+      const delta = Number(media.currentTime) - previous.time;
+      const elapsed = Math.max(0, sampledAt - previous.at) / 1000;
+      return delta > 0 && delta <= elapsed * requestedRate + localPlayerForceSyncEpsilonSeconds;
+    };
+    videoAdvancing = clockAdvancing(video, session.syncVideoClockSample);
+    audioAdvancing = clockAdvancing(audio, session.syncAudioClockSample);
+    session.syncVideoClockSample = { time: Number(video.currentTime), at: sampledAt, seeking: video.seeking };
+    session.syncAudioClockSample = { time: Number(audio.currentTime), at: sampledAt, seeking: audio.seeking };
+  }
 
   if (shouldHoldCurrentItemForTransition(video.dataset.playerItemId)) {
-    clearAndroidAudioClockRecovery();
+    clearSplitAudioClockRecovery();
     state.localShouldBePlaying = false;
     if (!audio.paused) {
       audio.pause();
@@ -14577,7 +14621,7 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
     return reportAction("pause");
   }
   if (audio.seeking) {
-    if (isAndroid && state.localShouldBePlaying) {
+    if ((isAndroid || isWebKit) && state.localShouldBePlaying) {
       holdVideoForAudio(video);
     }
     return reportAction("wait-for-audio");
@@ -14597,7 +14641,7 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
   }
 
   if (!state.localShouldBePlaying) {
-    clearAndroidAudioClockRecovery();
+    clearSplitAudioClockRecovery();
     if (!audio.paused) {
       audio.pause();
     }
@@ -14608,10 +14652,13 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
   // decoder starvation. Reconcile both sticky flags with live readiness: a
   // buffered video may keep playing without another canplay/playing event,
   // otherwise its old flag would keep the independent audio paused forever.
-  if (!video.seeking && video.readyState >= 3) {
+  // WebKit may keep HAVE_CURRENT_DATA after recovering without another
+  // canplay/playing event. Real clock advance also retires an old waiting flag;
+  // a seek jump, paused media or a stopped clock is not recovery evidence.
+  if (!video.seeking && (video.readyState >= 3 || (isWebKit && videoAdvancing))) {
     state.localVideoPlaybackBlocked = false;
   }
-  if (!audio.seeking && audio.readyState >= 3) {
+  if (!audio.seeking && (audio.readyState >= 3 || (isWebKit && audioAdvancing))) {
     state.localAudioPlaybackBlocked = false;
   }
 
@@ -14624,7 +14671,7 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
     // before that pause so their AbortError cannot fail the new prime.
     beforePrime: () => { state.localPlaybackStartGeneration += 1; },
   })) {
-    scheduleAndroidAudioClockRecovery(video, audio);
+    scheduleSplitAudioClockRecovery(video, audio);
     return reportAction("pitch-priming");
   }
   const videoTime = Number(video.currentTime || 0);
@@ -14669,26 +14716,30 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
   const drift = audioTime - targetAudioTime;
   const absoluteDrift = Math.abs(drift);
 
-  const session = state.hostPlaybackSession;
-  if (isAndroid) {
-    const catchUpThreshold = session.audioClockRecovering || state.localVideoHeldForAudio || forceCorrection
+  if (isAndroid || isWebKit) {
+    const catchUpThreshold = isWebKit
+      ? session.audioClockRecovering || state.localVideoHeldForAudio
+        ? localPlayerDriftToleranceSeconds
+        : localPlayerModerateSyncThresholdSeconds
+      : session.audioClockRecovering || state.localVideoHeldForAudio || forceCorrection
       ? localPlayerForceSyncEpsilonSeconds
       : localPlayerDriftToleranceSeconds;
     if (drift < -catchUpThreshold) {
-      // seeked/canplay only establish decoder readiness. Android's separate
-      // audio output clock can still stall after seek/play while video runs.
-      // Seeking audio again restarts that stall. Let audio catch the held
-      // video instead, preserving both the audio timeline and the AV offset.
+      // Decoder readiness does not guarantee that the output clock resumed.
+      // WebKit can report a completed seek while Web Audio still drains old
+      // buffers. Seeking that lagging audio again restarts the interruption
+      // and lets video run further ahead. Hold video until audio catches up;
+      // explicit user seeks and AV-delay changes retain their own positioning.
       session.audioClockRecovering = true;
       holdVideoForAudio(video);
       playMediaBestEffort(audio, { video, audio, mediaKind: "audio" });
       if (absoluteDrift < localPlayerHardSyncThresholdSeconds) {
-        scheduleAndroidAudioClockRecovery(video, audio);
+        scheduleSplitAudioClockRecovery(video, audio);
       }
       return reportAction("wait-for-audio-clock");
     }
     if (session.audioClockRecovering) {
-      clearAndroidAudioClockRecovery(session);
+      clearSplitAudioClockRecovery(session);
       state.localVideoDeferredRecovery = false;
       state.localVideoHeldForAudio = false;
       playMediaBestEffort(video, { internalVideo: true, video, audio, mediaKind: "video" });
@@ -16093,9 +16144,9 @@ function renderPlayer(currentItem, playbackMode) {
   createSplitPlaybackStartOverlay(video, audio);
   ensureTauriMediaSessionHandlers();
   syncTauriMediaSessionState(video, { forcePosition: true });
-  ["loadedmetadata", "durationchange", "timeupdate", "play", "pause", "seeked", "volumechange"].forEach((eventName) => {
+  ["loadedmetadata", "durationchange", "timeupdate", "play", "pause", "seeking", "seeked", "volumechange"].forEach((eventName) => {
     addMountedPlayerListener(video, eventName, () => {
-      publishPresentationPlaybackState(session).catch(() => {});
+      publishPresentationPlaybackState(session, { force: eventName !== "timeupdate" }).catch(() => {});
     });
   });
 

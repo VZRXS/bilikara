@@ -20,7 +20,14 @@
     lastMasterAt: 0,
     lastDiagnosticsAt: 0,
     scene: null,
+    sceneKey: "",
+    remoteAccessKey: "",
+    internetRemoteKey: "",
+    requestNoticeKey: "",
+    actionFeedbackKey: "",
     clock: null,
+    lastClockSeekAt: null,
+    forceClockSeek: false,
     video: null,
     channel: null,
     sequence: 0,
@@ -480,20 +487,36 @@
 
   function safeSeek(targetTime) {
     const video = state.video;
-    if (!video || video.readyState < 1) return;
+    if (!video || video.readyState < 1 || video.seeking) return false;
     const duration = Number.isFinite(video.duration) ? video.duration : Number.POSITIVE_INFINITY;
     try {
-      video.currentTime = Math.max(0, Math.min(Number(targetTime || 0), duration));
+      const target = Math.max(0, Math.min(Number(targetTime || 0), duration));
+      if (Math.abs(video.currentTime - target) <= sync.softSyncThresholdSeconds) return false;
+      video.currentTime = target;
+      state.lastClockSeekAt = Date.now();
+      state.forceClockSeek = false;
+      return true;
     } catch {
       // Metadata readiness events retry the latest clock.
+      return false;
     }
+  }
+
+  function finishClockSeek(video) {
+    if (state.video !== video) return;
+    // A slow decoder needs the correction interval after its seek completes,
+    // rather than spending that interval seeking and immediately seeking again.
+    state.lastClockSeekAt = Date.now();
+    applyClock();
   }
 
   function applyClock() {
     const video = state.video;
-    const stale = Boolean(androidDisplay && Date.now() - state.lastMasterAt > 2000);
-    if (state.failedClosed || (androidDisplay && (
-      !androidDisplay.isForeground() || stale || state.session?.phase !== "active"
+    const now = Date.now();
+    const stale = now - state.lastMasterAt > sync.maxClockAgeMs
+      || (state.clock?.sampledAt > 0 && now - state.clock.sampledAt > sync.maxClockAgeMs);
+    if (state.failedClosed || stale || (androidDisplay && (
+      !androidDisplay.isForeground() || state.session?.phase !== "active"
     ))) {
       video?.pause();
       reportOutputDiagnostics(stale);
@@ -509,18 +532,29 @@
     const correction = sync.planClockCorrection(state.clock, {
       currentTime: video.currentTime,
       paused: video.paused,
-    }, Date.now());
+      seeking: video.seeking,
+      lastSeekAt: state.lastClockSeekAt,
+      forceSeek: state.forceClockSeek,
+    }, now);
     reportOutputDiagnostics(false, correction.driftSeconds);
     if (correction.action === "seek") safeSeek(correction.targetTime);
-    if (Math.abs(Number(video.playbackRate || 1) - correction.playbackRate) > 0.001) {
+    // Some decoders implement a rate change as another pipeline seek. Finish
+    // the position correction before applying the latest requested rate.
+    if (correction.action !== "seek" && correction.action !== "wait"
+      && Math.abs(Number(video.playbackRate || 1) - correction.playbackRate) > 0.001) {
       video.playbackRate = correction.playbackRate;
     }
     if (!correction.shouldPlay) {
       if (!video.paused) video.pause();
       return;
     }
-    if (video.paused && !video.ended && video.readyState >= 1) {
-      video.play().catch(() => {
+    if (correction.action !== "wait" && video.paused && !video.ended && video.readyState >= 1) {
+      video.play().catch((error) => {
+        // pause(), a new scene and a stale Host clock can retire an unfinished
+        // WebKit play promise. Its rejection is not an autoplay policy failure.
+        if (error?.name === "AbortError" || state.video !== video || state.failedClosed
+          || !video.paused || state.clock?.paused
+          || Date.now() - state.lastMasterAt > sync.maxClockAgeMs) return;
         setError(t("controller.autoplayBlocked"), "controller.autoplayBlocked");
       });
     }
@@ -589,6 +623,8 @@
 
   function mountScene(scene) {
     retireVideo();
+    state.lastClockSeekAt = null;
+    state.forceClockSeek = true;
     document.documentElement.dataset.theme = scene.theme;
     document.title = scene.title ? `${scene.title} · bilikara Stage` : "bilikara Stage";
     if (!scene.videoUrl) {
@@ -608,6 +644,7 @@
     video.src = scene.videoUrl;
     video.addEventListener("loadedmetadata", applyClock);
     video.addEventListener("canplay", applyClock);
+    video.addEventListener("seeked", () => finishClockSeek(video));
     video.addEventListener("error", () => setError(t("controller.outputVideoFailed"), "controller.outputVideoFailed"));
     state.video = video;
     preserveOverlayAndReplace(video);
@@ -626,26 +663,59 @@
     if (state.failedClosed || candidate.payload?.scene?.generation !== state.session?.generation) return;
     state.lastMasterEnvelope = candidate;
     state.lastMasterAt = Date.now();
-    applyLanguage(candidate.payload?.language);
-    renderRemoteAccess(candidate.payload?.remoteAccess);
-    renderInternetRemote(candidate.payload?.internetRemote);
     const nextScene = sceneApi?.normalizePresentationScene(candidate.payload?.scene);
     const nextClock = sync.normalizeClock(candidate.payload?.clock);
     if (!nextScene || nextScene.generation !== state.session?.generation) return;
-    if (androidDisplay) setRemoteQrPinned(candidate.payload?.remoteMenuVisible === true);
+    const language = ["zh", "en", "ja"].includes(candidate.payload?.language) ? candidate.payload.language : "zh";
+    const languageChanged = language !== state.language;
+    if (languageChanged) applyLanguage(candidate.payload?.language);
+    const remoteAccessKey = JSON.stringify([language, candidate.payload?.remoteAccess]);
+    if (remoteAccessKey !== state.remoteAccessKey) {
+      state.remoteAccessKey = remoteAccessKey;
+      renderRemoteAccess(candidate.payload?.remoteAccess);
+    }
+    const internetRemoteKey = JSON.stringify([language, candidate.payload?.internetRemote]);
+    if (internetRemoteKey !== state.internetRemoteKey) {
+      state.internetRemoteKey = internetRemoteKey;
+      renderInternetRemote(candidate.payload?.internetRemote);
+    }
+    if (androidDisplay && state.remoteQrPinned !== (candidate.payload?.remoteMenuVisible === true)) {
+      setRemoteQrPinned(candidate.payload?.remoteMenuVisible === true);
+    }
     const shouldMount = !state.scene
-      || nextScene.revision !== state.scene.revision
       || nextScene.currentItemIdentity !== state.scene.currentItemIdentity
       || nextScene.videoUrl !== state.scene.videoUrl;
+    const sceneKey = JSON.stringify(nextScene);
+    const sceneChanged = sceneKey !== state.sceneKey;
+    // Drift caused by a stalled master is not a fresh user seek. Only a new
+    // seek/pause target may bypass the decoder's correction cooldown.
+    if (!state.clock || state.clock.itemIdentity !== nextClock.itemIdentity
+      || (nextClock.seeking && !state.clock.seeking)
+      || ((nextClock.paused || nextClock.seeking)
+        && Math.abs(sync.predictedMediaTime(state.clock, nextClock.sampledAt) - nextClock.mediaTime)
+          > sync.hardSyncThresholdSeconds)) state.forceClockSeek = true;
     state.scene = nextScene;
+    state.sceneKey = sceneKey;
     state.clock = nextClock;
-    requestNotice.show(candidate.payload?.incomingRequest);
-    actionFeedback.show(candidate.payload?.actionFeedback);
-    setError("");
+    const requestNoticeKey = JSON.stringify([language, candidate.payload?.incomingRequest]);
+    if (requestNoticeKey !== state.requestNoticeKey) {
+      state.requestNoticeKey = requestNoticeKey;
+      requestNotice.show(candidate.payload?.incomingRequest);
+    }
+    const actionFeedbackKey = JSON.stringify([language, candidate.payload?.actionFeedback]);
+    if (actionFeedbackKey !== state.actionFeedbackKey) {
+      state.actionFeedbackKey = actionFeedbackKey;
+      actionFeedback.show(candidate.payload?.actionFeedback);
+    }
+    if (elements.error.textContent || !elements.error.classList.contains("hidden")) setError("");
     if (shouldMount) {
       mountScene(nextScene);
     } else {
-      renderOverlay();
+      if (sceneChanged) {
+        document.documentElement.dataset.theme = nextScene.theme;
+        document.title = nextScene.title ? `${nextScene.title} · bilikara Stage` : "bilikara Stage";
+        renderOverlay();
+      }
       applyClock();
     }
   }
@@ -712,7 +782,7 @@
     requestOutputStateUntilReceived();
     window.setInterval(() => {
       applyClock();
-      renderOverlay();
+      if (state.scene?.overlay?.visible) renderOverlay();
     }, 100);
   }
 

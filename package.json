@@ -37,7 +37,7 @@
     "test:native-login": "node --test tests/desktop_login_native.test.mjs",
     "test:native-login-window": "node --test tests/desktop_web_login_window.test.mjs",
     "test:native-ratings": "node --test tests/native_ratings_browser.test.mjs",
-    "test:host-experience": "node --test tests/login_qr_browser.test.mjs tests/host_experience_browser.test.mjs tests/shared_host_layout_browser.test.mjs tests/android_phone_ui_browser.test.mjs tests/source_removal_browser.test.mjs tests/fullscreen_player_browser.test.mjs tests/native_startup_session_browser.test.mjs tests/window_chrome_browser.test.mjs tests/rapid_seek_browser.test.mjs tests/source_pagination_browser.test.mjs",
+    "test:host-experience": "node --test tests/login_qr_browser.test.mjs tests/host_experience_browser.test.mjs tests/shared_host_layout_browser.test.mjs tests/android_phone_ui_browser.test.mjs tests/source_removal_browser.test.mjs tests/fullscreen_player_browser.test.mjs tests/native_startup_session_browser.test.mjs tests/window_chrome_browser.test.mjs tests/rapid_seek_browser.test.mjs tests/presentation_timing_browser.test.mjs tests/source_pagination_browser.test.mjs",
     "test:playback-restart": "node --test tests/playback_restart.test.mjs tests/playback_restart_browser.test.mjs",
     "test:app-updates": "node --test tests/app_update_startup.test.mjs tests/app_update_startup_browser.test.mjs",
     "test:playback-sheet": "node --test tests/playback_sheet_gestures.test.mjs tests/playback_sheet_gestures_browser.test.mjs tests/playback_sheet_columns_browser.test.mjs",

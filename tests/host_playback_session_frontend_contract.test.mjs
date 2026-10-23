@@ -226,7 +226,7 @@ assert.deepEqual(result["retryBusyObservations"], 2);
 },
 async run_foundation(body) {
 let clock_recovery_cleanup, completed, equality, foundation, listener_lifecycle, recovery, resets, script, seek_cleanup;
-clock_recovery_cleanup = (await this.source_slice("function clearAndroidAudioClockRecovery", "function clearWebKitAudioStarvationTimer"));
+clock_recovery_cleanup = (await this.source_slice("function clearSplitAudioClockRecovery", "function clearWebKitAudioStarvationTimer"));
 equality = (await this.source_slice("function playbackProgramDescriptorsEqual", "function isValidHostMediaLocator"));
 listener_lifecycle = (await this.source_slice("function clearLocalPlayerEventListeners", "function clearLocalPlayerSeekState"));
 seek_cleanup = (await this.source_slice("function takeLocalPlayerSeekCompletion", "function playerDelayOverlay"));

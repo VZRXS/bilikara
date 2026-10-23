@@ -13,6 +13,8 @@
   const softSyncThresholdSeconds = 0.06;
   const hardSyncThresholdSeconds = 0.3;
   const playbackRateCorrection = 0.04;
+  const maxClockAgeMs = 2000;
+  const seekCooldownMs = 750;
 
   function finiteNumber(value, fallback = 0) {
     const numeric = Number(value);
@@ -56,7 +58,8 @@
     if (normalized.paused || normalized.seeking || normalized.sampledAt <= 0) {
       return normalized.mediaTime;
     }
-    const elapsedSeconds = Math.max(0, finiteNumber(nowMs) - normalized.sampledAt) / 1000;
+    const elapsedSeconds = Math.min(maxClockAgeMs,
+      Math.max(0, finiteNumber(nowMs) - normalized.sampledAt)) / 1000;
     return Math.max(0, normalized.mediaTime + elapsedSeconds * normalized.playbackRate);
   }
 
@@ -67,7 +70,17 @@
     const driftSeconds = targetTime - currentTime;
     const absoluteDrift = Math.abs(driftSeconds);
 
-    if (normalized.seeking || absoluteDrift > hardSyncThresholdSeconds) {
+    // A slow decoder must finish its current seek before another correction.
+    // Keep explicit pause effective even while that work is pending.
+    if (follower?.seeking) {
+      return {action: "wait", targetTime, driftSeconds,
+        playbackRate: normalized.playbackRate, shouldPlay: !normalized.paused};
+    }
+    const lastSeekAt = Number(follower?.lastSeekAt);
+    const canSeek = follower?.forceSeek || follower?.lastSeekAt == null
+      || !Number.isFinite(lastSeekAt) || nowMs - lastSeekAt >= seekCooldownMs;
+    if ((normalized.seeking && absoluteDrift > softSyncThresholdSeconds
+      || absoluteDrift > hardSyncThresholdSeconds) && canSeek) {
       return {
         action: "seek",
         targetTime,
@@ -116,6 +129,8 @@
     storageKey,
     softSyncThresholdSeconds,
     hardSyncThresholdSeconds,
+    maxClockAgeMs,
+    seekCooldownMs,
     normalizeClock,
     makeEnvelope,
     acceptsEnvelope,

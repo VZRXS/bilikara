@@ -1283,7 +1283,7 @@ pub(crate) async fn set_window_fullscreen(
                 // Do not persist intermediate frame geometry or let resize
                 // callbacks change window styles in the middle of this transition.
                 let restoring = state.restoring.swap(true, Ordering::AcqRel);
-                let result = transition.set(&window, fullscreen);
+                let result = transition.set(&window.as_ref().window(), fullscreen);
                 let _ = crate::platform::sync_windows_main_window_frame(&window.as_ref().window());
                 state.restoring.store(restoring, Ordering::Release);
                 append_desktop_diagnostic(

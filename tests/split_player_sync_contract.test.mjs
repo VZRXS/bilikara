@@ -516,6 +516,62 @@ mountedVideo = video; mountedAudio = audio;
 video.paused = false; audio.paused = false;
 `, body), this.sync_source, ...sources));
 },
+async test_webkit_lagging_output_clock_recovers_without_repeated_audio_seeks() {
+const result = await this.run_android_clock_node(`
+Object.defineProperty(globalThis, "navigator", {
+  value: { userAgent: "Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 Version/26.1 Safari/605.1.15" },
+  configurable: true,
+});
+document.documentElement.dataset.hostPlatform = "desktop";
+class OutputClockAudio extends FakeMedia {
+  get currentTime() { return this._time; }
+  set currentTime(value) {
+    super.currentTime = value;
+    this.seeking = true;
+    this.seekCompletesAt = nowMs + 10;
+    this.clockResumesAt = nowMs + 310;
+  }
+}
+const output = new OutputClockAudio(29.2);
+mountedAudio = output; output.paused = false;
+for (let tick = 0; tick < 600; tick++) {
+  nowMs += 10;
+  if (output.seeking && nowMs >= output.seekCompletesAt) output.seeking = false;
+  if (!video.paused) video._time += 0.01;
+  if (!output.paused && !output.seeking && nowMs >= (output.clockResumesAt || 0)) output._time += 0.01;
+  if (tick % 12 === 0) syncSplitPlayer(video, output, 0.2, false);
+  const callbacks = [...frames.values()]; frames.clear();
+  for (const callback of callbacks) callback();
+  await Promise.resolve();
+}
+console.log(JSON.stringify({audioSeeks:output.seekWrites,videoSeeks:video.seekWrites,
+  drift:video.currentTime-output.currentTime-0.2,audioProgress:output.currentTime-29.2,
+  videoProgress:video.currentTime-30,paused:[video.paused,output.paused],
+  intent:state.localShouldBePlaying,rates:[video.playbackRate,output.playbackRate],frames:frames.size}));
+`);
+assert.equal(result.audioSeeks, 0, "periodic WebKit correction must not restart the audio output clock");
+assert.equal(result.videoSeeks, 0, "clock catch-up must not become a navigation seek");
+assert.ok(Math.abs(result.drift) < 0.06, JSON.stringify(result));
+assert.ok(result.audioProgress > 5.9); assert.ok(result.videoProgress > 5);
+assert.deepEqual(result.paused, [false, false]); assert.deepEqual(result.rates, [1, 1]);
+assert.equal(result.intent, true); assert.equal(result.frames, 0);
+},
+async test_webkit_audio_seek_holds_video_without_changing_logical_play_intent() {
+const result = await this.run_android_clock_node(`
+Object.defineProperty(globalThis, "navigator", {
+  value: { userAgent: "Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15" }, configurable:true,
+});
+document.documentElement.dataset.hostPlatform = "desktop";
+audio.seeking = true;
+const action = syncSplitPlayer(video, audio, 0.2, false), held = video.paused;
+audio.seeking = false; audio._time = 29.78;
+syncSplitPlayer(video, audio, 0.2, false);
+console.log(JSON.stringify({action,held,paused:[video.paused,audio.paused],
+  intent:state.localShouldBePlaying,audioSeeks:audio.seekWrites,videoSeeks:video.seekWrites}));
+`);
+assert.deepEqual(result, {action:"wait-for-audio",held:true,paused:[false,false],
+  intent:true,audioSeeks:0,videoSeeks:0});
+},
 async test_android_clock_catchup_preserves_offset_and_requested_rate() {
 let result, row;
 result = (await this.run_android_clock_node(`
@@ -792,6 +848,36 @@ console.log(JSON.stringify({action,blocked:state.localVideoPlaybackBlocked,
   videoPaused:video.paused,audioPaused:audio.paused,videoSeeks:video.seekWrites,audioSeeks:audio.seekWrites}));
 `, this.sync_source);
 assert.deepEqual(result,{action:'none',blocked:false,videoPaused:false,audioPaused:false,videoSeeks:0,audioSeeks:0});
+},
+async test_webkit_advancing_current_data_retires_stale_waiting_without_seek_loops() {
+const result=await this.run_node(`
+Object.defineProperty(globalThis,'navigator',{value:{userAgent:'AppleWebKit/605.1.15 Safari/605.1.15'},configurable:true});
+const cases=[];
+for(const mode of ['audio','video','stopped-clock','seek-jump']){
+  const video=new FakeMedia(10),audio=new FakeMedia(10);
+  mountedVideo=video;mountedAudio=audio;video.paused=false;audio.paused=false;
+  video.readyState=2;audio.readyState=2;
+  Object.assign(state.hostPlaybackSession,{syncAudioClockSample:null,syncVideoClockSample:null});
+  state.localVideoPlaybackBlocked=mode==='video';state.localAudioPlaybackBlocked=mode!=='video';
+  state.localVideoHeldForAudio=false;state.localVideoDeferredRecovery=false;
+  audio.seeking=mode==='seek-jump';
+  syncSplitPlayer(video,audio,0,false);
+  const firstHeld=video.paused;
+  nowMs+=20;
+  if(mode==='seek-jump'){audio.seeking=false;audio._time=20;}
+  else if(mode!=='stopped-clock'){audio._time+=.02;if(mode==='video')video._time+=.02;}
+  syncSplitPlayer(video,audio,0,false);
+  cases.push({mode,firstHeld,blocked:mode==='video'?state.localVideoPlaybackBlocked:state.localAudioPlaybackBlocked,
+    videoPaused:video.paused,videoSeeks:video.seekWrites,audioSeeks:audio.seekWrites});
+}
+console.log(JSON.stringify(cases));
+`,this.sync_source);
+for(const entry of result){
+  const recovered=['audio','video'].includes(entry.mode);
+  assert.equal(entry.blocked,!recovered,JSON.stringify(entry));
+  assert.equal(entry.videoPaused,!recovered,JSON.stringify(entry));
+  assert.equal(entry.videoSeeks,0);assert.equal(entry.audioSeeks,0);
+}
 },
 async test_desktop_native_scrub_pause_preserves_intent_but_explicit_pause_replaces_it() {
 const result = await this.run_node(`
@@ -4409,12 +4495,14 @@ async test_webkit_sync_thresholds() {
 let result;
 result = (await this.run_node(`
 Object.defineProperty(globalThis, "navigator", { value: { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15" }, configurable: true, writable: true });
-const video = new FakeMedia(30); const audio = new FakeMedia(29.80);
+// Audio ahead still uses bounded repositioning; lagging audio has the
+// output-clock catch-up coverage above and must not be repeatedly sought.
+const video = new FakeMedia(30); const audio = new FakeMedia(30.20);
 video.paused = false; audio.paused = false;
 const smallDriftAction = syncSplitPlayer(video, audio, 0.0, false);
 const smallAudioWrites = audio.seekWrites;
 
-audio._time = 29.30;
+audio._time = 30.70;
 const largeDriftAction = syncSplitPlayer(video, audio, 0.0, false);
 const largeAudioWrites = audio.seekWrites;
 
@@ -4510,7 +4598,7 @@ async test_webkit_starvation_recovery_defers_large_correction_to_later_tick() {
 let result;
 result = (await this.run_node(`
 Object.defineProperty(globalThis, "navigator", { value: { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15" }, configurable: true, writable: true });
-const video = new FakeMedia(30); const audio = new FakeMedia(27);
+const video = new FakeMedia(30); const audio = new FakeMedia(33);
 video.paused = false; audio.paused = false;
 state.localVideoDeferredRecovery = true;
 const recoveryAction = syncSplitPlayer(video, audio, 0, true);
@@ -5087,3 +5175,6 @@ test("SplitPlayerSyncTest.test_webkit_resolved_but_paused_pair_is_not_establishe
 test("SplitPlayerSyncTest.test_webkit_startup_not_allowed_error_triggers_user_gesture", async () => { const instance = Object.create(SplitPlayerSyncTest); await instance.setUpClass(); await instance.test_webkit_startup_not_allowed_error_triggers_user_gesture(); });
 test("SplitPlayerSyncTest.test_tauri_webkit_fullscreen_uses_native_capability", async () => { const instance = Object.create(SplitPlayerSyncTest); await instance.setUpClass(); await instance.test_tauri_webkit_fullscreen_uses_native_capability(); });
 test("SplitPlayerSyncTest.test_chromium_freeze_unchanged", async () => { const instance = Object.create(SplitPlayerSyncTest); await instance.setUpClass(); await instance.test_chromium_freeze_unchanged(); });
+test('SplitPlayerSyncTest.test_webkit_lagging_output_clock_recovers_without_repeated_audio_seeks', async () => { const instance = Object.create(SplitPlayerSyncTest); await instance.setUpClass(); await instance.test_webkit_lagging_output_clock_recovers_without_repeated_audio_seeks(); });
+test('SplitPlayerSyncTest.test_webkit_audio_seek_holds_video_without_changing_logical_play_intent', async () => { const instance = Object.create(SplitPlayerSyncTest); await instance.setUpClass(); await instance.test_webkit_audio_seek_holds_video_without_changing_logical_play_intent(); });
+test('SplitPlayerSyncTest.test_webkit_advancing_current_data_retires_stale_waiting_without_seek_loops',async()=>{const instance=Object.create(SplitPlayerSyncTest);await instance.setUpClass();await instance.test_webkit_advancing_current_data_retires_stale_waiting_without_seek_loops();});

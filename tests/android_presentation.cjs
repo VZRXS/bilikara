@@ -61,7 +61,8 @@ async function stageTests() {
   class Element {
     constructor() {
       this.dataset = {}; this.children = []; this.style = {setProperty(){}};
-      this.classes = new Set(); this.classList = {add:n=>this.classes.add(n),remove:n=>this.classes.delete(n),toggle:(n,on)=>on?this.classes.add(n):this.classes.delete(n)}; this.listeners = {};
+      this.classes = new Set(); this.classList = {add:n=>this.classes.add(n),remove:n=>this.classes.delete(n),
+        contains:n=>this.classes.has(n),toggle:(n,on)=>on?this.classes.add(n):this.classes.delete(n)}; this.listeners = {};
       this.paused = true; this.ended = false; this.readyState = 4; this.currentTime = 0;
       this.duration = 300; this.playbackRate = 1; this.scrollWidth = 20;
     }
