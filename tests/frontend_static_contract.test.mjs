@@ -87,7 +87,12 @@ test('caption locale/icon updates and native pointer regions preserve authorizat
 });
 
 test('Linux/macOS caption controls and shared palette stay native', () => {
-  includes(read('src-tauri/src/platform.rs'), ['gtk::HeaderBar::new()', 'header.set_show_close_button(true)', 'gtk_window.is_realized()']); const window = JSON.parse(read('src-tauri/tauri.macos.conf.json')).app.windows[0]; assert.equal(window.decorations, true); assert.equal(window.titleBarStyle, 'Overlay'); includes(app, ['getPropertyValue("--bg-middle")', 'getPropertyValue("--ink")']);
+  includes(read('src-tauri/src/platform.rs'), ['gtk::HeaderBar::new()', 'header.set_show_close_button(true)', 'gtk_window.is_realized()']);
+  const window = JSON.parse(read('src-tauri/tauri.macos.conf.json')).app.windows[0];
+  assert.equal(window.decorations, true);
+  assert.equal(window.hiddenTitle, true);
+  assert.equal(window.titleBarStyle, 'Transparent');
+  includes(app, ['getPropertyValue("--bg-middle")', 'getPropertyValue("--ink")']);
 });
 
 test('manual bundle labels do not authorize publication/mirroring', () => {

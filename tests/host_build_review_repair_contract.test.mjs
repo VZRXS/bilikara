@@ -569,7 +569,7 @@ for (const permission of iterableValues(["core:window:allow-close", "core:window
 assert.ok(contains(permission, main_capability["permissions"]));
 }
 macos = JSON.parse(readFileSync(path.join(path.join(ROOT, "src-tauri"), "tauri.macos.conf.json"), "utf8"))["app"]["windows"][0];
-assert.deepEqual(macos["titleBarStyle"], "Overlay");
+assert.deepEqual(macos["titleBarStyle"], "Transparent");
 assert.ok(hasContent(macos["hiddenTitle"]));
 assert.ok(contains("id=\"window-controls\"", this.markup));
 assert.ok(contains("initializeWindowChrome", this.script));

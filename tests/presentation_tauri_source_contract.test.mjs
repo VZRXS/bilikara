@@ -112,6 +112,29 @@ assert.ok(contains("append_desktop_diagnostic", command));
 assert.ok(contains("\"presentation_video_geometry\"", command));
 assert.ok(!contains("std::fs", command));
 },
+async test_macos_output_covers_the_selected_screen_without_a_fullscreen_space() {
+const native = this.presentation.slice(sourceIndex(this.presentation, "fn place_macos_output_frame("), sourceIndex(this.presentation, "fn place_controller_for_activation("));
+assert.ok(contains("MainThreadMarker::new()", native));
+assert.ok(contains("NSScreen::screens(marker)", native));
+assert.ok(contains("selected_display_id != format!", native));
+assert.ok(contains("macos_display_uuid(display_id as u32)?", native));
+assert.ok(contains("native.setFrame_display(frame, false)", native));
+for (const setting of ["CanJoinAllSpaces", "FullScreenAuxiliary", "Stationary", "IgnoresCycle",
+  "native.setHidesOnDeactivate(false)", "native.setLevel(NSMainMenuWindowLevel + 1)"]) {
+  assert.ok(contains(setting, native), setting);
+}
+assert.ok(!contains("setPresentationOptions", native), "audience settings must not change the Host app's menu/Dock behavior");
+assert.ok(sourceIndex(native, "native.setFrame_display(frame, false)") < sourceIndex(native, "native.orderFront(None)"));
+assert.ok(sourceIndex(native, "native.orderFront(None)") < sourceIndex(native, ".screen()"));
+assert.ok(contains(".screen()", native));
+assert.ok(!contains("set_position(", native));
+const placement = this.presentation.slice(sourceIndex(this.presentation, "fn place_controller_for_activation("), sourceIndex(this.presentation, "pub(crate) fn authorize_window("));
+const otherPlatforms = sourceIndex(placement, '#[cfg(not(target_os = "macos"))]');
+assert.ok(sourceIndex(placement, "place_macos_output_frame(controller, &target.display.id)") < otherPlatforms);
+assert.ok(sourceIndex(placement, "controller.set_fullscreen(true)") > otherPlatforms);
+assert.ok(placement.trimEnd().endsWith("Ok(())\n}"), "macOS returns after native placement without creating a Space");
+assert.ok(contains("run_activation_window_mutation", placement));
+},
 async test_windows_main_and_audience_windows_share_one_webview_store() {
 let argument, builder, checkedArguments, setup, storage, window, windows, windows_config;
 windows = JSON.parse(readFileSync(path.join(this.tauri, "tauri.windows.conf.json"), "utf8"))["app"]["windows"];
@@ -311,6 +334,7 @@ test("PresentationTauriSourceTest.test_capabilities_keep_controller_narrow_and_r
 test("PresentationTauriSourceTest.test_command_manifest_handler_and_generated_permissions_are_synchronized", async () => { const instance = Object.create(PresentationTauriSourceTest); await instance.setUpClass(); await instance.test_command_manifest_handler_and_generated_permissions_are_synchronized(); });
 test("PresentationTauriSourceTest.test_output_state_relay_is_bounded_generation_checked_and_role_scoped", async () => { const instance = Object.create(PresentationTauriSourceTest); await instance.setUpClass(); await instance.test_output_state_relay_is_bounded_generation_checked_and_role_scoped(); });
 test("PresentationTauriSourceTest.test_video_geometry_log_is_audience_scoped_and_generation_checked", async () => { const instance = Object.create(PresentationTauriSourceTest); await instance.setUpClass(); await instance.test_video_geometry_log_is_audience_scoped_and_generation_checked(); });
+test("PresentationTauriSourceTest.test_macos_output_covers_the_selected_screen_without_a_fullscreen_space", async () => { const instance = Object.create(PresentationTauriSourceTest); await instance.setUpClass(); await instance.test_macos_output_covers_the_selected_screen_without_a_fullscreen_space(); });
 test("PresentationTauriSourceTest.test_windows_main_and_audience_windows_share_one_webview_store", async () => { const instance = Object.create(PresentationTauriSourceTest); await instance.setUpClass(); await instance.test_windows_main_and_audience_windows_share_one_webview_store(); });
 test("PresentationTauriSourceTest.test_display_identifiers_are_ordered_native_overlays_with_bounded_lifetime", async () => { const instance = Object.create(PresentationTauriSourceTest); await instance.setUpClass(); await instance.test_display_identifiers_are_ordered_native_overlays_with_bounded_lifetime(); });
 test("PresentationTauriSourceTest.test_only_main_is_static_and_audience_output_is_dynamic", async () => { const instance = Object.create(PresentationTauriSourceTest); await instance.setUpClass(); await instance.test_only_main_is_static_and_audience_output_is_dynamic(); });

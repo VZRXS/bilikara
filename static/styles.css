@@ -9123,8 +9123,7 @@ body {
   flex: 1 1 auto;
 }
 
-body[data-tauri-platform="windows"] .window-drag-region,
-body[data-tauri-platform="macos"] .window-drag-region {
+body[data-tauri-platform="windows"] .window-drag-region {
   display: block;
 }
 
@@ -9308,12 +9307,10 @@ body[data-tauri-platform="macos"] .window-drag-region {
   }
 }
 
-body[data-tauri-platform="macos"] .app-shell {
-  padding-top: 30px;
-}
-
-body[data-tauri-platform="macos"] .topbar {
-  padding-left: 72px;
+/* macOS keeps its native titlebar above the WebView. Its traffic lights and
+   background-window dragging must not depend on a DOM overlay. */
+body[data-tauri-platform="macos"] .window-drag-region {
+  display: none;
 }
 
 body[data-tauri-platform="linux"] .app-shell {

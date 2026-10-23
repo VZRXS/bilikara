@@ -267,6 +267,28 @@ Chromium and WebKit, including editable waiting ratings, shared control geometry
 seek gestures and download status across isolated audience storage. Its shell
 relay fixture does not qualify native monitor/fullscreen or device behavior.
 
+On macOS, audience placement resolves the selected display UUID to its current
+`NSScreen` and covers that screen with an owned borderless window, without
+creating a native fullscreen Space. Its window level covers the menu bar and
+Dock, it remains visible when Host takes focus, and its collection behavior
+keeps it on the selected display across Spaces. No application-wide presentation
+options are changed. Apply the screen frame synchronously on the AppKit main
+thread in AppKit points, order the window without taking key focus, then verify
+its actual `screen`. Do not convert through the previous backing scale or enter
+native fullscreen after placement, which can choose the active display again.
+Closing the audience window retires these per-window settings. Missing or
+changed displays enter the existing activation recovery path. Verify placement
+with mixed Retina/external scales and displays to the left or above the primary;
+cross-target Rust checks and browser fixtures do not qualify OS window behavior.
+
+The macOS Host retains a transparent native titlebar with its title hidden.
+AppKit owns its traffic lights and titlebar dragging, including activation and
+dragging from an inactive window. Do not add a second 30px strip inside the
+WebView. Its native background follows the Host surface color on theme changes.
+Spare toolbar content also supports Tauri dragging; buttons, links,
+menus and help retain their own pointer interactions. Windows retains its
+separate native caption row and double-click owner.
+
 `npm run test:playback-restart` separately checks the shared restart affordances
 against an actual isolated native Host, Chromium and short synthetic media.
 Linux needs the cached native alpha build, the pinned Chromium and a test-only

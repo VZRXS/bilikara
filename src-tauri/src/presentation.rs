@@ -1914,12 +1914,12 @@ fn capture_host_placement(window: &tauri::WebviewWindow) -> Result<HostWindowPla
     })
 }
 
-fn run_activation_window_mutation(
+fn run_activation_window_mutation<E: std::fmt::Display>(
     app: &tauri::AppHandle,
     state: &PresentationState,
     generation: u64,
     action: &str,
-    operation: impl FnOnce() -> tauri::Result<()>,
+    operation: impl FnOnce() -> Result<(), E>,
 ) -> Result<(), String> {
     trace_presentation(
         app,
@@ -2183,24 +2183,89 @@ fn create_controller_window(
         .map_err(|error| error.to_string())
 }
 
+#[cfg(target_os = "macos")]
+fn place_macos_output_frame(
+    controller: &tauri::WebviewWindow,
+    selected_display_id: &str,
+) -> Result<(), String> {
+    use objc2::{MainThreadMarker, msg_send};
+    use objc2_app_kit::{NSMainMenuWindowLevel, NSScreen, NSWindow, NSWindowCollectionBehavior};
+    use objc2_foundation::NSString;
+
+    let marker = MainThreadMarker::new()
+        .ok_or("macOS output placement must run on the AppKit main thread")?;
+    let pointer = controller.ns_window().map_err(|error| error.to_string())?;
+    // SAFETY: Tauri owns this live NSWindow and this operation runs on its main thread.
+    let native = unsafe { pointer.cast::<NSWindow>().as_ref() }
+        .ok_or("the macOS output window is unavailable")?;
+    let key = NSString::from_str("NSScreenNumber");
+    for screen in NSScreen::screens(marker).iter() {
+        let description = screen.deviceDescription();
+        let Some(value) = description.objectForKey(&key) else {
+            continue;
+        };
+        // SAFETY: NSScreenNumber is documented as an NSNumber-compatible value.
+        let display_id: usize = unsafe { msg_send![&*value, unsignedIntegerValue] };
+        if selected_display_id != format!("macos-uuid:{}", macos_display_uuid(display_id as u32)?) {
+            continue;
+        }
+        // Cover this display with the owned borderless audience window. Native
+        // fullscreen creates a Space and may move it back to the active display;
+        // do not ask AppKit to choose a display again after this placement.
+        // All options belong to this disposable window, never NSApplication.
+        native.setCollectionBehavior(
+            NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::FullScreenAuxiliary
+                | NSWindowCollectionBehavior::Stationary
+                | NSWindowCollectionBehavior::IgnoresCycle,
+        );
+        native.setHidesOnDeactivate(false);
+        native.setLevel(NSMainMenuWindowLevel + 1);
+        // NSScreen frames are AppKit points, including negative origins and
+        // mixed Retina scales; do not convert via the window's previous scale.
+        let frame = screen.frame();
+        native.setFrame_display(frame, false);
+        // A hidden/offscreen NSWindow may have no screen. Order the already
+        // placed audience window without taking key focus before querying its
+        // screen. Ordering must not transfer key focus away from the Host.
+        native.orderFront(None);
+        if native
+            .screen()
+            .is_none_or(|current| current.frame() != frame)
+        {
+            return Err("the macOS output window did not move to the selected display".into());
+        }
+        return Ok(());
+    }
+    Err("the selected macOS output display is unavailable".into())
+}
+
 fn place_controller_for_activation(
     app: &tauri::AppHandle,
     controller: &tauri::WebviewWindow,
-    target: &tauri::window::Monitor,
+    target: &PresentationDisplayRecord,
     state: &PresentationState,
     generation: u64,
 ) -> Result<(), String> {
-    let position = *target.position();
-    let size = *target.size();
-    run_activation_window_mutation(app, state, generation, "resize output window", || {
-        controller.set_size(size)
+    #[cfg(target_os = "macos")]
+    run_activation_window_mutation(app, state, generation, "place macOS output window", || {
+        place_macos_output_frame(controller, &target.display.id)
     })?;
-    run_activation_window_mutation(app, state, generation, "position output window", || {
-        controller.set_position(position)
-    })?;
-    run_activation_window_mutation(app, state, generation, "fullscreen output window", || {
-        controller.set_fullscreen(true)
-    })
+    #[cfg(not(target_os = "macos"))]
+    {
+        let position = *target.monitor.position();
+        let size = *target.monitor.size();
+        run_activation_window_mutation(app, state, generation, "resize output window", || {
+            controller.set_size(size)
+        })?;
+        run_activation_window_mutation(app, state, generation, "position output window", || {
+            controller.set_position(position)
+        })?;
+        run_activation_window_mutation(app, state, generation, "fullscreen output window", || {
+            controller.set_fullscreen(true)
+        })?;
+    }
+    Ok(())
 }
 
 pub(crate) fn authorize_window(
@@ -2768,7 +2833,7 @@ pub(crate) fn activate_local_presentation(
         .and_then(|controller| {
             let lifecycle_app = app.clone();
             let host = window.clone();
-            let target_monitor = target.monitor.clone();
+            let target_display = target.clone();
             let host_target_monitor = host_target.map(|record| record.monitor);
             let selected_display_id = target.display.id.clone();
             let placement = placement.clone();
@@ -2779,7 +2844,7 @@ pub(crate) fn activate_local_presentation(
                 place_controller_for_activation(
                     &lifecycle_app,
                     &controller,
-                    &target_monitor,
+                    &target_display,
                     &state,
                     activating.generation,
                 )?;

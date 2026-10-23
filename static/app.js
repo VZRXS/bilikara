@@ -5620,6 +5620,14 @@ function initializeWindowChrome() {
   if (!appWindow) {
     return;
   }
+  if (platform === "macos") {
+    // The native titlebar owns primary dragging, including inactive windows.
+    // Spare non-interactive header content remains draggable as well; menus
+    // and controls retain their own pointer interactions.
+    elements.topbar?.setAttribute("data-tauri-drag-region", "deep");
+    elements.topbar?.querySelectorAll('[role="dialog"], [role="menu"], [role="tooltip"], .cache-panel')
+      .forEach(panel => panel.setAttribute("data-tauri-drag-region", "false"));
+  }
   let frameStateRequest = 0;
   const syncWindowFrameState = () => {
     if (platform !== "windows" || typeof appWindow.isMaximized !== "function") {

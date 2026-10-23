@@ -30,7 +30,7 @@ assert.deepEqual(macos_window[key], value, key);
 }
 assert.ok(hasContent(macos_window["decorations"]));
 assert.ok(hasContent(macos_window["hiddenTitle"]));
-assert.deepEqual(macos_window["titleBarStyle"], "Overlay");
+assert.deepEqual(macos_window["titleBarStyle"], "Transparent");
 assert.deepEqual(capability["windows"], ["main"]);
 },
 async test_macos_main_webview_uses_creation_time_autoplay_policy() {
