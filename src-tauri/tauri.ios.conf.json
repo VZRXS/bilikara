@@ -1,0 +1,26 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "bilikara iOS dev",
+  "build": {
+    "beforeDevCommand": null,
+    "beforeBuildCommand": "",
+    "devUrl": null
+  },
+  "app": {
+    "macOSPrivateApi": false,
+    "windows": [
+      {
+        "label": "main",
+        "create": false,
+        "title": "bilikara iOS dev",
+        "url": "ios-startup.html",
+        "visible": true,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "capabilities": ["ios-startup"],
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-src 'none'"
+    }
+  }
+}

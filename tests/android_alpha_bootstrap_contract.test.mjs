@@ -29,7 +29,9 @@ assert.ok(contains("#[cfg_attr(mobile, tauri::mobile_entry_point)]", entry));
 assert.ok(contains(`#[cfg(target_os = "android")]
 mod android;`, entry));
 source = readFileSync(path.join(TAURI, "src/android.rs"), "utf8");
-assert.ok(contains("initialize_native_host(", source));
+const sharedStartup = readFileSync(path.join(ROOT, "rust-runtime/src/native_host/mobile.rs"), "utf8");
+assert.ok(contains("bilikara_runtime::native_host::mobile::start(", source));
+assert.ok(contains("initialize_native_host(", sharedStartup));
 assert.match(source, new RegExp("app\\s*\\.path\\(\\)\\s*\\.app_data_dir\\(\\)",""));
 assert.ok(contains("execute_app_state(AppStateRequest::Snapshot", source));
 for (const forbidden of iterableValues(["Command::new", "backend_process::", "execute_app_state_json", "CString"])) {
@@ -42,7 +44,7 @@ assert.ok(contains("persistence_ready: true", source));
 assert.ok(contains("stage: \"native-host-alpha\"", source));
 assert.ok(contains("if let Some(error) = &bootstrap.error", source));
 assert.ok(contains("app.asset_resolver()", source));
-assert.ok(contains("NativeHost::start(", source));
+assert.ok(contains("NativeHost::start(", sharedStartup));
 assert.ok(contains("app.manage(AndroidBootstrap { host, error });", source));
 assert.ok(!contains("std::fs::remove", source));
 },

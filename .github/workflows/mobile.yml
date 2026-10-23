@@ -35,6 +35,8 @@ jobs:
         include:
           - platform: Android
             os: ubuntu-latest
+          - platform: iOS
+            os: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -49,21 +51,29 @@ jobs:
         run: npm ci
 
       - name: Setup Java
+        if: matrix.platform == 'Android'
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
 
       - name: Setup Android SDK
+        if: matrix.platform == 'Android'
         uses: android-actions/setup-android@v4
         with:
           packages: platform-tools
 
       - name: Install pinned Android signing and media tools
+        if: matrix.platform == 'Android'
         run: |
           sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
           sudo apt-get update
           sudo apt-get install -y make gnupg gpgv
+
+      - name: Setup iOS build tools
+        if: matrix.platform == 'iOS'
+        id: ios-environment
+        uses: ./.github/actions/ios-toolchain
 
       - name: Setup repository Rust toolchain
         uses: ./.github/actions/rust-toolchain
@@ -76,9 +86,11 @@ jobs:
             ./rust -> target
             ./rust-runtime -> target
           cache-workspace-crates: true
-          shared-key: android-test-workspace-v1
+          shared-key: ${{ matrix.platform == 'Android' && 'android-test-workspace-v1' || 'ios-test-workspace-v1' }}
+          key: ${{ steps.ios-environment.outputs.sdk-key }}
 
       - name: Resolve Android libav C cache
+        if: matrix.platform == 'Android'
         id: media-key
         shell: bash
         run: |
@@ -87,15 +99,17 @@ jobs:
           cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- android-libav --ndk "$ANDROID_HOME/ndk/27.0.12077973" --abi arm64-v8a --out "$RUNNER_TEMP/android-media-output" --cache "$RUNNER_TEMP/bilikara-android-libav-cache" --cache-key >> "$GITHUB_OUTPUT"
 
       - name: Restore Android libav C cache
+        if: matrix.platform == 'Android'
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/bilikara-android-libav-cache
           key: ${{ steps.media-key.outputs.key }}
 
       - name: Verify actual Android media libraries and cache
+        if: matrix.platform == 'Android'
         run: npm run test:android-libav
 
-      - name: Validate native Host and Android packaging contract
+      - name: Validate native Host and mobile UI
         run: |
           cargo fmt --manifest-path rust/Cargo.toml --check
           cargo clippy --manifest-path rust/Cargo.toml --all-targets --locked -- -D warnings
@@ -103,15 +117,25 @@ jobs:
           cargo fmt --manifest-path rust-runtime/Cargo.toml --check
           cargo clippy --manifest-path rust-runtime/Cargo.toml --features native-host --all-targets --locked -- -D warnings
           cargo test --manifest-path rust-runtime/Cargo.toml --features native-host --locked
-          BILIKARA_REQUIRE_ANDROID_SIGNING_TESTS=1 node --test tests/android_release.test.mjs
           npm run test:frontend
+
+      - name: Validate Android signing contract
+        if: matrix.platform == 'Android'
+        run: BILIKARA_REQUIRE_ANDROID_SIGNING_TESTS=1 node --test tests/android_release.test.mjs
+
+      - name: Validate iOS startup and build entry
+        if: matrix.platform == 'iOS'
+        run: |
+          npm run test:ios-bootstrap
+          npm run test:ios-build
 
       - name: Summarize Rust test cache
         if: always()
         env:
           CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
+          MOBILE_PLATFORM: ${{ matrix.platform }}
         run: |
-          printf '### Android test cache\n\nRust exact hit: `%s` (see restore/save steps for details).\n' "${CACHE_HIT:-unavailable}" >> "$GITHUB_STEP_SUMMARY"
+          printf '### %s test cache\n\nRust exact hit: `%s` (see restore/save steps for details).\n' "$MOBILE_PLATFORM" "${CACHE_HIT:-unavailable}" >> "$GITHUB_STEP_SUMMARY"
 
   bundle:
     name: Bundle (${{ matrix.platform }} ${{ matrix.label }})
@@ -126,6 +150,20 @@ jobs:
             label: ARM64
             rust_target: aarch64-linux-android
             tauri_target: aarch64
+          - platform: iOS
+            os: macos-15
+            label: ARM64 unsigned
+            rust_target: aarch64-apple-ios
+            tauri_target: aarch64
+            export_arch: arm64
+            artifact_kind: device-arm64-unsigned
+          - platform: iOS
+            os: macos-15
+            label: Simulator ARM64
+            rust_target: aarch64-apple-ios-sim
+            tauri_target: aarch64-sim
+            export_arch: arm64-sim
+            artifact_kind: simulator-arm64
     permissions:
       contents: write
     steps:
@@ -142,36 +180,46 @@ jobs:
         run: npm ci
 
       - name: Setup Java
+        if: matrix.platform == 'Android'
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
 
       - name: Setup Android SDK
+        if: matrix.platform == 'Android'
         uses: android-actions/setup-android@v4
         with:
           # The action's default also requests the unavailable legacy "tools" package.
           packages: platform-tools
 
       - name: Prepare native YouTube binding generator
+        if: matrix.platform == 'Android'
         run: |
           sudo apt-get update
           sudo apt-get install -y libclang-dev make gnupg gpgv
 
       - name: Install pinned Android tools
+        if: matrix.platform == 'Android'
         run: |
           sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
           echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
           yt_ndk="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64"
           echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--target=aarch64-linux-android24 --sysroot=$yt_ndk/sysroot -resource-dir=$yt_ndk/lib/clang/18" >> "$GITHUB_ENV"
 
+      - name: Setup iOS build tools
+        if: matrix.platform == 'iOS'
+        id: ios-environment
+        uses: ./.github/actions/ios-toolchain
+
       - name: Setup repository Rust toolchain
         uses: ./.github/actions/rust-toolchain
 
-      - name: Install Android Rust target
+      - name: Install mobile Rust target
         run: rustup target add "${{ matrix.rust_target }}"
 
       - name: Cache Rust builds
+        if: matrix.platform == 'Android'
         id: rust-cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -183,7 +231,21 @@ jobs:
           shared-key: android-apk-workspace-v1
           key: android-36-ndk-27.0.12077973
 
+      - name: Cache iOS Rust builds
+        if: matrix.platform == 'iOS'
+        id: ios-rust-cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            ./rust -> target
+            ./rust-runtime -> target
+            ./src-tauri -> target
+          cache-workspace-crates: true
+          shared-key: ios-app-workspace-v1
+          key: ${{ matrix.rust_target }}-${{ steps.ios-environment.outputs.sdk-key }}
+
       - name: Resolve Android libav C cache
+        if: matrix.platform == 'Android'
         id: media-key
         shell: bash
         run: |
@@ -191,18 +253,21 @@ jobs:
           cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- android-libav --ndk "$ANDROID_HOME/ndk/27.0.12077973" --abi arm64-v8a --out "$RUNNER_TEMP/android-media-output" --cache "$RUNNER_TEMP/bilikara-android-libav-cache" --cache-key >> "$GITHUB_OUTPUT"
 
       - name: Restore Android libav C cache
+        if: matrix.platform == 'Android'
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/bilikara-android-libav-cache
           key: ${{ steps.media-key.outputs.key }}
 
       - name: Cache Gradle dependencies
+        if: matrix.platform == 'Android'
         uses: gradle/actions/setup-gradle@v5
         with:
           add-job-summary: never
           cache-read-only: ${{ github.event_name == 'pull_request' }}
 
       - name: Resolve APK and prepare signing
+        if: matrix.platform == 'Android'
         id: android
         env:
           # Never expose the persistent beta key to pull-request builds or tags.
@@ -214,6 +279,7 @@ jobs:
         run: node scripts/android_release.mjs
 
       - name: Build APK
+        if: matrix.platform == 'Android'
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
           ANDROID_KEY_ALIAS: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_KEY_ALIAS || '' }}
@@ -228,12 +294,14 @@ jobs:
           fi
 
       - name: Compile Android playback service tests
+        if: matrix.platform == 'Android'
         working-directory: src-tauri/gen/android
         run: |
           ./gradlew :app:compileArm64DebugAndroidTestKotlin :app:testArm64DebugUnitTest \
             -PabiList=arm64-v8a -x :app:rustBuildArm64Debug --console=plain
 
       - name: Stage and verify APK
+        if: matrix.platform == 'Android'
         env:
           APK_NAME: ${{ steps.android.outputs.apk }}
           RELEASE_APK: ${{ steps.android.outputs.release }}
@@ -251,6 +319,7 @@ jobs:
           cp "${apks[0]}" "$APK_NAME"
 
       - name: Upload APK test artifact
+        if: matrix.platform == 'Android'
         uses: actions/upload-artifact@v7
         with:
           path: ${{ steps.android.outputs.apk }}
@@ -258,7 +327,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload signed APK to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.platform == 'Android'
         uses: softprops/action-gh-release@v3
         with:
           files: ${{ steps.android.outputs.apk }}
@@ -266,15 +335,92 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-preview.') }}
           draft: true
 
+      - name: Initialize iOS project
+        if: matrix.platform == 'iOS'
+        run: |
+          npm run ios:doctor
+          npm run ios:init -- --skip-targets-install
+
+      - name: Build iOS without signing credentials
+        if: matrix.platform == 'iOS'
+        env:
+          IOS_TAURI_TARGET: ${{ matrix.tauri_target }}
+        run: node scripts/ios.mjs build --debug --target "$IOS_TAURI_TARGET" --no-sign --ci
+
+      - name: Stage iOS test artifact
+        if: matrix.platform == 'iOS'
+        env:
+          IOS_EXPORT_ARCH: ${{ matrix.export_arch }}
+          IOS_ARTIFACT_KIND: ${{ matrix.artifact_kind }}
+          IOS_RUST_TARGET: ${{ matrix.rust_target }}
+        run: |
+          set -euo pipefail
+          ios_product_name="$(node -p "require('./src-tauri/tauri.ios.conf.json').productName")"
+          ios_product_root="src-tauri/gen/apple/build/$IOS_EXPORT_ARCH"
+          ios_stage="$RUNNER_TEMP/bilikara-ios-artifacts"
+          mkdir -p "$ios_stage"
+          if [ "$IOS_EXPORT_ARCH" = arm64-sim ]; then
+            ios_app="$ios_product_root/$ios_product_name.app"
+            ios_artifact_name="bilikara-ios-$IOS_ARTIFACT_KIND.app.zip"
+            ios_expected_platform=IOSSIMULATOR
+            test -d "$ios_app"
+          else
+            ios_ipa="$ios_product_root/$ios_product_name.ipa"
+            ios_artifact_name="bilikara-ios-$IOS_ARTIFACT_KIND.ipa"
+            ios_expected_platform=IOS
+            test -f "$ios_ipa"
+            ditto -x -k "$ios_ipa" "$RUNNER_TEMP/bilikara-ios-unpacked"
+            ios_app="$RUNNER_TEMP/bilikara-ios-unpacked/Payload/$ios_product_name.app"
+          fi
+          plutil -lint "$ios_app/Info.plist"
+          test ! -e "$ios_app/embedded.mobileprovision"
+          ios_bundle_id="$(node -p "require('./src-tauri/tauri.ios.conf.json').identifier ?? require('./src-tauri/tauri.conf.json').identifier")"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$ios_app/Info.plist")" = "$ios_bundle_id"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity:NSAllowsArbitraryLoads' "$ios_app/Info.plist")" = false
+          ios_executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$ios_app/Info.plist")"
+          case "$ios_executable" in ''|*/*|.|..) exit 1 ;; esac
+          test "$(xcrun lipo -archs "$ios_app/$ios_executable")" = arm64
+          xcrun vtool -show-build "$ios_app/$ios_executable" > "$ios_stage/build-platform.txt"
+          test "$(awk '$1 == "platform" {print $2}' "$ios_stage/build-platform.txt")" = "$ios_expected_platform"
+          if [ "$IOS_EXPORT_ARCH" = arm64-sim ]; then
+            ditto -c -k --sequesterRsrc --keepParent "$ios_app" "$ios_stage/$ios_artifact_name"
+          else
+            cp "$ios_ipa" "$ios_stage/$ios_artifact_name"
+          fi
+          {
+            printf 'commit=%s\nrust_target=%s\nartifact_kind=%s\nsigning=no-provisioning\n' "$GITHUB_SHA" "$IOS_RUST_TARGET" "$IOS_ARTIFACT_KIND"
+            cat "$RUNNER_TEMP/bilikara-ios-toolchain.txt"
+            rustc --version
+            node --version
+            xcodegen --version
+          } > "$ios_stage/build-info.txt"
+          (cd "$ios_stage" && shasum -a 256 "$ios_artifact_name" > SHA256SUMS)
+
+      - name: Upload iOS test artifact
+        if: matrix.platform == 'iOS'
+        uses: actions/upload-artifact@v7
+        with:
+          name: bilikara-ios-${{ matrix.artifact_kind }}
+          path: ${{ runner.temp }}/bilikara-ios-artifacts/
+          if-no-files-found: error
+
+      - name: Summarize iOS build
+        if: always() && matrix.platform == 'iOS'
+        env:
+          CACHE_HIT: ${{ steps.ios-rust-cache.outputs.cache-hit }}
+          IOS_ARTIFACT_KIND: ${{ matrix.artifact_kind }}
+        run: |
+          printf '### iOS %s\n\nRust exact hit: `%s`. No provisioning/signing credentials were used. Device IPA requires valid signing before installation; simulator build is not device acceptance.\n' "$IOS_ARTIFACT_KIND" "${CACHE_HIT:-unavailable}" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Summarize Rust cache
-        if: always()
+        if: always() && matrix.platform == 'Android'
         env:
           CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
         run: |
           printf '### Android bundle cache\n\nRust exact hit: `%s` (see restore/save steps for details).\n' "${CACHE_HIT:-unavailable}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove temporary signing file
-        if: always()
+        if: always() && matrix.platform == 'Android'
         run: |
           if [ -n "${ANDROID_KEYSTORE_PATH:-}" ] && [ "$ANDROID_KEYSTORE_PATH" = "$RUNNER_TEMP/bilikara-android-release.jks" ]; then
             rm -f -- "$ANDROID_KEYSTORE_PATH"

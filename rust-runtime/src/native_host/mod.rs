@@ -22,6 +22,7 @@ mod login;
 pub(crate) use login::LoginDiagnostic;
 mod admin;
 mod maintenance;
+pub mod mobile;
 mod monthly;
 mod network;
 pub mod output_platform;
@@ -363,7 +364,7 @@ fn start(
         if desktop {
             facts.platform
         } else {
-            "android".into()
+            mobile::platform().into()
         },
     );
     let bbdown = if desktop {

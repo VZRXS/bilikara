@@ -72,7 +72,7 @@ fn browser_playback(value: &Value) -> Value {
     if let Some(platform) = value["chrome_platform"].as_str().filter(|platform| {
         matches!(
             *platform,
-            "browser" | "macos" | "windows" | "linux" | "android"
+            "browser" | "macos" | "windows" | "linux" | "android" | "ios"
         )
     }) {
         safe["chrome_platform"] = json!(platform);
@@ -128,7 +128,7 @@ fn environment(body: &Value, timestamp: f64) -> Value {
     let mut system = json!({
         "generated_at":format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",date.year(),u8::from(date.month()),date.day(),date.hour(),date.minute(),date.second()),
         "app_version":"0.8.0 · bilikara beta", "system":format!("{} {}",std::env::consts::OS,std::env::consts::ARCH),
-        "python_implementation":"not applicable (Rust Native)","python_version":"", "frozen_bundle":cfg!(target_os="android"),
+        "python_implementation":"not applicable (Rust Native)","python_version":"", "frozen_bundle":cfg!(any(target_os="android", target_os="ios")),
         "browser":{"user_agent":safe_text(&body["browser"]["user_agent"]),"platform":safe_text(&body["browser"]["platform"])},
     });
     system["browser"]["playback"] = browser_playback(&body["browser"]["playback"]);

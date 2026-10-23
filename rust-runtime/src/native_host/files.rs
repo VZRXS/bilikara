@@ -61,6 +61,8 @@ pub(super) fn asset(context: &HostContext, path: &str, head: bool) -> Result<Res
                 "<html ",
                 if context.desktop {
                     "<html data-native-host=\"true\" data-host-platform=\"desktop\" "
+                } else if super::mobile::platform() == "ios" {
+                    "<html data-native-host=\"true\" data-host-platform=\"ios\" "
                 } else {
                     "<html data-native-host=\"true\" data-host-platform=\"android\" "
                 },

@@ -284,6 +284,7 @@ test('one CI entry runs independent Desktop and Mobile test-to-bundle matrices a
   includes(checks, ['platform: Android', 'os: ubuntu-latest', 'cargo test --manifest-path rust/Cargo.toml --locked',
     'cargo test --manifest-path rust-runtime/Cargo.toml --features native-host --locked', 'npm run test:frontend',
     'BILIKARA_REQUIRE_ANDROID_SIGNING_TESTS=1']);
+  includes(checks, ['platform: iOS', 'os: macos-15', 'npm run test:ios-bootstrap', 'npm run test:ios-build']);
   assert.ok(checks.indexOf('npm ci') < checks.indexOf('npm run test:frontend'));
   includes(packages, ['platform: Android', 'rust_target: aarch64-linux-android', 'tauri_target: aarch64',
     'apksigner', 'zipalign', 'key: android-36-ndk-27.0.12077973']);
@@ -295,4 +296,37 @@ test('one CI entry runs independent Desktop and Mobile test-to-bundle matrices a
   assert.equal(bundle.split('uses: ./.github/actions/rust-toolchain').length - 1, 2);
   assert.equal(android.split('uses: ./.github/actions/rust-toolchain').length - 1, 2);
   includes(bundle, ["github.event_name == 'push' && github.ref == 'refs/heads/main'"]);
+});
+
+test('iOS mobile lanes build both Apple targets without entering Android signing or release steps', () => {
+  const checks = android.split('\n  test:\n')[1].split('\n  bundle:\n')[0];
+  const packages = android.split('\n  bundle:\n')[1];
+  includes(packages, ['rust_target: aarch64-apple-ios\n', 'rust_target: aarch64-apple-ios-sim\n',
+    'tauri_target: aarch64-sim', 'export_arch: arm64-sim', 'artifact_kind: device-arm64-unsigned',
+    'artifact_kind: simulator-arm64', 'npm run ios:init -- --skip-targets-install']);
+  const build = step(packages, 'Build iOS without signing credentials');
+  includes(build, ["if: matrix.platform == 'iOS'", '--no-sign --ci', 'node scripts/ios.mjs build']);
+  excludes(build, ['secrets.', 'APPLE_CERTIFICATE', 'APPLE_DEVELOPMENT_TEAM', 'ANDROID_']);
+  for (const name of ['Setup Java', 'Setup Android SDK', 'Resolve Android libav C cache',
+    'Restore Android libav C cache', 'Verify actual Android media libraries and cache', 'Validate Android signing contract']) {
+    includes(step(checks, name), ["if: matrix.platform == 'Android'"]);
+  }
+  for (const name of ['Setup Java', 'Setup Android SDK', 'Prepare native YouTube binding generator',
+    'Install pinned Android tools', 'Cache Rust builds', 'Resolve Android libav C cache', 'Restore Android libav C cache',
+    'Cache Gradle dependencies', 'Resolve APK and prepare signing', 'Build APK', 'Compile Android playback service tests',
+    'Stage and verify APK', 'Upload APK test artifact', 'Upload signed APK to GitHub Release', 'Remove temporary signing file']) {
+    includes(step(packages, name), ["matrix.platform == 'Android'"]);
+  }
+  const stage = step(packages, 'Stage iOS test artifact');
+  includes(stage, ['plutil -lint', 'CFBundleIdentifier', 'NSAllowsArbitraryLoads', 'embedded.mobileprovision',
+    'lipo -archs', 'vtool -show-build', 'IOSSIMULATOR', 'ios_expected_platform=IOS',
+    'ditto -c -k --sequesterRsrc --keepParent', 'SHA256SUMS', 'GITHUB_SHA']);
+  const upload = step(packages, 'Upload iOS test artifact');
+  includes(upload, ["if: matrix.platform == 'iOS'", 'actions/upload-artifact@v7', 'if-no-files-found: error']);
+  excludes(upload, ['action-gh-release', 'secrets.']);
+  const apple = read('.github/actions/ios-toolchain/action.yml');
+  includes(apple, ['Xcode_16.4.app', 'xcodegen.zip', '/2.46.0/', 'shasum -a 256 --check',
+    '4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806', '--max-filesize',
+    'libclang.dylib', 'GITHUB_PATH', 'sdk-key=']);
+  excludes(apple, ['brew install', 'releases/latest', 'APPLE_DEVELOPMENT_TEAM', 'secrets.']);
 });

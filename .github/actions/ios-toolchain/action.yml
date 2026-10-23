@@ -1,0 +1,45 @@
+name: iOS build tools
+description: Select the CI Xcode baseline and install the pinned, verified XcodeGen build tool.
+outputs:
+  sdk-key:
+    description: Identity of the selected Xcode and device/simulator SDKs.
+    value: ${{ steps.apple.outputs.sdk-key }}
+runs:
+  using: composite
+  steps:
+    - name: Select and report Apple SDKs
+      id: apple
+      shell: bash
+      env:
+        DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+      run: |
+        set -euo pipefail
+        test "$(uname -m)" = arm64
+        test -d "$DEVELOPER_DIR"
+        ios_clang_lib="$(dirname "$(xcrun --find clang)")/../lib"
+        test -f "$ios_clang_lib/libclang.dylib"
+        echo "DEVELOPER_DIR=$DEVELOPER_DIR" >> "$GITHUB_ENV"
+        echo "LIBCLANG_PATH=$ios_clang_lib" >> "$GITHUB_ENV"
+        {
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          xcrun --sdk iphonesimulator --show-sdk-version
+        } | tee "$RUNNER_TEMP/bilikara-ios-toolchain.txt"
+        ios_sdk_key="$(shasum -a 256 "$RUNNER_TEMP/bilikara-ios-toolchain.txt" | awk '{print $1}')"
+        echo "sdk-key=$ios_sdk_key" >> "$GITHUB_OUTPUT"
+
+    - name: Install pinned XcodeGen
+      shell: bash
+      run: |
+        set -euo pipefail
+        ios_generator_root="$RUNNER_TEMP/bilikara-xcodegen-2.46.0"
+        mkdir -p "$ios_generator_root"
+        curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+          --connect-timeout 15 --max-time 120 --max-filesize 10485760 \
+          https://github.com/yonaskolb/XcodeGen/releases/download/2.46.0/xcodegen.zip \
+          --output "$ios_generator_root/xcodegen.zip"
+        printf '4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806  %s\n' "$ios_generator_root/xcodegen.zip" | shasum -a 256 --check
+        unzip -q "$ios_generator_root/xcodegen.zip" -d "$ios_generator_root"
+        test -x "$ios_generator_root/xcodegen/bin/xcodegen"
+        "$ios_generator_root/xcodegen/bin/xcodegen" --version
+        echo "$ios_generator_root/xcodegen/bin" >> "$GITHUB_PATH"

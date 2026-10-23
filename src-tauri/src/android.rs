@@ -1,12 +1,9 @@
 //! Android's in-process Rust Host. The shell resolves private storage and serves
 //! the existing bundled Host/Remote assets; it owns no playlist business rules.
 use bilikara_runtime::native_host::{Asset, NativeHost, RemoteExportRenderer};
-use bilikara_runtime::{
-    AppStateRequest, AppStateSeed, PlayerSettingsSeed, execute_app_state, initialize_native_host,
-};
+use bilikara_runtime::{AppStateRequest, execute_app_state};
 use serde::Serialize;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 
 // Operational startup result, not a second application-state authority.
@@ -236,44 +233,8 @@ fn initialize(app: &tauri::App) -> Result<NativeHost, String> {
         .path()
         .app_data_dir()
         .map_err(|_| "Android app-private storage directory is unavailable".to_owned())?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| "System time is before the Unix epoch".to_owned())?
-        .as_secs_f64();
-    let response = initialize_native_host(
-        &directory,
-        AppStateSeed {
-            automatic_volume: Default::default(),
-            session_user_ids: std::collections::HashMap::new(),
-            requester_user_ids: std::collections::HashMap::new(),
-
-            playback_mode: "local".to_owned(),
-            player_settings: PlayerSettingsSeed::default(),
-            current_item: None,
-            current_item_started: false,
-            playlist: Vec::new(),
-            history: Vec::new(),
-            session_history: Vec::new(),
-            session_users: Vec::new(),
-            remote_identities: Default::default(),
-            gatcha_pool_preferences: Default::default(),
-            session_started_at: now,
-            session_played_file: "native-session.json".to_owned(),
-            session_played: Vec::new(),
-            session_archives: Vec::new(),
-            previous_session: None,
-            backup: None,
-            updated_at: now,
-        },
-    );
-    response.snapshot().ok_or_else(|| {
-        response.error().map_or_else(
-            || "Native Host returned no snapshot".to_owned(),
-            |error| format!("{}: {}", error.kind, error.message),
-        )
-    })?;
     let resolver = app.asset_resolver();
-    NativeHost::start(
+    bilikara_runtime::native_host::mobile::start(
         &directory,
         Arc::new(move |path| {
             resolver.get(path.to_owned()).map(|asset| Asset {

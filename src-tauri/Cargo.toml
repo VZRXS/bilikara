@@ -29,6 +29,9 @@ jni = "0.21"
 jni_platform = { package = "jni", version = "=0.22.4" }
 rustls-platform-verifier = "=0.7.0"
 
+[target.'cfg(target_os = "ios")'.dependencies]
+bilikara_runtime = { path = "../rust-runtime", features = ["native-host"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "=0.10.1"
 core-graphics = "=0.25.0"

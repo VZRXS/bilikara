@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoads</key><false/>
+    <key>NSAllowsArbitraryLoadsInWebContent</key><false/>
+    <key>NSAllowsArbitraryLoadsForMedia</key><false/>
+    <key>NSExceptionDomains</key>
+    <dict>
+      <key>127.0.0.1</key>
+      <dict>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+        <key>NSIncludesSubdomains</key><false/>
+      </dict>
+    </dict>
+  </dict>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>让同一 Wi-Fi 下的设备连接 bilikara，进行点歌和播放控制。</string>
+</dict>
+</plist>

@@ -67,7 +67,11 @@ pub(crate) struct UpdateState {
 impl Default for UpdateState {
     fn default() -> Self {
         Self {
-            status: json!({"state":"idle","supported":true,"message":"可检查 Android 更新","updated_at":0}),
+            status: if super::mobile::platform() == "ios" {
+                json!({"state":"unsupported","supported":false,"message":"iOS 安装与更新渠道尚未接入","updated_at":0})
+            } else {
+                json!({"state":"idle","supported":true,"message":"可检查 Android 更新","updated_at":0})
+            },
             package: None,
             operation: 0,
             desktop: None,
@@ -629,6 +633,13 @@ pub(super) fn route(
     // platform reaches the other's operations.
     if context.desktop {
         return desktop_route(context, path, body);
+    }
+    if super::mobile::platform() == "ios" {
+        return Err(ApiError::new(
+            501,
+            "ios_update_unavailable",
+            "iOS 安装与更新渠道尚未接入",
+        ));
     }
     match path {
         "/api/app/update/check" => {
