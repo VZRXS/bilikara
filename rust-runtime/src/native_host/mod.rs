@@ -29,6 +29,8 @@ mod owner_enrichment;
 pub(crate) mod preferences;
 pub(crate) mod purek;
 pub(crate) mod ratings;
+#[cfg(test)]
+mod transport_concurrency_tests;
 pub(crate) mod updates;
 
 use crate::app_state::native_session::{Identity, with_app};
@@ -649,6 +651,34 @@ async fn handle(
     response
 }
 
+// AppState serializes durable commits as well as reads. Even authorization may
+// wait behind filesystem I/O, so it must not park the HTTP runtime's workers.
+async fn state_task<T: Send + 'static>(
+    action: impl FnOnce(&mut crate::app_state::AppState) -> Result<T, ApiError> + Send + 'static,
+) -> Result<T, ApiError> {
+    tokio::task::spawn_blocking(move || with_app(action))
+        .await
+        .map_err(|_| ApiError::new(500, "task", "原生请求处理失败"))?
+}
+
+// Cleanup cannot await from Drop. Keep uncontended release synchronous; only a
+// contended lease is handed off. Runtime shutdown drains these blocking tasks
+// before the Host owner retires media and AppState.
+fn retire_state(
+    action: impl FnOnce(&mut crate::app_state::AppState) -> Result<(), ApiError> + Send + 'static,
+) {
+    let Err(action) = crate::app_state::native_session::try_with_app(action) else {
+        return;
+    };
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        runtime.spawn_blocking(move || {
+            let _ = with_app(action);
+        });
+    } else {
+        let _ = with_app(action);
+    }
+}
+
 async fn handle_inner(
     context: Arc<HostContext>,
     address: SocketAddr,
@@ -684,31 +714,30 @@ async fn handle_inner(
     };
     if method == Method::GET && path.starts_with("/bootstrap/") {
         validate_entry_navigation(request.headers())?;
-        let secret = path.trim_start_matches("/bootstrap/");
-        with_app(|app| {
-            app.native_authorize(
-                &Identity {
-                    token: secret.to_owned(),
-                    loopback: identity.loopback,
-                    client: String::new(),
-                },
-                true,
-            )
-        })?;
-        return Ok(session_entry(host_entry_page(&query)?, secret));
+        let secret = path.trim_start_matches("/bootstrap/").to_owned();
+        let entry_identity = Identity {
+            token: secret.clone(),
+            loopback: identity.loopback,
+            client: String::new(),
+        };
+        state_task(move |app| app.native_authorize(&entry_identity, true)).await?;
+        return Ok(session_entry(host_entry_page(&query)?, &secret));
     }
     if method == Method::GET && matches!(path.as_str(), "/remote" | "/remote/" | "/remote.html") {
         validate_entry_navigation(request.headers())?;
-        let device_token = with_app(|app| {
+        let entry_identity = identity.clone();
+        let device_token = state_task(move |app| {
             // LAN entry is open, as in the Python Host. A device cookie only
             // binds its Remote identity; it never grants Host authority.
             // Preserve existing Host/Remote cookies and avoid a refresh loop.
-            if app.native_authorize(&identity, false).is_ok() {
+            if app.native_authorize(&entry_identity, false).is_ok() {
                 Ok(None)
             } else {
-                app.native_join_remote(&identity.token, token()?).map(Some)
+                app.native_join_remote(&entry_identity.token, token()?)
+                    .map(Some)
             }
-        })?;
+        })
+        .await?;
         if let Some(device_token) = device_token {
             return Ok(session_entry(EntryPage::Remote, &device_token));
         }
@@ -753,7 +782,7 @@ async fn handle_inner(
             return Err(ApiError::new(403, "shutdown", "关闭凭证无效"));
         }
         if path == "/api/app/export-status" {
-            let language = with_app(|app| Ok(app.native().ui_language))?;
+            let language = state_task(|app| Ok(app.native().ui_language)).await?;
             return Ok(json_response(
                 200,
                 json!({"ok":true,"data":{"active":context.export_slots.available_permits() == 0,"language":language}}),
@@ -786,13 +815,15 @@ async fn handle_inner(
             return Ok(json_response(200, json!({"ok":true,"data":result})));
         }
         context.stop.store(true, Ordering::Release);
-        let _ = with_app(|app| {
+        let _ = state_task(|app| {
             app.notify_analysis(true);
             Ok(())
-        });
+        })
+        .await;
         return Ok(json_response(200, json!({"ok":true})));
     }
-    let host = with_app(|app| app.native_authorize(&identity, false))?;
+    let request_identity = identity.clone();
+    let host = state_task(move |app| app.native_authorize(&request_identity, false)).await?;
     if path == "/api/events" && method == Method::GET {
         return event_stream(context, identity, host).await;
     }
@@ -813,7 +844,13 @@ async fn handle_inner(
         if matches!(path.as_str(), "/" | "/index.html") && !host {
             return Err(ApiError::new(403, "host_only", "请使用手机点歌页面"));
         }
-        return files::asset(&context, &path, method == Method::HEAD);
+        // Desktop assets canonicalize paths and read from disk. Slow storage
+        // must not stop unrelated connections, media I/O or network deadlines.
+        return tokio::task::spawn_blocking(move || {
+            files::asset(&context, &path, method == Method::HEAD)
+        })
+        .await
+        .map_err(|_| ApiError::new(500, "task", "原生请求处理失败"))?;
     }
     let permit = context
         .api_slots
@@ -992,15 +1029,22 @@ async fn event_stream(
     struct LanConnection(Option<String>);
     impl Drop for LanConnection {
         fn drop(&mut self) {
-            if let Some(key) = &self.0 {
-                let _ = with_app(|app| {
-                    app.native_close_lan_connection(key);
+            if let Some(key) = self.0.take() {
+                retire_state(move |app| {
+                    app.native_close_lan_connection(&key);
                     Ok(())
                 });
             }
         }
     }
-    let connection = LanConnection(with_app(|app| app.native_open_lan_connection(&identity))?);
+    let connection_identity = identity.clone();
+    // Return the guard from the blocking task itself: a disconnected request
+    // may discard its result after admission, and must still retire the stream.
+    let connection = state_task(move |app| {
+        app.native_open_lan_connection(&connection_identity)
+            .map(LanConnection)
+    })
+    .await?;
     let (reader, mut writer) = tokio::io::duplex(64 * 1024);
     tokio::spawn(async move {
         let _connection = connection;

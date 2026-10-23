@@ -6,6 +6,26 @@ import path from 'node:path';
 import { root, runNative } from './desktop_construction_support.mjs';
 const ROOT = root;
 import { contains, sourceIndex, iterableValues, concatenate } from './frontend_contract_support.mjs';
+import vm from 'node:vm';
+
+test('Remote retains a favorite version change while its previous read is pending',()=>{
+  const remote=readFileSync(path.join(ROOT,'static/remote.js'),'utf8');
+  const start=remote.indexOf('function scheduleFavlistBrowseReloadFromState('),end=remote.indexOf('\nfunction renderSourcesFollowBrowse(',start);
+  const reads=[],timers=new Map();let id=0;
+  const state={favlistBrowseData:{},favlistBrowseLoading:true,favlistBrowseSelectedFolderId:'42:10',favlistBrowseReloadTimer:null};
+  const elements={favlistSearchQuery:{value:'old query'}};
+  const window={setTimeout:fn=>{timers.set(++id,fn);return id;},clearTimeout:key=>timers.delete(key)};
+  const context={window,state,elements,loadFavlistBrowse:args=>reads.push(JSON.parse(JSON.stringify(args)))};
+  vm.runInNewContext(readFileSync(path.join(ROOT,'static/source-status.js'),'utf8')+'\n'+remote.slice(start,end)+'\nthis.schedule=scheduleFavlistBrowseReloadFromState;',context);
+  context.schedule({gatcha_favlist_updated_at:1},{gatcha_favlist_updated_at:2});
+  context.schedule({gatcha_favlist_updated_at:2},{gatcha_favlist_updated_at:3});
+  for(const fn of timers.values())fn();timers.clear();assert.equal(reads.length,0);
+  state.favlistBrowseSelectedFolderId='42:11';elements.favlistSearchQuery.value='kept query';
+  state.favlistBrowseLoading=false;window.BilikaraSourceStatus.flush('favorites');
+  assert.deepEqual(reads,[{folderId:'42:11',query:'kept query',keepQuery:true}]);
+  context.schedule({gatcha_favlist_updated_at:3},{gatcha_favlist_updated_at:3});
+  assert.equal(reads.length,1,'an unchanged source version does not reload again');
+});
 async function checked(program, args, cwd) { const result = await runNative(program, args, process.env, 120000, cwd); assert.equal(result.status, 0, result.stdout + result.stderr); return result; }
 const SourceStatusFrontendTest = {
 async run_client(client, script) {

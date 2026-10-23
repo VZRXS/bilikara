@@ -13496,6 +13496,10 @@ function commitHostPlaybackSessionReadyPaused(session, video, audio) {
   syncTauriMediaSessionState(video, { forcePosition: true });
   publishPresentationPlaybackState(session).catch(() => {});
   applyInitialHostPlaybackIntent(session, video, audio);
+  if (Number(state.data?.player_control_command?.seq) > Number(state.lastAppliedPlayerControlSeq || 0)) {
+    applyRemotePlayerControl(state.data.player_control_command, state.data.current_item,
+      frontendPlaybackMode(state.data.playback_mode));
+  }
   return true;
 }
 
@@ -16460,6 +16464,12 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
     && isCurrentHostPlaybackSession(state.hostPlaybackSession)
   );
 
+  // A current-program command can arrive before asynchronous media binding.
+  // Keep it at the native FIFO head; readiness retries it on this same owner.
+  if (!exactPlaybackProgram && playbackMode === "local" && currentItem
+    && expectedPlaybackGeneration === state.data?.playback_generation
+    && (!commandItemId || commandItemId === currentItem.id)) return;
+
   if (
     exactPlaybackProgram
     && playbackMode === "local"
@@ -16472,6 +16482,7 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
       const video = elements.playerFrame.querySelector("video");
       const audio = elements.playerFrame.querySelector('audio[data-player-role="audio"]');
       const playbackSession = state.hostPlaybackSession;
+      if (!video || !isCurrentHostPlaybackSession(playbackSession, video, audio)) return;
       if (video && isCurrentHostPlaybackSession(playbackSession, video, audio)) {
         // WebKit can keep a successful active pair in "starting" until its
         // initial play promises settle. Remote controls must treat that pair
@@ -16671,6 +16682,33 @@ function nextHostPlayerStatusSequence(session) {
   return nextSequence;
 }
 
+function sendHostPlayerStatus(session, payload, signature) {
+  if (session.playerStatusInFlight) {
+    // Observations describe current state, not a command FIFO. Keep one latest
+    // value while the previous HTTP request completes so network scheduling
+    // cannot deliver a lower status_sequence after a newer observation.
+    session.pendingPlayerStatus = { payload, signature };
+    return session.playerStatusRequest;
+  }
+  session.playerStatusInFlight = true;
+  session.playerStatusRequest = apiPost("/api/player/status", payload)
+    .catch(() => {
+      if (session.lastReportedStatusSignature === signature) {
+        session.lastReportedStatusSignature = "";
+      }
+    })
+    .finally(() => {
+      session.playerStatusInFlight = false;
+      const pending = session.pendingPlayerStatus;
+      session.pendingPlayerStatus = null;
+      if (pending && !networkOutputOwnsPlayback()
+        && isCurrentHostPlaybackSession(session, session.video, session.audio)) {
+        return sendHostPlayerStatus(session, pending.payload, pending.signature);
+      }
+    });
+  return session.playerStatusRequest;
+}
+
 function reportPlayerStatus(itemId, video, session) {
   if(networkOutputOwnsPlayback())return false;
   const observed = observedHostPlayerStatus(itemId, session, video, session?.audio);
@@ -16710,7 +16748,7 @@ function reportPlayerStatus(itemId, video, session) {
   }
   session.lastReportedStatusSignature = signature;
 
-  apiPost("/api/player/status", {
+  sendHostPlayerStatus(session, {
     playback_generation: playbackGeneration,
     status_sequence: statusSequence,
     item_id: normalizedItemId,
@@ -16721,7 +16759,7 @@ function reportPlayerStatus(itemId, video, session) {
       language: String(window.navigator?.language || ""),
       vendor: String(window.navigator?.vendor || ""),
     },
-  }).catch(() => {});
+  }, signature);
   return true;
 }
 

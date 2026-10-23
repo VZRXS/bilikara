@@ -181,8 +181,36 @@ pub(crate) fn with_app<T>(
         .get_or_init(|| Mutex::new(AppState::default()))
         .lock()
         .map_err(|_| ApiError::new(503, "state_unavailable", "Rust 状态锁不可用"))?;
+    apply_native_action(&mut state, action)
+}
+
+// Transport destructors must release their leases even when a client cancels.
+// Return the untouched action on contention so the caller can move only that
+// cleanup to a blocking worker, retaining the ordinary immediate-release path.
+pub(crate) fn try_with_app<T, F>(action: F) -> Result<Result<T, ApiError>, F>
+where
+    F: FnOnce(&mut AppState) -> Result<T, ApiError>,
+{
+    match APP_STATE
+        .get_or_init(|| Mutex::new(AppState::default()))
+        .try_lock()
+    {
+        Ok(mut state) => Ok(apply_native_action(&mut state, action)),
+        Err(std::sync::TryLockError::WouldBlock) => Err(action),
+        Err(std::sync::TryLockError::Poisoned(_)) => Ok(Err(ApiError::new(
+            503,
+            "state_unavailable",
+            "Rust 状态锁不可用",
+        ))),
+    }
+}
+
+fn apply_native_action<T>(
+    state: &mut AppState,
+    action: impl FnOnce(&mut AppState) -> Result<T, ApiError>,
+) -> Result<T, ApiError> {
     let before = state.native_session.revision;
-    let result = action(&mut state);
+    let result = action(state);
     if state.native_session.revision != before {
         state_changes().notify_waiters();
     }

@@ -8,6 +8,26 @@ import { setImmediate as microtaskTurn } from 'node:timers/promises';
 import test from 'node:test';
 import { root } from './desktop_construction_support.mjs';
 
+test('a current command waits for its session and media mount before being acknowledged',async()=>{
+  const source=readFileSync(path.join(root,'static/app.js'),'utf8');
+  const start=source.indexOf('function applyRemotePlayerControl('),end=source.indexOf('function observedHostPlayerStatus(',start);
+  const state={data:{playback_generation:3},hostPlaybackSession:null,lastAppliedPlayerControlSeq:0,localShouldBePlaying:false};
+  const video={currentTime:0,duration:90,paused:true};let mounted=false;const acknowledgements=[],seeks=[];
+  const apply=runInNewContext(hostOutputGuards()+source.slice(start,end)+';applyRemotePlayerControl;',{
+    state,elements:{playerFrame:{querySelector:s=>mounted&&s==='video'?video:null}},
+    isCurrentHostPlaybackSession:session=>Boolean(session&&session===state.hostPlaybackSession),
+    setMediaCurrentTime:(_video,time)=>{seeks.push(time);video.currentTime=time;},
+    apiPost:async(_route,body)=>{acknowledgements.push(body.seq);},
+  });
+  const command={seq:1,action:'seek-absolute',item_id:'same-song',playback_generation:3,target_seconds:12};
+  const consume=()=>apply(command,{id:'same-song'},'local');
+  consume();assert.deepEqual(acknowledgements,[],'session creation must not discard the FIFO head');
+  state.hostPlaybackSession={playbackGeneration:3};consume();
+  assert.deepEqual(acknowledgements,[],'a not-yet-mounted video must retain the FIFO head');
+  mounted=true;consume();consume();await microtaskTurn();
+  assert.deepEqual(seeks,[12]);assert.deepEqual(acknowledgements,[1]);
+});
+
 test('failed ACK retries its head without applying a relative seek twice or sending parallel ACKs', async () => {
   const source = readFileSync(path.join(root,'static/app.js'),'utf8');
   const start = source.indexOf('function applyRemotePlayerControl('), end = source.indexOf('function observedHostPlayerStatus(',start);
@@ -60,4 +80,46 @@ for (const [action, timing, expected] of [
   assert.deepEqual(seeks, [expected]); assert.equal(state.lastAppliedPlayerControlSeq, 7);
   assert.deepEqual(acknowledgements, [7]);
   await microtaskTurn();
+});
+
+function statusSender() {
+  const source=readFileSync(path.join(root,'static/app.js'),'utf8');
+  const start=source.indexOf('function sendHostPlayerStatus('),end=source.indexOf('function reportPlayerStatus(',start);
+  assert.ok(start>=0&&end>start);
+  const session={video:{},audio:{},lastReportedStatusSignature:''};
+  const state={data:{media_output:{target:'local'}},hostPlaybackSession:session};
+  const calls=[];
+  const send=runInNewContext(hostOutputGuards()+source.slice(start,end)+';sendHostPlayerStatus;',{
+    state,isCurrentHostPlaybackSession:s=>s===state.hostPlaybackSession,
+    apiPost:(route,payload)=>new Promise((resolve,reject)=>calls.push({route,payload,resolve,reject})),
+  });
+  return {session,state,calls,send:(seq)=>{const signature=String(seq);session.lastReportedStatusSignature=signature;return send(session,{status_sequence:seq},signature);}};
+}
+
+test('Host observations serialize HTTP delivery and retain only the latest queued status',async()=>{
+  const f=statusSender();f.send(1);f.send(2);f.send(3);
+  assert.equal(f.calls.length,1,'a newer observation cannot overtake the in-flight request');
+  assert.equal(f.session.pendingPlayerStatus.payload.status_sequence,3,'the pending buffer holds one current observation');
+  f.calls[0].resolve({accepted:true});await microtaskTurn();
+  assert.deepEqual(f.calls.map(c=>c.payload.status_sequence),[1,3]);
+  f.calls[1].resolve({accepted:true});await f.session.playerStatusRequest;
+  assert.equal(f.session.playerStatusInFlight,false);assert.equal(f.session.pendingPlayerStatus,null);
+});
+
+test('retired sessions and network output discard queued local observations',async()=>{
+  for(const reason of ['retired','network']){
+    const f=statusSender();f.send(1);f.send(2);
+    if(reason==='retired')f.state.hostPlaybackSession=null;
+    else f.state.data.media_output.target='purek';
+    f.calls[0].resolve({accepted:true});await f.session.playerStatusRequest;
+    assert.equal(f.calls.length,1,reason);assert.equal(f.session.pendingPlayerStatus,null);
+  }
+});
+
+test('a failed observation releases the sender and permits the unchanged current status to retry',async()=>{
+  const f=statusSender();f.send(1);f.calls[0].reject(new Error('fixture connection lost'));
+  await f.session.playerStatusRequest;assert.equal(f.session.lastReportedStatusSignature,'');
+  assert.equal(f.session.playerStatusInFlight,false);
+  f.send(2);f.calls[1].resolve({accepted:true});await f.session.playerStatusRequest;
+  assert.deepEqual(f.calls.map(c=>c.payload.status_sequence),[1,2]);
 });

@@ -3,21 +3,104 @@ import {mkdirSync,mkdtempSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import test,{before} from 'node:test';
-import {chromium} from 'playwright';
+import {chromium,webkit} from 'playwright';
 import {root} from './desktop_construction_support.mjs';
 import {buildNativeAlpha} from './native_runtime_artifacts.mjs';
-import {RunningHost,isolatedEnvironment} from './native_host_support.mjs';
+import {RunningHost,isolatedEnvironment,waitFor} from './native_host_support.mjs';
 
 let binary;
 before(async()=>{if(process.platform==='linux')binary=await buildNativeAlpha();},{timeout:300000});
 const posts=Array.from({length:612},(_,i)=>({bvid:'BV'+String(i+1).padStart(10,'0'),title:`Post ${i+1}`,
   owner_name:'Fixture UP',source_url:'https://www.bilibili.com/video/BV'+String(i+1).padStart(10,'0')}));
-async function open(t,client) {
+
+for(const engine of [chromium,webkit])test(`${engine.name()} Remote catalog loading stays readable and Back retires late replies`,{
+  skip:process.platform!=='linux',timeout:90000,
+},async t=>{
+  const {page}=await open(t,'remote',engine),pending=[];
+  await page.context().route('**/api/d1/**',route=>new Promise(resolve=>pending.push({
+    async reply(data){await route.fulfill({json:{ok:true,data}});resolve();},
+  })));
+  const reply=async(index,data)=>{
+    await waitFor(()=>pending[index],`catalog read ${index}`);
+    await pending[index].reply(data);
+  };
+  const empty={items:[],tags:[],has_more:false,next_offset:0,matched_count:0};
+  await page.locator('[data-remote-request-view="discover"]').click();
+  await page.locator('[data-category-id]').first().click();
+  const category=page.locator('#remote-discover-categories-panel');
+  await page.waitForFunction(()=>state.categoryBrowseLoading);
+  assert.match(await category.locator('[data-category-browse-results]').innerText(),/正在读取歌曲/);
+  assert.equal(await category.locator('[data-category-browse-back]').isEnabled(),true);
+  await category.locator('[data-category-browse-back]').click();
+  await reply(0,{...empty,items:[{...posts[0],title:'Late category result'}]});
+  await page.waitForFunction(()=>!state.categoryBrowseSelectedId&&!state.categoryBrowseLoading);
+  assert.equal(await category.locator('[data-category-browser-home]').isVisible(),true);
+
+  await page.locator('[data-remote-discover-mode="artist"]').click();
+  const artist=page.locator('#remote-discover-artist-panel');
+  await artist.locator('[data-letter="Y"]').click();
+  await page.waitForFunction(()=>state.d1BrowseModes.artist.loading);
+  assert.match(await artist.locator('[data-d1-browse-tags]').innerText(),/正在读取浏览索引/);
+  assert.equal(await artist.locator('[data-d1-browse-back]').isEnabled(),true);
+  await artist.locator('[data-d1-browse-back]').click();
+  await reply(1,{...empty,tags:[{tag:'Late artist',count:1}]});
+  await page.waitForFunction(()=>!state.d1BrowseModes.artist.letter&&!state.d1BrowseModes.artist.loading);
+  assert.equal(await artist.locator('[data-d1-browse-alphabet]').isVisible(),true);
+
+  await artist.locator('[data-letter="Y"]').click();
+  const tags=Array.from({length:10},(_,i)=>({tag:i===9?'YOASOBI':`Y artist ${i}`,locale:'ja',count:3}));
+  await reply(2,{...empty,tags});
+  await artist.locator('[data-tag="YOASOBI"]').click();
+  await page.waitForFunction(()=>state.d1BrowseModes.artist.loading&&state.d1BrowseModes.artist.tag==='YOASOBI');
+  assert.match(await artist.locator('[data-d1-browse-results]').innerText(),/正在读取歌曲/);
+  const geometry=await artist.evaluate(n=>({nav:n.querySelector('.tag-browser-nav').getBoundingClientRect().bottom,
+    result:n.querySelector('[data-d1-browse-results]').getBoundingClientRect().top}));
+  assert.ok(geometry.result-geometry.nav<32,`no empty track above artist results: ${JSON.stringify(geometry)}`);
+  await artist.locator('[data-d1-browse-back]').click();
+  await reply(3,{...empty,items:[{...posts[0],title:'Late YOASOBI result'}]});
+  await reply(4,{...empty,tags});
+  await page.waitForFunction(()=>!state.d1BrowseModes.artist.loading&&!state.d1BrowseModes.artist.tag);
+  assert.equal(await artist.locator('[data-tag="YOASOBI"]').isVisible(),true);
+  assert.equal(await artist.locator('[data-d1-browse-results]').isVisible(),false);
+  await artist.locator('[data-tag="YOASOBI"]').click();
+  await reply(5,empty);
+  await page.waitForFunction(()=>!state.d1BrowseModes.artist.loading);
+  assert.match(await artist.locator('[data-d1-browse-results]').innerText(),/没有匹配结果/);
+  await artist.locator('[data-d1-browse-back]').click();
+  await reply(6,{...empty,tags});
+  await artist.locator('[data-d1-browse-back]').click();
+
+  const owner={uid:'42',name:'Fixture UP',count:3};
+  const folder={id:'42:7',folder_id:'7',title:'Fixture favorites',count:3};
+  await page.context().route(/\/api\/gatcha\/(?:favlist\/)?browse(?:\?|$)/,route=>{
+    const url=new URL(route.request().url()),favorites=url.pathname.includes('/favlist/');
+    const selected=url.searchParams.get(favorites?'folder_id':'uid')||'';
+    const data={...empty,owners:[owner],folders:[folder],selected_uid:favorites?'':selected,
+      selected_folder_id:favorites?selected:'',query:'',items:selected?[posts[0]]:[]};
+    if(!selected)return route.fulfill({json:{ok:true,data}});
+    return new Promise(resolve=>pending.push({async reply(){await route.fulfill({json:{ok:true,data}});resolve();}}));
+  });
+  await page.locator('#remote-request-secondary-back').click();
+  await page.locator('[data-remote-request-view="sources"]').click();
+  for(const [index,mode,card,back,selectedState,loadingState] of [
+    [7,'uids','#sources-follow-grid [data-uid="42"]','#sources-follow-back','followBrowseSelectedUid','followBrowseLoading'],
+    [8,'favorites','#favlist-grid [data-folder-id="42:7"]','#favlist-browse-back','favlistBrowseSelectedFolderId','favlistBrowseLoading'],
+  ]){
+    await page.locator(`[data-remote-sources-mode="${mode}"]`).click();
+    await page.locator(card).click();await waitFor(()=>pending[index],`${mode} detail read`);
+    assert.equal(await page.locator(back).isEnabled(),true);
+    await page.locator(back).click();await reply(index);
+    await page.waitForFunction(({selectedState,loadingState})=>!state[selectedState]&&!state[loadingState],{selectedState,loadingState});
+    assert.equal(await page.locator(card).isVisible(),true,'a late source reply must not reopen its detail');
+  }
+});
+
+async function open(t,client,engine=chromium) {
   const home=mkdtempSync(path.join(tmpdir(),'bilikara-source-pager-'));
   t.after(()=>rmSync(home,{recursive:true,force:true}));
   const host=await RunningHost.start(binary,home,[home,path.join(root,'static')],isolatedEnvironment(home),true);
   t.after(()=>host.close());await host.api('/api/session-users/add',{name:'Fixture singer'});
-  const browser=await chromium.launch();t.after(()=>browser.close());
+  const browser=await engine.launch();t.after(()=>browser.close());
   const context=await browser.newContext({viewport:client==='desktop'?{width:1280,height:800}:{width:393,height:844},hasTouch:client!=='desktop'});
   await context.addCookies([...host.cookies].map(([name,value])=>({name,value,url:host.base})));
   await context.addInitScript(android=>{

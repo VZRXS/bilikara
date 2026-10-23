@@ -6,7 +6,7 @@ import http from 'node:http';
 import nativeTest, {before} from 'node:test';
 function test(name,options,run){return nativeTest(name,options,async t=>{try{await run(t);}catch(error){console.error(name,error.stack);throw error;}});}
 test.after=nativeTest.after;
-import {chromium} from 'playwright';
+import {chromium,webkit} from 'playwright';
 import {root} from './desktop_construction_support.mjs';
 import {buildNativeHost, buildNativeAlpha} from './native_runtime_artifacts.mjs';
 import {RunningHost, HttpClient, isolatedEnvironment, waitFor} from './native_host_support.mjs';
@@ -63,8 +63,8 @@ async function screenshot(page, name) {
   const file=path.join(output,name+'.png'); await page.screenshot({path:file});
   snapshots.push(file);
 }
-async function browser(t, host, {android=false, remote=false, origin=host.base, hasTouch=android||remote, mobileBrowser=false} = {}) {
-  const instance=await chromium.launch({headless:process.env.BILIKARA_SOURCE_TEST_HEADED!=='1',args:['--disable-background-networking','--disable-features=WebRtcHideLocalIpsWithMdns'],...(process.platform==='win32'?{channel:'msedge'}:{})});
+async function browser(t, host, {android=false, remote=false, origin=host.base, hasTouch=android||remote, mobileBrowser=false, engine=chromium} = {}) {
+  const instance=await engine.launch({headless:process.env.BILIKARA_SOURCE_TEST_HEADED!=='1',...(engine===chromium?{args:['--disable-background-networking','--disable-features=WebRtcHideLocalIpsWithMdns'],...(process.platform==='win32'?{channel:'msedge'}:{})}:{})});
   cleanup(t,async()=>{if(!completed.has(t)&&process.env.BILIKARA_TEST_SCREENSHOT_DIR){for(const [i,p] of instance.contexts().flatMap(c=>c.pages()).entries())if(!p.isClosed())await screenshot(p,`failure-${t.name.includes('touch')?'touch':t.name.includes('public')?'public':'desktop'}-${i}`).catch(()=>{});}await instance.close();});
   const context=await instance.newContext({viewport:android||remote?{width:390,height:844}:{width:700,height:650},hasTouch,isMobile:mobileBrowser,reducedMotion:'reduce',locale:'zh-CN'});
   if(!remote)await context.addCookies([...host.cookies].map(([name,value])=>({name,value,url:origin})));
@@ -1360,18 +1360,39 @@ test('selection cards share pointer roles, group ordering, drag previews and an 
   assert.deepEqual(errors,[]);await assertMedia(page);completed.add(t);
 });
 
-async function controlledSources(t) {
+async function controlledSources(t, {freshUid=false} = {}) {
   let release;const gate=new Promise(resolve=>{release=resolve;});
   const provider=await videoFixture(async target=>{
     const u=new URL(target,'https://api.bilibili.com'),uid=u.searchParams.get('mid')||'42';
     if(u.pathname.endsWith('/nav'))return {code:0,data:{isLogin:true,wbi_img:{img_url:`https://i0.hdslb.com/${'a'.repeat(32)}.png`,sub_url:`https://i0.hdslb.com/${'b'.repeat(32)}.png`}}};
     if(u.pathname.endsWith('/acc/info'))return {code:0,data:{mid:Number(uid),name:`本地 UP ${Number(uid)-41}`,face:''}};
-    if(u.pathname.endsWith('/arc/search')){await gate;return {code:0,data:{list:{vlist:[{bvid,title:'Refreshed song',length:'1:30',author:'本地 UP 1'}]}}};}
+    if(u.pathname.endsWith('/arc/search')){await gate;return {code:0,data:{list:{vlist:[...(freshUid?[{bvid:'BV17x411w7KC',title:'Refreshed song 伴奏',length:'1:30',author:'本地 UP 1'}]:[]),{bvid,title:'Refreshed song',length:'1:30',author:'本地 UP 1'}]}}};}
     if(u.pathname.endsWith('/list-all'))return {code:0,data:{list:[{id:10,title:'我的本地收藏',attr:0,media_count:1},{id:11,title:'独立收藏夹',attr:0,media_count:1},{id:12,title:'正在拉取的收藏夹',attr:0,media_count:1},{id:13,title:'等待拉取的收藏夹',attr:0,media_count:1}]}};
     if(u.pathname.endsWith('/resource/list')){await gate;return {code:0,data:{medias:[{bvid,title:'Refreshed favorite',duration:90,upper:{mid:42,name:'本地 UP 1'}}],has_more:false}};}
     return {code:0,data:{}};
   });cleanup(t,()=>provider.close());return {provider,release};
 }
+
+for(const kind of ['uid','favlist'])for(const detail of [false,true])test(`WebKit Remote ${kind} pull refreshes its open ${detail?'detail':'source list'} without a manual reload`,{timeout:45000},async t=>{
+  const {provider,release}=await controlledSources(t,{freshUid:true});
+  const {host}=await fixture(t,{size:3,environment:{...provider.environment,BILIKARA_CF_API_URL:provider.base},prepare:data=>writeFileSync(path.join(data,'BBDown.data'),'SESSDATA=fixture; bili_jct=fixture')});cleanup(t,release);
+  const {page,errors}=await browser(t,host,{remote:true,engine:webkit});await sources(page,false,true);
+  if(kind==='favlist')await page.locator('[data-remote-sources-mode="favorites"]').click();
+  await page.waitForFunction(()=>!state.followBrowseLoading&&!state.favlistBrowseLoading);
+  if(detail){
+    await page.locator(kind==='uid'?'#sources-follow-grid button[data-uid="42"]':'#favlist-grid button[data-folder-id="42:10"]').click();
+    await page.waitForFunction(()=>!state.followBrowseLoading&&!state.favlistBrowseLoading);
+  }
+  let reads=0;const browsePath=kind==='uid'?'/api/gatcha/browse':'/api/gatcha/favlist/browse';
+  page.on('request',request=>{if(new URL(request.url()).pathname===browsePath)reads++;});
+  await host.api(kind==='uid'?'/api/gatcha/uids/add':'/api/gatcha/favlist',kind==='uid'?{uid:'42',queue:true}:{uid:'42',folder_ids:['10'],folder_titles:{10:'我的本地收藏'},queue:true});
+  await waitFor(async()=>Boolean((await host.api('/api/state')).gatcha.source_queue.active),'actual native source pull started');release();
+  await page.waitForFunction(kind=>Number(state.data.gatcha.source_queue.completed[kind==='uid'?'uids':'favorites'])>0,kind);
+  await waitFor(()=>reads>0,'source completion initiated a fresh Remote read');
+  await page.waitForFunction(()=>!state.followBrowseLoading&&!state.favlistBrowseLoading);
+  if(detail)assert.match(await page.locator(kind==='uid'?'#sources-follow-results':'#favlist-song-results').innerText(),kind==='uid'?/Refreshed song/:/Refreshed favorite/);
+  assert.deepEqual(errors,[]);completed.add(t);
+});
 
 test('queued favorite folders remain browsable on Host and Remote during actual native pulls',{timeout:45000},async t=>{
   const {provider,release}=await controlledSources(t),{host}=await fixture(t,{size:3,environment:{...provider.environment,BILIKARA_CF_API_URL:provider.base},prepare:data=>writeFileSync(path.join(data,'BBDown.data'),'SESSDATA=fixture; bili_jct=fixture')});cleanup(t,release);

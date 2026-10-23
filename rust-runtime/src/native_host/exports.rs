@@ -271,10 +271,12 @@ pub(super) async fn download(
     identity: Identity,
     query: String,
 ) -> Result<Response, ApiError> {
-    with_app(|app| {
-        app.native_requester(&identity, "")?;
+    let request_identity = identity.clone();
+    state_task(move |app| {
+        app.native_requester(&request_identity, "")?;
         Ok(())
-    })?;
+    })
+    .await?;
     let options = Options::parse(&query)?;
     let renderer = context
         .export_renderer

@@ -11,6 +11,16 @@ that desktop behavior baseline, including approved Preview 1 behavior and later
 changes. Remaining Python maintenance does not reopen the runtime migration or
 alter published Preview 2 tags/assets, storage paths or update contracts.
 
+The HTTP listener has two asynchronous I/O workers. Entry authorization, Remote
+admission, SSE/export admission and static-asset filesystem reads run in Tokio's
+blocking pool: waiting behind an AppState commit or slow disk must not occupy
+both network workers and stall otherwise independent sockets and deadlines.
+Media path checks and pin admission use the same blocking boundary. Media/SSE
+guards release immediately when the state lock is free; contended cancellation
+cleanup runs in the blocking pool and drains before Host shutdown.
+AppState still serializes and durably commits commands under its existing lock;
+this transport isolation does not shorten the underlying disk or upstream wait.
+
 LAN Remote links and QR codes use `http://<LAN address>:<port>/remote` without
 an invitation parameter. Opening `/remote` (also `/remote/` or `/remote.html`)
 establishes a Remote device cookie and then shows username registration, matching

@@ -1916,20 +1916,24 @@ const beforeCounts = {
 state.hostPlaybackSession.readyCommitted = true;
 state.hostPlaybackSession.phase = "playing";
 const afterCommit = reportPlayerStatus("item", video, state.hostPlaybackSession);
+await state.hostPlaybackSession.playerStatusRequest;
 const duplicate = reportPlayerStatus("item", video, state.hostPlaybackSession);
 reportPlayerStatusHeartbeat("item", video, state.hostPlaybackSession);
 nowMs = 6001;
 video.currentTime = 24;
 reportPlayerStatusHeartbeat("item", video, state.hostPlaybackSession);
+await state.hostPlaybackSession.playerStatusRequest;
 
 for (const phase of ["ready-paused", "starting", "needs-user-gesture", "failed"]) {
   state.hostPlaybackSession.phase = phase;
   video.currentTime += 1;
   reportPlayerStatus("item", video, state.hostPlaybackSession);
+  await state.hostPlaybackSession.playerStatusRequest;
 }
 state.hostPlaybackSession.phase = "playing";
 video.currentTime += 1;
 reportPlayerStatus("item", video, state.hostPlaybackSession);
+await state.hostPlaybackSession.playerStatusRequest;
 
 const retiredSession = state.hostPlaybackSession;
 const videoB = new FakeMedia(3); const audioB = new FakeMedia(2.8);

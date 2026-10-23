@@ -15,7 +15,7 @@ test('rapid native timeline and Host transport seeks retain audible split playba
   const evidence = process.env.BILIKARA_SEEK_EVIDENCE;
   if (evidence) mkdirSync(evidence, {recursive: true});
   let browser, host;
-  const errors = [], samples = [];
+  const errors = [], samples = [], httpErrors = [];
   try {
     const video = path.join(home, 'video.mp4'), audio = path.join(home, 'audio.m4a');
     for (const [file, args] of [[video, ['-f','lavfi','-i','testsrc2=s=320x180:r=15:d=90','-c:v','libx264','-preset','ultrafast','-g','15','-pix_fmt','yuv420p','-movflags','+faststart']],
@@ -54,6 +54,12 @@ test('rapid native timeline and Host transport seeks retain audible split playba
     }
     page.on('pageerror', error => errors.push(error.message));
     page.on('console', message => { if (message.type()==='error') errors.push(message.text()); });
+    page.on('response', async response => {
+      if(response.status()<400)return;
+      const url=new URL(response.url());if(url.origin!==host.base)return;
+      const body=await response.json().catch(()=>({}));
+      httpErrors.push({path:url.pathname,status:response.status(),code:body.code});
+    });
     page.on('requestfailed', request => {
       // Native scrubbing legitimately cancels superseded media range fetches.
       if (request.resourceType()==='media' && request.failure()?.errorText==='net::ERR_ABORTED') return;
@@ -62,6 +68,30 @@ test('rapid native timeline and Host transport seeks retain audible split playba
     await page.goto(host.base);
     assert.equal(await page.title(), 'bilikara host');
     await page.waitForFunction(() => state.hostPlaybackSession?.phase === 'playing');
+    // Hold one actual status request while media events publish newer samples.
+    // Only the latest queued observation may follow it; all requests still run
+    // through the real Rust sequence/claim checks, without synthetic responses.
+    await page.evaluate(()=>state.hostPlaybackSession.playerStatusRequest);
+    let releaseStatus,statusSeen;
+    const statusGate=new Promise(resolve=>releaseStatus=resolve),firstStatus=new Promise(resolve=>statusSeen=resolve);
+    const sequences=[];
+    const holdStatus=async route=>{
+      sequences.push(route.request().postDataJSON().status_sequence);
+      if(sequences.length===1){statusSeen();await statusGate;}
+      return route.continue();
+    };
+    await context.route('**/api/player/status',holdStatus);
+    const observe=()=>page.evaluate(()=>{
+      const s=state.hostPlaybackSession;s.lastReportedStatusSignature='';
+      reportPlayerStatus(state.data.current_item.id,s.video,s);
+    });
+    try{
+      await observe();await firstStatus;await observe();await observe();
+      assert.equal(sequences.length,1,'HTTP observations cannot overtake the held sample');
+    }finally{releaseStatus();}
+    await page.evaluate(()=>state.hostPlaybackSession.playerStatusRequest);
+    await context.unroute('**/api/player/status',holdStatus);
+    assert.ok(sequences.length>=2);assert.ok(sequences.every((seq,i)=>i===0||seq>sequences[i-1]));
     await page.evaluate(() => {
       const {video, audio} = state.hostPlaybackSession;
       window.seekOriginalPair = {video, audio};
@@ -179,7 +209,7 @@ test('rapid native timeline and Host transport seeks retain audible split playba
       const pcm=new Float32Array(window.seekAnalyser.fftSize);window.seekAnalyser.getFloatTimeDomainData(pcm);
       return !state.hostPlaybackSession.video.paused&&!state.hostPlaybackSession.audio.paused&&pcm.some(value=>Math.abs(value)>.005);
     });
-    assert.deepEqual(errors, []);
+    assert.deepEqual(errors, [],JSON.stringify(httpErrors));
     if (evidence) await page.screenshot({path:path.join(evidence,'rapid-seek-after.png')});
   } finally {
     if (evidence) {
@@ -188,7 +218,7 @@ test('rapid native timeline and Host transport seeks retain audible split playba
         const s=state.hostPlaybackSession;
         return {phase:s?.phase,video:s?.video&&{ready:s.video.readyState,error:s.video.error?.message},audio:s?.audio&&{ready:s.audio.readyState,error:s.audio.error?.message}};
       }).catch(()=>null);
-      writeFileSync(path.join(evidence,'rapid-seek.json'),JSON.stringify({errors,samples,events,final},null,2)+'\n');
+      writeFileSync(path.join(evidence,'rapid-seek.json'),JSON.stringify({errors,httpErrors,samples,events,final},null,2)+'\n');
     }
     await browser?.close();
     if (host) await host.close();

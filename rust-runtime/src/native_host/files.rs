@@ -9,8 +9,9 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 struct MediaLease(String);
 impl Drop for MediaLease {
     fn drop(&mut self) {
-        let _ = with_app(|app| {
-            app.native_unpin_media(&self.0);
+        let handle = std::mem::take(&mut self.0);
+        retire_state(move |app| {
+            app.native_unpin_media(&handle);
             Ok(())
         });
     }
@@ -134,21 +135,26 @@ pub(super) async fn media(
         return Err(ApiError::new(404, "not_found", "媒体不存在"));
     }
     let route = path.to_owned();
-    let handle = with_app(|app| app.native_pin_media(&route))?;
-    // Released on every early error/HEAD and when the streaming body is dropped.
-    let lease = MediaLease(handle);
-    let root = context
-        .cache_root
-        .canonicalize()
-        .map_err(|_| ApiError::new(404, "not_found", "缓存目录不存在"))?;
-    let file_path = context
-        .cache_root
-        .join(relative)
-        .canonicalize()
-        .map_err(|_| ApiError::new(404, "not_found", "媒体文件不存在"))?;
-    if !file_path.starts_with(root) {
-        return Err(ApiError::new(404, "not_found", "媒体不存在"));
-    }
+    let cache_root = context.cache_root.clone();
+    let (file_path, lease) = tokio::task::spawn_blocking(move || {
+        let handle = with_app(|app| app.native_pin_media(&route))?;
+        // Construct the guard inside the task so a cancelled request also
+        // releases a pin admitted after its caller has already disappeared.
+        let lease = MediaLease(handle);
+        let root = cache_root
+            .canonicalize()
+            .map_err(|_| ApiError::new(404, "not_found", "缓存目录不存在"))?;
+        let file_path = cache_root
+            .join(relative)
+            .canonicalize()
+            .map_err(|_| ApiError::new(404, "not_found", "媒体文件不存在"))?;
+        if !file_path.starts_with(root) {
+            return Err(ApiError::new(404, "not_found", "媒体不存在"));
+        }
+        Ok((file_path, lease))
+    })
+    .await
+    .map_err(|_| ApiError::new(500, "task", "原生请求处理失败"))??;
     let mut file = tokio::fs::File::open(file_path)
         .await
         .map_err(|_| ApiError::new(404, "not_found", "无法读取媒体"))?;

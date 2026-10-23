@@ -24,6 +24,15 @@
   const automaticRenderers = new WeakMap();
   function refreshAutomatic(slider) { automaticRenderers.get(slider)?.(); }
 
+  function setText(node, text) {
+    if (node.textContent === text) return;
+    // WebKit can cancel a press if its hit text node is removed before release.
+    // Keep that node through live snapshots, including actual value changes.
+    const child = node.firstChild;
+    if (child?.nodeType === 3 && !child.nextSibling) child.nodeValue = text;
+    else node.textContent = text;
+  }
+
   function resetForSong(slider, percent) {
     if (slider) songResetHandlers.get(slider)?.(bounded(percent));
   }
@@ -36,7 +45,7 @@
     slider.setAttribute("aria-valuenow", String(toPosition(current)));
     slider.setAttribute("aria-valuetext", `${current}%`);
     slider.closest(".volume-control")?.classList.toggle("is-boosted", current > 100);
-    value.textContent = `${current}%`;
+    setText(value, `${current}%`);
   }
 
   function bind({ slider, value, t, getValue, onInput, onCommit, getAutomatic, onAutomatic, bindInfo, closeInfo }) {
@@ -186,6 +195,7 @@
     let draftDirty = false;
     let closing = false;
     let songEpoch = 0;
+    let openingPosition = 0;
     songResetHandlers.set(slider, (percent) => {
       songEpoch += 1;
       gesture = null;
@@ -205,7 +215,7 @@
       const left = viewport?.offsetLeft || 0;
       const top = viewport?.offsetTop || 0;
       const box = { width: dialog.offsetWidth, height: dialog.offsetHeight };
-      const thumbX = anchor.left + 10 + Math.max(0, anchor.width - 20) * toPosition(getValue()) / 100;
+      const thumbX = anchor.left + 10 + Math.max(0, anchor.width - 20) * openingPosition / 100;
       const x = (isRemote ? thumbX + 20 : anchor.right) - box.width;
       let y = anchor.top - box.height - 8;
       if (isRemote && y < top + 12 && anchor.bottom + box.height + 8 <= top + height - 12) {
@@ -228,11 +238,15 @@
     }
     function openDialog() {
       if (dialog.open) return;
-      heading.textContent = t("player.volumeAdjust");
+      openingPosition = toPosition(getValue());
+      const phoneHost = document.documentElement.dataset.hostPlatform === "android"
+        && document.documentElement.dataset.hostLayout === "portrait";
+      close.autofocus = isRemote || phoneHost;
+      setText(heading, t("player.volumeAdjust"));
       dialog.setAttribute("aria-label", t("player.volumeAdjust"));
       input.setAttribute("aria-label", t("player.volumeTag"));
       close.setAttribute("aria-label", t("common.close"));
-      reset.textContent = t("common.resetShort");
+      setText(reset, t("common.resetShort"));
       errorMessage.hidden = true;
       input.value = String(bounded(getValue()));
       draftDirty = false;
@@ -247,7 +261,7 @@
       position();
       for (const [element, top, left] of scrollers) element.scrollTo({top, left, behavior: "instant"});
       // Opening the mobile editor should not immediately summon its keyboard.
-      if (isRemote) close.focus({ preventScroll: true });
+      if (isRemote || phoneHost) close.focus({ preventScroll: true });
       else {
         input.focus({ preventScroll: true });
         input.select();
@@ -362,10 +376,10 @@
       if (dialog.open && !busy && !draftDirty) input.value = String(bounded(getValue()));
       const automatic = getAutomatic?.() || { status: 'off', enabled: false, scanner_available: false };
       const host = automatic.host_controls === true && typeof onAutomatic === 'function';
-      dialog.querySelector('[data-auto-label]').textContent = t('automaticVolume.title');
+      setText(dialog.querySelector('[data-auto-label]'), t('automaticVolume.title'));
       autoInfo.setAttribute('aria-label', t('automaticVolume.helpLabel'));
       const helpKey = isRemote ? ({off:'automaticVolume.remoteHelpOff', waiting_baseline:'automaticVolume.remoteHelpWaiting', unavailable:'automaticVolume.remoteHelpUnavailable'}[automatic.status] || 'automaticVolume.remoteHelp') : (!automatic.scanner_available ? 'automaticVolume.hostHelpUnavailable' : 'automaticVolume.hostHelp');
-      autoHelp.textContent = t(helpKey);
+      setText(autoHelp, t(helpKey));
       autoToggle.hidden = !host;
       autoSwitch.checked = automatic.enabled === true;
       autoSwitch.disabled = busy || autoBusy || (!automatic.scanner_available && !automatic.enabled);
@@ -374,22 +388,22 @@
       autoStatus.dataset.status = status;
       autoStatus.hidden = false;
       reference.hidden = !host || !automatic.enabled;
-      reference.textContent = t(automatic.calibrated ? 'automaticVolume.update' : 'automaticVolume.reference');
+      setText(reference, t(automatic.calibrated ? 'automaticVolume.update' : 'automaticVolume.reference'));
       const draft = dialog.open && draftDirty && input.value !== String(bounded(getValue()));
       reference.disabled = busy || autoBusy || !automatic.can_reference || draft;
       const reason = draft ? "draft" : automatic.reference_reason;
       const explanation = reason ? t(reasonKeys[reason] || reasonKeys.unavailable) : '';
       const labels = isRemote ? compactStatusKeys : statusKeys;
-      autoStatus.textContent = t(labels[status] || labels.off);
+      const statusText = t(labels[status] || labels.off);
       reference.title = explanation || t(automatic.calibrated ? 'automaticVolume.updateHint' : 'automaticVolume.referenceHint');
       reference.setAttribute('aria-label', `${reference.textContent} · ${reference.title}`);
       autoStatus.id = `${isRemote ? 'remote' : 'host'}-automatic-volume-status`;
       reference.setAttribute('aria-describedby', autoStatus.id);
       // The Host's existing row carries actionable state; no permanent
       // message block below its actions. Remote retains only its one-line tag.
-      if (host && automatic.enabled && explanation) autoStatus.textContent = explanation;
+      setText(autoStatus, host && automatic.enabled && explanation ? explanation : statusText);
       resume.hidden = !host || !automatic.enabled || !automatic.manual_override || !automatic.calibrated;
-      resume.textContent = t('automaticVolume.resume');
+      setText(resume, t('automaticVolume.resume'));
       resume.disabled = busy || autoBusy || !automatic.can_resume;
       if (!busy && !autoBusy) reset.disabled = manualResetDisabled(bounded(getValue()));
       if (dialog.open) position();
