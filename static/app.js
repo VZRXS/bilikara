@@ -19021,6 +19021,36 @@ function diagnosticBrowserInfo() {
     platform: String(userAgentData?.platform || navigator.platform || ""),
     mobile: Boolean(userAgentData?.mobile),
     brands,
+    playback: diagnosticPlayerInfo(),
+    volume_controls: window.BilikaraVolumeControl?.getDiagnostics?.() || [],
+  };
+}
+
+function diagnosticPlayerInfo() {
+  const session = state.hostPlaybackSession;
+  const video = session?.video;
+  const audio = session?.audio;
+  const toggle = document.querySelector('.volume-adjust-popover [data-auto-switch]');
+  return {
+    phase: String(session?.phase || 'none'),
+    playback_generation: Number(session?.playbackGeneration || 0),
+    last_applied_control_seq: Number(state.lastAppliedPlayerControlSeq || 0),
+    pending_control_seq: Number(state.data?.player_control_command?.seq || 0),
+    state_poll_in_flight: Boolean(state.statePollInFlight),
+    has_valid_state_response: Boolean(state.hasValidStateResponse),
+    ready_committed: Boolean(session?.readyCommitted),
+    current_pair: Boolean(session && isCurrentHostPlaybackSession(session, video, audio)),
+    should_play: Boolean(state.localShouldBePlaying),
+    seeking: Boolean(session?.seekSettling),
+    video_time: Number(video?.currentTime || 0), audio_time: Number(audio?.currentTime || 0),
+    video_rate: Number(video?.playbackRate || 1), audio_rate: Number(audio?.playbackRate || 1),
+    video_paused: !video || video.paused, audio_paused: !audio || audio.paused,
+    native_api: typeof window.__TAURI__?.core?.invoke === 'function',
+    native_window_api: typeof window.__TAURI__?.window?.getCurrentWindow === 'function',
+    chrome_platform: document.documentElement?.dataset?.tauriPlatform || 'browser',
+    page_hidden: document.hidden,
+    volume_dialog_open: Boolean(toggle?.closest('dialog')?.open),
+    automatic_disabled: Boolean(toggle?.disabled), automatic_checked: Boolean(toggle?.checked),
   };
 }
 

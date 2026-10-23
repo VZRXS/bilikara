@@ -22,6 +22,7 @@
   };
   const songResetHandlers = new WeakMap();
   const automaticRenderers = new WeakMap();
+  const automaticEvents = [];
   function refreshAutomatic(slider) { automaticRenderers.get(slider)?.(); }
 
   function setText(node, text) {
@@ -196,6 +197,19 @@
     let closing = false;
     let songEpoch = 0;
     let openingPosition = 0;
+    function recordAutomatic(event) {
+      const automatic = getAutomatic?.();
+      automaticEvents.push({
+        at: Date.now(), event, remote: isRemote, checked: autoSwitch.checked,
+        disabled: autoSwitch.disabled, busy: busy || autoBusy,
+        enabled: automatic?.enabled === true,
+        scanner_available: automatic?.scanner_available === true,
+      });
+      if (automaticEvents.length > 24) automaticEvents.shift();
+    }
+    dialog.addEventListener('pointerdown', event => {
+      if (autoToggle.contains(event.target)) recordAutomatic('pointerdown');
+    }, true);
     songResetHandlers.set(slider, (percent) => {
       songEpoch += 1;
       gesture = null;
@@ -416,6 +430,7 @@
       const payload = action === 'enable'
         ? { action, enabled: autoSwitch.checked }
         : { action, context: automatic.context };
+      if (action === 'enable') recordAutomatic('request');
       autoBusy = true;
       errorMessage.hidden = true;
       const controls = [...form.querySelectorAll('button, input')];
@@ -425,7 +440,9 @@
       dialog.focus({preventScroll:true});
       try {
         await onAutomatic(payload);
+        if (action === 'enable') recordAutomatic('success');
       } catch (error) {
+        if (action === 'enable') recordAutomatic('failure');
         errorMessage.textContent = error?.message || t('player.volumeSaveFailed');
         errorMessage.hidden = false;
       } finally {
@@ -436,7 +453,10 @@
         control.focus({preventScroll:true});
       }
     }
-    autoSwitch.addEventListener('change', () => automaticAction('enable', autoSwitch));
+    autoSwitch.addEventListener('change', () => {
+      recordAutomatic('change');
+      automaticAction('enable', autoSwitch);
+    });
     reference.addEventListener('click', () => automaticAction('reference', reference));
     resume.addEventListener('click', () => automaticAction('resume', resume));
     renderAutomatic();
@@ -447,5 +467,6 @@
     render(slider, value, getValue());
   }
 
-  globalThis.BilikaraVolumeControl = { bind, render, resetForSong, refreshAutomatic, toPosition, toPercent };
+  globalThis.BilikaraVolumeControl = { bind, render, resetForSong, refreshAutomatic, toPosition, toPercent,
+    getDiagnostics: () => automaticEvents.map(event => ({ ...event })) };
 })();

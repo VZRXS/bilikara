@@ -12,6 +12,115 @@ fn safe_text(value: &Value) -> String {
         .collect()
 }
 
+fn browser_playback(value: &Value) -> Value {
+    let mut safe = json!({});
+    for key in [
+        "playback_generation",
+        "last_applied_control_seq",
+        "pending_control_seq",
+        "video_time",
+        "audio_time",
+        "video_rate",
+        "audio_rate",
+    ] {
+        if let Some(number) = value[key]
+            .as_f64()
+            .filter(|n| (-1.0..=9_007_199_254_740_991.0).contains(n))
+        {
+            safe[key] = json!(number);
+        }
+    }
+    for key in [
+        "state_poll_in_flight",
+        "has_valid_state_response",
+        "ready_committed",
+        "current_pair",
+        "should_play",
+        "seeking",
+        "video_paused",
+        "audio_paused",
+        "native_api",
+        "native_window_api",
+        "page_hidden",
+        "volume_dialog_open",
+        "automatic_disabled",
+        "automatic_checked",
+    ] {
+        if let Some(boolean) = value[key].as_bool() {
+            safe[key] = json!(boolean);
+        }
+    }
+    if let Some(phase) = value["phase"].as_str().filter(|phase| {
+        matches!(
+            *phase,
+            "none"
+                | "requested"
+                | "binding"
+                | "ready-paused"
+                | "starting"
+                | "start-retry-wait"
+                | "playing"
+                | "paused"
+                | "needs-user-gesture"
+                | "failed"
+                | "retiring"
+                | "retired"
+        )
+    }) {
+        safe["phase"] = json!(phase);
+    }
+    if let Some(platform) = value["chrome_platform"].as_str().filter(|platform| {
+        matches!(
+            *platform,
+            "browser" | "macos" | "windows" | "linux" | "android"
+        )
+    }) {
+        safe["chrome_platform"] = json!(platform);
+    }
+    safe
+}
+
+fn volume_controls(value: &Value) -> Vec<Value> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .rev()
+        .take(24)
+        .filter_map(|entry| {
+            let event = entry["event"].as_str().filter(|event| {
+                matches!(
+                    *event,
+                    "pointerdown" | "change" | "request" | "success" | "failure"
+                )
+            })?;
+            let mut safe = json!({"event":event});
+            if let Some(at) = entry["at"]
+                .as_u64()
+                .filter(|at| *at <= 9_007_199_254_740_991)
+            {
+                safe["at"] = json!(at);
+            }
+            for key in [
+                "remote",
+                "checked",
+                "disabled",
+                "busy",
+                "enabled",
+                "scanner_available",
+            ] {
+                if let Some(boolean) = entry[key].as_bool() {
+                    safe[key] = json!(boolean);
+                }
+            }
+            Some(safe)
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
 fn environment(body: &Value, timestamp: f64) -> Value {
     let date = time::OffsetDateTime::from_unix_timestamp(timestamp as i64)
         .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
@@ -22,6 +131,9 @@ fn environment(body: &Value, timestamp: f64) -> Value {
         "python_implementation":"not applicable (Rust Native)","python_version":"", "frozen_bundle":cfg!(target_os="android"),
         "browser":{"user_agent":safe_text(&body["browser"]["user_agent"]),"platform":safe_text(&body["browser"]["platform"])},
     });
+    system["browser"]["playback"] = browser_playback(&body["browser"]["playback"]);
+    system["browser"]["volume_controls"] =
+        json!(volume_controls(&body["browser"]["volume_controls"]));
     // Client platform facts are informational only, never authorization input.
     if cfg!(target_os = "android") && platform["sdk"].as_u64().is_some_and(|sdk| sdk > 0) {
         system["system"] = json!(format!(
@@ -166,6 +278,12 @@ fn artifact(
     }
     let mut local_usernames = snapshot.session_users;
     local_usernames.extend(local_account_names());
+    // Copy diagnostics renders runtime facts in Markdown too; browser facts in
+    // environment.json alone would be absent from the clipboard report.
+    let frontend = json!({
+        "playback":system["browser"]["playback"],
+        "volume_controls":system["browser"]["volume_controls"],
+    });
     let request = DiagnosticRequest {
         app_home: context.directory.clone(),
         log_dir: context.directory.join("logs"),
@@ -189,7 +307,10 @@ fn artifact(
         system,
         tools_and_tasks: json!({"tools":{"rust_native":{"installed":true,"version":env!("CARGO_PKG_VERSION"),"state":"ready","message":"In-process media downloader and normalizer"},"bbdown":{"installed":context.bbdown.is_some(),"enabled":cache_policy["download_source"] == "bbdown"},"aria2c":{"installed":aria2_available,"enabled":cache_policy["download_source"] == "downkyi"},"yt-dlp":{"installed":false,"enabled":false,"state":"disabled"}}}),
         cache_policy,
-        runtime_state: json!({"revision":snapshot.revision,"playback_generation":snapshot.playback_generation,"items":items,"diagnostics":events}),
+        runtime_state: json!({"revision":snapshot.revision,"playback_generation":snapshot.playback_generation,
+            "playback_mode":snapshot.playback_mode,"playback_program":snapshot.playback_program,
+            "player_settings":snapshot.player_settings,"automatic_volume":snapshot.automatic_volume,
+            "frontend":frontend,"items":items,"diagnostics":events}),
         export_diagnostics: body["export_diagnostics"]
             .as_array()
             .map(|v| v.iter().take(64).cloned().collect())
@@ -275,6 +396,51 @@ pub(super) fn markdown(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn playback_and_volume_browser_facts_are_bounded_and_drop_untrusted_text() {
+        let mut entries = (0..40)
+            .map(|at| {
+                json!({"event":"pointerdown","at":at,
+            "remote":false,"disabled":true,"scanner_available":false,
+            "cookie":"private-cookie","message":"https://private.example"})
+            })
+            .collect::<Vec<_>>();
+        entries.push(json!({"event":"https://private.example", "at":41}));
+        let value = environment(
+            &json!({"browser":{
+                "playback":{"phase":"playing","last_applied_control_seq":7,"pending_control_seq":8,
+                    "video_paused":false,"should_play":true,"video_time":32.5,"audio_time":"private-cookie",
+                    "url":"https://private.example","native_api":true,
+                    "state_poll_in_flight":true,"has_valid_state_response":true},
+                "volume_controls":entries,
+            }}),
+            1_789_200_000.0,
+        );
+        let playback = &value["browser"]["playback"];
+        assert_eq!(playback["phase"], "playing");
+        assert_eq!(playback["last_applied_control_seq"].as_f64(), Some(7.0));
+        assert_eq!(playback["pending_control_seq"].as_f64(), Some(8.0));
+        assert_eq!(playback["video_paused"], false);
+        assert_eq!(playback["state_poll_in_flight"], true);
+        assert_eq!(playback["has_valid_state_response"], true);
+        assert_eq!(
+            browser_playback(&json!({"phase":"requested"}))["phase"],
+            "requested"
+        );
+        assert!(playback.get("audio_time").is_none());
+        let controls = value["browser"]["volume_controls"].as_array().unwrap();
+        assert!(!controls.is_empty() && controls.len() <= 24);
+        assert_eq!(controls.last().unwrap()["at"], 39);
+        assert_eq!(controls.last().unwrap()["disabled"], true);
+        assert!(!value.to_string().contains("private-cookie"));
+        assert!(!value.to_string().contains("private.example"));
+        assert!(
+            browser_playback(&json!({"phase":"private-cookie"}))
+                .get("phase")
+                .is_none()
+        );
+    }
     #[test]
     fn diagnostic_environment_supplies_renderer_keys_and_bounds_untrusted_browser_facts() {
         let value = environment(

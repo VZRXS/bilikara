@@ -543,6 +543,15 @@ for(const engine of [chromium,webkit])test(`${engine.name()} Android phone enabl
   await dialog.locator('.automatic-volume-toggle').tap();
   await page.waitForFunction(()=>state.data.automatic_volume.enabled&&!document.querySelector('[data-auto-switch]').disabled);
   assert.equal(await dialog.locator('[data-auto-switch]').isChecked(),true);
+  const events=await page.evaluate(()=>BilikaraVolumeControl.getDiagnostics());
+  assert.deepEqual(events.slice(-4).map(entry=>entry.event),['pointerdown','change','request','success']);
+  assert.equal(events.at(-4).disabled,false);assert.equal(events.at(-4).scanner_available,true);
+  assert.equal(events.at(-1).enabled,true);
+  assert.equal(await page.evaluate(()=>{const copy=BilikaraVolumeControl.getDiagnostics();copy[0].event='changed';return BilikaraVolumeControl.getDiagnostics()[0].event;}),'pointerdown');
+  await dialog.locator('.automatic-volume-toggle').evaluate(node=>{
+    for(let i=0;i<40;i++)node.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));
+  });
+  assert.equal(await page.evaluate(()=>BilikaraVolumeControl.getDiagnostics().length),24);
   await dialog.evaluate(n=>Promise.allSettled(n.getAnimations({subtree:true}).map(a=>a.finished)));
   assert.equal(await dialog.locator('.cache-hires-switch').evaluate(n=>{
     const track=n.getBoundingClientRect(),thumb=n.firstElementChild.getBoundingClientRect();

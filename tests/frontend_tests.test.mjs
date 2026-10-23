@@ -17,6 +17,7 @@ import './controller_frontend_contract.test.mjs';
 import './copy_i18n_contract.test.mjs';
 import './d1_browse_frontend_contract.test.mjs';
 import './diagnostics_copy_contract.test.mjs';
+import './playback_diagnostics.test.mjs';
 import './export_download_contract.test.mjs';
 import './export_guard_contract.test.mjs';
 import './frontend_export_contract.test.mjs';

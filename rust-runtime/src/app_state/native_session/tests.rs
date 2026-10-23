@@ -852,6 +852,36 @@ fn rapid_controls_are_queued_and_future_ack_cannot_drop_them() {
 }
 
 #[test]
+fn playback_delivery_diagnostics_read_the_authoritative_head_without_exposing_owners() {
+    let (mut app, host) = setup();
+    let (snapshot, _) = ready(&mut app);
+    let program = snapshot.playback_program.as_ref().unwrap();
+    app.native_claim(&host, &json!({"playback_generation":snapshot.playback_generation,
+        "item_incarnation_id":program.item_incarnation_id,"artifact_set_id":program.artifact_set_id}), false).unwrap();
+    app.native_player_status(&host, &json!({"item_id":"first","playback_generation":snapshot.playback_generation,
+        "status_sequence":1,"observed_phase":"playing","is_paused":false,"current_time":25.0,"duration":120.0}),4.0).unwrap();
+    let command = json!({"item_id":"first","playback_generation":snapshot.playback_generation,"action":"pause"});
+    app.native_control(&host, &command, 4.0).unwrap();
+    let before_revision = app.native().revision;
+    let facts = app.native_diagnostics();
+    assert_eq!(facts["playback_delivery"]["head"]["seq"], 1);
+    assert_eq!(facts["playback_delivery"]["head"]["action"], "pause");
+    assert_eq!(
+        facts["playback_delivery"]["claim_generation"],
+        snapshot.playback_generation
+    );
+    assert_eq!(
+        facts["playback_delivery"]["observation"]["current_time"],
+        25.0
+    );
+    assert_eq!(app.native().revision, before_revision);
+    assert!(!facts.to_string().contains("host-token"));
+    assert!(!facts.to_string().contains("host-webview"));
+    app.native_ack(&host, &json!({"seq":1})).unwrap();
+    assert!(app.native_diagnostics()["playback_delivery"]["head"].is_null());
+}
+
+#[test]
 fn native_and_ffi_controls_share_one_fifo_and_host_only_ack() {
     let (mut app, host) = setup();
     let (snapshot, _) = ready(&mut app);

@@ -1236,6 +1236,11 @@ impl AppState {
 
     pub(crate) fn native_diagnostics(&self) -> Value {
         json!({"backend":"rust","events":self.native_session.diagnostics,
+            "playback_delivery": {
+                "head": self.player_control_head(),
+                "claim_generation": self.native_session.claim.as_ref().map(|claim| claim.generation),
+                "observation": self.native_session.observation,
+            },
             "remote_connection":self.native_session.remote_connection_diagnostics,
             "bilibili_login":self.native_session.login_diagnostics,
             "library_refresh":self.native_session.library_diagnostics,
