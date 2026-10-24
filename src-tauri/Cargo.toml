@@ -31,6 +31,7 @@ rustls-platform-verifier = "=0.7.0"
 
 [target.'cfg(target_os = "ios")'.dependencies]
 bilikara_runtime = { path = "../rust-runtime", features = ["native-host"] }
+objc2-avf-audio = { version = "=0.3.2", default-features = false, features = ["std", "AVAudioSession", "AVAudioSessionTypes"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "=0.10.1"

@@ -15095,10 +15095,15 @@ function ensureAudioPitchSource(audio) {
 function applyMediaVolume(media) {
   if (!media) return;
   const volume = Math.max(0, Math.min(5, state.localPlayerVolume));
+  // iOS does not expose a writable element volume. Reuse the existing Web
+  // Audio gain route for attenuation as well as boost; keep unity native until
+  // processing is needed, and retain the same graph after it has been created.
+  const iosVolume = globalThis.document?.documentElement?.dataset?.nativeHost === "true"
+    && globalThis.document.documentElement.dataset.hostPlatform === "ios";
   media.bilikaraVolume = volume;
   media.volume = media.bilikaraVolumeGain ? 1 : Math.min(1, volume);
   media.muted = state.localPlayerMuted;
-  if (volume > 1 && !media.bilikaraPitchSource && !media.bilikaraGainErrorReported) {
+  if ((volume > 1 || (iosVolume && volume !== 1)) && !media.bilikaraPitchSource && !media.bilikaraGainErrorReported) {
     try {
       if (state.pitchContextFailure === "media-clock") throw new Error("Media source clock unavailable");
       if (!ensureAudioPitchSource(media)) throw new Error("Web Audio unavailable");

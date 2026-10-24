@@ -294,7 +294,7 @@ test('one CI entry runs independent Desktop and Mobile test-to-bundle matrices a
   includes(toolchain, ['RUSTUP_HOME=%s/bilikara-ci-rustup', '"$RUNNER_TEMP"', 'rustup toolchain install', 'rustup toolchain list']);
   excludes(toolchain, ['toolchain uninstall', 'rustup default', 'RUSTUP_TOOLCHAIN=']);
   assert.equal(bundle.split('uses: ./.github/actions/rust-toolchain').length - 1, 2);
-  assert.equal(android.split('uses: ./.github/actions/rust-toolchain').length - 1, 2);
+  assert.equal(android.split('uses: ./.github/actions/rust-toolchain').length - 1, 3);
   includes(bundle, ["github.event_name == 'push' && github.ref == 'refs/heads/main'"]);
 });
 

@@ -1,6 +1,7 @@
 // Normal frontend verification entry: current Node behavior fixtures and source contracts.
 import './frontend_static_contract.test.mjs';
 import './mobile_host_viewport.test.mjs';
+import './ios_playback.test.mjs';
 import './media_output_transport.test.mjs';
 import './android_alpha_bootstrap_contract.test.mjs';
 import './android_webview_timeout.test.mjs';

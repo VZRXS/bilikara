@@ -54,6 +54,7 @@ async fn ios_host_status(
 }
 
 fn initialize(app: &tauri::App) -> Result<NativeHost, String> {
+    crate::ios_audio::configure().map_err(str::to_owned)?;
     // Tauri maps app_data_dir to Library/Application Support/<bundle identifier>
     // on iOS. Keep durable data out of Documents and temporary directories.
     let directory = app
@@ -85,6 +86,8 @@ fn startup_error(error: &str) -> &'static str {
         "native_storage_path" => "native_storage_path",
         "native_storage_write" | "native_storage_io" => "native_storage_io",
         "mobile_start_already_attempted" => "mobile_start_already_attempted",
+        "audio_session_unavailable" => "audio_session_unavailable",
+        "audio_session_configuration_failed" => "audio_session_configuration_failed",
         _ => "host_startup_failed",
     }
 }

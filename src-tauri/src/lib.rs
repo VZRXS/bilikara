@@ -36,6 +36,8 @@ mod android;
 
 #[cfg(target_os = "ios")]
 mod ios;
+#[cfg(target_os = "ios")]
+mod ios_audio;
 #[cfg(any(target_os = "ios", test))]
 mod mobile_navigation;
 

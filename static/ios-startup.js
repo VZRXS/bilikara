@@ -9,6 +9,8 @@
     native_storage_path: "应用存储目录不可用。",
     native_storage_io: "无法读写应用数据，请保留数据后排查。",
     mobile_start_already_attempted: "本机 Host 已尝试启动，请重新打开应用。",
+    audio_session_unavailable: "系统音频会话不可用，请检查系统版本后重试。",
+    audio_session_configuration_failed: "无法配置播放音频会话，请重新打开应用后排查。",
     host_startup_failed: "本机 Host 启动失败，请保留应用数据后排查。",
     host_unavailable: "本机 Host 不可用。",
     app_state_unavailable: "应用状态不可用。",

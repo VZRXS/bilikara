@@ -2,7 +2,17 @@ name: Mobile
 
 on:
   workflow_call:
+    inputs:
+      ios_adhoc:
+        type: boolean
+        default: false
     secrets:
+      IOS_CERTIFICATE:
+        required: false
+      IOS_CERTIFICATE_PASSWORD:
+        required: false
+      IOS_MOBILE_PROVISION:
+        required: false
       ANDROID_BETA_KEYSTORE_BASE64:
         required: false
       ANDROID_KEYSTORE_BASE64:
@@ -68,7 +78,7 @@ jobs:
         run: |
           sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
           sudo apt-get update
-          sudo apt-get install -y make gnupg gpgv
+          sudo apt-get install -y make gnupg gpgv ffmpeg
 
       - name: Setup iOS build tools
         if: matrix.platform == 'iOS'
@@ -123,11 +133,22 @@ jobs:
         if: matrix.platform == 'Android'
         run: BILIKARA_REQUIRE_ANDROID_SIGNING_TESTS=1 node --test tests/android_release.test.mjs
 
+      - name: Install shared playback browser fixture
+        if: matrix.platform == 'Android'
+        run: npm exec -- playwright install --with-deps chromium
+
+      - name: Validate shared playback controls and decoded gain
+        if: matrix.platform == 'Android'
+        # Linux Chromium covers shared control logic; this is not WKWebView or
+        # native Android/iOS playback acceptance.
+        run: npm run test:ios-playback
+
       - name: Validate iOS startup and build entry
         if: matrix.platform == 'iOS'
         run: |
           npm run test:ios-bootstrap
           npm run test:ios-build
+          npm run test:ios-signing
 
       - name: Summarize Rust test cache
         if: always()
@@ -426,3 +447,80 @@ jobs:
             rm -f -- "$ANDROID_KEYSTORE_PATH"
           fi
           rm -f -- "$RUNNER_TEMP/bilikara-android-beta.p12"
+
+  ios-adhoc:
+    name: Bundle (iOS ARM64 Ad Hoc)
+    needs: test
+    if: inputs.ios_adhoc && github.event_name == 'workflow_dispatch' && github.repository == 'VZRXS/bilikara' && startsWith(github.ref, 'refs/heads/')
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup iOS build tools
+        id: ios-environment
+        uses: ./.github/actions/ios-toolchain
+
+      - name: Check Ad Hoc signing inputs
+        env:
+          IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION }}
+        run: node scripts/ios-signing.mjs preflight "$RUNNER_TEMP/bilikara-ios-signing.json"
+
+      - name: Install locked Node dependencies
+        run: npm ci
+
+      - name: Setup repository Rust toolchain
+        uses: ./.github/actions/rust-toolchain
+
+      - name: Install iOS device Rust target
+        run: rustup target add aarch64-apple-ios
+
+      - name: Cache iOS release Rust builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            ./rust -> target
+            ./rust-runtime -> target
+            ./src-tauri -> target
+          cache-workspace-crates: true
+          shared-key: ios-adhoc-release-workspace-v1
+          key: aarch64-apple-ios-${{ steps.ios-environment.outputs.sdk-key }}
+
+      - name: Initialize iOS project
+        run: npm run ios:init -- --skip-targets-install
+
+      - name: Build iOS Ad Hoc
+        env:
+          IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION }}
+        # Pinned Tauri 2.11 uses Xcode's release-testing name for Ad Hoc.
+        run: node scripts/ios.mjs build --target aarch64 --export-method release-testing --ci
+
+      - name: Verify and stage signed iOS IPA
+        run: |
+          ios_product_name="$(node -p "require('./src-tauri/tauri.ios.conf.json').productName")"
+          node scripts/ios-signing.mjs verify "src-tauri/gen/apple/build/arm64/$ios_product_name.ipa" \
+            "$RUNNER_TEMP/bilikara-ios-signing.json" "$RUNNER_TEMP/bilikara-ios-adhoc-artifact"
+
+      - name: Upload iOS Ad Hoc test artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: bilikara-ios-device-arm64-adhoc
+          path: ${{ runner.temp }}/bilikara-ios-adhoc-artifact/
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Remove owned provisioning copy and inspection receipt
+        if: always()
+        run: node scripts/ios-signing.mjs cleanup "$RUNNER_TEMP/bilikara-ios-signing.json"

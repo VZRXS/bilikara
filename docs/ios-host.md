@@ -39,8 +39,8 @@ Apple sysroots to QuickJS bindgen using SDK discovery and forwarded Cargo
 configuration, including when Xcode is opened separately. Build/dev commands
 retain `--locked`; the script does not download an
 SDK, disable TLS, install media CLIs or build the desktop backend. The current
-Tauri deployment target default is a build input, not a declared minimum
-supported iOS version. Set the product support floor only after the WebKit,
+AVFAudio dependency sets an iOS 14.5 build floor in `tauri.ios.conf.json`;
+this is not a declared minimum supported iOS version. Set the product support floor only after the WebKit,
 dependency and device matrix has been measured.
 
 Development runs disable Tauri's separate development web server so the
@@ -58,10 +58,53 @@ signing steps.
 The iOS workflow uploads an unprovisioned ARM64 `.ipa` and a simulator `.app.zip`
 as separate Actions artifacts, each with a commit/toolchain record and SHA-256
 checksum. It validates bundle identity, the final ATS setting, ARM64 machine
-architecture and the device/simulator Mach-O platform. Signing credentials are
-not supplied and iOS products are not uploaded to GitHub Releases. The device
+architecture and the device/simulator Mach-O platform. Default builds receive
+no signing credentials and iOS products are not uploaded to GitHub Releases. The device
 IPA requires valid signing before installation; neither archive is real-device
 or playback acceptance. CI results apply only after the workflow actually runs.
+
+### Optional Ad Hoc distribution
+
+Manual `CI And Bundles` runs can enable the `ios_adhoc` boolean. This adds a
+separate release build for registered devices; unsigned and simulator lanes
+remain available. Configure these repository secrets using real Apple assets:
+
+| Secret | Required content |
+| --- | --- |
+| `IOS_CERTIFICATE` | Base64 Apple Distribution `.p12`, including its private key. |
+| `IOS_CERTIFICATE_PASSWORD` | Password for that P12. |
+| `IOS_MOBILE_PROVISION` | Base64 iOS Ad Hoc provisioning profile for the existing bundle identifier and registered test devices. |
+
+For example, after configuring credentials:
+
+```sh
+gh workflow run ci-bundle.yml --ref feature/ios -f ios_adhoc=true
+```
+
+The signing job accepts only manual branch builds in the upstream repository.
+PR/default jobs receive no iOS credentials. Requested signing fails explicitly
+when inputs are absent, expired or incompatible; it never substitutes a local
+`codesign -` signature. The pinned Tauri CLI uses Xcode's `release-testing`
+export method for Ad Hoc, imports the certificate into its temporary keychain
+and owns that keychain's cleanup. Build scripts do not install a permanent key.
+An always-run cleanup removes only the new provisioning copy whose bytes match
+this invocation; it preserves every previously installed profile.
+
+`scripts/ios-signing.mjs` checks the profile's explicit app identity, team,
+expiry, distribution entitlement and device list before building. It then
+checks the exported IPA's embedded profile, actual signing certificate,
+entitlements, code seals, ARM64 device platform and ATS setting before staging
+the original sealed archive. Receipts omit device IDs and certificate/profile
+contents. The IPA itself contains the provisioning profile required by Apple;
+the separate Actions artifact expires after seven days. No release is published.
+An exported/verified IPA still needs installation and upgrade testing on a
+registered device. No signing credentials are provided by this repository.
+
+Apple Ad Hoc requires a distribution certificate and a profile that includes
+the target devices; see [Apple's profile requirements](https://developer.apple.com/help/account/provisioning-profiles/create-an-ad-hoc-provisioning-profile/).
+The ordinary unsigned IPA is also available for independent AltStore/SideStore
+resigning. That route supplies its own signing identity/provisioning; installation
+and capabilities through those tools remain unverified for this app.
 
 ## Startup and trust boundary
 
@@ -89,7 +132,7 @@ The main window permits only that packaged document, the exact bootstrap URL,
 and `/` or `/index.html` at the native-created loopback origin. Other ports,
 external URLs, Remote and audience paths are rejected. HTTP pages receive no
 Tauri IPC capability. This boundary is not yet a share, login, fullscreen,
-audio-session or external-display bridge. Add those as separately scoped
+external-display bridge. Add those as separately scoped
 platform operations, with main-frame/origin validation, bounded pending
 requests and stale-response isolation.
 
@@ -108,14 +151,15 @@ and [local-network privacy](https://developer.apple.com/documentation/technotes/
 | Core, queue, settings, history | Existing Rust AppState; native checkpoints and API authentication remain authoritative. |
 | Startup and HTTP | Shared in-process startup; iOS compile/link, WKWebView cookie/SSE/Range and reopen require Apple validation. |
 | Shared UI | The existing Host page receives `hostPlatform=ios` and uses the shared mobile navigation, Request pager and My/Settings components. CSS safe areas and an iOS VisualViewport adapter reserve input space. Native keyboard, rotation, gestures and iPhone/iPad layout still require device validation; no Android identity or legacy engine mode is injected. |
-| Playback | Existing split video/audio and WebKit path; gesture, offset, tracks, Signalsmith, drift and output require real-device measurements. |
+| Playback | Existing split video/audio and WebKit path; iOS attenuation/zero volume reuse the same Web Audio gain used by boost and pitch. Gesture, offset with DSP, tracks, Signalsmith, drift and physical output require real-device measurements. |
 | Network/TLS | Existing Rust HTTP/TLS and Apple interface discovery. SDK linkage, platform trust and another device's LAN Remote are mandatory checks. |
 | Public Remote | Existing signaling/ICE/DataChannel protocol; iOS room authentication, initial identity/state and reconnection have not been qualified. |
 | QuickJS | iOS device/simulator bindgen enabled; actual C compilation and execution require the corresponding SDK. |
 | Export/fonts | Shared renderer is present; mobile renderer registration, font discovery, system sharing and temporary-file ownership remain to be implemented/verified. |
 | libav / automatic volume / Pure K / DLNA | No iOS companion is installed or claimed. They do not gate startup and must retain explicit unavailable results. |
 | Updates | iOS rejects the Android APK workflow. Version checks, installation guidance and upgrade retention require a separate iOS implementation. |
-| Lifecycle / audio session / audience | Platform adapters and device evidence are outstanding; no background or external-display support is declared. |
+| Audio session | A narrow Rust/Objective-C adapter selects `AVAudioSessionCategoryPlayback` before Host startup and reports fixed startup errors. It does not activate audio at launch or request a microphone. Actual activation and routing remain device checks. |
+| Lifecycle / audience | Interruption/route recovery and external-display adapters and device evidence are outstanding; no background or external-display support is declared. |
 
 ## Shared mobile presentation
 
@@ -147,6 +191,8 @@ Portable checks:
 ```sh
 npm run test:ios-bootstrap
 npm run test:ios-build
+npm run test:ios-signing
+npm run test:ios-playback
 npm run test:mobile-host
 node --test tests/android_alpha_bootstrap_contract.test.mjs
 cargo test --manifest-path rust-runtime/Cargo.toml --features native-host --locked --test mobile_startup
@@ -158,6 +204,32 @@ The mobile startup test launches isolated native processes and exercises real
 HTTP authentication, durable reopen, repeat-start rejection and corrupt-data
 preservation. It does not qualify iOS or physical LAN access. Run the affected
 Android and desktop checks in `AGENTS.md` before accepting shared changes.
+
+The playback browser fixture runs desktop first, then Android/iOS platform
+markers over an actual isolated Rust Host. FFmpeg generates fixed test media
+only for the fixture; it is not an application dependency or downloader fallback.
+The default Chromium run checks real decoded PCM attenuation/zero gain, mute,
+positive/negative offset, track selection, pause/resume, actual pitch output
+frequency and media/gain-node retention across DSP changes.
+It tests shared logic and cannot qualify Apple codecs, WKWebView or speakers.
+
+For a Linux WebKit risk probe, run the same assertions with
+`BILIKARA_IOS_PLAYBACK_ENGINE=webkit npm run test:ios-playback`.
+This engine's GStreamer MediaElement/Web Audio clock behavior can prevent the
+combined gain/offset synchronization check from passing, even while decoded
+PCM gain works. Preserve that failure separately from shared-logic regression
+results; do not relax the sync assertion or infer an iOS result from it.
+Use `BILIKARA_IOS_PLAYBACK_EVIDENCE=/absolute/ignored/directory` to retain
+samples, failure diagnostics and screenshots.
+
+On an iPhone, test first user gesture and rejected `play()`, automatic next,
+positive/negative offset and seek, original/accompaniment selection, pitch
+on/off, gain/mute, and uninterrupted playback for at least one hour. Record
+actual output sync/error, DSP delay, CPU/memory/heat and route changes; do not
+infer audible output from a gain parameter or a processor's ready flag.
+The pinned Wry iOS adapter configures inline media and autoplay policy when
+creating WKWebView. Inspect that version before adding configuration overrides;
+changing a copied configuration after WebView creation is ineffective.
 
 On Apple hardware, record both device and simulator build/link results before
 claiming either target works. Check the signed app's bundle identity, plist and

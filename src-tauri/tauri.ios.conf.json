@@ -1,6 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "bilikara iOS dev",
+  "bundle": {
+    "iOS": {
+      "minimumSystemVersion": "14.5"
+    }
+  },
   "build": {
     "beforeDevCommand": null,
     "beforeBuildCommand": "",
