@@ -13,7 +13,11 @@
     pending.delete(result.id);
     clearTimeout(request.timeout);
     if (result.ok) request.resolve(result.data);
-    else request.reject(new Error(result.error || "Android 系统操作失败"));
+    else {
+      const error = new Error(result.error || "Android 系统操作失败");
+      if (result.code === "purek_wechat_unavailable") error.code = result.code;
+      request.reject(error);
+    }
   };
   function call(action, data = {}, timeoutMs = 30000) {
     if (pending.size >= 8) return Promise.reject(new Error("Android 系统操作繁忙"));

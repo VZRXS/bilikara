@@ -470,6 +470,88 @@ fn qr_image_decode_works_without_browser_barcode_detector() {
         .is_err()
     );
 }
+
+#[test]
+fn dense_room_qr_survives_a_photographed_screen() {
+    // Synthetic camera frame: dense modules, skewed screen, antialiasing and
+    // uneven screen brightness. No venue credentials or user photo is stored.
+    let raw = format!(
+        "{}&bill_id={}",
+        qr("http://192.168.1.8", "fixture"),
+        "7".repeat(90)
+    );
+    let code = crate::qr_image::encode_qr(&raw).unwrap();
+    let width = 324;
+    let height = 576;
+    let mut pixels = vec![35; width * height];
+    for y in 200..385 {
+        for x in 45..225 {
+            let mut level = 0.0;
+            for (dx, dy) in [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)] {
+                let (px, py) = (x as f64 + dx, y as f64 + dy);
+                let mut v = (py - 210.0) / 156.0;
+                let mut u = 0.0;
+                for _ in 0..4 {
+                    let left = 62.0 - 10.0 * v;
+                    u = (px - left) / (152.0 + 2.0 * v);
+                    v = (py - 210.0 - 3.0 * u) / (150.0 + 9.0 * u);
+                }
+                let inside = (0.0..1.0).contains(&u) && (0.0..1.0).contains(&v);
+                let sx = (u * (code.width() + 8) as f64).floor() as isize - 4;
+                let sy = (v * (code.width() + 8) as f64).floor() as isize - 4;
+                let dark = inside
+                    && sx >= 0
+                    && sy >= 0
+                    && sx < code.width() as isize
+                    && sy < code.width() as isize
+                    && code[(sx as usize, sy as usize)] == qrcode::Color::Dark;
+                level += if !inside {
+                    35.0
+                } else if dark {
+                    35.0 + 15.0 * u
+                } else {
+                    245.0 - 20.0 * v
+                };
+            }
+            pixels[y * width + x] = (level / 4.0).round() as u8;
+        }
+    }
+    assert_eq!(
+        decode(&json!({"width":width,"height":height,"pixels":STANDARD.encode(pixels)})).unwrap(),
+        raw
+    );
+}
+
+#[test]
+fn photo_with_multiple_valid_rooms_is_ambiguous() {
+    let width = 576;
+    let height = 288;
+    let mut pixels = vec![255; width * height];
+    for (left, raw) in [
+        (20, qr("http://192.168.1.8", "one")),
+        (310, qr("http://192.168.1.9", "two")),
+    ] {
+        let code = crate::qr_image::encode_qr(&raw).unwrap();
+        assert!((code.width() + 8) * 3 < height);
+        for y in 0..code.width() {
+            for x in 0..code.width() {
+                if code[(x, y)] == qrcode::Color::Dark {
+                    for yy in (y + 4) * 3..(y + 5) * 3 {
+                        for xx in left + (x + 4) * 3..left + (x + 5) * 3 {
+                            pixels[yy * width + xx] = 0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(
+        decode(&json!({"width":width,"height":height,"pixels":STANDARD.encode(pixels)}))
+            .unwrap_err()
+            .code,
+        "purek_qr_image"
+    );
+}
 #[test]
 fn registration_timeout_is_bounded_and_errors_do_not_echo_credentials() {
     let fixture = Fixture::start(|_, _| {

@@ -150,6 +150,20 @@ test installation expecting its local data to transfer into a new release app.
 
 ## Device acceptance
 
+Pure K photo/image recognition runs locally in Rust with the same bounded QR
+decoder on Android and desktop. Import accepts one valid room QR, not an
+arbitrary URL or a choice among multiple rooms. A successful decode prepares
+the official authorization link; it does not establish authorization or connect
+to the room.
+
+Android's authorization action targets WeChat explicitly. If WeChat does not
+accept external web links, the action copies the official link and opens WeChat
+so it can be pasted into a chat and opened there. Missing WeChat is an explicit
+error. Desktop follows ChunK-Helper's authorization workflow: copy the official
+link, paste it into a WeChat chat (for example File Transfer), and open it within
+WeChat. Return to bilikara and check the connection after official authorization;
+neither platform opens this link in an ordinary browser or a Host WebView.
+
 1. Install a newer beta APK over a beta signed with the same certificate,
    without uninstalling. Confirm icon/name and
    that login/settings survive. Continue an existing session once, then restart

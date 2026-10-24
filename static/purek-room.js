@@ -39,12 +39,13 @@
   }
   function showError(error) {
     const code = String(error?.code || "").replace(/^purek_/, "");
-    const key = ["qr_invalid","qr_image","qr_required","description_invalid","authorization","network","http","identity_changed","busy","protocol","renderer"].includes(code) ? code : "network";
+    const key = ["qr_invalid","qr_image","qr_required","description_invalid","authorization","wechat_unavailable","clipboard","network","http","identity_changed","busy","protocol","renderer"].includes(code) ? code : "network";
     byId("purek-error").textContent = t(`purek.error.${key}`);
     byId("purek-error").hidden = false;
   }
   function clearError() { byId("purek-error").hidden = true; }
   function paint() {
+    const android = document.documentElement.dataset.hostPlatform === "android";
     const connected = snapshot?.connected === true;
     byId("purek-output").hidden = !connected;
     byId("purek-output-name").textContent = connected ? `${t("purek.title")} · ${snapshot.room_name || ""}` : "";
@@ -55,6 +56,9 @@
     byId("purek-authorization-step").hidden = !prepared && !connected;
     byId("purek-room-name").textContent = prepared?.room_name || snapshot?.room_name || "";
     byId("purek-authorize").hidden = connected || !prepared?.authorization_url;
+    byId("purek-authorize").textContent = t(android ? "purek.authorizeAndroid" : "purek.authorize");
+    byId("purek-authorization-guide").hidden = connected || !prepared?.authorization_url;
+    byId("purek-authorization-guide").textContent = t(android ? "purek.authHintAndroid" : "purek.authHint");
     byId("purek-input-hint").hidden = Boolean(prepared || connected);
     byId("purek-auth-hint").hidden = connected || !prepared;
     byId("purek-auth-hint").textContent = t(prepared?.connection_type === "dlna" ? "purek.dlnaHint" : "purek.authHint");
@@ -194,11 +198,14 @@
     if (!target) return;
     if (document.documentElement.dataset.hostPlatform === "android") {
       if (!window.BilikaraAndroidPlatform?.openRoomAuthorization) throw {code:"purek_authorization"};
-      await window.BilikaraAndroidPlatform.openRoomAuthorization(target);
-    } else if (document.documentElement.dataset.hostPlatform === "desktop") {
-      if (!window.BilikaraDesktopPlatform?.openExternal) throw {code:"purek_authorization"};
-      await window.BilikaraDesktopPlatform.openExternal(target);
-    } else window.open(target,"_blank","noopener,noreferrer");
+      const result = await window.BilikaraAndroidPlatform.openRoomAuthorization(target);
+      if (result?.mode === "wechat-clipboard") setAppMessage(t("purek.authorizationCopied"));
+    } else {
+      try {
+        await window.BilikaraDiagnosticsCopy.copyText(target);
+      } catch { throw {code:"purek_clipboard"}; }
+      setAppMessage(t("purek.authorizationCopied"));
+    }
   }));
   document.addEventListener("keydown", event => {
     if (!opened) return;

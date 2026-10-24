@@ -45,9 +45,7 @@ internal class HostPlatform(private val activity: AppCompatActivity,
       try {
         val data = when (input.optString("action")) {
           "open-room-authorization" -> {
-            val url = HostLoginLink.roomAuthorization(input.optString("url")) ?: error("invalid_room_url")
-            activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE))
-            JSONObject().put("opened", true)
+            HostRoomAuthorization(activity).open(input.optString("url"))
           }
           "open-bilibili-login" -> {
             val url = HostLoginLink.validated(input.optString("url")) ?: error("invalid_login_url")
@@ -61,6 +59,8 @@ internal class HostPlatform(private val activity: AppCompatActivity,
           else -> error("Unsupported platform action")
         }
         result.put("ok", true).put("data", data)
+      } catch (_: HostRoomAuthorization.WeChatUnavailable) {
+        result.put("ok", false).put("code", "purek_wechat_unavailable").put("error", "WeChat unavailable")
       } catch (_: Exception) {
         result.put("ok", false).put("error", "Android 系统操作失败，请确认有可用的浏览器或系统组件")
       }

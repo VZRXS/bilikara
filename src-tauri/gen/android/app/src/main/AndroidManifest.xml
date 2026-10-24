@@ -10,6 +10,7 @@
 
     <!-- Wry checks for an external camera before handling image capture. -->
     <queries>
+        <package android:name="com.tencent.mm" />
         <intent>
             <action android:name="android.media.action.IMAGE_CAPTURE" />
         </intent>

@@ -106,7 +106,11 @@ for(const engine of [chromium,webkit])for(const android of [false,true])test(`${
     state.eventSource?.close();fetchState=async()=>{};setLanguage('zh');applyTheme('light');
     const opener=url=>window.roomBridgeCall({action:'authorize',url});
     if(android)window.BilikaraAndroidPlatform={openRoomAuthorization:opener};
-    else window.BilikaraDesktopPlatform={...window.BilikaraDesktopPlatform,openExternal:opener};
+    else {
+      window.BilikaraDiagnosticsCopy.copyText=url=>window.roomBridgeCall({action:'copy-authorization',url});
+      window.BilikaraDesktopPlatform={...window.BilikaraDesktopPlatform,openExternal:()=>{throw Error('Authorization must stay in WeChat');}};
+      window.open=()=>{throw Error('Authorization must stay in WeChat');};
+    }
   },android);
   await page.locator(android?'[data-android-page="my"]':'#work-rail-settings').click();
   await page.waitForFunction(android=>android ? document.documentElement.dataset.hostPage==='my' : state.activeHostWorkspace==='settings',android);
@@ -202,7 +206,11 @@ for(const engine of [chromium,webkit])for(const android of [false,true])test(`${
   }
   await page.locator('#purek-authorize').evaluate(n=>{n.click();n.click();});
   await page.waitForFunction(()=>document.getElementById('purek-authorize').getAttribute('aria-busy')==='true');
-  assert.equal(bridge.length,1);assert.equal(bridge[0].url,qr());releaseAuthorization();
+  assert.equal(bridge.length,1);assert.equal(bridge[0].url,qr());
+  assert.equal(bridge[0].action,android?'authorize':'copy-authorization');
+  assert.equal(await page.locator('#purek-authorization-guide').isVisible(),true);
+  assert.match(await page.locator('#purek-authorization-guide').innerText(),/微信/);
+  releaseAuthorization();
   await page.waitForFunction(()=>!document.getElementById('purek-authorize').disabled);
   await page.locator('#purek-submit').click();await page.locator('#purek-error:not([hidden])').waitFor();
   assert.equal(await page.locator('#purek-submit').isEnabled(),true);

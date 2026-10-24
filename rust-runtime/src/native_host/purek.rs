@@ -301,14 +301,25 @@ fn decode(body: &Value) -> Result<String, ApiError> {
     if pixels.len() != width * height {
         return Err(failure(400, "qr_image", "二维码图片尺寸不匹配"));
     }
-    let mut decoder = quircs::Quirc::default();
-    let values: Vec<_> = decoder
-        .identify(width, height, &pixels)
-        .filter_map(Result::ok)
-        .filter_map(|q| q.decode().ok())
-        .filter_map(|q| String::from_utf8(q.payload).ok())
-        .filter(|s| Room::parse(s).is_ok())
-        .collect();
+    // Use the perspective-aware QR reader for camera photos. Keep decoding
+    // local, QR-only and bounded by the same grayscale input limits.
+    let mut hints = rxing::DecodeHints {
+        PossibleFormats: Some(std::collections::HashSet::from([
+            rxing::BarcodeFormat::QR_CODE,
+        ])),
+        ..Default::default()
+    };
+    let values: Vec<_> = rxing::helpers::detect_multiple_in_luma_with_hints(
+        pixels,
+        width as u32,
+        height as u32,
+        &mut hints,
+    )
+    .unwrap_or_default()
+    .into_iter()
+    .map(|result| result.getText().to_owned())
+    .filter(|s| Room::parse(s).is_ok())
+    .collect();
     if values.len() != 1 {
         return Err(failure(
             400,
