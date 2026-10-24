@@ -135,12 +135,12 @@ jobs:
 
       - name: Install shared playback browser fixture
         if: matrix.platform == 'Android'
-        run: npm exec -- playwright install --with-deps chromium
+        run: npm exec -- playwright install --with-deps chromium webkit
 
       - name: Validate shared playback controls and decoded gain
         if: matrix.platform == 'Android'
-        # Linux Chromium covers shared control logic; this is not WKWebView or
-        # native Android/iOS playback acceptance.
+        # Chromium and Linux WebKit cover real decoded media and timing. They
+        # do not qualify native Android/iOS or Apple WKWebView playback.
         run: npm run test:ios-playback
 
       - name: Validate iOS startup and build entry
@@ -401,6 +401,8 @@ jobs:
           ios_executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$ios_app/Info.plist")"
           case "$ios_executable" in ''|*/*|.|..) exit 1 ;; esac
           test "$(xcrun lipo -archs "$ios_app/$ios_executable")" = arm64
+          xcrun otool -L "$ios_app/$ios_executable" > "$ios_stage/system-frameworks.txt"
+          test "$(awk '$1 == "/System/Library/Frameworks/AVFAudio.framework/AVFAudio" {count++} END {print count+0}' "$ios_stage/system-frameworks.txt")" = 1
           xcrun vtool -show-build "$ios_app/$ios_executable" > "$ios_stage/build-platform.txt"
           test "$(awk '$1 == "platform" {print $2}' "$ios_stage/build-platform.txt")" = "$ios_expected_platform"
           if [ "$IOS_EXPORT_ARCH" = arm64-sim ]; then

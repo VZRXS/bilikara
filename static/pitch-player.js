@@ -228,9 +228,10 @@
           this.gate.connect(this.destination);
           this.gateConnected = true;
         }
-        if (Math.abs(this.audio.currentTime - target) > 0.001) {
+        if (Math.abs((this.audio.bilikaraAudioClock?.time() ?? this.audio.currentTime) - target) > 0.001) {
           this.ownSeek = true;
-          this.audio.currentTime = target;
+          if (this.audio.bilikaraAudioClock) this.audio.bilikaraAudioClock.seek(target, false);
+          else this.audio.currentTime = target;
         }
         this.source.disconnect();
         if (!this.requested || this.failure) {
@@ -265,7 +266,7 @@
         this.inputStarted = true;
         this.inputStartContext = this.context.currentTime;
       }
-      const advance = this.audio.currentTime - this.anchor;
+      const advance = (this.audio.bilikaraAudioClock?.time() ?? this.audio.currentTime) - this.anchor;
       const elapsed = this.context.currentTime - this.inputStartContext;
       // Some WebKit/GStreamer MediaElement sources expose a decoder-buffer clock
       // that jumps ahead of the context. It cannot support this live time mapping.

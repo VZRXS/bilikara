@@ -2989,7 +2989,8 @@ function hostPlaybackSessionObservedPlaying(
     && session.audio === audio
     && isActiveSplitPlayer(video, audio)
     && !video.paused
-    && !audio.paused
+    && (!audio.paused || (audio.ended && audio.bilikaraAudioClock?.running
+      && audio.bilikaraAudioClock.time() < audio.duration))
   );
 }
 
@@ -12384,11 +12385,13 @@ function setMediaCurrentTime(media, nextTime, toleranceSeconds = localPlayerForc
     return false;
   }
   const target = clampMediaTime(media, nextTime);
-  const currentTime = Number(media.currentTime || 0);
-  if (Number.isFinite(currentTime) && Math.abs(currentTime - target) <= toleranceSeconds) {
+  const currentTime = Number(media.bilikaraAudioClock?.time() ?? media.currentTime ?? 0);
+  if (Number.isFinite(currentTime) && Math.abs(currentTime - target) <= toleranceSeconds
+    && !media.bilikaraAudioClock?.needsReposition) {
     return false;
   }
   try {
+    if (media.bilikaraAudioClock) return media.bilikaraAudioClock.seek(target);
     media.currentTime = target;
     return true;
   } catch {
@@ -13257,11 +13260,15 @@ function splitSyncSnapshot(video, audio, offsetSeconds, action) {
   const audioTime = Number(audio?.currentTime || 0);
   const videoTime = Number(video?.currentTime || 0);
   const targetVideoTime = clampMediaTime(video, audioTime - (audio?.bilikaraPitch?.delay() || 0) + offsetSeconds);
+  const renderedAudioTime = audio?.bilikaraAudioClock?.time() ?? audioTime;
   return {
     audio_current_time: audioTime,
     video_current_time: videoTime,
     target_video_time: targetVideoTime,
     drift_seconds: videoTime - targetVideoTime,
+    audio_clock_source: audio?.bilikaraAudioClock ? "web-audio-segment" : "media-element",
+    rendered_audio_time: renderedAudioTime,
+    rendered_audio_drift_seconds: videoTime - (renderedAudioTime - (audio?.bilikaraPitch?.delay() || 0) + offsetSeconds),
     effective_av_delay_seconds: offsetSeconds,
     pitch: audio?.bilikaraPitch?.snapshot() || null,
     audio_playback_rate: Number(audio?.playbackRate || 1),
@@ -13413,6 +13420,10 @@ async function handleSplitAudioEnded(currentItem, video, audio, reportStatus) {
   const endingSession = state.hostPlaybackSession;
   if (endingSession.pitchDraining) return;
   endingSession.pitchDraining = true;
+  if (audio.bilikaraAudioClock && !await audio.bilikaraAudioClock.drain()) {
+    endingSession.pitchDraining = false;
+    return;
+  }
   if (audio.bilikaraPitch && !await audio.bilikaraPitch.drain()) {
     endingSession.pitchDraining = false;
     return;
@@ -13830,6 +13841,7 @@ function setSplitPlaybackIntent(
   if (!nextIntent) {
     session.seekResumeAfterSettle = false;
     session.seekResumePending = false;
+    audio.bilikaraAudioClock?.stop();
     if (!audio.paused) {
       audio.pause();
     }
@@ -14555,6 +14567,14 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
     return "none";
   }
   if (audio.ended) {
+    // The captured input may end before its queued output. Release a video
+    // held during the last seek/resume so that the final output stays visible.
+    if (audio.bilikaraAudioClock?.running && !audio.bilikaraAudioClock.holding
+      && state.localShouldBePlaying && !video.ended && !video.seeking
+      && !shouldHoldCurrentItemForTransition(video.dataset.playerItemId)) {
+      state.localVideoHeldForAudio = state.localVideoDeferredRecovery = false;
+      playMediaBestEffort(video, { internalVideo: true, video, audio, mediaKind: "video" });
+    }
     clearSplitAudioClockRecovery();
     return "none";
   }
@@ -14674,6 +14694,14 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
     scheduleSplitAudioClockRecovery(video, audio);
     return reportAction("pitch-priming");
   }
+  audio.bilikaraAudioClock?.sync();
+  if (audio.bilikaraAudioClock?.holding) {
+    holdVideoForAudio(video);
+    if (!audio.bilikaraAudioClock.failure && state.audioContext?.state === "running") {
+      scheduleSplitAudioClockRecovery(video, audio);
+    }
+    return reportAction("wait-for-captured-audio");
+  }
   const videoTime = Number(video.currentTime || 0);
   if (video.ended) {
     if (audio.readyState >= 2 && !state.localAudioPlaybackBlocked) {
@@ -14711,7 +14739,7 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
     return reportAction("wait-for-audio");
   }
 
-  const audioTime = Number(audio.currentTime || 0);
+  const audioTime = Number(audio.bilikaraAudioClock?.time() ?? audio.currentTime ?? 0);
   const targetAudioTime = clampMediaTime(audio, rawTargetAudioTime);
   const drift = audioTime - targetAudioTime;
   const absoluteDrift = Math.abs(drift);
@@ -15026,6 +15054,8 @@ function disposeAudioPitchShifter(audio) {
     return;
   }
   disposeAudioPitchProcessor(audio);
+  audio.bilikaraAudioClock?.dispose();
+  audio.bilikaraAudioClock = null;
   disconnectAudioPitchSource(audio);
   // Retain the source identity: an element cannot be wrapped a second time.
   audio.bilikaraPitchRetired = true;
@@ -15071,6 +15101,13 @@ function ensureAudioPitchSource(audio) {
   if (!state.audioContext) {
     state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
   }
+  const session = state.hostPlaybackSession;
+  const needsClock = typeof isWebKitPlaybackRuntime === "function" && isWebKitPlaybackRuntime()
+    && session?.audio === audio;
+  if (needsClock && !globalThis.BilikaraAudioClock) throw new Error("Audio clock unavailable");
+  const wasPlaying = !audio.paused;
+  const initialTime = Number(audio.currentTime || 0);
+  if (needsClock) audio.pause();
 
   addMountedPlayerListener(audio, "play", resumeAudioContextBestEffort);
   const gain = state.audioContext.createGain();
@@ -15081,6 +15118,7 @@ function ensureAudioPitchSource(audio) {
     audio.bilikaraPitchSource = state.audioContext.createMediaElementSource(audio);
   } catch (error) {
     gain.disconnect();
+    if (needsClock && wasPlaying) playMediaBestEffort(audio, { video: session.video, audio, mediaKind: "audio" });
     throw error;
   }
   audio.bilikaraVolumeGain = gain;
@@ -15089,6 +15127,20 @@ function ensureAudioPitchSource(audio) {
   audio.volume = 1;
   audio.bilikaraPitchSource.connect(gain);
   audio.bilikaraPitchRoute = "direct";
+  if (needsClock) {
+    audio.bilikaraAudioClock = new BilikaraAudioClock.CapturedClock({
+      audio, context: state.audioContext,
+      current: () => isCurrentHostPlaybackSession(session, session.video, audio),
+      shouldPlay: () => Boolean(session.logicalPlayIntent && state.localShouldBePlaying),
+      play: () => playMediaBestEffort(audio, { video: session.video, audio, mediaKind: "audio" }),
+      changed: () => applyMediaVolume(audio),
+      unavailable: kind => {
+        setAppMessage(t("player.volumeUnavailable"), true);
+        if (kind === "context-closed") recoverAudioPitchOutput(audio, kind);
+      },
+    });
+    audio.bilikaraAudioClock.seek(initialTime, wasPlaying);
+  }
   return audio.bilikaraPitchSource;
 }
 
@@ -15118,9 +15170,14 @@ function applyMediaVolume(media) {
   }
   const gain = media.bilikaraVolumeGain;
   if (gain) {
-    const target = volume;
+    const target = media.bilikaraAudioClock && (media.bilikaraAudioClock.holding || state.localPlayerMuted) ? 0 : volume;
     if (gain.bilikaraTarget !== target) {
-      gain.gain.setTargetAtTime(target, state.audioContext.currentTime, 0.015);
+      if (media.bilikaraAudioClock?.holding) {
+        gain.gain.cancelScheduledValues(state.audioContext.currentTime);
+        gain.gain.value = 0;
+      } else {
+        gain.gain.setTargetAtTime(target, state.audioContext.currentTime, 0.015);
+      }
       gain.bilikaraTarget = target;
     }
   }
@@ -16115,6 +16172,7 @@ function holdLocalPlaybackForNetworkOutput() {
     if(session) {clearSplitPlaybackStartupWatchdog(session);if(session.readyCommitted)setHostPlaybackSessionPhase(session,"paused");}
   }
   for (const media of elements.playerFrame.querySelectorAll("video,audio")) {
+    media.bilikaraAudioClock?.stop();
     if(!media.paused) {media.dataset.bilikaraInternalPause="true";media.pause();}
   }
   return true;
@@ -16262,7 +16320,7 @@ function renderPlayer(currentItem, playbackMode) {
     if (video.seeking) {
       return;
     }
-    if (video.ended && !audio.ended) {
+    if (video.ended && (!audio.ended || audio.bilikaraAudioClock?.tail)) {
       return;
     }
     if (document.hidden && state.localShouldBePlaying) {
@@ -16309,7 +16367,7 @@ function renderPlayer(currentItem, playbackMode) {
     if (!settleSplitPlayerSeek(video, audio)) {
       reportCurrentVideoStatus();
     }
-    maybeShowRatingPromptForProgress(currentItem, audio.currentTime, audio.duration);
+    maybeShowRatingPromptForProgress(currentItem, audio.bilikaraAudioClock?.time() ?? audio.currentTime, audio.duration);
   });
 
   addMountedPlayerListener(video, "canplay", () => {
@@ -16458,7 +16516,7 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   addMountedPlayerListener(audio, "timeupdate", () => {
-    maybeShowRatingPromptForProgress(currentItem, audio.currentTime, audio.duration);
+    maybeShowRatingPromptForProgress(currentItem, audio.bilikaraAudioClock?.time() ?? audio.currentTime, audio.duration);
   });
 
   let syncTimer = null;
@@ -16476,7 +16534,7 @@ function renderPlayer(currentItem, playbackMode) {
     }
     syncSplitPlayer(video, audio, currentAvOffsetSeconds(), false);
     reportCurrentVideoStatus();
-    maybeShowRatingPromptForProgress(currentItem, audio.currentTime, audio.duration);
+    maybeShowRatingPromptForProgress(currentItem, audio.bilikaraAudioClock?.time() ?? audio.currentTime, audio.duration);
   }, localPlayerSyncIntervalMs);
   session.syncTimer = syncTimer;
 
@@ -16699,7 +16757,7 @@ function observedHostPlayerStatus(itemId, session, video, audio = session?.audio
     return null;
   }
   let observedPhase = "paused";
-  if (audio.ended) {
+  if (audio.ended && !(audio.bilikaraAudioClock && audio.bilikaraAudioClock.time() < audio.duration)) {
     observedPhase = "ended";
   } else if (hostPlaybackSessionObservedPlaying(session, video, audio)) {
     observedPhase = "playing";

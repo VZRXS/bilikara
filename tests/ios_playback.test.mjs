@@ -51,6 +51,7 @@ test('iOS audio setup uses playback policy without activating on launch or enabl
   assert.match(ios,/playback: "unverified"/);
   const config=JSON.parse(readFileSync(new URL('../src-tauri/tauri.ios.conf.json',import.meta.url),'utf8'));
   assert.equal(config.bundle.iOS.minimumSystemVersion,'14.5','AVFAudio framework dependency floor, not device acceptance');
+  assert.ok(config.bundle.iOS.frameworks.includes('AVFAudio'),'Rust staticlib dependencies must also be linked by the native Xcode target');
   const plist=readFileSync(new URL('../src-tauri/Info.ios.plist',import.meta.url),'utf8');
   assert.doesNotMatch(plist,/UIBackgroundModes|NSMicrophoneUsageDescription/);
 });

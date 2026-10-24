@@ -42,6 +42,10 @@ SDK, disable TLS, install media CLIs or build the desktop backend. The current
 AVFAudio dependency sets an iOS 14.5 build floor in `tauri.ios.conf.json`;
 this is not a declared minimum supported iOS version. Set the product support floor only after the WebKit,
 dependency and device matrix has been measured.
+The iOS configuration also declares `AVFAudio` in the generated Xcode target's
+framework list. A Rust static library's framework requirement alone does not
+supply the final native link. Re-run `ios:init` after changing that list; CI
+checks the final executable's system-framework dependencies.
 
 Development runs disable Tauri's separate development web server so the
 startup document and Host resources remain packaged and work without a PC.
@@ -184,6 +188,26 @@ WebKit player path. System sharing and external login report unavailable until
 a separately authenticated iOS bridge is implemented. Startup still runs only
 once per process; reloading or restoring the page never starts another Host.
 
+## Captured audio timing
+
+`static/audio-clock.js` adapts the existing split player's captured audio on
+WebKit. A media element routed to Web Audio can report queued decoder input
+ahead of actual output and can retain samples after native pause. The adapter
+starts each playback/seek segment from an explicit media position and advances
+it with the existing AudioContext clock. It gates gain while paused or seeking,
+flushes the source before resume, and drains queued output before normal song
+completion. Signalsmith keeps the same source/gain graph and its explicit DSP
+latency compensation. Media elements and browser `currentTime` are not replaced.
+
+Clock ownership follows the current Host playback session. User pause cancels
+pending completion, retired listeners cannot restart/advance another song, and
+context closure remains an explicit recovery condition. This is renderer timing
+state; Rust AppState remains the only queue/settings/business authority.
+Diagnostics retain raw media clocks and separately expose the captured segment
+clock and its drift. The mapping still needs Apple-device validation, including
+real output-route latency and interruptions; it does not declare background
+playback or compensate an unmeasured device route with a fixed offset.
+
 ## Verification
 
 Portable checks:
@@ -208,17 +232,20 @@ Android and desktop checks in `AGENTS.md` before accepting shared changes.
 The playback browser fixture runs desktop first, then Android/iOS platform
 markers over an actual isolated Rust Host. FFmpeg generates fixed test media
 only for the fixture; it is not an application dependency or downloader fallback.
-The default Chromium run checks real decoded PCM attenuation/zero gain, mute,
+The default run includes Chromium and Linux WebKit. It checks decoded PCM attenuation/zero gain, mute,
 positive/negative offset, track selection, pause/resume, actual pitch output
-frequency and media/gain-node retention across DSP changes.
+frequency and media/gain-node retention across DSP changes. An independent
+frequency-coded channel verifies actual output position through offset, seek,
+and DSP changes, and WebKit checks queued EOS, tail pause/resume and a single
+automatic next operation. It does not accept a mapped-clock value as output proof.
 It tests shared logic and cannot qualify Apple codecs, WKWebView or speakers.
 
-For a Linux WebKit risk probe, run the same assertions with
+For a focused Linux WebKit run, use
 `BILIKARA_IOS_PLAYBACK_ENGINE=webkit npm run test:ios-playback`.
-This engine's GStreamer MediaElement/Web Audio clock behavior can prevent the
-combined gain/offset synchronization check from passing, even while decoded
-PCM gain works. Preserve that failure separately from shared-logic regression
-results; do not relax the sync assertion or infer an iOS result from it.
+Raw MediaElement time may still describe decoder input ahead of output. Preserve
+that diagnostic; compare the segment clock against independent decoded PCM and
+video position rather than concealing the raw reading or accepting model-only
+agreement. Do not infer an iOS result from Linux WebKit.
 Use `BILIKARA_IOS_PLAYBACK_EVIDENCE=/absolute/ignored/directory` to retain
 samples, failure diagnostics and screenshots.
 

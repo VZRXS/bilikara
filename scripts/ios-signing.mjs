@@ -102,6 +102,8 @@ function verify(ipa,receipt,stage) {
     const executable=info('CFBundleExecutable');
     requireSigning(executable.length>0 && !/[\\/]/.test(executable) && !['.','..'].includes(executable),'ios_executable_invalid');
     requireSigning(command('xcrun',['lipo','-archs',path.join(app,executable)])==='arm64','ios_architecture');
+    const libraries=command('xcrun',['otool','-L',path.join(app,executable)]).split('\n').map(line=>line.trim().split(/\s+/,1)[0]);
+    requireSigning(libraries.filter(value=>value==='/System/Library/Frameworks/AVFAudio.framework/AVFAudio').length===1,'ios_audio_framework_missing');
     const platforms=[...command('xcrun',['vtool','-show-build',path.join(app,executable)]).matchAll(/^\s*platform\s+(\S+)/gm)].map(match=>match[1]);
     requireSigning(platforms.length===1 && platforms[0]==='IOS','ios_device_platform');
     command('codesign',['--verify','--deep','--strict',app]);

@@ -3,7 +3,8 @@
   "productName": "bilikara iOS dev",
   "bundle": {
     "iOS": {
-      "minimumSystemVersion": "14.5"
+      "minimumSystemVersion": "14.5",
+      "frameworks": ["AVFAudio"]
     }
   },
   "build": {
