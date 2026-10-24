@@ -23,7 +23,9 @@
       });
       this.listen(audio, "seeking", () => {
         if (this.pending || !this.valid()) return;
-        this.seek(Number(audio.currentTime || 0), !audio.paused);
+        // play() implicitly rewinds an ended decoder before its play event.
+        // A paused captured tail still owns its explicit output position.
+        this.seek(this.needsReposition ? this.time() : Number(audio.currentTime || 0), !audio.paused);
       });
       this.listen(audio, "seeked", () => this.ready());
       this.listen(audio, "canplay", () => this.ready());
@@ -70,6 +72,12 @@
       this.resumeWanted = false;
       this.needsReposition = true;
       if (!this.audio.paused) this.audio.pause();
+    }
+    preparePlay() {
+      if (!this.valid() || this.failure) return false;
+      // Do this before HTMLMediaElement.play(): an ended decoder may already
+      // have queued its implicit rewind by the time it dispatches play/seeking.
+      return !this.needsReposition || this.seek(this.time(), true);
     }
     seek(target, resume = !this.audio.paused) {
       if (!this.valid() || !Number.isFinite(target)) return false;

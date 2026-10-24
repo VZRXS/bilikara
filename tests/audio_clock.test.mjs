@@ -107,6 +107,43 @@ test('closed contexts and rejected seeks remain explicit failures',()=>{
   assert.deepEqual(g.errors,['seek-failed']);g.clock.dispose();
 });
 
+test('resuming an ended native element cannot replace the paused output tail with its implicit rewind',()=>{
+  const f=fixture();f.clock.seek(29,true);f.finish();
+  f.audio.ended=true;f.audio.pause();f.setIntent(false);f.clock.stop();
+  assert.equal(f.clock.time(),29);
+  f.setIntent(true);
+  // HTMLMediaElement.play() may rewind an ended input and dispatch seeking
+  // before play. That input event must retain the explicit output segment.
+  f.audio.currentTime=0;f.audio.paused=false;f.audio.dispatchEvent(new Event('seeking'));
+  f.audio.dispatchEvent(new Event('play'));
+  assert.equal(f.audio.currentTime,29);
+  assert.equal(f.clock.time(),29);
+  f.finish();f.context.currentTime=.5;
+  assert.equal(f.clock.time(),29.5);f.clock.dispose();
+});
+
+test('the shared native play entry restores a captured tail before the decoder can queue an implicit rewind',async()=>{
+  const app=readFileSync(new URL('../static/app.js',import.meta.url),'utf8');
+  const start=app.indexOf('function invokeMediaPlay('),end=app.indexOf('function pauseSplitPlaybackForStartupRecovery(',start);
+  const invoke=vm.runInNewContext(app.slice(start,end)+';invokeMediaPlay;',{networkOutputOwnsPlayback:()=>false});
+  const f=fixture();f.clock.seek(29,true);f.finish();
+  f.audio.ended=true;f.audio.pause();f.setIntent(false);f.clock.stop();f.setIntent(true);
+  f.audio.bilikaraAudioClock=f.clock;
+  let rewinds=0;
+  f.audio.play=function(){
+    const endedAtInvocation=this.ended;this.paused=false;this.dispatchEvent(new Event('play'));
+    if(endedAtInvocation){
+      // An already queued decoder reset can arrive after the play callback's
+      // own seek. Restoring from that callback is too late to prevent it.
+      rewinds++;this.currentTime=0;this.dispatchEvent(new Event('seeking'));
+    }
+  };
+  await invoke(f.audio);
+  assert.equal(rewinds,0,'Reposition must precede the native play invocation');
+  assert.equal(f.audio.currentTime,29);
+  f.finish();f.context.currentTime=.5;assert.equal(f.clock.time(),29.5);f.clock.dispose();
+});
+
 test('a suspended tail deadline reports failure instead of inventing output completion',async()=>{
   const f=fixture();const saved=scope.Date;
   let now=0;scope.Date={now:()=>now};

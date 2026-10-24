@@ -7,21 +7,23 @@ import vm from 'node:vm';
 const app=readFileSync(new URL('../static/app.js',import.meta.url),'utf8');
 const volume=app.slice(app.indexOf('function applyMediaVolume('),app.indexOf('function setupAudioPitchShifter('));
 
-test('iOS attenuation and zero volume use one existing gain path, while desktop/Android keep native unity-range volume',()=>{
-  for(const platform of ['ios','android','desktop']){
+test('iOS WebKit prepares its gain before playback; other engines retain native unity-range volume',()=>{
+  for(const [platform,webkit] of [['ios',false],['ios',true],['android',false],['desktop',true]]){
     const connections=[],changes=[],context={document:{documentElement:{dataset:{nativeHost:'true',hostPlatform:platform}}},
       state:{localPlayerVolume:1,localPlayerMuted:false,audioContext:{currentTime:2}},
+      isWebKitPlaybackRuntime:()=>webkit,
       ensureAudioPitchSource(media){connections.push(media);media.bilikaraPitchSource={};media.bilikaraVolumeGain={
         gain:{value:context.state.localPlayerVolume,setTargetAtTime(value){changes.push(value);}},bilikaraTarget:context.state.localPlayerVolume};return media.bilikaraPitchSource;},
       resumeAudioContextBestEffort(){},setAppMessage(){assert.fail('working gain must not report unavailable');},t:key=>key};
     vm.runInNewContext(volume,context);
-    const media={volume:1,paused:false};
+    const media={volume:1,paused:true};
     context.applyMediaVolume(media);
-    assert.equal(connections.length,0,'Unity starts on native audio');
+    assert.equal(connections.length,platform==='ios'&&webkit?1:0,'Only iOS WebKit captures the paused element before first playback');
+    media.paused=false;
     for(const value of [.25,0,1]){context.state.localPlayerVolume=value;context.applyMediaVolume(media);}
     assert.equal(connections.length,platform==='ios'?1:0);
     assert.equal(media.volume,1);
-    if(platform==='ios')assert.deepEqual(changes,[0,1]);
+    if(platform==='ios')assert.deepEqual(changes,webkit?[.25,0,1]:[0,1]);
     context.state.localPlayerVolume=2;context.applyMediaVolume(media);
     assert.equal(connections.length,1,'Boost and attenuation share the same source');
     context.state.localPlayerMuted=true;context.applyMediaVolume(media);

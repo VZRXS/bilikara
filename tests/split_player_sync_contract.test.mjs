@@ -913,6 +913,20 @@ assert.ok(hasContent(result["audioPaused"]));
 assert.deepEqual(result["videoPlayCalls"], 0);
 assert.deepEqual(result["audioPlayCalls"], 0);
 },
+async test_native_video_eos_pause_preserves_play_intent_until_completion() {
+const result = await this.run_node(`
+global.document = {hidden:false};
+const currentItem = {id:'item'}, video = new FakeMedia(100), audio = new FakeMedia(100);
+const session=state.hostPlaybackSession;
+function reportCurrentVideoStatus() {}
+mountedVideo=video;mountedAudio=audio;
+video.paused=true;video.ended=true;audio.paused=true;audio.ended=true;
+${this.pause_event_source}
+video.dispatchMediaEvent('pause');
+console.log(JSON.stringify({intent:session.logicalPlayIntent,shouldPlay:state.localShouldBePlaying}));
+`, this.sync_source);
+assert.deepEqual(result,{intent:true,shouldPlay:true});
+},
 async test_positive_and_negative_delay_preserve_startup_boundaries() {
 let result;
 result = (await this.run_node(`
@@ -1118,6 +1132,23 @@ console.log(JSON.stringify({ afterVideo, advances }));
 `, this.ended_source));
 assert.deepEqual(result["afterVideo"], {["advances"]: 0, ["audioPaused"]: false});
 assert.deepEqual(result["advances"], 1);
+},
+async test_user_pause_at_input_eos_cannot_start_or_finish_an_automatic_advance() {
+const result = await this.run_node(`
+const video = new FakeMedia(100); const audio = new FakeMedia(99.9);
+audio.ended = true; audio.paused = true;
+const item = { id: "item" }; const report = () => {};
+let drains = 0, finishDrain;
+audio.bilikaraAudioClock = { drain() { drains++; return new Promise(resolve => { finishDrain = resolve; }); } };
+state.localShouldBePlaying = false;
+await handleSplitAudioEnded(item, video, audio, report);
+const pausedBefore = { advances, drains };
+state.localShouldBePlaying = true;
+const ending = handleSplitAudioEnded(item, video, audio, report);
+state.localShouldBePlaying = false; finishDrain(true); await ending;
+console.log(JSON.stringify({ pausedBefore, advances, drains, handled: state.localPlaybackEndHandled }));
+`, this.ended_source);
+assert.deepEqual(result, {pausedBefore:{advances:0,drains:0},advances:0,drains:1,handled:false});
 },
 async test_teardown_helpers_clear_timers_and_registered_listeners() {
 let result;
@@ -5094,6 +5125,8 @@ test("SplitPlayerSyncTest.test_manual_video_seek_while_paused_keeps_pair_paused"
 test("SplitPlayerSyncTest.test_requested_rate_is_preserved_without_internal_audio_nudging", async () => { const instance = Object.create(SplitPlayerSyncTest); await instance.setUpClass(); await instance.test_requested_rate_is_preserved_without_internal_audio_nudging(); });
 test("SplitPlayerSyncTest.test_long_term_periodic_correction_never_writes_video_timeline", async () => { const instance = Object.create(SplitPlayerSyncTest); await instance.setUpClass(); await instance.test_long_term_periodic_correction_never_writes_video_timeline(); });
 test("SplitPlayerSyncTest.test_video_end_does_not_truncate_audio_and_completion_advances_once", async () => { const instance = Object.create(SplitPlayerSyncTest); await instance.setUpClass(); await instance.test_video_end_does_not_truncate_audio_and_completion_advances_once(); });
+test('SplitPlayerSyncTest.test_user_pause_at_input_eos_cannot_start_or_finish_an_automatic_advance',async()=>{const instance=Object.create(SplitPlayerSyncTest);await instance.setUpClass();await instance.test_user_pause_at_input_eos_cannot_start_or_finish_an_automatic_advance();});
+test('SplitPlayerSyncTest.test_native_video_eos_pause_preserves_play_intent_until_completion',async()=>{const instance=Object.create(SplitPlayerSyncTest);await instance.setUpClass();await instance.test_native_video_eos_pause_preserves_play_intent_until_completion();});
 test("SplitPlayerSyncTest.test_teardown_helpers_clear_timers_and_registered_listeners", async () => { const instance = Object.create(SplitPlayerSyncTest); await instance.setUpClass(); await instance.test_teardown_helpers_clear_timers_and_registered_listeners(); });
 test("SplitPlayerSyncTest.test_ordinary_render_does_not_synchronize_or_seek_mounted_player", async () => { const instance = Object.create(SplitPlayerSyncTest); await instance.setUpClass(); await instance.test_ordinary_render_does_not_synchronize_or_seek_mounted_player(); });
 test("SplitPlayerSyncTest.test_ownership_claim_latency_does_not_consume_media_readiness_watchdog", async () => { const instance = Object.create(SplitPlayerSyncTest); await instance.setUpClass(); await instance.test_ownership_claim_latency_does_not_consume_media_readiness_watchdog(); });

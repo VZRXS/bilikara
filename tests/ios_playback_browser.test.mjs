@@ -26,7 +26,8 @@ for (const [platform,useWebKit] of cases) {
     const home = mkdtempSync(path.join(tmpdir(), 'bilikara-ios-playback-'));
     const evidence = process.env.BILIKARA_IOS_PLAYBACK_EVIDENCE || home;
     mkdirSync(evidence, {recursive: true});
-    const errors = [], consoleErrors = [], httpErrors = [], samples = [], nextRequests=[];
+    const errors = [], consoleErrors = [], httpErrors = [], errorResponses=[], samples = [], nextRequests=[];
+    let replacedTrack=null;
     let browser, host, page;
     try {
       const video = path.join(home, 'video.mp4'), audio = path.join(home, 'audio.m4a');
@@ -66,7 +67,9 @@ for (const [platform,useWebKit] of cases) {
         if (new URL(response.url()).origin!==host.base || response.status()<400) return;
         const pathname=new URL(response.url()).pathname;
         const body=pathname==='/api/player/status'?response.request().postDataJSON():null;
-        httpErrors.push({path:pathname,status:response.status(),item:body?.item_id,generation:body?.playback_generation,afterNext:nextRequests.length>0});
+        const error={path:pathname,status:response.status(),item:body?.item_id,generation:body?.playback_generation,afterNext:nextRequests.length>0,afterTrackChange:replacedTrack!==null};
+        httpErrors.push(error);
+        errorResponses.push(response.json().then(reply=>{error.code=reply.code;}).catch(()=>{}));
       });
       await page.goto(host.base);
       await page.waitForFunction(()=>state.hostPlaybackSession?.phase === 'playing' && state.hostPlaybackSession.audio.currentTime > .3);
@@ -87,6 +90,28 @@ for (const [platform,useWebKit] of cases) {
         samples.push({label,...value});return value;
       };
       const start = await sample('initial');
+      if(useWebKit){
+        await page.evaluate(()=>{
+          const {audio}=state.hostPlaybackSession;
+          if(!audio.bilikaraVolumeGain)throw Error('iOS WebKit must capture before first playback');
+          const analyser=state.audioContext.createAnalyser();
+          audio.bilikaraVolumeGain.connect(analyser);
+          window.startupAudioProbe={analyser,gain:audio.bilikaraVolumeGain,read:()=>{
+            const values=new Float32Array(analyser.fftSize);analyser.getFloatTimeDomainData(values);
+            return Math.sqrt(values.reduce((total,value)=>total+value*value,0)/values.length);
+          }};
+        });
+        await page.waitForFunction(()=>window.startupAudioProbe.read()>.02);
+        const startup=[];
+        for(let index=0;index<20;index++){
+          const value=await page.evaluate(()=>({rms:window.startupAudioProbe.read(),time:state.audioContext.currentTime}));
+          startup.push(value);
+          assert.ok(value.rms>.02,`Captured audio must remain present during startup: ${JSON.stringify(startup)}`);
+          await page.waitForTimeout(100);
+        }
+        samples.push({label:'decoded startup',values:startup});
+        await page.evaluate(()=>window.startupAudioProbe.gain.disconnect(window.startupAudioProbe.analyser));
+      }
       await page.waitForFunction(time=>state.hostPlaybackSession.video.currentTime > time+1,start.video);
       const running = await sample('advance');
       assert.ok(running.video-start.video > .9);
@@ -131,27 +156,39 @@ for (const [platform,useWebKit] of cases) {
             return Math.sqrt(bytes.reduce((total,value)=>total+value*value,0)/bytes.length);
           };
         });
-        // Average decoded samples after a complete analyser window. GStreamer's
-        // initial Web Audio ramp is not a settled gain measurement.
-        const rms=()=>page.evaluate(async()=>{
+        // Read a rendered analyser window after the gain ramp, using the audio
+        // clock. Wall-clock timers alone do not prove rendering has advanced
+        // on a busy runner. Keep the decoded-gain ratio assertion unchanged.
+        const rms=async()=>{
+          const start=await page.evaluate(()=>state.audioContext.currentTime);
+          await page.waitForFunction(start=>{
+            const {audio}=state.hostPlaybackSession, clock=audio.bilikaraAudioClock;
+            const rendered=.015*8+window.playbackAnalyser.fftSize/state.audioContext.sampleRate;
+            return (!clock || clock.running&&!clock.holding)
+              && state.audioContext.currentTime-start>=rendered;
+          },start);
+          return page.evaluate(async()=>{
           const values=[];
           for(let index=0;index<12;index++){
-            await new Promise(resolve=>setTimeout(resolve,50));values.push(window.playbackRms());
+            await new Promise(resolve=>setTimeout(resolve,50));
+            values.push({rms:window.playbackRms(),time:state.audioContext.currentTime,
+              gain:state.hostPlaybackSession.audio.bilikaraVolumeGain.gain.value});
           }
-          return values.sort((a,b)=>a-b)[6];
-        });
+          return {median:values.map(v=>v.rms).sort((a,b)=>a-b)[6],values};
+          });
+        };
         await page.waitForFunction(()=>window.playbackRms()>.005);
-        const quiet=await rms();
+        const quietWindow=await rms(), quiet=quietWindow.median;
         await volume(100);
         await page.waitForFunction(()=>state.hostPlaybackSession.audio.bilikaraVolumeGain.gain.value>.99);
-        const full=await rms();
-        assert.ok(full/quiet>3 && full/quiet<5,`Actual decoded gain ratio ${full/quiet}`);
+        const fullWindow=await rms(), full=fullWindow.median;
+        samples.push({label:'decoded PCM',quiet,full,quietWindow,fullWindow});
+        assert.ok(full/quiet>3 && full/quiet<5,`Actual decoded gain ratio ${full/quiet}: ${JSON.stringify({quietWindow,fullWindow})}`);
         await volume(0);
         await page.waitForFunction(()=>window.playbackRms()<.0001);
         await volume(25);
         await page.waitForFunction(()=>window.playbackRms()>.005);
         assert.equal(await page.evaluate(()=>state.hostPlaybackSession.audio.bilikaraVolumeGain===window.playbackGain),true);
-        samples.push({label:'decoded PCM',quiet,full});
       } else {
         assert.equal((await sample('native attenuation')).source,false);
         assert.equal(await page.evaluate(()=>state.hostPlaybackSession.audio.volume),.25);
@@ -222,6 +259,7 @@ for (const [platform,useWebKit] of cases) {
       // Track selection commits through the same NativeHost API. Both fixture
       // variants contain the same signal; this checks selection/ownership and
       // decoded resumption, not the correctness of a provider's accompaniment.
+      replacedTrack=await page.evaluate(()=>({item:state.data.current_item.id,generation:state.data.playback_generation}));
       await page.locator('#audio-variant-bar [data-variant-id="p2_instrumental"]').click();
       await page.waitForFunction(()=>state.data.current_item.selected_audio_variant_id==='p2_instrumental'
         && state.hostPlaybackSession?.phase==='playing' && state.hostPlaybackSession.audio.currentSrc.endsWith('/instrumental.m4a'));
@@ -279,18 +317,24 @@ for (const [platform,useWebKit] of cases) {
         await page.evaluate(()=>{
           window.endingPair={...window.pitchPair,clock:state.hostPlaybackSession.audio.bilikaraAudioClock};
           window.tailSamples=[];
-          window.tailTimer=setInterval(()=>{
+          const sampleTail=()=>{
             const pair=window.endingPair;
             window.tailSamples.push({clock:pair.clock.time(),duration:pair.audio.duration,inputEnded:pair.audio.ended,
               pcm:window.readPitchTime(),item:state.data.current_item.id,phase:state.hostPlaybackSession.phase,intent:state.hostPlaybackSession.logicalPlayIntent,
               videoPaused:pair.video.paused,observed:observedHostPlayerStatus(state.data.current_item.id,state.hostPlaybackSession,state.hostPlaybackSession.video)});
-          },50);
+          };
+          window.tailTimer=setInterval(sampleTail,50);
+          // Decoder read-ahead varies: an EOS/output gap can be shorter than
+          // Playwright's poll interval. Pause at the real input event instead
+          // of assuming a fixed 200ms queue. Keep the actual PCM assertions.
+          window.tailPaused=false;
+          window.endingPair.audio.addEventListener('ended',()=>{
+            sampleTail();toggleMountedLocalPlayback();window.tailPaused=true;
+          },{once:true,capture:true});
         });
         await control('seek-absolute',88);
-        await page.waitForFunction(()=>window.endingPair.audio.ended
-          && window.endingPair.clock.time()<window.endingPair.audio.duration-.2);
+        await page.waitForFunction(()=>window.tailPaused);
         assert.equal(next.length,0,'Input EOS cannot advance before the queued output is played');
-        await page.evaluate(()=>toggleMountedLocalPlayback());
         const paused=await page.evaluate(()=>window.endingPair.clock.time());
         await page.waitForTimeout(250);
         assert.equal(next.length,0,'Pausing the tail cancels automatic completion');
@@ -308,10 +352,14 @@ for (const [platform,useWebKit] of cases) {
       }
       await page.screenshot({path:path.join(evidence,`${evidenceName}-playback.png`)});
       const finalSnapshot=await host.api('/api/state');
-      const staleStatus=error=>useWebKit && error.path==='/api/player/status' && error.status===409 && error.afterNext
-        && error.item==='fixture-first' && Number.isSafeInteger(error.generation) && error.generation<finalSnapshot.playback_generation;
-      // A status already in flight at auto-next must be rejected by Rust after
-      // ownership changes. Accept only that exact stale-generation negative.
+      await Promise.all(errorResponses);
+      const staleStatus=error=>error.path==='/api/player/status' && error.status===409 && error.code==='stale_player'
+        && error.item==='fixture-first' && Number.isSafeInteger(error.generation) && error.generation<finalSnapshot.playback_generation
+        && ((error.afterTrackChange && error.item===replacedTrack?.item && error.generation===replacedTrack.generation)
+          || (useWebKit && error.afterNext));
+      // Replacing the selected track also retires a program. Only an exact
+      // stale_player rejection from a retired program is an expected negative;
+      // same-generation/order failures and all other HTTP errors still fail.
       const retiredStatus=httpErrors.filter(staleStatus);
       assert.deepEqual(errors,[]);assert.deepEqual(httpErrors.filter(error=>!staleStatus(error)),[]);
       assert.deepEqual(consoleErrors.filter(message=>!/^Failed to load resource:/.test(message)),[]);
@@ -320,7 +368,7 @@ for (const [platform,useWebKit] of cases) {
       const player=await page?.evaluate(()=>{
         const s=state.hostPlaybackSession;
         const clock=s?.audio.bilikaraAudioClock;
-        return {phase:s?.phase,settings:state.data?.player_settings,clock:clock?{time:clock.time(),running:clock.running,pending:clock.pending,holding:clock.holding,resumeWanted:clock.resumeWanted,needsReposition:clock.needsReposition}:null,media:[...document.querySelectorAll('audio,video')].map(node=>({kind:node.tagName,time:node.currentTime,paused:node.paused,ready:node.readyState,seeking:node.seeking,error:node.error?.code})),pitch: s?.audio.bilikaraPitch?.snapshot?.()};
+        return {phase:s?.phase,item:state.data?.current_item?.id,tailSamples:window.tailSamples,settings:state.data?.player_settings,clock:clock?{time:clock.time(),running:clock.running,pending:clock.pending,holding:clock.holding,resumeWanted:clock.resumeWanted,needsReposition:clock.needsReposition}:null,media:[...document.querySelectorAll('audio,video')].map(node=>({kind:node.tagName,time:node.currentTime,paused:node.paused,ready:node.readyState,seeking:node.seeking,error:node.error?.code})),pitch: s?.audio.bilikaraPitch?.snapshot?.()};
       }).catch(()=>null);
       writeFileSync(path.join(evidence,`${evidenceName}-failure.json`),JSON.stringify({error:String(error),player,samples,errors,httpErrors,consoleErrors},null,2),'utf8');
       throw error;

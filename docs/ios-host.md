@@ -199,6 +199,11 @@ flushes the source before resume, and drains queued output before normal song
 completion. Signalsmith keeps the same source/gain graph and its explicit DSP
 latency compensation. Media elements and browser `currentTime` are not replaced.
 
+iOS WebKit creates that source/gain route while its element is still paused,
+before the first playback. Capturing an already-playing decoder can introduce
+a source underrun during the initial gain change. Desktop and Android retain
+their native unity-range path; volume/pitch changes keep the existing graph.
+
 Clock ownership follows the current Host playback session. User pause cancels
 pending completion, retired listeners cannot restart/advance another song, and
 context closure remains an explicit recovery condition. This is renderer timing

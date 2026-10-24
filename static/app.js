@@ -13412,6 +13412,8 @@ async function handleSplitVideoEnded(currentItem, video, audio, reportStatus) {
 async function handleSplitAudioEnded(currentItem, video, audio, reportStatus) {
   if (
     state.localPlaybackEndHandled
+    || !state.localShouldBePlaying
+    || state.hostPlaybackSession?.logicalPlayIntent === false
     || !isActiveSplitPlayer(video, audio)
     || !state.hostPlaybackSession?.readyCommitted
   ) {
@@ -13430,6 +13432,7 @@ async function handleSplitAudioEnded(currentItem, video, audio, reportStatus) {
   }
   endingSession.pitchDraining = false;
   if (!isActiveSplitPlayer(video, audio) || state.localPlaybackEndHandled || !audio.ended
+    || !state.localShouldBePlaying || endingSession.logicalPlayIntent === false
     || shouldHoldCurrentItemForTransition(currentItem)) return;
   state.localPlaybackEndHandled = true;
   state.localShouldBePlaying = false;
@@ -14068,6 +14071,9 @@ function ensureTauriMediaSessionHandlers() {
 
 function invokeMediaPlay(media, { internalVideo = false } = {}) {
   if(networkOutputOwnsPlayback())return Promise.resolve();
+  if (media.bilikaraAudioClock && !media.bilikaraAudioClock.preparePlay()) {
+    return Promise.reject(new Error("Captured audio output unavailable"));
+  }
   if (internalVideo) {
     media.dataset.bilikaraInternalPlay = "true";
   }
@@ -15148,14 +15154,16 @@ function applyMediaVolume(media) {
   if (!media) return;
   const volume = Math.max(0, Math.min(5, state.localPlayerVolume));
   // iOS does not expose a writable element volume. Reuse the existing Web
-  // Audio gain route for attenuation as well as boost; keep unity native until
-  // processing is needed, and retain the same graph after it has been created.
+  // Audio gain route for attenuation as well as boost. WebKit iOS prepares it
+  // before first playback: capturing an already-running decoder can leave a
+  // silent gap in the new source. Other platforms keep their native unity path.
   const iosVolume = globalThis.document?.documentElement?.dataset?.nativeHost === "true"
     && globalThis.document.documentElement.dataset.hostPlatform === "ios";
+  const prepareIOSSource = iosVolume && typeof isWebKitPlaybackRuntime === "function" && isWebKitPlaybackRuntime();
   media.bilikaraVolume = volume;
   media.volume = media.bilikaraVolumeGain ? 1 : Math.min(1, volume);
   media.muted = state.localPlayerMuted;
-  if ((volume > 1 || (iosVolume && volume !== 1)) && !media.bilikaraPitchSource && !media.bilikaraGainErrorReported) {
+  if ((volume > 1 || (iosVolume && volume !== 1) || prepareIOSSource) && !media.bilikaraPitchSource && !media.bilikaraGainErrorReported) {
     try {
       if (state.pitchContextFailure === "media-clock") throw new Error("Media source clock unavailable");
       if (!ensureAudioPitchSource(media)) throw new Error("Web Audio unavailable");
@@ -16320,7 +16328,9 @@ function renderPlayer(currentItem, playbackMode) {
     if (video.seeking) {
       return;
     }
-    if (video.ended && (!audio.ended || audio.bilikaraAudioClock?.tail)) {
+    // Native EOS pauses are observations, not a new user pause intent. The
+    // shared completion path owns advancement after the audible tail drains.
+    if (video.ended) {
       return;
     }
     if (document.hidden && state.localShouldBePlaying) {

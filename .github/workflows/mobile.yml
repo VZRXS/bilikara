@@ -141,7 +141,18 @@ jobs:
         if: matrix.platform == 'Android'
         # Chromium and Linux WebKit cover real decoded media and timing. They
         # do not qualify native Android/iOS or Apple WKWebView playback.
+        env:
+          BILIKARA_IOS_PLAYBACK_EVIDENCE: ${{ runner.temp }}/bilikara-shared-playback
         run: npm run test:ios-playback
+
+      - name: Upload shared playback diagnostics
+        if: always() && matrix.platform == 'Android'
+        uses: actions/upload-artifact@v4
+        with:
+          name: shared-playback-linux
+          path: ${{ runner.temp }}/bilikara-shared-playback
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Validate iOS startup and build entry
         if: matrix.platform == 'iOS'
