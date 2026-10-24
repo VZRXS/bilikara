@@ -362,7 +362,23 @@ fn destination(path: &Path) -> Result<PathBuf, String> {
     Ok(parent.join(path.file_name().ok_or("Missing destination name")?))
 }
 
-fn lock(destination: &Path) -> Result<File, String> {
+struct ImportLock(File);
+
+impl Drop for ImportLock {
+    fn drop(&mut self) {
+        // Closing only this descriptor can leave flock owned by a child that
+        // inherited the open file description before its close-on-exec. The
+        // import transaction, rather than that child, owns the lock lifetime.
+        if let Err(error) = fs2::FileExt::unlock(&self.0) {
+            eprintln!(
+                "[desktop-import] cannot release import lock: {:?}",
+                error.kind()
+            );
+        }
+    }
+}
+
+fn lock(destination: &Path) -> Result<ImportLock, String> {
     let path = import_guard_path(destination, "lock")?;
     real(&path)?;
     let file = private_options()
@@ -374,7 +390,7 @@ fn lock(destination: &Path) -> Result<File, String> {
         .map_err(|_| "Cannot open import lock")?;
     fs2::FileExt::try_lock_exclusive(&file)
         .map_err(|_| "Another Host or import tool owns this data directory")?;
-    Ok(file)
+    Ok(ImportLock(file))
 }
 
 #[derive(Serialize, Deserialize)]
