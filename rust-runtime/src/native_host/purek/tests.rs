@@ -668,6 +668,40 @@ fn g0_uses_real_http_without_transmitting_room_credentials() {
 }
 
 #[test]
+fn oversized_length_is_rejected_without_waiting_for_body() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let (release, waiting) = std::sync::mpsc::channel();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut request = Vec::new();
+        while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            request.push(byte[0]);
+            assert!(request.len() <= 16384);
+        }
+        // Deliberately withhold the body until the caller has a result. The
+        // declared limit alone must reject it; no timeout/retry is acceptance.
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: 1048577\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        stream.flush().unwrap();
+        let _ = waiting.recv_timeout(Duration::from_secs(6));
+    });
+    let reply = client(None).unwrap().get(url).send().unwrap();
+    let error = response(reply).err().unwrap();
+    release.send(()).unwrap();
+    server.join().unwrap();
+    assert_eq!(error.code, "purek_protocol");
+}
+
+#[test]
 fn g0_fault_redirect_and_oversized_reply_are_errors_not_empty_sinks() {
     for (status, reply, expected) in [
         (302, "synthetic echoed credential".into(), "purek_http"),

@@ -505,8 +505,12 @@ mod tests {
             b"synthetic legacy data"
         );
         std::fs::remove_file(root.join("BBDown.data")).unwrap();
-        assert_eq!(preview_root(&root).unwrap(), root);
-        assert_eq!(preview_root(&root).unwrap(), root);
+        // macOS exposes its temporary directory through /var -> /private/var.
+        // Compare against the independently resolved original directory, not
+        // another spelling of that same directory or the returned value.
+        let canonical_root = std::fs::canonicalize(&root).unwrap();
+        assert_eq!(preview_root(&root).unwrap(), canonical_root);
+        assert_eq!(preview_root(&root).unwrap(), canonical_root);
         assert!(preview_root(Path::new("relative")).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }

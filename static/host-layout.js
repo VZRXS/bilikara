@@ -3,7 +3,7 @@
 (() => {
   "use strict";
   const root = document.documentElement;
-  // Runtime settings share content-based wrapping on desktop and Android.
+  // Runtime settings share content-based wrapping on every Host platform.
   const sourceRow = document.getElementById?.("cache-source-row");
   let sourceRowFrame = null;
   function scheduleSourceRowLayout() {
@@ -43,9 +43,9 @@
   window.addEventListener("resize", scheduleSourceRowLayout);
   scheduleSourceRowLayout();
   if (root.dataset.nativeHost !== "true") return;
-  // Desktop keeps its existing narrow workspace/rail layout. Phone navigation
-  // belongs to Android, not to every native WebView below the width threshold.
-  if (root.dataset.hostPlatform !== "android") {
+  // Platform selects the mobile workflow; width only selects its arrangement.
+  // Desktop keeps its existing workspace/rail even in a narrow touch window.
+  if (!["android", "ios"].includes(root.dataset.hostPlatform)) {
     root.dataset.hostLayout = "landscape";
     return;
   }
@@ -169,6 +169,7 @@
       native_window_controls: Boolean(window.BilikaraHostWindow || window.__TAURI__?.core?.invoke),
       playback_visibility: window.BilikaraAndroidPlayback?.diagnostics() || null,
       external_display: window.BilikaraAndroidPresentation?.diagnostics(),
+      ios_viewport: window.BilikaraIOSHost?.diagnostics(),
       viewport: {width: window.innerWidth, height: window.innerHeight},
       qr_source: !source ? "missing" : source.startsWith("data:image/svg+xml;base64,") ? "inline-svg" : "invalid",
       qr_source_chars: source.length, image_policy_blocks: blockedImages,
@@ -261,7 +262,7 @@
 
   function saveRoute(replace = false) {
     const route = {page, settings, queueView, requestView};
-    // Same-document history also gives Android's Back gesture a real parent
+    // Same-document history also gives the system Back gesture a real parent
     // page; do not put credentials, room handles or business state in the URL.
     history[replace ? "replaceState" : "pushState"]({...history.state, hostLayout: route}, "");
   }

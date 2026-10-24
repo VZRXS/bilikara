@@ -107,7 +107,7 @@ and [local-network privacy](https://developer.apple.com/documentation/technotes/
 | --- | --- |
 | Core, queue, settings, history | Existing Rust AppState; native checkpoints and API authentication remain authoritative. |
 | Startup and HTTP | Shared in-process startup; iOS compile/link, WKWebView cookie/SSE/Range and reopen require Apple validation. |
-| Shared UI | The existing Host page receives `hostPlatform=ios`. Android phone navigation has not yet been generalized; no Android identity or legacy engine mode is injected. |
+| Shared UI | The existing Host page receives `hostPlatform=ios` and uses the shared mobile navigation, Request pager and My/Settings components. CSS safe areas and an iOS VisualViewport adapter reserve input space. Native keyboard, rotation, gestures and iPhone/iPad layout still require device validation; no Android identity or legacy engine mode is injected. |
 | Playback | Existing split video/audio and WebKit path; gesture, offset, tracks, Signalsmith, drift and output require real-device measurements. |
 | Network/TLS | Existing Rust HTTP/TLS and Apple interface discovery. SDK linkage, platform trust and another device's LAN Remote are mandatory checks. |
 | Public Remote | Existing signaling/ICE/DataChannel protocol; iOS room authentication, initial identity/state and reconnection have not been qualified. |
@@ -117,6 +117,29 @@ and [local-network privacy](https://developer.apple.com/documentation/technotes/
 | Updates | iOS rejects the Android APK workflow. Version checks, installation guidance and upgrade retention require a separate iOS implementation. |
 | Lifecycle / audio session / audience | Platform adapters and device evidence are outstanding; no background or external-display support is declared. |
 
+## Shared mobile presentation
+
+`static/host-layout.js` selects the common mobile workflow only for native
+Android/iOS Hosts; available width then selects phone or landscape arrangement.
+A narrow desktop retains its rail, workspace and desktop controls, independently
+of touch input. Existing `android-*` DOM hooks and browse helper names remain
+compatibility hooks for one shared component tree, rather than a second iOS UI.
+Navigation moves headings/settings only; it never moves or recreates media.
+
+`static/ios-host.js` owns only viewport events. It coalesces VisualViewport and
+focus changes, excludes pinch zoom from keyboard measurements, and releases its
+listeners on page hide before restoring them on page show. Only content and
+transient messages reserve keyboard space; the five-target dock stays at the
+bottom of the layout viewport. Safe-area values come from WebKit, separately
+from Android's native inset notifications. Browser simulations check geometry
+and event ownership, not native keyboard or lifecycle behavior.
+
+Android TLS/JNI, window preferences, media visibility workarounds, export and
+platform commands remain Android adapters. iOS continues to use the existing
+WebKit player path. System sharing and external login report unavailable until
+a separately authenticated iOS bridge is implemented. Startup still runs only
+once per process; reloading or restoring the page never starts another Host.
+
 ## Verification
 
 Portable checks:
@@ -124,6 +147,7 @@ Portable checks:
 ```sh
 npm run test:ios-bootstrap
 npm run test:ios-build
+npm run test:mobile-host
 node --test tests/android_alpha_bootstrap_contract.test.mjs
 cargo test --manifest-path rust-runtime/Cargo.toml --features native-host --locked --test mobile_startup
 cargo test --manifest-path src-tauri/Cargo.toml --locked --lib mobile_navigation::tests

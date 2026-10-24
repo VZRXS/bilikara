@@ -45,7 +45,7 @@ function openExternalUrl(url) {
   }
   if (document.documentElement?.dataset?.nativeHost === "true" && document.documentElement?.dataset?.hostPlatform !== "desktop") {
     // External-link integration is deferred; never navigate the player away.
-    setAppMessage("Android Beta：请在另一台设备打开链接，保持本机播放页面在前台。");
+    setAppMessage(t("mobile.externalLinkUnavailable"));
     return;
   }
   if (window.__TAURI__) {
@@ -1387,7 +1387,7 @@ function isTauriWebKitRuntime() {
 function isAndroidNativePlaybackRuntime() {
   return typeof document !== "undefined"
     && document.documentElement?.dataset?.nativeHost === "true"
-    && document.documentElement?.dataset?.hostPlatform !== "desktop"
+    && document.documentElement?.dataset?.hostPlatform === "android"
     && typeof navigator !== "undefined"
     && /Android/i.test(navigator.userAgent || "");
 }
@@ -7819,11 +7819,11 @@ function createSearchResultItem(item, options = {}) {
   return row;
 }
 
-// Android browse results reuse Remote's page model, gestures, footer and cache.
-// Desktop keeps its existing scrolling/append workflow.
+// Mobile browse results reuse Remote's page model, gestures, footer and cache.
+// Keep the Android-named compatibility hooks; desktop retains its own workflow.
 const androidBrowsePages = new WeakMap();
 function androidBrowseEnabled() {
-  return document.documentElement.dataset.hostPlatform === "android" && Boolean(window.BilikaraResultPager);
+  return ["android", "ios"].includes(document.documentElement.dataset.hostPlatform) && Boolean(window.BilikaraResultPager);
 }
 function androidBrowseFrame(container, renderPage) {
   let record = androidBrowsePages.get(container);
@@ -8280,7 +8280,7 @@ function renderD1BrowseView() {
     queryInput.placeholder = d1BrowseSearchPlaceholder(kind);
   }
   if (alphabet) {
-    const collapsed = globalThis.document?.documentElement?.dataset?.hostPlatform === "android" && level !== "alphabet";
+    const collapsed = ["android", "ios"].includes(globalThis.document?.documentElement?.dataset?.hostPlatform) && level !== "alphabet";
     alphabet.classList.toggle("hidden", collapsed);
     view.classList.toggle("is-browsing-tags", collapsed);
     alphabet.innerHTML = "";
@@ -11250,7 +11250,7 @@ function renderUpdatePreviewControl() {
       // The action already communicates checking; channel changes are not errors.
       statusText = "";
     } else {
-      statusText = globalThis.document?.documentElement?.dataset?.hostPlatform === "android" && !update?.error
+      statusText = ["android", "ios"].includes(globalThis.document?.documentElement?.dataset?.hostPlatform) && !update?.error
         ? update?.state === "up_to_date" ? t("service.noUpdateAvailable")
           : update?.supported === false ? t("service.featureUnavailable") : String(update?.message || "")
         : String(update?.error || update?.message || "");
@@ -11333,7 +11333,7 @@ function renderBBDownLogin(login, { startIfNeeded = true } = {}) {
 }
 
 function syncAndroidLoginLabel() {
-  if (document.documentElement.dataset.hostPlatform !== "android") return;
+  if (!["android", "ios"].includes(document.documentElement.dataset.hostPlatform)) return;
   const button = elements.bbdownLoginButton;
   const loggedIn = Boolean(state.data?.bbdown?.login?.logged_in || state.data?.bbdown?.logged_in);
   if (!loggedIn) delete button.dataset.logoutArmed;
@@ -11361,9 +11361,9 @@ function maybeStartBBDownLogin(login, options = {}) {
     return;
   }
   const force = Boolean(options.force);
-  // Android's compact account page requires an explicit login action. Window
+  // The mobile compact account page requires an explicit login action. Window
   // width alone must not disable the desktop Settings login workflow.
-  if (!force && document.documentElement.dataset.hostPlatform === "android"
+  if (!force && ["android", "ios"].includes(document.documentElement.dataset.hostPlatform)
     && globalThis.BilikaraHostLayout?.isPortrait?.()) return;
   if (!force && (loginState === "starting" || loginState === "waiting")) {
     return;
@@ -18953,6 +18953,7 @@ async function downloadHistoryExport(format, source = "played", pageSize = 200) 
     return;
   }
   if (document.documentElement?.dataset?.nativeHost === "true" && document.documentElement?.dataset?.hostPlatform !== "desktop") {
+    if (document.documentElement.dataset.hostPlatform === "ios") throw new Error(t("service.featureUnavailable"));
     if (!window.BilikaraAndroidExport) throw new Error("Android 系统保存功能不可用，请更新系统 WebView 后重试");
     return window.BilikaraAndroidExport.saveHistory(normalizedFormat, normalizedSource, normalizedPageSize);
   }
@@ -20724,7 +20725,7 @@ async function restartHostPlayback(context) {
 }
 playbackRestartMenu = globalThis.BilikaraPlaybackRestart?.create({
   extraHintControls: [{button: elements.playerFullscreenButton,
-    enabled: () => document.documentElement.dataset.hostPlatform === "android" && !isPlayerPanelFullscreen()}],
+    enabled: () => ["android", "ios"].includes(document.documentElement.dataset.hostPlatform) && !isPlayerPanelFullscreen()}],
   hoverHints: true,
   alwaysInline: true,
   firstUse: globalThis.BilikaraPlaybackRestart.firstUseStore?.("host", tauriInvoke("presentation")) || null,
@@ -20769,7 +20770,7 @@ elements.bbdownLoginButton?.addEventListener("click", async () => {
     await startBBDownLogin({ force: true });
     return;
   }
-  if (document.documentElement.dataset.hostPlatform === "android"
+  if (["android", "ios"].includes(document.documentElement.dataset.hostPlatform)
       && elements.bbdownLoginButton.dataset.logoutArmed !== "true") {
     elements.bbdownLoginButton.dataset.logoutArmed = "true";
     syncAndroidLoginLabel();
@@ -20806,6 +20807,8 @@ elements.bbdownLoginLink?.addEventListener("click", async event => {
     if (document.documentElement.dataset.hostPlatform === "android") {
       if (!window.BilikaraAndroidPlatform?.openLoginLink) throw new Error(t("service.loginLinkUnavailable"));
       await window.BilikaraAndroidPlatform.openLoginLink(url);
+    } else if (document.documentElement.dataset.hostPlatform === "ios") {
+      throw new Error(t("service.loginLinkUnavailable"));
     } else if (desktop) {
       await window.BilikaraDesktopPlatform.openBilibiliLogin();
     } else window.open(url, "_blank", "noopener,noreferrer");
@@ -22498,7 +22501,7 @@ elements.requestWorkspace?.addEventListener("click", (event) => {
   }
   const letterButton = event.target.closest("[data-letter]");
   if (letterButton && elements.requestWorkspace.contains(letterButton)) {
-    if (document.documentElement.dataset.hostPlatform === "android") {
+    if (["android", "ios"].includes(document.documentElement.dataset.hostPlatform)) {
       if (document.activeElement?.matches("input, textarea, [contenteditable='true']")) document.activeElement.blur();
     }
     const kind = state.d1BrowseKind || "name";

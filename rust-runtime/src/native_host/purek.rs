@@ -87,6 +87,14 @@ fn response(response: reqwest::blocking::Response) -> Result<String, ApiError> {
     if response.status() != 200 {
         return Err(failure(502, "http", "房台请求失败，请确认官方授权后重试"));
     }
+    // Reject an advertised oversized reply before waiting for its body. Keep
+    // the streaming limit below for chunked/missing/dishonest length headers.
+    if response
+        .content_length()
+        .is_some_and(|size| size > 1024 * 1024)
+    {
+        return Err(failure(502, "protocol", "房台响应过大"));
+    }
     let mut bytes = Vec::new();
     response
         .take(1024 * 1024 + 1)

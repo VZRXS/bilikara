@@ -301,6 +301,11 @@
     "r27",
     ".source-frame-footer",
     "> .host-result-pager:not([hidden])"
+  ],
+  [
+    "r28",
+    ".media-output-targets",
+    "input:disabled"
   ]
 ];
   if (window.BilikaraWebViewCompatibility.engine === 83) relations.forEach(function (rule) {

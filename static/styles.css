@@ -242,24 +242,24 @@
   box-sizing: border-box;
 }
 
-/* Android keeps the system overlay scrollbar and its idle fade. */
-:root:not([data-host-platform="android"]),
-:root:not([data-host-platform="android"]) * {
+/* Mobile Hosts keep system overlay scrollbars and their idle fade. */
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])),
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) * {
   scrollbar-color: var(--scrollbar-thumb-bg) var(--scrollbar-track-bg);
   scrollbar-width: thin;
 }
 
-:root:not([data-host-platform="android"]) *::-webkit-scrollbar {
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
-:root:not([data-host-platform="android"]) *::-webkit-scrollbar-track {
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) *::-webkit-scrollbar-track {
   border-radius: 999px;
   background: var(--scrollbar-track-bg);
 }
 
-:root:not([data-host-platform="android"]) *::-webkit-scrollbar-thumb {
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) *::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   border-radius: 999px;
   background: var(--scrollbar-thumb-bg);
@@ -267,7 +267,7 @@
 }
 
 @media (hover: hover) and (pointer: fine) {
-  :root:not([data-host-platform="android"]) *::-webkit-scrollbar-thumb:hover {
+  :root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) *::-webkit-scrollbar-thumb:hover {
     background: var(--scrollbar-thumb-hover-bg);
     background-clip: padding-box;
   }
@@ -5308,34 +5308,34 @@ button.queue-current-drag-handle:focus-visible { outline: 2px solid var(--accent
   padding-right: 4px;
 }
 
-:root:not([data-host-platform="android"]) .history-list::-webkit-scrollbar,
-:root:not([data-host-platform="android"]) .search-results::-webkit-scrollbar,
-:root:not([data-host-platform="android"]) .session-user-list::-webkit-scrollbar,
-:root:not([data-host-platform="android"]) .follow-up-grid::-webkit-scrollbar {
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .history-list::-webkit-scrollbar,
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .search-results::-webkit-scrollbar,
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .session-user-list::-webkit-scrollbar,
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .follow-up-grid::-webkit-scrollbar {
   width: 8px;
 }
 
-:root:not([data-host-platform="android"]) .history-list::-webkit-scrollbar-track,
-:root:not([data-host-platform="android"]) .search-results::-webkit-scrollbar-track,
-:root:not([data-host-platform="android"]) .session-user-list::-webkit-scrollbar-track,
-:root:not([data-host-platform="android"]) .follow-up-grid::-webkit-scrollbar-track {
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .history-list::-webkit-scrollbar-track,
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .search-results::-webkit-scrollbar-track,
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .session-user-list::-webkit-scrollbar-track,
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .follow-up-grid::-webkit-scrollbar-track {
   background: var(--scrollbar-track-bg);
   border-radius: 999px;
 }
 
-:root:not([data-host-platform="android"]) .history-list::-webkit-scrollbar-thumb,
-:root:not([data-host-platform="android"]) .search-results::-webkit-scrollbar-thumb,
-:root:not([data-host-platform="android"]) .session-user-list::-webkit-scrollbar-thumb,
-:root:not([data-host-platform="android"]) .follow-up-grid::-webkit-scrollbar-thumb {
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .history-list::-webkit-scrollbar-thumb,
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .search-results::-webkit-scrollbar-thumb,
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .session-user-list::-webkit-scrollbar-thumb,
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .follow-up-grid::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb-bg);
   border-radius: 999px;
 }
 
 @media (hover: hover) and (pointer: fine) {
-  :root:not([data-host-platform="android"]) .history-list::-webkit-scrollbar-thumb:hover,
-  :root:not([data-host-platform="android"]) .search-results::-webkit-scrollbar-thumb:hover,
-  :root:not([data-host-platform="android"]) .session-user-list::-webkit-scrollbar-thumb:hover,
-  :root:not([data-host-platform="android"]) .follow-up-grid::-webkit-scrollbar-thumb:hover {
+  :root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .history-list::-webkit-scrollbar-thumb:hover,
+  :root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .search-results::-webkit-scrollbar-thumb:hover,
+  :root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .session-user-list::-webkit-scrollbar-thumb:hover,
+  :root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .follow-up-grid::-webkit-scrollbar-thumb:hover {
     background: var(--scrollbar-thumb-hover-bg);
   }
 }
@@ -6724,28 +6724,28 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   min-height: 0;
 }
 
-:root:not([data-host-platform="android"]) .category-browser-home {
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .category-browser-home {
   scrollbar-color: var(--scrollbar-thumb-bg) var(--category-scrollbar-track-bg);
   scrollbar-width: thin;
 }
 
-:root:not([data-host-platform="android"]) .category-browser-home::-webkit-scrollbar {
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .category-browser-home::-webkit-scrollbar {
   width: 10px;
 }
 
-:root:not([data-host-platform="android"]) .category-browser-home::-webkit-scrollbar-track {
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .category-browser-home::-webkit-scrollbar-track {
   border-radius: 999px;
   background: var(--category-scrollbar-track-bg);
 }
 
-:root:not([data-host-platform="android"]) .category-browser-home::-webkit-scrollbar-thumb {
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .category-browser-home::-webkit-scrollbar-thumb {
   border: var(--category-scrollbar-thumb-border);
   border-radius: 999px;
   background: var(--category-scrollbar-thumb-bg);
 }
 
 @media (hover: hover) and (pointer: fine) {
-  :root:not([data-host-platform="android"]) .category-browser-home::-webkit-scrollbar-thumb:hover {
+  :root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .category-browser-home::-webkit-scrollbar-thumb:hover {
     background: var(--category-scrollbar-thumb-hover-bg);
   }
 }

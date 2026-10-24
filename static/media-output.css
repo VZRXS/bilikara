@@ -21,7 +21,7 @@
 .media-output-note {color:var(--muted);}
 .media-output-error {color:var(--danger-btn-color, var(--red));}
 .media-output-targets {min-height:44px;flex:none;margin-inline-start:auto;}
-.media-output-targets:has(input:disabled) {cursor:default;opacity:.55;}
+.media-output-targets:is(:has(input:disabled), :where([data-legacy-has~="r28"])) {cursor:default;opacity:.55;}
 .media-output-card button:not(.media-output-help) {
   min-height:44px;
   min-width:0;

@@ -149,8 +149,18 @@ mod tests {
     }
     #[test]
     fn explicit_interface_keeps_loopback_companion_on_same_port() {
-        let listeners = bind_listeners(std::net::Ipv4Addr::new(127, 0, 0, 2), 0).unwrap();
+        // Linux routes all of 127/8 to lo; macOS does not implicitly configure
+        // 127.0.0.2. Exercise a real assigned interface on each native runner.
+        let address = crate::networking::local_transport_addresses()
+            .into_iter()
+            .find_map(|address| match address {
+                std::net::IpAddr::V4(ip) if !ip.is_loopback() && !ip.is_unspecified() => Some(ip),
+                _ => None,
+            })
+            .expect("this native listener test requires an assigned non-loopback IPv4 interface");
+        let listeners = bind_listeners(address, 0).unwrap();
         assert_eq!(listeners.len(), 2);
+        assert_eq!(listeners[0].local_addr().unwrap().ip(), address);
         assert_eq!(
             listeners[0].local_addr().unwrap().port(),
             listeners[1].local_addr().unwrap().port()
@@ -159,5 +169,12 @@ mod tests {
             listeners[1].local_addr().unwrap().ip(),
             std::net::Ipv4Addr::LOCALHOST
         );
+        for listener in listeners {
+            std::net::TcpStream::connect_timeout(
+                &listener.local_addr().unwrap(),
+                Duration::from_secs(2),
+            )
+            .expect("both the assigned interface and loopback must accept connections");
+        }
     }
 }

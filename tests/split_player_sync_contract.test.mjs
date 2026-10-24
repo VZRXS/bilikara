@@ -364,7 +364,7 @@ result = (await this.run_node(`
 Object.defineProperty(globalThis, "navigator", {
   value: { userAgent: "Mozilla/5.0 (Linux; Android 16; wv) Chrome/133" }, configurable: true,
 });
-global.document = { documentElement: { dataset: { nativeHost: "true" } } };
+global.document = { documentElement: { dataset: { nativeHost: "true", hostPlatform: "android" } } };
 const video = new FakeMedia(8.661754), audio = new FakeMedia(8.683087);
 mountedVideo = video; mountedAudio = audio; effectiveOffsetSeconds = 0;
 video.paused = false; audio.paused = false;
@@ -393,7 +393,7 @@ result = (await this.run_node(`
 Object.defineProperty(globalThis, "navigator", {
   value: { userAgent: "Mozilla/5.0 (Linux; Android 16; wv) Chrome/133" }, configurable: true,
 });
-global.document = { documentElement: { dataset: { nativeHost: "true" } } };
+global.document = { documentElement: { dataset: { nativeHost: "true", hostPlatform: "android" } } };
 const video = new FakeMedia(10), audio = new FakeMedia(10.6);
 mountedVideo = video; mountedAudio = audio;
 video.paused = false; audio.paused = false;
@@ -434,7 +434,7 @@ Object.defineProperty(globalThis, "navigator", {
   value: { userAgent: "Mozilla/5.0 (Linux; Android 16; wv) AppleWebKit/537.36 Chrome/133.0.0.0" },
   configurable: true,
 });
-global.document = { documentElement: { dataset: { nativeHost: "true" } } };
+global.document = { documentElement: { dataset: { nativeHost: "true", hostPlatform: "android" } } };
 const frames = new Map(); let nextFrame = 0;
 window.requestAnimationFrame = callback => { frames.set(++nextFrame, callback); return nextFrame; };
 window.cancelAnimationFrame = id => frames.delete(id);
@@ -507,7 +507,7 @@ Object.defineProperty(globalThis, "navigator", {
   value: { userAgent: "Mozilla/5.0 (Linux; Android 16; wv) AppleWebKit/537.36 Chrome/133.0.0.0" },
   configurable: true,
 });
-global.document = { documentElement: { dataset: { nativeHost: "true" } } };
+global.document = { documentElement: { dataset: { nativeHost: "true", hostPlatform: "android" } } };
 const frames = new Map(); let nextFrame = 0;
 window.requestAnimationFrame = callback => { frames.set(++nextFrame, callback); return nextFrame; };
 window.cancelAnimationFrame = id => frames.delete(id);
