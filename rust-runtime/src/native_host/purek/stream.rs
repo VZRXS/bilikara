@@ -158,29 +158,42 @@ impl Running {
         let port = listener.local_addr().map_err(|_| network_error())?.port();
         let running = self.clone();
         let host = context.clone();
-        context.spawn("purek-stream-listener",move|| {
-            while !running.stop.load(Ordering::Acquire) && !host.stop.load(Ordering::Acquire) {
-                match listener.accept() {
-                    Ok((socket,peer)) => {
-                        if peer.ip()!=IpAddr::V4(receiver) {
-                            running.rejected.fetch_add(1,Ordering::Relaxed);
-                            let mut socket=socket;let _=socket.set_write_timeout(Some(Duration::from_millis(100)));
-                            let _=socket.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"); continue;
+        context
+            .spawn("purek-stream-listener", move || {
+                while !running.stop.load(Ordering::Acquire) && !host.stop.load(Ordering::Acquire) {
+                    match listener.accept() {
+                        Ok((socket, peer)) => {
+                            let permitted = peer.ip() == IpAddr::V4(receiver);
+                            if !permitted {
+                                running.rejected.fetch_add(1, Ordering::Relaxed);
+                            }
+                            if running.clients.fetch_add(1, Ordering::AcqRel) >= 4 {
+                                running.clients.fetch_sub(1, Ordering::AcqRel);
+                                continue;
+                            }
+                            let session = running.clone();
+                            if host
+                                .spawn("purek-stream-client", move || {
+                                    session.serve(socket, permitted);
+                                    session.clients.fetch_sub(1, Ordering::AcqRel);
+                                })
+                                .is_err()
+                            {
+                                running.clients.fetch_sub(1, Ordering::AcqRel);
+                            }
                         }
-                        if running.clients.fetch_add(1,Ordering::AcqRel)>=4 {
-                            running.clients.fetch_sub(1,Ordering::AcqRel); continue;
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(20))
                         }
-                        let session=running.clone();
-                        if host.spawn("purek-stream-client",move||{ session.serve(socket); session.clients.fetch_sub(1,Ordering::AcqRel); }).is_err() {
-                            running.clients.fetch_sub(1,Ordering::AcqRel);
+                        Err(_) => {
+                            running.cancel();
+                            break;
                         }
                     }
-                    Err(e) if e.kind()==std::io::ErrorKind::WouldBlock => thread::sleep(Duration::from_millis(20)),
-                    Err(_) => {running.cancel();break;}
                 }
-            }
-            running.cancel();
-        }).map_err(|_|network_error())?;
+                running.cancel();
+            })
+            .map_err(|_| network_error())?;
         Ok(format!(
             "http://{local}:{port}/purek/stream/{}.ts",
             self.capability
@@ -195,7 +208,7 @@ impl Running {
         let mime = self.protocol.mime();
         format!("HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\n{encoding}Connection: close\r\nCache-Control: no-store\r\ntransferMode.dlna.org: Streaming\r\ncontentFeatures.dlna.org: DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000\r\n\r\n").into_bytes()
     }
-    fn serve(&self, mut socket: TcpStream) {
+    fn serve(&self, mut socket: TcpStream, permitted: bool) {
         let _ = socket.set_read_timeout(Some(Duration::from_millis(200)));
         let _ = socket.set_write_timeout(Some(Duration::from_millis(200)));
         let mut bytes = Vec::new();
@@ -236,7 +249,13 @@ impl Running {
                 .zip(expected.bytes())
                 .fold(0, |a, (b, c)| a | (b ^ c))
                 == 0;
-        let error = if self.stop.load(Ordering::Acquire) {
+        // Wait for the bounded request header before any HTTP response. An
+        // immediate denial on accept can race the client's request write and
+        // cause an unexpected-message error or TCP reset instead of HTTP 403.
+        // Denied peers share the client limit and never reach the media queue.
+        let error = if !permitted {
+            Some("403 Forbidden")
+        } else if self.stop.load(Ordering::Acquire) {
             Some("410 Gone")
         } else if !valid || !bytes.ends_with(b"\r\n\r\n") {
             Some("404 Not Found")
@@ -383,6 +402,43 @@ mod tests {
         let mut p = vec![tag; 188];
         p[0] = 0x47;
         p
+    }
+    #[test]
+    fn denied_peer_gets_http_403_only_after_its_bounded_request_header() {
+        let host = context();
+        let running = Running::new(1, Framing::Close).unwrap();
+        assert!(running.push(&packet(7), 0, true));
+        let uri = running
+            .bind(&host, Ipv4Addr::LOCALHOST, Ipv4Addr::new(127, 0, 0, 2))
+            .unwrap();
+        let endpoint = Url::parse(&uri).unwrap();
+        let mut socket =
+            TcpStream::connect((Ipv4Addr::LOCALHOST, endpoint.port().unwrap())).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        socket.write_all(b"GET / HTTP/1.1\r\n").unwrap();
+        let mut byte = [0];
+        let partial = socket.read(&mut byte);
+        assert!(
+            matches!(partial, Err(ref error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)),
+            "A response before the complete request can race the HTTP client: {partial:?}"
+        );
+        socket.write_all(b"Host: 127.0.0.1\r\n\r\n").unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut response = Vec::new();
+        socket.take(4096).read_to_end(&mut response).unwrap();
+        assert_eq!(
+            response,
+            b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        let queue = running.queue.lock().unwrap();
+        assert_eq!(queue.bytes, 188);
+        assert!(!queue.consumer);
+        drop(queue);
+        finish(&host, &running);
     }
     #[test]
     fn endpoint_headers_ip_scope_range_and_expired_capability() {
