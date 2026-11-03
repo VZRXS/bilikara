@@ -142,10 +142,17 @@ const { chromium } = require("playwright");
       const result = await bounds();
       console.log(label, JSON.stringify(result));
       assert.equal(result.objectFit, "contain");
-      for (const side of ["x", "y", "width", "height"]) {
-        assert.ok(Math.abs(result.video[side] - result.frame[side]) < 1, `${label}: video ${side} overflows stage: ${JSON.stringify(result)}`);
-      }
       assert.deepEqual([result.frame.width, result.frame.height], result.viewport);
+      // The element is the contained picture: inside the stage, centered,
+      // filling one axis and keeping the media aspect, so letterbox bars are
+      // page background rather than part of the video surface.
+      const { video, frame, natural } = result, detail = JSON.stringify(result);
+      assert.ok(video.x >= frame.x - 1 && video.y >= frame.y - 1
+        && video.right <= frame.right + 1 && video.bottom <= frame.bottom + 1, `${label}: video overflows stage: ${detail}`);
+      assert.ok(Math.abs(video.width - frame.width) < 1 || Math.abs(video.height - frame.height) < 1, `${label}: video fills neither axis: ${detail}`);
+      assert.ok(Math.abs(video.width / video.height - natural[0] / natural[1]) < 0.01, `${label}: video box is not the media aspect: ${detail}`);
+      assert.ok(Math.abs((video.x + video.width / 2) - (frame.x + frame.width / 2)) < 1
+        && Math.abs((video.y + video.height / 2) - (frame.y + frame.height / 2)) < 1, `${label}: video is not centered: ${detail}`);
     };
     await assertFits("portrait in landscape window");
     await page.waitForFunction(() => window.geometryCalls.some(call => call.geometry.videoHeight === 640));

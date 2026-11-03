@@ -55,6 +55,12 @@ body.is-cursor-hidden * {
   background: #000;
 }
 
+/* The frame always fills the audience viewport. */
+.presentation-output-frame.has-video-aspect video[data-presentation-output-video] {
+  width: min(100vw, 100vh * var(--presentation-video-aspect));
+  height: min(100vh, 100vw / var(--presentation-video-aspect));
+}
+
 .presentation-output-frame .player-delay-overlay {
   z-index: 10;
   border-radius: 0;

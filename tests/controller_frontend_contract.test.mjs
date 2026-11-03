@@ -53,6 +53,14 @@ assert.ok(contains("grid-template-rows: minmax(0, 1fr)", frame));
 assert.ok(contains("min-width: 0", video));
 assert.ok(contains("min-height: 0", video));
 assert.ok(contains("object-fit: contain", video));
+// Known media dimensions size the element to the contained picture.
+const sized = splitOnce(splitOnce(this.css, ".presentation-output-frame.has-video-aspect video[data-presentation-output-video] {")[1], "}")[0];
+assert.ok(contains("width: min(100vw, 100vh * var(--presentation-video-aspect))", sized));
+assert.ok(contains("height: min(100vh, 100vw / var(--presentation-video-aspect))", sized));
+assert.ok(contains("video.addEventListener(\"loadedmetadata\", () => syncVideoAspect(video))", this.source));
+assert.ok(contains("video.addEventListener(\"resize\", () => syncVideoAspect(video))", this.source));
+const retire = splitOnce(splitOnce(this.source, "function retireVideo()")[1], "function renderOverlay")[0];
+assert.ok(contains("elements.frame.classList.remove(\"has-video-aspect\")", retire));
 },
 async test_output_geometry_is_desktop_only_event_driven_and_released() {
 let body, value;
