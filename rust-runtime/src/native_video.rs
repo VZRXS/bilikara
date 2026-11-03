@@ -259,6 +259,18 @@ fn video_share_reference(input: &str) -> &str {
     input
 }
 
+// 去除语言路径，如 https://www.bilibili.com/zh-Hans/video/BV17x411w7KC
+fn strip_language_path(url: String) -> String {
+    static LANGUAGE: OnceLock<regex::Regex> = OnceLock::new();
+    let pattern = LANGUAGE.get_or_init(|| {
+        regex::Regex::new(r"^(https://www\.bilibili\.com)/[a-z]{2}(?:-[A-Za-z]{2,4})?(/)").unwrap()
+    });
+    match pattern.replace(&url, "$1$2") {
+        std::borrow::Cow::Owned(stripped) => stripped,
+        std::borrow::Cow::Borrowed(_) => url,
+    }
+}
+
 fn desktop_reference(
     input: &str,
     client: &BilibiliHttpClient,
@@ -277,11 +289,12 @@ fn desktop_reference(
     } else {
         input.to_owned()
     };
+    let original_url = strip_language_path(original_url);
     let invalid = || NativeVideoError::invalid("当前仅支持普通 B 站视频 URL 或 BV/av 号");
     let parsed = url::Url::parse(&original_url).map_err(|_| invalid())?;
     let resolved_url =
         if matches!(parsed.host_str(), Some("b23.tv" | "bili2233.cn")) && parsed.port().is_none() {
-            client.resolve_video_short_url(&original_url)?
+            strip_language_path(client.resolve_video_short_url(&original_url)?)
         } else {
             original_url.clone()
         };
@@ -937,6 +950,26 @@ mod tests {
         ] {
             let r = desktop_reference(input, &client).unwrap();
             assert_eq!((r.bvid.as_str(), r.aid, r.page), (bvid, aid, page));
+        }
+        for (input, expected) in [
+            (
+                "https://www.bilibili.com/zh-Hans/video/BV17x411w7KC?p=2",
+                "https://www.bilibili.com/video/BV17x411w7KC?p=2",
+            ),
+            (
+                "www.bilibili.com/en/video/av123",
+                "https://www.bilibili.com/video/av123",
+            ),
+            (
+                "https://www.bilibili.com/video/BV17x411w7KC",
+                "https://www.bilibili.com/video/BV17x411w7KC",
+            ),
+        ] {
+            let r = desktop_reference(input, &client).unwrap();
+            assert_eq!(
+                (r.original_url.as_str(), r.resolved_url.as_str()),
+                (expected, expected)
+            );
         }
         assert!(desktop_reference("http://localhost/private", &client).is_err());
         assert!(
