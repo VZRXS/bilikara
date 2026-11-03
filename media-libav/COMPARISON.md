@@ -1,21 +1,21 @@
-# M2 developer metadata comparison (Linux, FFmpeg 9.0.1)
+# Metadata comparison contract
 
-This extends the accepted M1 driver and uses its real
-`LibavMetadataProbe::load` / `probe_metadata` entry. Only an explicit `compare`
-subcommand starts a reference process. No runtime startup/build dependency,
-AppState mutation, cache sampling, routing, retry, publication or playback change.
-The old two-argument driver and M1 ABI v1 remain unchanged.
+The metadata driver uses `LibavMetadataProbe::load` / `probe_metadata`.
+Only the explicit `compare` subcommand starts a reference process. Comparison
+owns no AppState mutation or application routing. The two-argument probe entry
+and metadata ABI v1 remain supported.
 
 ## Run one authorized local sample
 
-From the repository root, with the already accepted M1 prefix/companion:
+From the repository root, supply trusted absolute paths to a matching native
+companion, same-build test prefix and synthetic fixtures:
 
 ```bash
 cargo run --manifest-path rust-runtime/Cargo.toml --locked --example libav_metadata -- \
-  compare /sunhonglin/bilikara/.tmp/m1-libav-9/companion/libbilikara_media_libav.so \
-  /sunhonglin/bilikara/.tmp/m1-libav-9/ffmpeg-prefix \
-  /sunhonglin/bilikara/.tmp/m1-libav-9/fixtures/aac.m4a synthetic-aac \
-  --pure-rust audio --repeat 3 > /tmp/bilikara-m2-aac.jsonl 2>/dev/null
+  compare /absolute/companion/libbilikara_media_libav.so \
+  /absolute/test-prefix \
+  /absolute/fixtures/aac.m4a synthetic-aac \
+  --pure-rust audio --repeat 3 > /tmp/bilikara-metadata.jsonl 2>/dev/null
 ```
 
 Paths must be absolute and explicitly trusted. The prefix selects exactly
@@ -31,13 +31,13 @@ one bounded, allowlisted JSON line. The tool itself does not persist reports.
 the existing read-only `probe_media` operation and its expected single-track
 contract; omitting it leaves `pure_rust`/`secondary` null. It never normalizes
 media. The existing normalization rejection is exercised only by the dedicated
-live acceptance test, as in M1.
+live acceptance test.
 
 `--timeout-ms` (1–60000, default 5000) bounds each reference process, including
 its identity call. SIGINT/SIGTERM and `--cancelled` set the same atomic flag used
-by M1. Reference cancellation, timeout, oversized output and read errors kill
+by the probe. Reference cancellation, timeout, oversized output and read errors kill
 and reap the direct child. This is a synchronous local driver, not a scheduler
-or subprocess sandbox. M1 remains cooperatively cancellable (no new hard native
+or subprocess sandbox. The native probe remains cooperatively cancellable (no new hard native
 timeout); the existing Pure Rust scan checks the flag before entry only.
 
 Exit 0 means there is no unexpected comparable mismatch or execution error;
@@ -48,14 +48,12 @@ successful parity. Exit 2 is a usage error. No result triggers a fallback.
 
 ## Reference and field contract
 
-M1 still negotiates actual build/runtime versions and configurations before
+The metadata probe negotiates actual build/runtime versions and configurations before
 libav struct access. The driver obtains structured ffprobe program/library
-versions and compares its **entire configuration in memory** with M1's build and
+versions and compares its **entire configuration in memory** with the companion build and
 all three runtime configurations. No reference media probe runs unless this
 same-build check succeeds. Reports retain numeric library versions and a fixed
 allowlist of configuration flags; prefix/other option values are omitted.
-The existing upstream signature and dependency-origin evidence remain in
-`.tmp/m1-libav-9/`; no hashes, new manifest or provenance system were added.
 
 The metadata reference uses `-v error -of json -show_entries` with only:
 
@@ -67,8 +65,8 @@ The metadata reference uses `-v error -of json -show_entries` with only:
 Both use format probe 65536 bytes, probe 1048576 bytes, analyzeduration 1000000
 media microseconds, 256 probe packets, 32 streams, and disabled PTS duration
 estimation. The CLI option is `-formatprobesize` (the installed 9.0.1 spelling).
-Both read a seekable `fd:` without a filename hint. M1 explicitly pre-probes
-before open; ffprobe probes within open. M1 rejects every subordinate `io_open`;
+Both read a seekable `fd:` without a filename hint. The companion explicitly pre-probes
+before open; ffprobe probes within open. The companion rejects every subordinate `io_open`;
 CLI uses only the fd protocol and `enable_drefs=0,use_absolute_path=0` in a
 network-disabled build. Only self-contained local inputs are in scope.
 Neither enumerates packets/frames. `find_stream_info` can read packets and do
@@ -80,7 +78,7 @@ Comparison semantics live in Rust's experimental `comparison` module:
 
 | Fields | Rule |
 | --- | --- |
-| Container family | Only the M1 MOV alias list, `mov`, `mp4`, `m4a` map to `mov_mp4`; raw `flac` stays separate. |
+| Container family | Only the probe MOV alias list, `mov`, `mp4`, `m4a` map to `mov_mp4`; raw `flac` stays separate. |
 | Inventory | Exact count and actual unique index/type; missing/extra indices remain separate findings. Different types at one index are not paired for other fields. |
 | Codec/dimensions/rate/channels/raw bits | Exact known values; no fuzzy codec matching. |
 | Container duration/start | Separate fields in integer microseconds; exact (0 us tolerance), matching six-decimal CLI output units. |
@@ -102,17 +100,16 @@ stream index, dimensions/rate/channels/start/time base. Association is justified
 only by a successful exactly-one-requested-track contract. Its sample-end time
 is preserved separately from AVStream presentation duration: edit-list effects
 cannot be resolved from that API, even when the numbers happen to match.
-AAC here reports 1021333 us versus 1000000 us; this is an explicit timeline
-contract difference, not a tolerance widened to make them equal.
+Do not widen comparison tolerances to hide a timeline-contract difference.
 
 Enumeration success, requested stream contract satisfaction and complete media
 validation are separate facts. The report explicitly says complete validation
 is not established. Multi-stream enumeration can succeed while Pure Rust
 rejects its single-track request. Raw FLAC is outside that operation's MP4
-input contract. The old missing-mdat fixture succeeds in both read-only probes;
+input contract. A missing-mdat input may pass both read-only probes;
 existing `normalize_media` still returns `InvalidMedia`, disallows fallback,
 and publishes nothing. The dedicated `normalization-contract.json` records
-that stricter result without changing S3 or adding a normalization mode.
+that stricter result separately from read-only comparison.
 
 ## Explicit live acceptance
 
@@ -121,32 +118,31 @@ Build the driver once, then run the suite (no missing-artifact skips):
 ```bash
 cargo build --manifest-path rust-runtime/Cargo.toml --locked --example libav_metadata
 npm run test:media -- \
-  --companion /sunhonglin/bilikara/.tmp/m1-libav-9/companion/libbilikara_media_libav.so \
-  --prefix /sunhonglin/bilikara/.tmp/m1-libav-9/ffmpeg-prefix \
-  --fixtures /sunhonglin/bilikara/.tmp/m1-libav-9/fixtures \
-  --long-fixture /tmp/bilikara_media_native_research_20260901_ijcpsG/fixtures/synthetic_hires_large.mp4 \
-  --out /tmp/bilikara-m2-live
+  --companion /absolute/companion/libbilikara_media_libav.so \
+  --prefix /absolute/test-prefix \
+  --fixtures /absolute/fixtures \
+  --long-fixture /absolute/fixtures/synthetic_hires_large.mp4 \
+  --out /tmp/bilikara-metadata
 ```
 
-The supplied long fixture is the existing approximately 300-second, 96 kHz,
-24-bit stereo FLAC-in-MP4 synthetic sample. The corpus uses M1/S3 fixtures:
+Supply a long synthetic FLAC-in-MP4 fixture separately. The corpus includes:
 H.264 MP4, AAC M4A, two-stream H.264/AAC MP4, raw FLAC, FLAC MP4, unknown-duration
 FLAC, missing mdat, truncated header and malformed header. Three sequential
 runs per sample distinguish first-in-process from repeated runs; this is not a
 cold-cache benchmark. JSON measures companion setup, identity subprocess,
-M1 call, reference startup+probe+cleanup, optional Pure Rust sample scan, and
+native probe call, reference startup+probe+cleanup, optional Pure Rust sample scan, and
 normalization/comparison separately. Per-call/run times exclude report
 serialization/output; cumulative process time includes earlier report output.
 Pure Rust sample scanning is different work; no speedup target or memory/leak
 claim follows from these timings.
 
 The Node suite orchestrates the current Cargo-selected executable and asserts Rust decisions. It
-also invokes the existing M1 AppState/default isolation test and the explicit
+also invokes the AppState/default isolation test and the explicit
 Rust normalization-rejection test, verifies missing artifacts and active-child
 cancellation/reaping, and creates one synthetic tagged copy outside the repo
 for privacy testing. Raw tags, private input/config paths, signed URL strings,
 auth/cookie/room strings and error text are excluded from reports. No raw
-ffprobe JSON or unfiltered stderr is persisted. An old M1 invocation with a
+ffprobe JSON or unfiltered stderr is persisted. The two-argument probe invocation with a
 poison PATH ffprobe verifies that it still does not request a comparison.
 
 Focused tests (no companion needed for the ordinary tests):

@@ -369,6 +369,189 @@ fn first_start_only_discovers_legacy_when_destination_has_no_native_checkpoint()
 }
 
 #[test]
+fn inspection_checks_record_contents_and_reports_errors_without_changing_sources() {
+    let f = Fixture::new();
+    let appdata = f.0.join("AppData/Roaming");
+    let source = appdata.join("bilikara");
+    f.populate(&source);
+    let file = source.join("data/history.json");
+    fs::write(&file, b"{\"history\":false}").unwrap();
+    let report = inspect_first_start(&f.target(), &f.0.join("new/host"), "windows", |key| {
+        (key == "APPDATA").then(|| appdata.clone().into_os_string())
+    })
+    .unwrap();
+    assert_eq!(
+        report["candidates"],
+        json!([]),
+        "A filename is not evidence of a supported record shape"
+    );
+    assert!(
+        report["rejected_candidates"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("history.json")
+    );
+    assert_eq!(fs::read(file).unwrap(), b"{\"history\":false}");
+    assert!(!f.target().exists());
+    assert!(!source.join("data/host-state.lock").exists());
+
+    fs::create_dir_all(f.target()).unwrap();
+    let checkpoint = f.target().join("host-state.json");
+    let original = br#"{"schema_version":1,"state":{}}"#;
+    fs::write(&checkpoint, original).unwrap();
+    let report =
+        inspect_first_start(&f.target(), &f.0.join("new/host"), "windows", |_| None).unwrap();
+    assert_eq!(
+        report["destination_status"], "native",
+        "Unrecognized native records remain protected"
+    );
+    assert_eq!(report["candidates"], json!([]));
+    let error = report["destination_error"].as_str().unwrap();
+    assert!(
+        error.contains("host-state.json") && error.contains("session_started_at"),
+        "{error}"
+    );
+    assert_eq!(fs::read(checkpoint).unwrap(), original);
+    assert_eq!(
+        fs::read_dir(f.target()).unwrap().count(),
+        1,
+        "Inspection must not create locks, records or migration backups"
+    );
+}
+
+#[test]
+fn native_inspection_validates_versions_and_chunks_read_only() {
+    let f = Fixture::new();
+    let data = f.target();
+    fs::create_dir_all(&data).unwrap();
+    let checkpoint = data.join("host-state.json");
+    let original = br#"{"schema_version":1,"state":{"session_started_at":1,"session_played_file":"old.json","updated_at":1}}"#;
+    fs::write(&checkpoint, original).unwrap();
+    let report = inspect_first_start(&data, &f.0.join("host"), "linux", |_| None).unwrap();
+    assert!(report["destination_error"].is_null());
+    assert_eq!(
+        fs::read_dir(&data).unwrap().count(),
+        1,
+        "No v1 migration backup or lock during inspection"
+    );
+    assert_eq!(fs::read(&checkpoint).unwrap(), original);
+    let unsupported = br#"{"schema_version":99,"state":{"session_started_at":1,"session_played_file":"old.json","updated_at":1}}"#;
+    fs::write(&checkpoint, unsupported).unwrap();
+    let report = inspect_first_start(&data, &f.0.join("host"), "linux", |_| None).unwrap();
+    assert!(
+        report["destination_error"]
+            .as_str()
+            .unwrap()
+            .contains("version 99")
+    );
+    assert_eq!(fs::read(&checkpoint).unwrap(), unsupported);
+    fs::remove_file(&checkpoint).unwrap();
+    let source = f.source();
+    f.populate(&source);
+    install(Some(&source), &data).unwrap();
+    let original = fs::read(&checkpoint).unwrap();
+    let report = inspect_first_start(&data, &f.0.join("host"), "linux", |_| None).unwrap();
+    assert!(report["destination_error"].is_null());
+    let mut version_two: Value = serde_json::from_slice(&original).unwrap();
+    version_two["schema_version"] = json!(2);
+    version_two["records"]
+        .as_object_mut()
+        .unwrap()
+        .remove("gatcha_pool_preferences");
+    let version_two = serde_json::to_vec(&version_two).unwrap();
+    fs::write(&checkpoint, &version_two).unwrap();
+    let report = inspect_first_start(&data, &f.0.join("host"), "linux", |_| None).unwrap();
+    assert!(report["destination_error"].is_null());
+    assert_eq!(fs::read(&checkpoint).unwrap(), version_two);
+    assert!(!data.join("host-state.v2.backup.json").exists());
+    fs::write(&checkpoint, &original).unwrap();
+    let manifest: Value = serde_json::from_slice(&original).unwrap();
+    let record = data
+        .join("host-records")
+        .join(manifest["records"]["history"][0].as_str().unwrap());
+    fs::remove_file(record).unwrap();
+    let report = inspect_first_start(&data, &f.0.join("host"), "linux", |_| None).unwrap();
+    assert!(
+        report["destination_error"]
+            .as_str()
+            .unwrap()
+            .contains("Open record: NotFound")
+    );
+    assert_eq!(report["candidates"], json!([]));
+    assert_eq!(fs::read(checkpoint).unwrap(), original);
+}
+
+#[test]
+fn empty_or_unrelated_legacy_shapes_are_not_offered_and_native_corruption_is_not_downgraded() {
+    for bytes in [b"{}".as_slice(), b"{\"unrelated\":true}", b"{broken"] {
+        let f = Fixture::new();
+        let source = f.source();
+        fs::create_dir_all(source.join("data")).unwrap();
+        fs::write(source.join("data/state.json"), bytes).unwrap();
+        assert!(
+            inspect(
+                &f.target(),
+                &f.0.join("host"),
+                "linux",
+                Some(&source),
+                |_| None
+            )
+            .unwrap_err()
+            .contains("state.json")
+        );
+        assert_eq!(fs::read(source.join("data/state.json")).unwrap(), bytes);
+        assert!(!f.target().exists());
+    }
+    let f = Fixture::new();
+    let source = f.source();
+    f.populate(&source);
+    fs::write(
+        source.join("data/host-state.json"),
+        b"invalid native checkpoint",
+    )
+    .unwrap();
+    let error = inspect(
+        &f.target(),
+        &f.0.join("host"),
+        "linux",
+        Some(&source),
+        |_| None,
+    )
+    .unwrap_err();
+    assert!(error.contains("host-state.json"));
+    assert_eq!(
+        fs::read(source.join("data/host-state.json")).unwrap(),
+        b"invalid native checkpoint"
+    );
+    assert!(source.join("data/history.json").is_file());
+    assert!(!f.target().exists());
+}
+
+#[test]
+fn verified_empty_preview_marker_is_compatible_but_cannot_hide_unknown_records() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.target()).unwrap();
+    let marker = f.target().join(".bilikara-desktop-rust-preview");
+    fs::write(&marker, b"desktop-rust-preview-v1\n").unwrap();
+    let report = inspect_first_start(&f.target(), &f.0.join("host"), "linux", |_| None).unwrap();
+    assert_eq!(report["destination_status"], "empty");
+    assert!(report["destination_error"].is_null());
+    assert_eq!(fs::read(&marker).unwrap(), b"desktop-rust-preview-v1\n");
+    fs::write(f.target().join("unrecognized.json"), b"protected records").unwrap();
+    let report = inspect_first_start(&f.target(), &f.0.join("host"), "linux", |_| None).unwrap();
+    assert_eq!(report["destination_status"], "unknown");
+    assert!(
+        report["destination_error"]
+            .as_str()
+            .unwrap()
+            .contains("Unrecognized data format")
+    );
+    fs::remove_file(f.target().join("unrecognized.json")).unwrap();
+    fs::write(&marker, b"invalid marker").unwrap();
+    assert_eq!(format(&f.target()).unwrap(), Format::Unknown);
+}
+
+#[test]
 fn explicit_native_replacement_preserves_complete_backup_and_rejects_active_or_corrupt_storage() {
     let f = Fixture::new();
     let source = f.source();

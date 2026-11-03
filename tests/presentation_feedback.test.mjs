@@ -33,6 +33,18 @@ function fixture() {
     card(category) { return element.children.find(node => node.dataset.feedbackCategory === category); } };
 }
 const plain = value => JSON.parse(JSON.stringify(value));
+test('restart feedback requires a fresh adjacent acknowledged seek-zero/play pair on the same owner', () => {
+  const {api}=fixture();
+  const previous={action:'seek-absolute',target_seconds:0,seq:4,item_id:'a',playback_generation:2,at:1000};
+  const play={action:'play',seq:5,item_id:'a',playback_generation:2};
+  assert.equal(api.isRestartPair(previous,play,1100),true);
+  for(const command of [{...play,seq:6},{...play,item_id:'b'},{...play,playback_generation:3},{...play,action:'pause'}])
+    assert.equal(api.isRestartPair(previous,command,1100),false);
+  assert.equal(api.isRestartPair({...previous,target_seconds:5},play,1100),false);
+  assert.equal(api.isRestartPair(previous,play,4000),false);
+  const notices=api.recent(null,[{key:'seek',kind:'seek',value:'0:00',expiresAt:3000},{key:'restart',kind:'restart',value:'',expiresAt:3000}],1000);
+  assert.equal(notices.entries.length,1); assert.equal(notices.kind,'restart');
+});
 test('settings feedback excludes initial/progress/user/reorder/song defaults and preserves simultaneous acknowledged changes', () => {
   const { api } = fixture(), data = baseline(), first = api.snapshot(data);
   assert.deepEqual(plain(api.changes(null, first)), []);

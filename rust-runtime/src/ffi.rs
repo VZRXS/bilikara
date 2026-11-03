@@ -371,6 +371,7 @@ pub unsafe extern "C" fn bilikara_runtime_status_service(
                         state,
                         message,
                         qr_image,
+                        login_url: String::new(),
                     },
                 );
                 json!({"applied": applied})

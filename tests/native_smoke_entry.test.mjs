@@ -21,7 +21,7 @@ test('required Linux launcher validation fails without its declared candidate', 
 });
 
 test('native process contracts and extracted macOS shell checks use real Node entries after required prerequisites', () => {
-  const workflow = readFileSync(path.join(root, '.github/workflows/ci-bundle.yml'), 'utf8');
+  const workflow = readFileSync(path.join(root, '.github/workflows/desktop.yml'), 'utf8');
   const command = 'node --test tests/macos_tauri_smoke.test.mjs';
   const block = workflow.split(/\n      - /).find(step => step.includes(command)); assert.ok(block);
   assert.ok(block.includes('BILIKARA_REQUIRE_TAURI_SMOKE=1')); assert.ok(block.includes('test_extract/dist_release/bilikara-desktop.app/Contents/MacOS/bilikara'));

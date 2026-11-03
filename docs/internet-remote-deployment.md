@@ -19,6 +19,12 @@ assets, validates the Worker, and deploys to `rtc.kevinx96.icu`. Worker source,
 Cloudflare credentials, and deployment configuration remain in that repository.
 The application repository does not deploy the Worker itself.
 
+Optional TURN requires a compatible credential-issuance change in that separate
+Worker, administrator-controlled relay endpoints and short-lived credentials.
+See [Internet Remote networking and the companion contract](internet-remote-network.md).
+Asset synchronization alone does not enable TURN, and local tests never dispatch
+this production workflow.
+
 The copied frontend assets are a one-way mirror, not an independent fork.
 `sync_internet_remote_assets.ps1` overwrites its allowlisted destination files.
 A manual edit to those files in the Worker repository will therefore be replaced

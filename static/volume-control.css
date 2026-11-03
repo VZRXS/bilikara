@@ -58,7 +58,7 @@
   box-sizing: border-box;
   width: min(232px, calc(100vw - 24px));
   max-width: none;
-  max-height: calc(100dvh - 24px);
+  max-height: calc(calc(var(--legacy-vh, 1vh) * 100) - 24px); max-height: calc(100dvh - 24px);
   margin: 0;
   padding: 10px 14px 14px;
   border: var(--modal-card-border);

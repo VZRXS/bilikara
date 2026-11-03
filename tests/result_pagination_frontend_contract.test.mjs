@@ -18,7 +18,7 @@ async run_case(source) {
 let result;
 result = (await runNative(this.node, ["-e", concatenate(concatenate(`
 const assert = require('node:assert/strict');
-const { Pages, compactCount, swipeDirection, dotWindow, maximumPage } = require('./static/result-pagination.js');
+const { Pages, compactCount, swipeDirection, dotWindow, maximumPage, fittedPageSize } = require('./static/result-pagination.js');
 const items = (offset, count) => Array.from({length: count}, (_, i) => ({id: offset + i}));
 const initial = (extra = {}) => ({key: 'uploader', items: items(0, 100),
   total: 612, hasMore: true, ...extra});
@@ -103,6 +103,43 @@ for (const size of [3, 9, 15, 21]) {
   assert.equal(pages.items[0].id, size);
   assert.equal(pages.items.length, size);
 }
+`));
+},
+async test_native_panels_fit_complete_rows_and_bound_extreme_or_unmeasured_sizes() {
+(await this.run_case(`
+assert.equal(fittedPageSize({columns:3,height:485,itemHeight:72,gap:12}),15);
+assert.equal(fittedPageSize({columns:2,height:485,itemHeight:72,gap:12}),10);
+assert.equal(fittedPageSize({columns:2,height:281,itemHeight:72,gap:12}),6);
+assert.equal(fittedPageSize({columns:2,height:240,itemHeight:72,gap:12}),6);
+assert.equal(fittedPageSize({columns:2,height:239,itemHeight:72,gap:12}),4);
+assert.equal(fittedPageSize({columns:2,height:256,itemHeight:72,gap:12,padding:16}),6);
+assert.equal(fittedPageSize({columns:2,height:10,itemHeight:72,gap:12}),2);
+assert.equal(fittedPageSize({columns:5,height:100000,itemHeight:72,gap:12}),45);
+assert.equal(fittedPageSize({columns:100000,height:100000,itemHeight:72}),48);
+for(const options of [{columns:0},{height:0},{height:NaN},{itemHeight:0},{gap:-1},{padding:-1}]) {
+  assert.equal(fittedPageSize({columns:3,height:485,itemHeight:72,gap:12,...options}),null);
+}
+`));
+},
+async test_native_capacity_changes_preserve_the_visible_anchor_without_fetching_cached_items() {
+(await this.run_case(`
+let calls=0;
+const pages=new Pages();
+const options=initial({items:items(0,100),total:100,hasMore:false,
+  load:async()=>{calls++;throw new Error('local page must stay cached');}});
+for(const size of [2,4,5,8,10,16,20,25,45,48]) {
+  pages.update({...options,pageSize:size});
+  assert.equal(pages.pageSize,size);
+  await pages.goTo(2);
+  const anchor=pages.items[0].id;
+  const next=size===48?2:size+1;
+  pages.update({...options,pageSize:next});
+  assert.ok(pages.items.some(item=>item.id===anchor));
+}
+for(const size of [0,49,1.5,NaN,Infinity]) {
+  pages.update({...options,pageSize:size});assert.equal(pages.pageSize,6);
+}
+assert.equal(calls,0);
 `));
 },
 async test_pending_and_failed_navigation_preserve_current_page_and_allow_retry() {
@@ -443,6 +480,8 @@ test("ResultPaginationFrontendTest.test_compact_totals_use_local_units_and_carry
 test("ResultPaginationFrontendTest.test_direct_jump_fetches_beyond_initial_hundred_and_returns_to_cached_page", async () => { const instance = Object.create(ResultPaginationFrontendTest); await instance.setUpClass(); await instance.test_direct_jump_fetches_beyond_initial_hundred_and_returns_to_cached_page(); });
 test("ResultPaginationFrontendTest.test_small_cards_use_six_rows_and_preserve_the_visible_range_on_resize", async () => { const instance = Object.create(ResultPaginationFrontendTest); await instance.setUpClass(); await instance.test_small_cards_use_six_rows_and_preserve_the_visible_range_on_resize(); });
 test("ResultPaginationFrontendTest.test_three_row_grids_support_odd_column_counts_without_resetting_pages", async () => { const instance = Object.create(ResultPaginationFrontendTest); await instance.setUpClass(); await instance.test_three_row_grids_support_odd_column_counts_without_resetting_pages(); });
+test("ResultPaginationFrontendTest.test_native_panels_fit_complete_rows_and_bound_extreme_or_unmeasured_sizes", async () => { const instance = Object.create(ResultPaginationFrontendTest); await instance.setUpClass(); await instance.test_native_panels_fit_complete_rows_and_bound_extreme_or_unmeasured_sizes(); });
+test("ResultPaginationFrontendTest.test_native_capacity_changes_preserve_the_visible_anchor_without_fetching_cached_items", async () => { const instance = Object.create(ResultPaginationFrontendTest); await instance.setUpClass(); await instance.test_native_capacity_changes_preserve_the_visible_anchor_without_fetching_cached_items(); });
 test("ResultPaginationFrontendTest.test_pending_and_failed_navigation_preserve_current_page_and_allow_retry", async () => { const instance = Object.create(ResultPaginationFrontendTest); await instance.setUpClass(); await instance.test_pending_and_failed_navigation_preserve_current_page_and_allow_retry(); });
 test("ResultPaginationFrontendTest.test_replaced_source_ignores_both_late_success_and_failure", async () => { const instance = Object.create(ResultPaginationFrontendTest); await instance.setUpClass(); await instance.test_replaced_source_ignores_both_late_success_and_failure(); });
 test("ResultPaginationFrontendTest.test_partial_initial_batch_refetches_overlapping_page_without_skipping_items", async () => { const instance = Object.create(ResultPaginationFrontendTest); await instance.setUpClass(); await instance.test_partial_initial_batch_refetches_overlapping_page_without_skipping_items(); });

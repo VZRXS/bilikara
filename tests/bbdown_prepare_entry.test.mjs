@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
-const workflow = readFileSync(new URL('../.github/workflows/ci-bundle.yml', import.meta.url), 'utf8');
-const bundle = workflow.slice(workflow.indexOf('\n  bundle:'), workflow.indexOf('\n  android-bundle:'));
+const workflow = readFileSync(new URL('../.github/workflows/desktop.yml', import.meta.url), 'utf8');
+const bundle = workflow.slice(workflow.indexOf('\n  bundle:'), workflow.length);
 const steps = bundle.split(/\n      - /).slice(1);
 const index = pattern => {
   const found = steps.findIndex(step => pattern.test(step));
@@ -22,14 +22,17 @@ test('actual BBDown producer uses locked host-native xtask and keeps vendor/env 
   assert.equal(existsSync(new URL('../tests/test_prepare_bbdown_vendor.py', import.meta.url)), false);
 });
 
-test('toolchain repair, pinned setup, build cache and native linker precede every xtask producer', () => {
-  const repair = index(/rustup toolchain uninstall 1\.97\.0/);
-  const rust = index(/rustup toolchain install\s/);
+test('isolated pinned toolchain, build cache and native linker precede every xtask producer', () => {
+  const rust = index(/uses: \.\/\.github\/actions\/rust-toolchain/);
+  const toolchain = readFileSync(new URL('../.github/actions/rust-toolchain/action.yml', import.meta.url), 'utf8');
+  const home = toolchain.indexOf('RUSTUP_HOME=%s/bilikara-ci-rustup');
+  assert.ok(home >= 0 && home < toolchain.indexOf('rustup toolchain install'));
+  assert.match(toolchain, /"\$RUNNER_TEMP" >> "\$GITHUB_ENV"/);
+  assert.doesNotMatch(toolchain, /toolchain uninstall|RUSTUP_TOOLCHAIN=|rustup default/);
   const cache = index(/uses: Swatinem\/rust-cache@v2/);
   const msvc = index(/run: \.\/scripts\/setup_msvc\.ps1 -Arch '\$\{\{ matrix\.arch \}\}'/);
-  assert.match(steps[repair], /if: runner.os == 'macOS'/);
   assert.match(steps[msvc], /if: runner.os == 'Windows'/);
-  assert.ok(repair < rust && rust < cache);
+  assert.ok(rust < cache);
   const firstProducer = index(/cargo run --manifest-path xtask\/Cargo\.toml/);
   assert.ok(cache < firstProducer && msvc < firstProducer);
   assert.match(steps[firstProducer], /-- prepare-bbdown /);

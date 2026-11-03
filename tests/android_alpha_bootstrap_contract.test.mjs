@@ -55,7 +55,7 @@ assert.deepEqual(new Set((Symbol.iterator in Object(desktop["platforms"]) ? desk
 capability = JSON.parse(readFileSync(path.join(TAURI, "capabilities/android-alpha.json"), "utf8"));
 assert.deepEqual(capability["platforms"], ["android"]);
 assert.deepEqual(capability["windows"], ["main"]);
-assert.deepEqual(capability["permissions"], ["allow-android-alpha-status"]);
+assert.deepEqual(capability["permissions"], ["allow-android-alpha-status", "allow-android-webview-diagnostics"]);
 assert.ok(hasContent(capability["local"]));
 assert.ok(!contains("remote", capability));
 config = JSON.parse(readFileSync(path.join(TAURI, "tauri.android.conf.json"), "utf8"));
@@ -99,13 +99,15 @@ let activity, kind, manifest, source;
 activity = readFileSync(path.join(TAURI, "gen/android/app/src/main/java/com/bilikara/app/MainActivity.kt"), "utf8");
 assert.ok(contains("HostWindowInsets.install(findViewById(android.R.id.content))", activity));
 manifest = readFileSync(path.join(TAURI, "gen/android/app/src/main/AndroidManifest.xml"), "utf8");
-assert.ok(contains("android:windowSoftInputMode=\"adjustResize\"", manifest));
+assert.ok(contains("android:windowSoftInputMode=\"adjustNothing\"", manifest));
 source = readFileSync(path.join(TAURI, "gen/android/app/src/main/java/com/bilikara/app/HostWindowInsets.kt"), "utf8");
 for (const kind of iterableValues(["systemBars", "displayCutout", "ime"])) {
 assert.ok(contains(("WindowInsetsCompat.Type." + String(kind) + "()"), source));
 }
 assert.ok(contains(".setInsets(handled, Insets.NONE)", source));
 assert.ok(contains("ViewCompat.requestApplyInsets(content)", source));
+assert.ok(contains("publishKeyboard(view, keyboard)", source));
+assert.ok(contains("bilikara:ime", source));
 },
 async test_bootstrap_page_reports_native_success_failure_and_wrong_schema() {
 let node, program, result;
@@ -119,14 +121,14 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 const source = fs.readFileSync("static/android-alpha.js", "utf8");
 const valid = {schema_version: 3, stage: "native-host-alpha", backend: "rust", revision: 0,
-  host_api_ready: true, persistence_ready: true, playback_ready: true,
+  host_api_ready: true, persistence_ready: true, playback_ready: true, window_controls_ready: true,
   bootstrap_url: "http://127.0.0.1:12345/bootstrap/" + "a".repeat(43)};
 async function render(invoke) {
   const nodes = {"bootstrap-status": {textContent: ""}, "bootstrap-details": {hidden: true}};
   let destination = null;
-  const context = {URL, window: {location: {replace: url => {destination = url;}},
+  const context = {URL, AbortController, CSS: {supports: () => true}, window: {location: {replace: url => {destination = url;}},
     ...(invoke ? {__TAURI__: {core: {invoke}}} : {})},
-    document: {getElementById: id => nodes[id]}};
+    document: {getElementById: id => nodes[id], createElement: () => ({inert: false})}};
   await vm.runInNewContext(source, context);
   return {...nodes, destination};
 }

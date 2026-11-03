@@ -1,9 +1,12 @@
 // Normal frontend verification entry: current Node behavior fixtures and source contracts.
 import './frontend_static_contract.test.mjs';
 import './android_alpha_bootstrap_contract.test.mjs';
+import './android_webview_timeout.test.mjs';
+import './android_webview_diagnostics.test.mjs';
 import './frontend_command_contract.test.mjs';
 import './frontend_support.test.mjs';
 import './app_update_frontend_contract.test.mjs';
+import './app_update_startup.test.mjs';
 import './application_restart_source_contract.test.mjs';
 import './async_action_guards_contract.test.mjs';
 import './audio_pitch_lifecycle_contract.test.mjs';
@@ -21,11 +24,15 @@ import './host_playback_session_frontend_contract.test.mjs';
 import './host_state_snapshot_frontend_contract.test.mjs';
 import './internet_remote_frontend_contract.test.mjs';
 import './internet_remote_ice.test.mjs';
+import './internet_remote_host_lifecycle.test.mjs';
+import './internet_remote_provisioning.test.mjs';
 import './list_flip_frontend_contract.test.mjs';
 import './player_fullscreen_frontend_contract.test.mjs';
 import './fullscreen_player_interaction.test.mjs';
 import './player_health_contract.test.mjs';
 import './player_control_consumption.test.mjs';
+import './playback_restart.test.mjs';
+import './playback_sheet_gestures.test.mjs';
 import './presentation_host_frontend_contract.test.mjs';
 import './presentation_feedback.test.mjs';
 import './presentation_renderer_contract.test.mjs';
@@ -48,3 +55,5 @@ import './split_player_sync_contract.test.mjs';
 import './startup_state_frontend_contract.test.mjs';
 import './tauri_export_source_contract.test.mjs';
 import './volume_boost_frontend_contract.test.mjs';
+
+import './source_management_contract.test.mjs';

@@ -51,6 +51,11 @@ module.exports=async ({api,okay,capture,browser,evidence,getPage,restart,inspect
   await okay("/api/cache-policy",{video_quality:"720P 高清",reset_offset_on_next:false});
   await stable(baseline);assert.equal((await okay("/api/state")).current_item.artifact_set_id,artifact);
   await page.locator('label[for="cache-hires-checkbox"]').click();
+  await page.waitForFunction(()=>state.data.cache_policy.audio_hires && !state.cachePolicySaving);
+  await stable(baseline);
+  assert.equal((await okay("/api/state")).current_item.artifact_set_id,artifact,"HiRes preference must preserve ready media until a new attempt");
+  const recache=(await okay("/api/state")).current_item;
+  await okay("/api/cache/retry",{item_id:recache.id,expected_item_incarnation_id:recache.item_incarnation_id,force:true});
   await until(async()=> (await stats()).media.some(v=>v.path==="/audio-flac.mp4"));
   await page.waitForFunction(old=>state.data.current_item.cache_status==="ready" && state.data.current_item.artifact_set_id!==old,artifact,{timeout:25000});
   snapshot=await okay("/api/state");
@@ -100,7 +105,11 @@ module.exports=async ({api,okay,capture,browser,evidence,getPage,restart,inspect
     });assert.equal(denied,403);
     assert.equal((await okay("/api/state")).cache_policy.media_capabilities.avc_supported,true);
     await remote.locator("#playback-dock").click();
-    await remote.locator("#remote-volume-slider").focus();await remote.locator("#remote-volume-slider").press("End");
+    // Morph/drag content is inert until it settles; focus() does not wait for it.
+    await remote.locator(".playback-sheet-body:not([inert])").waitFor({state:"visible"});
+    await remote.locator("#remote-volume-slider").focus();
+    assert.equal(await remote.locator("#remote-volume-slider").evaluate(node=>node===document.activeElement),true);
+    await remote.locator("#remote-volume-slider").press("End");
     await page.waitForFunction(()=>state.data.player_settings.volume_percent===100);
     await capture("cache-policy-remote-375.png",remote);
     await okay("/api/cache-policy",{reset_offset_on_next:true});
@@ -128,5 +137,5 @@ module.exports=async ({api,okay,capture,browser,evidence,getPage,restart,inspect
   await page.waitForFunction(()=>state.data.cache_policy.usage_bytes>0);
   await page.locator("#cache-settings-toggle").click();await capture("cache-policy-restarted.png",page);
   assert.deepEqual(errors,[]);
-  await fs.writeFile(path.join(evidence,"cache-policy-summary.json"),JSON.stringify({passed:true,desktopCounts:[1,2,4,5],disabledCachingSupported:false,actualRustJobs:true,delayedReplacement:true,hiresFlac:true,effectiveNoop:true,atomicRejectedPatch:true,restartPersistence:true,transientPlayerFacts:true,remoteViewport:[375,812],realDataChannel:false,consoleErrors:errors,browserWarnings},null,2));
+  await fs.writeFile(path.join(evidence,"cache-policy-summary.json"),JSON.stringify({passed:true,desktopCounts:[1,2,4,5],disabledCachingSupported:false,actualRustJobs:true,delayedReplacement:true,deferredPreferences:true,hiresFlac:true,effectiveNoop:true,atomicRejectedPatch:true,restartPersistence:true,transientPlayerFacts:true,remoteViewport:[375,812],realDataChannel:false,consoleErrors:errors,browserWarnings},null,2));
 };

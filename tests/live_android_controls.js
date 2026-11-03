@@ -182,6 +182,7 @@ const [exe, directory, video, audio, executablePath, selected = "all"] = process
               return {menu: box(menu), list: box(document.getElementById("playlist")), buttons: [...menu.children].map(box)};
             });
             for (const button of boxes.buttons) {
+              assert.ok(button.height >= 44, `Every ${language} action keeps the ordinary 44px control height`);
               assert.ok(button.left >= Math.max(0, boxes.list.left) && button.right <= Math.min(width, boxes.list.right), `Every ${language} action fits ${width}px: ${JSON.stringify(boxes)}`);
               assert.ok(button.top >= boxes.menu.top && button.bottom <= boxes.menu.bottom, "Actions stay within the menu");
             }

@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>bilikara host</title>
   <link rel="icon" href="/pic/icon.png" />
+  <script src="/webview-compat.js"></script>
   <link rel="stylesheet" href="/styles.css" />
   <link rel="stylesheet" href="/browse-search.css" />
   <link rel="stylesheet" href="/search-result-media.css" />
@@ -14,12 +15,15 @@
   <link rel="stylesheet" href="/remote-access.css" />
   <link rel="stylesheet" href="/host-layout.css" />
   <link rel="stylesheet" href="/status-indicators.css" />
+  <link rel="stylesheet" href="/result-pagination.css" />
   <link rel="stylesheet" href="/source-removal.css" />
   <link rel="stylesheet" href="/volume-control.css" />
   <link rel="stylesheet" href="/request-tabs.css" />
   <link rel="stylesheet" href="/ui-surfaces.css" />
   <link rel="stylesheet" href="/incoming-request.css" />
   <link rel="stylesheet" href="/announcements.css" />
+  <link rel="stylesheet" href="/webview-legacy.css" />
+  <script src="/webview83.js"></script>
 </head>
 
 <body>
@@ -38,7 +42,7 @@
       <div class="window-drag-region" id="window-drag-region" data-tauri-drag-region aria-hidden="true"></div>
       <div class="top-controls">
         <div class="mode-control remote-mini-control" id="remote-mini-control">
-          <button type="button" class="remote-mini-trigger" id="remote-mini-trigger" aria-expanded="false"
+          <button type="button" class="remote-mini-trigger" id="remote-mini-trigger" aria-expanded="false" aria-label="手机点歌" data-i18n-aria-label="top.mobileRemote"
             aria-haspopup="dialog" aria-controls="remote-mini-popover">
             <svg class="global-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -217,7 +221,7 @@
           </div>
         </div>
         <div class="status-chip presentation-status-chip hidden" id="presentation-settings">
-          <button type="button" class="status-chip-toggle" id="presentation-settings-toggle" aria-expanded="false"
+          <button type="button" class="status-chip-toggle" id="presentation-settings-toggle" aria-expanded="false" aria-label="双屏显示" data-i18n-aria-label="display.outputTitle"
             aria-controls="presentation-settings-panel">
             <span class="status-chip-label-row">
               <svg class="global-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -421,14 +425,24 @@
                   <p class="cache-panel-label" data-i18n="service.bbdownLogin">Bilibili 登录</p>
                 </div>
                 <div class="bbdown-login-qr">
-                  <img id="bbdown-login-qr-image" class="bbdown-login-qr-image hidden" alt="Bilibili 登录二维码"
-                    data-i18n-alt="service.bbdownQrAlt" />
-                  <pre id="bbdown-login-qr-text" class="bbdown-login-qr-text hidden"></pre>
-                  <p id="bbdown-login-message" class="bbdown-login-message" data-i18n="service.qrPreparing">正在准备二维码...</p>
+                  <button type="button" class="bbdown-login-qr-code" id="bbdown-login-refresh"
+                    data-i18n-aria-label="service.regenerateQr" data-i18n-title="service.regenerateQr"
+                    aria-label="重新生成二维码" title="重新生成二维码">
+                    <img id="bbdown-login-qr-image" class="bbdown-login-qr-image hidden" alt="Bilibili 登录二维码"
+                      data-i18n-alt="service.bbdownQrAlt" />
+                    <pre id="bbdown-login-qr-text" class="bbdown-login-qr-text hidden"></pre>
+                  </button>
+                  <div class="bbdown-login-qr-details">
+                    <div class="bbdown-login-options">
+                    <p id="bbdown-login-message" class="bbdown-login-message" data-i18n="service.qrPreparing">正在准备二维码...</p>
+                    <span id="bbdown-login-alternative" class="bbdown-login-alternative" data-i18n="service.loginAlternative" hidden>或</span>
+                    <a id="bbdown-login-link" class="bbdown-login-link" target="_blank" rel="noopener noreferrer" hidden>
+                      <span data-i18n="service.openLoginLink">打开登录页面</span>
+                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M10 4H4v16h16v-6" /></svg>
+                    </a>
+                    </div>
+                  </div>
                 </div>
-                <button type="button" class="toolbar-button bbdown-login-refresh" id="bbdown-login-refresh">
-                  <span data-i18n="service.regenerateQr">重新生成二维码</span>
-                </button>
               </div>
             </section>
             <!-- LEGACY: 在线外挂模式暂时下线，保留元素 id 仅避免旧脚本引用失效。 -->
@@ -494,29 +508,35 @@
       <main class="layout">
         <section class="host-content-region">
           <div class="android-host-only android-page-tools" id="android-page-tools" hidden>
+            <header class="android-page-heading host-peer-head" id="android-page-heading" hidden></header>
             <div id="android-queue-tabs" class="android-page-tabs" hidden>
               <button type="button" data-android-workspace="queue" data-shared-workspace="queue"></button>
               <button type="button" data-android-workspace="history" data-shared-workspace="history"></button>
             </div>
             <div id="android-request-tabs" hidden></div>
-            <button type="button" class="android-settings-back" id="android-settings-back" hidden>
-              <span aria-hidden="true">←</span> <span data-i18n="mobile.backToMe">返回我的</span>
-            </button>
+
           </div>
           <section class="android-host-only android-my-page" id="android-my-page" aria-labelledby="android-my-title" hidden inert>
-            <h2 id="android-my-title" data-i18n="mobile.me">我的</h2>
+            <div class="android-my-scroll" id="android-my-scroll">
+            <header class="android-my-heading host-peer-head">
+              <div class="host-peer-heading">
+                <p class="section-tag" data-i18n="mobile.meTag">My Page</p>
+                <h2 id="android-my-title" data-i18n="mobile.me">我的</h2>
+              </div>
+            </header>
             <section class="android-my-card" id="android-account-slot" aria-labelledby="android-account-title">
-              <h3 id="android-account-title" data-i18n="service.bbdownLogin">Bilibili 登录</h3>
-              <p class="android-login-hint" data-i18n="mobile.loginHint">点击“未登录”获取登录二维码。</p>
-              <p class="android-login-persistence" data-i18n="mobile.loginPersistence">登录仅保存在本机，重启或清理歌曲缓存不会退出。凭证失效后，请退出登录并重新扫码。</p>
+                <div class="android-my-section-heading" id="android-account-heading">
+                  <h3 id="android-account-title" data-i18n="service.bbdownLogin">Bilibili 登录</h3>
+                </div>
             </section>
             <section class="android-my-card" id="android-settings-slot" aria-labelledby="android-download-settings-title">
-              <h3 id="android-download-settings-title" data-i18n="mobile.downloadSettings">播放与下载</h3>
+                <h3 id="android-download-settings-title" data-i18n="mobile.downloadSettings">播放与下载</h3>
             </section>
             <button type="button" class="android-menu-row" id="android-open-settings">
-              <span><strong data-i18n="shell.settings">设置</strong><small data-i18n="mobile.settingsHint">外观、播放修复、数据清理与复制诊断 .md</small></span>
+              <span data-i18n="shell.settings">设置</span>
               <span aria-hidden="true">›</span>
             </button>
+            </div>
           </section>
           <section class="left-column" aria-label="Stage" data-i18n-aria-label="shell.stage">
         <section class="player-panel">
@@ -837,6 +857,9 @@
         <section class="settings-workspace host-workspace-fragment" id="host-workspace-settings" role="tabpanel"
           aria-labelledby="work-rail-settings" data-host-workspace-panel="settings" hidden inert>
           <header class="settings-workspace-head host-peer-head">
+            <button type="button" class="android-host-only android-settings-back secondary" id="android-settings-back" hidden>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg><span data-i18n="common.back">返回</span>
+            </button>
             <div class="host-peer-heading">
               <p class="section-tag" data-i18n="settings.workspaceTag">Settings</p>
               <h2 id="workspace-settings-heading" data-host-workspace-heading tabindex="-1"
@@ -845,6 +868,7 @@
           </header>
 
           <div class="settings-workspace-body">
+
             <section class="settings-section" aria-labelledby="settings-appearance-title">
               <div class="settings-section-heading">
                 <h3 id="settings-appearance-title" data-i18n="settings.appearance">外观</h3>
@@ -997,7 +1021,10 @@
                     </div>
                   </div>
                   <div class="cache-panel-actions diagnostic-panel-actions">
-                    <button type="button" class="toolbar-button cache-retry-current-button" id="diagnostic-copy-button">
+                    <button type="button" class="toolbar-button cache-retry-current-button settings-tool-button" id="webview-diagnostics-button" hidden>
+                      <span data-i18n="service.webviewDiagnostics">WebView 兼容性自检</span>
+                    </button>
+                    <button type="button" class="toolbar-button cache-retry-current-button settings-tool-button" id="diagnostic-copy-button">
                       <span data-i18n="service.copyDiagnosticsMarkdown">复制 .md</span>
                     </button>
                     <button type="button" class="toolbar-button cache-update-button" id="diagnostic-package-button">
@@ -1050,7 +1077,6 @@
           <div class="request-workspace-body">
             <section class="request-subview request-quick-view" id="request-quick-panel" role="tabpanel"
               data-request-panel="quick" aria-labelledby="workspace-request-heading">
-              <p class="native-alpha-notice">bilikara beta：支持搜索、分类、关注／收藏夹浏览、随机点歌及历史导出。导入来源前请在“我的”中登录 Bilibili。默认 720P、3 首缓存，可调整。手机点歌可使用局域网或公网房间。请保持本机前台播放；外接屏可在“双屏显示”中选择，具体能力取决于设备和系统。</p>
               <div class="request-subview-copy">
                 <p class="section-tag" data-i18n="request.quickTag">Quick Request</p>
                 <h3 data-i18n="request.quickTitle">快速点歌</h3>
@@ -1066,6 +1092,10 @@
                   data-i18n="request.next">顶歌</button>
                 <p class="help-text message-surface message-inline" id="form-message" role="status" aria-live="polite"></p>
               </form>
+              <div class="native-alpha-notice">
+                <span data-i18n="mobile.betaLabel">Android 测试版</span>
+                <span data-i18n="mobile.betaNotice">请保持应用在前台播放。</span>
+              </div>
             </section>
 
             <section class="request-subview request-search-view" id="request-search-panel" role="tabpanel"
@@ -1188,14 +1218,14 @@
               <section class="request-mode-panel source-mode-panel" id="request-sources-uids" role="tabpanel"
                 data-sources-panel="uids">
                 <div class="source-action-row">
-                  <form id="modal-follow-uid-form" class="follow-search-form modal-uid-form">
+                  <form id="modal-follow-uid-form" class="follow-search-form modal-uid-form source-uid-form">
                     <input type="text" id="modal-follow-uid-input" placeholder="UID 或 UP 主空间链接"
                       data-i18n-placeholder="gatcha.uidPlaceholder" autocomplete="off">
                     <button type="submit" id="modal-add-follow-uid-button" class="next-button"
                       data-i18n="sources.addUid">添加 UID</button>
+                    <button type="button" id="refresh-gatcha-cache-button" class="toolbar-button source-refresh-button"
+                      data-i18n="gatcha.refresh">手动更新</button>
                   </form>
-                  <button type="button" id="refresh-gatcha-cache-button" class="toolbar-button"
-                    data-i18n="gatcha.refresh">手动更新</button>
                 </div>
                 <p class="gatcha-message source-action-message" id="gatcha-uid-message" role="status"></p>
                 <div class="source-browse-scroll request-scroll-region" id="request-sources-followed-scroll"
@@ -1232,7 +1262,7 @@
               <section class="request-mode-panel source-mode-panel" id="request-sources-favorites" role="tabpanel"
                 data-sources-panel="favorites" hidden inert>
                 <div class="source-action-row">
-                  <form id="modal-favlist-pull-form" class="follow-search-form modal-uid-form">
+                  <form id="modal-favlist-pull-form" class="follow-search-form modal-uid-form source-uid-form">
                     <input type="text" id="modal-favlist-uid-input" placeholder="UID 或 UP 主空间链接"
                       data-i18n-placeholder="gatcha.uidPlaceholder" autocomplete="off">
                     <button type="submit" id="modal-pull-favlist-button" class="next-button"
@@ -1281,6 +1311,7 @@
               <h2 id="workspace-users-heading" data-host-workspace-heading tabindex="-1"
                 data-i18n="session.title">本场用户</h2>
             </div>
+
           </div>
 
           <form id="session-user-form" class="session-user-form">
@@ -1552,13 +1583,13 @@
 
     <nav class="android-host-only android-host-dock" id="android-host-dock" aria-label="主要页面" data-i18n-aria-label="mobile.navigation" hidden>
       <button type="button" data-android-page="playback" aria-current="page">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 11 7-11 7Z"/><path d="M4 5v14"/></svg><span data-i18n="mobile.playback">播放</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><g class="work-rail-icon-outline"><path d="m9 5 11 7-11 7Z"/><path d="M4 5v14"/></g><g class="work-rail-icon-fill"><path d="m9 5 11 7-11 7Z" fill="currentColor"/><path d="M4 5v14"/></g></svg><span data-i18n="mobile.playback">播放</span>
       </button>
       <button type="button" data-android-page="queue" data-shared-workspace="queue" data-workspace-icon></button>
       <button type="button" data-android-page="request" data-shared-workspace="request" data-workspace-icon></button>
-      <button type="button" data-android-page="users" data-shared-workspace="users" data-workspace-icon></button>
+      <button type="button" data-android-page="users" data-shared-workspace="users" data-workspace-icon><span class="android-dock-short-label" data-i18n="mobile.usersShort">本场用户</span></button>
       <button type="button" data-android-page="my">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg><span data-i18n="mobile.me">我的</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><g class="work-rail-icon-outline"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></g><g class="work-rail-icon-fill"><circle cx="12" cy="8" r="4" fill="currentColor"/><path d="M4 21a8 8 0 0 1 16 0Z" fill="currentColor"/></g></svg><span data-i18n="mobile.me">我的</span>
       </button>
     </nav>
   </div>
@@ -1763,10 +1794,10 @@
         <button type="button" id="gatcha-favlist-modal-close" class="banner-close" aria-label="关闭"
           data-i18n-aria-label="common.close"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
       </div>
-      <p class="selection-modal-text" id="gatcha-favlist-modal-text" data-i18n="favlist.text">请选择要拉取的公开收藏夹。</p>
+      <p class="selection-modal-text hidden" id="gatcha-favlist-modal-text"></p>
       <div class="selection-modal-grid selection-modal-grid-single">
         <section class="selection-modal-column">
-          <h3 data-i18n="favlist.folder">收藏夹</h3>
+          <h3><span data-i18n="favlist.folder">收藏夹</span> <span class="queue-count" id="gatcha-favlist-count"></span></h3>
           <div id="gatcha-favlist-options" class="selection-option-list"></div>
         </section>
       </div>
@@ -1900,6 +1931,7 @@
   <script src="/pitch-player.js" defer></script>
   <script src="/export-guard.js" defer></script>
   <script src="/source-status.js" defer></script>
+  <script src="/result-pagination.js" defer></script>
   <script src="/source-removal.js" defer></script>
   <script src="/browse-search.js" defer></script>
   <script src="/export-download.js" defer></script>
@@ -1918,10 +1950,11 @@
   <script src="/fullscreen-controls.js"></script>
   <script src="/queue-defer.js" defer></script>
   <script src="/session-user-editor.js" defer></script>
-  <script src="/app.js" defer></script>
+  <script src="/playback-restart.js" defer></script>
   <script src="/desktop-platform.js" defer></script>
   <script src="/android-platform.js" defer></script>
   <script src="/host-updates.js" defer></script>
+  <script src="/app.js" defer></script>
   <script src="/android-export.js" defer></script>
   <script src="/android-playback.js" defer></script>
   <script src="/native-session.js" defer></script>

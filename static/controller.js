@@ -2,6 +2,7 @@
   "use strict";
 
   const androidDisplay = window.BilikaraAndroidPresentation;
+  if (androidDisplay) document.documentElement.dataset.outputPlatform = "android";
   const invoke = androidDisplay?.invoke || window.__TAURI__?.core?.invoke || null;
   const listen = androidDisplay?.listen || window.__TAURI__?.event?.listen || null;
   const sceneApi = window.BilikaraPresentationScene;
@@ -302,6 +303,7 @@
   }
 
   function failClosed(message = "", key = "") {
+    if (androidDisplay) setRemoteQrPinned(false);
     requestNotice.hide();
     actionFeedback.hide();
     state.video?.pause();
@@ -630,6 +632,7 @@
     const nextScene = sceneApi?.normalizePresentationScene(candidate.payload?.scene);
     const nextClock = sync.normalizeClock(candidate.payload?.clock);
     if (!nextScene || nextScene.generation !== state.session?.generation) return;
+    if (androidDisplay) setRemoteQrPinned(candidate.payload?.remoteMenuVisible === true);
     const shouldMount = !state.scene
       || nextScene.revision !== state.scene.revision
       || nextScene.currentItemIdentity !== state.scene.currentItemIdentity

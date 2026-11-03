@@ -15,6 +15,21 @@ impl SourceJob {
     fn same_source(&self, other: &Self) -> bool {
         self.uid == other.uid && self.folder_ids == other.folder_ids
     }
+
+    fn retain_after_removal(&mut self, removed: &Value) -> bool {
+        if removed["uid"] != self.uid {
+            return true;
+        }
+        if removed["source"] == "uid" {
+            return self.folder_ids.is_some();
+        }
+        let Some(ids) = &mut self.folder_ids else {
+            return true;
+        };
+        ids.retain(|id| removed["folder_id"] != *id);
+        self.folder_titles.retain(|id, _| ids.contains(id));
+        !ids.is_empty()
+    }
 }
 
 #[derive(Default, Debug)]
@@ -37,20 +52,28 @@ impl SourceQueue {
     }
     pub(super) fn remove_source(&mut self, removed: &Value) {
         for jobs in [&mut self.pending, &mut self.failed] {
-            jobs.retain_mut(|job| {
-                if removed["uid"] != job.uid {
-                    return true;
-                }
-                if removed["source"] == "uid" {
-                    return job.folder_ids.is_some();
-                }
-                let Some(ids) = &mut job.folder_ids else {
-                    return true;
-                };
-                ids.retain(|id| removed["folder_id"] != *id);
-                job.folder_titles.retain(|id, _| ids.contains(id));
-                !ids.is_empty()
-            });
+            jobs.retain_mut(|job| job.retain_after_removal(removed));
+        }
+        // This is queue/UI metadata. The worker remains serialized by its
+        // TaskLease and library_source_active until it actually retires.
+        if self
+            .active
+            .as_mut()
+            .is_some_and(|job| !job.retain_after_removal(removed))
+        {
+            self.active = None;
+        }
+    }
+    fn finish_active(&mut self, remember_failure: bool) {
+        // Use the remaining selection, never the worker's captured old job.
+        // Otherwise a late failure could reintroduce a deleted retry entry.
+        if let Some(job) = self.active.take()
+            && remember_failure
+        {
+            self.failed.push_back(job);
+            while self.failed.len() > 100 {
+                self.failed.pop_front();
+            }
         }
     }
     pub(super) fn remember_refresh_result(&mut self, value: &Value) {
@@ -241,18 +264,12 @@ pub(super) fn run_next(context: &HostContext) -> bool {
         }
         let cancelled = control.check().is_err();
         let queue = &mut app.native().library_queue;
-        queue.active = None;
         if job.folder_ids.is_some() {
             queue.completed_favorites += 1;
         } else {
             queue.completed_uids += 1;
         }
-        if failed && !cancelled {
-            queue.failed.push_back(job);
-            while queue.failed.len() > 100 {
-                queue.failed.pop_front();
-            }
-        }
+        queue.finish_active(failed && !cancelled);
         app.native().revision += 1;
         Ok(())
     });
@@ -372,6 +389,84 @@ mod tests {
         q.remove_source(&json!({"source":"favlist","uid":"42","folder_id":"11"}));
         assert!(q.pending.is_empty());
         assert!(q.failed.is_empty());
+    }
+    #[test]
+    fn deleting_a_pulling_source_removes_its_active_placeholder() {
+        let mut q = SourceQueue {
+            active: Some(SourceJob {
+                uid: "42".into(),
+                folder_ids: Some(vec!["10".into(), "11".into()]),
+                folder_titles: BTreeMap::from([
+                    ("10".into(), "Ten".into()),
+                    ("11".into(), "Eleven".into()),
+                ]),
+            }),
+            ..Default::default()
+        };
+        q.remove_source(&json!({"source":"favlist","uid":"43","folder_id":"10"}));
+        assert_eq!(q.snapshot()["active"]["folder_ids"], json!(["10", "11"]));
+        q.remove_source(&json!({"source":"favlist","uid":"42","folder_id":"10"}));
+        assert_eq!(q.snapshot()["active"]["folder_ids"], json!(["11"]));
+        assert_eq!(
+            q.snapshot()["active"]["folder_titles"],
+            json!({"11":"Eleven"})
+        );
+        q.remove_source(&json!({"source":"favlist","uid":"42","folder_id":"11"}));
+        assert!(q.snapshot()["active"].is_null());
+    }
+    #[test]
+    fn late_pull_failure_keeps_only_remaining_folders_and_preserves_queued_readd() {
+        let mut q = SourceQueue::default();
+        let folders = SourceJob {
+            uid: "42".into(),
+            folder_ids: Some(vec!["10".into(), "11".into()]),
+            folder_titles: BTreeMap::from([
+                ("10".into(), "Ten".into()),
+                ("11".into(), "Eleven".into()),
+            ]),
+        };
+        q.active = Some(folders.clone());
+        q.remove_source(&json!({"source":"favlist","uid":"42","folder_id":"10"}));
+        q.finish_active(true);
+        assert_eq!(q.snapshot()["failed"][0]["folder_ids"], json!(["11"]));
+        assert_eq!(
+            q.snapshot()["failed"][0]["folder_titles"],
+            json!({"11":"Eleven"})
+        );
+
+        let up = SourceJob {
+            folder_ids: None,
+            folder_titles: BTreeMap::new(),
+            ..folders
+        };
+        q.active = Some(up.clone());
+        q.remove_source(&json!({"source":"uid","uid":"42"}));
+        assert!(q.snapshot()["active"].is_null());
+        assert_eq!(q.enqueue(up.clone()).unwrap()["duplicate"], false);
+        q.finish_active(true);
+        assert_eq!(q.pending.front(), Some(&up));
+        assert_eq!(q.failed.len(), 1);
+        assert!(q.failed[0].folder_ids.is_some());
+    }
+    #[test]
+    fn deleting_active_queue_metadata_keeps_the_pull_lease_exclusive() {
+        let mut session = crate::app_state::native_session::NativeSession::default();
+        let mut lease = TaskLease::start(&mut session, true, "queued_source", false, true).unwrap();
+        // This lease belongs to this local session, not the global test AppState.
+        lease.complete = true;
+        session.library_queue.active = Some(SourceJob {
+            uid: "42".into(),
+            folder_ids: None,
+            folder_titles: BTreeMap::new(),
+        });
+        session
+            .library_queue
+            .remove_source(&json!({"source":"uid","uid":"42"}));
+        assert!(session.library_queue.snapshot()["active"].is_null());
+        assert!(session.library_source_active);
+        assert!(lease.owns(&session, lease.ticket.as_ref().unwrap()));
+        assert!(lease.ticket.as_ref().unwrap().1.check().is_ok());
+        assert!(TaskLease::start(&mut session, true, "queued_source", false, true).is_err());
     }
     #[test]
     fn queue_is_bounded_without_dropping_existing_work() {

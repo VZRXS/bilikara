@@ -2419,6 +2419,21 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 CONTEXT._notify_state_changed()
                 self._write_json({"ok": True, "data": {**gatcha_pool_config_detail(), **result}})
                 return
+            if route == "/api/gatcha/sources/edit":
+                # The source Host uses its existing trusted local-client boundary;
+                # native products require their Host bootstrap capability.
+                if not self._is_local_client():
+                    self._write_json({"ok": False, "error": "forbidden"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                if set(body) != {"source", "expected_version", "edit"}:
+                    raise ValueError("invalid source edit")
+                from .bilibili import edit_gatcha_sources
+                result = edit_gatcha_sources(
+                    body.get("source"), body.get("expected_version"), body.get("edit"),
+                    on_done=CONTEXT._notify_state_changed,
+                )
+                self._write_json({"ok": True, "data": result})
+                return
             if route == "/api/gatcha/source/remove":
                 from .bilibili import remove_gatcha_source
                 result = remove_gatcha_source(

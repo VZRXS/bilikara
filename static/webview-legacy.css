@@ -1,0 +1,24 @@
+/* Only explicitly selected legacy documents use these missing-capability adapters. */
+html[data-webview-mode="legacy"][data-legacy-inert] [inert],
+html[data-webview-mode="legacy"][data-legacy-inert] [inert] * {
+  pointer-events: none !important;
+  user-select: none !important;
+}
+html[data-webview-mode="legacy"][data-legacy-colors] {
+  --host-control-pressed-bg: var(--legacy-pressed, var(--btn-secondary-bg));
+}
+html[data-webview-mode="legacy"][data-legacy-colors] .tag-letter-button.active {
+  background: var(--legacy-selected, var(--btn-secondary-bg));
+}
+@media (hover: hover) and (pointer: fine) {
+  html[data-webview-mode="legacy"][data-legacy-colors]:not([data-ui-client="remote"]) :is(.banner-close, .binding-sheet-close,
+    #confirm-close, .rating-close, .song-detail-close):hover:not(:disabled) {
+    background-color: var(--legacy-dismiss, var(--btn-secondary-bg));
+  }
+}
+html[data-webview-mode="legacy"][data-legacy-containers] .request-workspace[data-legacy-wide] .song-detail-hero {
+  grid-template-columns: minmax(0, 1.45fr) minmax(150px, 0.85fr);
+  gap: 14px;
+  align-items: start;
+}
+html[data-webview-mode="legacy"][data-legacy-containers] .request-workspace[data-legacy-wide] .song-detail-facts { padding: 2px 0; }

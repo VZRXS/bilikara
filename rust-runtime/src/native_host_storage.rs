@@ -39,6 +39,39 @@ impl NativeStorageError {
     }
 }
 
+/// Describe malformed persisted JSON without echoing saved values or secrets.
+pub(crate) fn json_error_detail(error: &serde_json::Error) -> String {
+    let text = error.to_string();
+    let missing = text
+        .strip_prefix("missing field `")
+        .and_then(|rest| rest.split_once('`'))
+        .map(|(field, _)| field)
+        .filter(|field| {
+            field
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        });
+    let reason = match error.classify() {
+        serde_json::error::Category::Eof => "JSON is truncated or incomplete".into(),
+        serde_json::error::Category::Syntax => "Invalid JSON syntax".into(),
+        serde_json::error::Category::Io => "Cannot read JSON".into(),
+        serde_json::error::Category::Data => match missing {
+            Some(field) => format!("Missing required field `{field}`"),
+            None if text.starts_with("unknown field ") => "Unrecognized JSON field".into(),
+            None => "Invalid JSON field type or record shape".into(),
+        },
+    };
+    if error.line() == 0 {
+        reason
+    } else {
+        format!(
+            "{reason} (line {}, column {})",
+            error.line(),
+            error.column()
+        )
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Checkpoint {
@@ -212,10 +245,29 @@ impl NativeHostStorage {
     }
 
     pub(crate) fn load(&self) -> Result<Option<AppStateSeed>, NativeStorageError> {
-        check_regular_or_missing(&self.directory.join(CHECKPOINT_FILE))?;
+        let Some((checkpoint, bytes)) = Self::read_checkpoint(&self.directory)? else {
+            return Ok(None);
+        };
+        if checkpoint.schema_version < CHECKPOINT_VERSION {
+            self.preserve_checkpoint(checkpoint.schema_version, &bytes)?;
+        }
+        Ok(Some(checkpoint.state))
+    }
+
+    /// Same checkpoint/chunk validation as startup, without creating directories,
+    /// lock files or old-schema backups. Inspection never opens an AppState.
+    #[cfg(feature = "native-host")]
+    pub(crate) fn inspect(directory: &Path) -> Result<Option<AppStateSeed>, NativeStorageError> {
+        Self::read_checkpoint(directory).map(|saved| saved.map(|(checkpoint, _)| checkpoint.state))
+    }
+
+    fn read_checkpoint(
+        directory: &Path,
+    ) -> Result<Option<(Checkpoint, Vec<u8>)>, NativeStorageError> {
+        check_regular_or_missing(&directory.join(CHECKPOINT_FILE))?;
         let file = match private_options()
             .read(true)
-            .open(self.directory.join(CHECKPOINT_FILE))
+            .open(directory.join(CHECKPOINT_FILE))
         {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -240,16 +292,19 @@ impl NativeHostStorage {
                 "Checkpoint exceeds 32 MiB",
             ));
         }
-        let mut checkpoint: Checkpoint = serde_json::from_slice(&bytes).map_err(|_| {
+        let mut checkpoint: Checkpoint = serde_json::from_slice(&bytes).map_err(|error| {
             NativeStorageError::new(
                 "native_storage_invalid",
-                "Checkpoint is incomplete or incompatible; the original file has been preserved",
+                format!("Checkpoint is incomplete or incompatible: host-state.json: {}; the original file has been preserved", json_error_detail(&error)),
             )
         })?;
         if ![1, 2, CHECKPOINT_VERSION].contains(&checkpoint.schema_version) {
             return Err(NativeStorageError::new(
                 "native_storage_version",
-                "Unsupported checkpoint version; the original file has been preserved",
+                format!(
+                    "Unsupported host-state.json checkpoint version {}; supported versions: 1, 2, {CHECKPOINT_VERSION}; the original file has been preserved",
+                    checkpoint.schema_version
+                ),
             ));
         }
         if (checkpoint.schema_version == 2 && checkpoint.records.len() != 6)
@@ -257,14 +312,11 @@ impl NativeHostStorage {
         {
             return Err(NativeStorageError::new(
                 "native_storage_invalid",
-                "Record manifest is incomplete",
+                "host-state.json: record manifest is incomplete; original files preserved",
             ));
         }
-        self.restore_records(&mut checkpoint)?;
-        if checkpoint.schema_version < CHECKPOINT_VERSION {
-            self.preserve_checkpoint(checkpoint.schema_version, &bytes)?;
-        }
-        Ok(Some(checkpoint.state))
+        Self::restore_records(directory, &mut checkpoint)?;
+        Ok(Some((checkpoint, bytes)))
     }
 
     fn preserve_checkpoint(&self, version: u32, bytes: &[u8]) -> Result<(), NativeStorageError> {
@@ -381,11 +433,19 @@ impl NativeHostStorage {
         Ok(())
     }
 
-    fn restore_records(&self, checkpoint: &mut Checkpoint) -> Result<(), NativeStorageError> {
+    fn restore_records(root: &Path, checkpoint: &mut Checkpoint) -> Result<(), NativeStorageError> {
         if checkpoint.records.is_empty() {
             return Ok(());
         }
-        let directory = self.record_directory()?;
+        let directory = root.join("host-records");
+        if !fs::symlink_metadata(&directory)
+            .is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink())
+        {
+            return Err(NativeStorageError::new(
+                "native_storage_invalid",
+                "host-records: missing or invalid record directory; original files preserved",
+            ));
+        }
         let invalid = || {
             NativeStorageError::new(
                 "native_storage_invalid",
@@ -593,6 +653,36 @@ impl<W: Write> Write for BoundedWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checkpoint_diagnostics_identify_missing_fields_and_locations_without_saved_values() {
+        for (bytes, expected) in [
+            (
+                br#"{"schema_version":1,"state":{}}"#.as_slice(),
+                "Missing required field `session_started_at`",
+            ),
+            (
+                br#"{"schema_version":1,"state":{"session_started_at":"private-cookie-value"}}"#,
+                "Invalid JSON field type or record shape",
+            ),
+            (
+                br#"{"schema_version":1,"private-cookie-value":true}"#,
+                "Unrecognized JSON field",
+            ),
+            (
+                b"{\"schema_version\":1,\n\"state\":{",
+                "JSON is truncated or incomplete",
+            ),
+        ] {
+            let error = serde_json::from_slice::<Checkpoint>(bytes).err().unwrap();
+            let detail = json_error_detail(&error);
+            assert!(
+                detail.contains(expected) && detail.contains("line ") && detail.contains("column "),
+                "{detail}"
+            );
+            assert!(!detail.contains("private-cookie-value"));
+        }
+    }
 
     #[test]
     fn upgrade_keeps_original_v1_bytes_and_repairs_corrupt_reused_chunks() {

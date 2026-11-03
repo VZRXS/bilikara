@@ -10,8 +10,16 @@
     pitch: ['M9 18V5l12-2v13', 'M9 5v4l12-2', 'M3 18a3 3 0 1 0 6 0 3 3 0 1 0-6 0m12-2a3 3 0 1 0 6 0 3 3 0 1 0-6 0'],
     play: ['M8 5v14l11-7Z'], pause: ['M7 5v14m10-14v14'],
     seek: ['M4 6v12l8-6Z', 'M12 6v12l8-6Z'], next: ['M6 5v14l11-7Z', 'M20 5v14'],
+    restart: [{ d: 'M7.25 7.25h-3.5v-3.5M4.05 7.1A8.25 8.25 0 1 1 3.75 12', transform: 'translate(0 2)' },
+      { d: 'm10.25 8.5 5.25 3.5-5.25 3.5z', fill: 'currentColor', stroke: 'none' }],
   };
-  const category = kind => kind === "muted" ? "volume" : ["play", "pause"].includes(kind) ? "playback" : kind;
+  const category = kind => kind === "muted" ? "volume" : ["play", "pause", "seek", "restart"].includes(kind) ? "playback" : kind;
+  function isRestartPair(previous, command, now = Date.now()) {
+    return Boolean(previous?.action === "seek-absolute" && previous.target_seconds === 0
+      && command?.action === "play" && command.seq === previous.seq + 1
+      && command.item_id === previous.item_id && command.playback_generation === previous.playback_generation
+      && now >= previous.at && now - previous.at <= durationMs);
+  }
   function snapshot(data) {
     if (!data) return null;
     const settings = data.player_settings || {};
@@ -95,8 +103,10 @@
       const icon = document.createElementNS(svgNS, "svg");
       for (const [key, value] of Object.entries({ viewBox: "0 0 24 24", "aria-hidden": "true", fill: "none",
         stroke: "currentColor", "stroke-width": "1.8", "stroke-linecap": "round", "stroke-linejoin": "round" })) icon.setAttribute(key, value);
-      for (const d of icons[notice.kind]) {
-        const path = document.createElementNS(svgNS, "path"); path.setAttribute("d", d); icon.appendChild(path);
+      for (const definition of icons[notice.kind]) {
+        const path = document.createElementNS(svgNS, "path");
+        for (const [name, value] of Object.entries(typeof definition === "string" ? { d: definition } : definition)) path.setAttribute(name, value);
+        icon.appendChild(path);
       }
       card.icon.replaceChildren(icon);
       if (changedKind && !root.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
@@ -151,5 +161,5 @@
     }
     return { show, hide };
   }
-  root.BilikaraPresentationFeedback = { snapshot, change, changes, recent, create, durationMs, maxVisible };
+  root.BilikaraPresentationFeedback = { snapshot, change, changes, recent, create, durationMs, maxVisible, isRestartPair };
 })(globalThis);

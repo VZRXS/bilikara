@@ -22,6 +22,8 @@ $files = @(
     "internet-remote-transport.js",
     "qrcode-generator.js",
     "part-selector.js",
+    "playback-restart.js",
+    "playback-sheet-gestures.js",
     "request-input.js",
     "qrcode-generator.LICENSE",
     "remote-access.css",
@@ -41,8 +43,6 @@ $files = @(
     "song-detail.js",
     "status-indicators.css",
     "source-status.js",
-    "source-removal.js",
-    "source-removal.css",
     "volume-control.css",
     "volume-control.js"
 )

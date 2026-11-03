@@ -111,11 +111,13 @@ fn admitted_request_finishing_after_rename_keeps_its_original_label() {
     );
     let snapshot = add(&mut app, "delayed", "Alice", Some(&alice));
     assert_eq!(snapshot.current_item.unwrap().requester_name, "Alice");
-    assert_eq!(snapshot.session_played[0].requester_name, "Alice");
-    command(
+    assert!(snapshot.session_played.is_empty());
+    let started = command(
         &mut app,
         json!({"schema_version":1,"command":"mark_current_item_started","item_id":"delayed","now":4.0}),
     );
+    assert_eq!(started.session_played[0].requester_name, "Alice");
+    assert_eq!(started.session_played[0].played_at, 4.0);
     let generation = app.data.as_ref().unwrap().playback_generation;
     let snapshot = command(
         &mut app,

@@ -12,30 +12,31 @@ const [exe, directory, executablePath] = process.argv.slice(2);
 (async () => {
   await fs.mkdir(directory, {recursive:true});
   const server = spawn(exe, [path.join(directory,"data"), path.resolve("static")], {stdio:["pipe","pipe","pipe"]});
-  let diagnostics="";server.stderr.on("data", data => { diagnostics += data; });
+  let browser, diagnostics="";server.stderr.on("data", data => { diagnostics += data; });
   const lines=createInterface({input:server.stdout});
-  const bootstrap=JSON.parse((await Promise.race([
-    once(lines,"line"),
-    once(server,"exit").then(()=>{throw new Error(`Host exited during startup: ${diagnostics.slice(-1500)}`);}),
-    new Promise((_,reject)=>{const timer=setTimeout(()=>reject(new Error("Host startup timed out")),20000);timer.unref();}),
-  ]))[0]).bootstrap_url;
-  const browser=await chromium.launch({headless:true,...(executablePath ? {executablePath} : {})});
-  const errors=[];
-  const hostContext=await browser.newContext({viewport:{width:1280,height:800}});
-  const remoteContexts=[];
-  const host=await hostContext.newPage();
-  host.on("pageerror", error => errors.push(error.message));
-  const checks=[];
-  async function remote() {
-    const context=await browser.newContext({viewport:{width:390,height:844},hasTouch:true,isMobile:true});
-    remoteContexts.push(context);
-    const page=await context.newPage();page.on("pageerror",error=>errors.push(error.message));
-    await page.goto(new URL("/remote",bootstrap).href);
-    await page.waitForFunction(()=>state.data?.session_user_entries?.length);
-    await page.evaluate(async()=>applyRemoteIdentity(await apiPost("/api/remote-identity/register",{name:"Alice",claim:true})));
-    return page;
-  }
   try {
+    const bootstrap=JSON.parse((await Promise.race([
+      once(lines,"line"),
+      once(server,"exit").then(()=>{throw new Error(`Host exited during startup: ${diagnostics.slice(-1500)}`);}),
+      new Promise((_,reject)=>{const timer=setTimeout(()=>reject(new Error("Host startup timed out")),20000);timer.unref();}),
+    ]))[0]).bootstrap_url;
+    browser=await chromium.launch({headless:true,...(executablePath ? {executablePath} : {}),
+      ...(process.env.BILIKARA_TEST_BROWSER_LIBRARY_PATH ? {env:{...process.env,LD_LIBRARY_PATH:process.env.BILIKARA_TEST_BROWSER_LIBRARY_PATH}} : {})});
+    const errors=[];
+    const hostContext=await browser.newContext({viewport:{width:1280,height:800}});
+    const remoteContexts=[];
+    const host=await hostContext.newPage();
+    host.on("pageerror", error => errors.push(error.message));
+    const checks=[];
+    async function remote() {
+      const context=await browser.newContext({viewport:{width:390,height:844},hasTouch:true,isMobile:true});
+      remoteContexts.push(context);
+      const page=await context.newPage();page.on("pageerror",error=>errors.push(error.message));
+      await page.goto(new URL("/remote",bootstrap).href);
+      await page.waitForFunction(()=>state.data?.session_user_entries?.length);
+      await page.evaluate(async()=>applyRemoteIdentity(await apiPost("/api/remote-identity/register",{name:"Alice",claim:true})));
+      return page;
+    }
     await host.goto(bootstrap);
     await host.waitForFunction(()=>state.data?.session_user_edit_version===1);
     assert.match(await host.title(),/bilikara/i);
@@ -48,7 +49,8 @@ const [exe, directory, executablePath] = process.argv.slice(2);
       await host.waitForFunction(name=>state.data.session_users.includes(name),name);
     }
     assert.equal(await host.locator(".session-user-badge").count(),3);
-    assert.equal(await host.locator('.session-user-empty, [data-i18n="session.help"]').count(),0);
+    assert.equal(await host.locator('.session-user-empty').count(),0);
+    assert.equal(await host.locator('.session-user-guidance').count(),0);
     const originalHeight=await host.locator(".session-user-badge").first().evaluate(node=>node.getBoundingClientRect().height);
     const aliceId=await host.evaluate(()=>state.data.session_user_entries.find(user=>user.name==="Alice").id);
     await host.evaluate(()=>{globalThis.originalAliceNode=document.querySelector('.session-user-badge[data-name="Alice"]');elements.requesterSelect.value="Alice";});
@@ -189,7 +191,8 @@ const [exe, directory, executablePath] = process.argv.slice(2);
     await touch.locator('#session-user-list .session-user-checkbox').nth(1).tap();
     assert.equal(await touch.locator('#session-user-list .session-user-checkbox:checked').count(),2);
     const touchIds=await touch.evaluate(()=>state.data.session_user_entries.map(user=>user.id));
-    const start=await touch.locator('#session-user-list .session-user-order-number').nth(0).boundingBox();
+    const start=await touch.locator('#session-user-list .session-user-name').nth(0).boundingBox();
+    const startBadge=await touch.locator('#session-user-list .session-user-badge').nth(0).boundingBox();
     const target=await touch.locator('#session-user-list .session-user-badge').nth(8).boundingBox();
     const cdp=await touchContext.newCDPSession(touch);
     const point=(box)=>({x:box.x+8,y:box.y+box.height/2});
@@ -197,24 +200,29 @@ const [exe, directory, executablePath] = process.argv.slice(2);
     await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:start.x+8,y:start.y+start.height/2+8}]});
     await touch.waitForFunction(()=>!!state.sessionUserEditor.drag);
     await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[point(target)]});
+    const preview=await touch.locator('.session-user-drag-image.is-pointer-drag-preview').boundingBox();
+    const previewStyle=await touch.locator('.session-user-drag-image.is-pointer-drag-preview').evaluate(node=>({opacity:Number(getComputedStyle(node).opacity),z:Number(getComputedStyle(node).zIndex)}));
+    assert.ok(preview&&previewStyle.opacity>0&&previewStyle.opacity<1&&previewStyle.z>0,'Touch drag has a visible translucent preview');
+    assert.ok(Math.abs(preview.x-(point(target).x-(point(start).x-startBadge.x+2)))<1,'Preview follows the original grab offset');
     await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
     await touch.waitForFunction(first=>state.data.session_user_entries[0].id!==first,touchIds[0]);
     const reordered=await touch.evaluate(()=>state.data.session_user_entries.map(user=>user.id));
     assert.equal(reordered.indexOf(touchIds[1]),reordered.indexOf(touchIds[0])+1);
     assert.equal(await touch.locator('#session-user-list .session-user-checkbox:checked').count(),2);
-    const cancelStart=await touch.locator('#session-user-list .session-user-order-number').nth(0).boundingBox();
+    const cancelStart=await touch.locator('#session-user-list .session-user-name').nth(0).boundingBox();
     await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[point(cancelStart)]});
     await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:cancelStart.x+8,y:cancelStart.y+cancelStart.height/2+8}]});
     await touch.waitForFunction(()=>!!state.sessionUserEditor.drag);
     await cdp.send('Input.dispatchTouchEvent',{type:'touchCancel',touchPoints:[]});
     assert.equal(await touch.evaluate(()=>!!state.sessionUserEditor.drag),false);
+    assert.equal(await touch.locator('.is-pointer-drag-preview').count(),0,'Interrupted drag removes its preview');
     assert.deepEqual(await touch.evaluate(()=>state.data.session_user_entries.map(user=>user.id)),reordered);
     await touchContext.close();
     checks.push('touch checkbox selection, immediate group drag, and interrupted gesture cancellation');
     assert.deepEqual(errors,[]);
     console.log(JSON.stringify({passed:checks,screenshots:["users-select.png","users-rename.png"]}));
   } finally {
-    await browser.close();server.stdin.end("stop\n");lines.close();
+    await browser?.close();server.stdin.end("stop\n");lines.close();
     if(server.exitCode===null)await once(server,"exit");
     assert.equal(server.exitCode,0,diagnostics.slice(-1500));
   }

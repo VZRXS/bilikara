@@ -24,6 +24,22 @@ fn main() {
     let pid=std::process::id();
     // No credentials in the test receipt either.
     fs::write(root.join(format!("{pid}.started")), format!("{kind}\n{}\n{}\n{}",option("-p"),mode,directory.display())).unwrap();
+    if env::var("BILIKARA_BBDOWN_PAIR_FAILURES").as_deref() == Ok("1")
+        && matches!(mode.as_str(), "missing" | "invalid" | "exit")
+    {
+        // This paired-track gate measures two children per admitted attempt.
+        // Do not let one fast failure cancel its sibling before its receipt.
+        // Other users of this fixture keep the ordinary fail-fast behavior.
+        let attempt = directory.parent().unwrap().file_name().unwrap().to_str().unwrap();
+        let paired = |track: &str| root.join(format!("pair-{attempt}-{track}-{}", option("-p")));
+        fs::write(paired(kind), b"started").unwrap();
+        let peer = paired(if kind == "video" { "audio" } else { "video" });
+        let start = std::time::Instant::now();
+        while !peer.exists() {
+            assert!(start.elapsed() < Duration::from_secs(5), "fixture paired failure timed out");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
     for _ in 0..24 { // larger than pipe capacity, both streams must drain
         println!("synthetic-secret-output {}", "x".repeat(8192));
         eprintln!("synthetic-secret-output {}", "x".repeat(8192));

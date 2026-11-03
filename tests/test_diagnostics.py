@@ -11,6 +11,63 @@ import bilikara.diagnostics as diagnostics
 
 
 class DiagnosticArtifactTest(unittest.TestCase):
+    def test_emergency_diagnostics_preserve_bounded_redacted_remote_records(self):
+        cache_manager = SimpleNamespace(diagnostic_snapshot=lambda: {"tools": {}, "tasks": {}})
+        records = [
+            {
+                "timestamp": f"2026-10-21T00:00:{index:02d}Z",
+                "stage": "room.create",
+                "status": "failed",
+                "httpStatus": 403,
+                "elapsedMs": 213,
+                "peerCount": 0,
+                "originClass": "loopback",
+                "errorCode": "network_error",
+                "errorMessage": "token=secret request failed for AliceSecret",
+                "roomId": "private-room",
+                "transport": {"sdp": "private-sdp", "credential": "private-turn"},
+            }
+            for index in range(70)
+        ]
+        records[-1].update(status="x" * 1000, elapsedMs=3_600_001, peerCount=True)
+        errors = [
+            diagnostics.rust_runtime.RustRuntimeUnavailableError("runtime unavailable"),
+            diagnostics.rust_runtime.RustRuntimeServiceError("service_error", "diagnostics failed", response={}),
+        ]
+        with TemporaryDirectory() as tmpdir:
+            for error in errors:
+                with (
+                    self.subTest(error=type(error).__name__),
+                    patch.object(diagnostics, "APP_HOME", Path(tmpdir)),
+                    patch.object(diagnostics, "LOG_DIR", Path(tmpdir) / "logs"),
+                    patch.object(diagnostics, "DIAGNOSTIC_CONFIG_FILES", ()),
+                    patch.object(diagnostics, "_local_usernames", return_value=set()),
+                    patch.object(diagnostics.rust_runtime, "build_diagnostic_artifact", side_effect=error),
+                ):
+                    artifact = diagnostics.build_diagnostic_artifact(
+                        cache_manager=cache_manager,
+                        cache_policy={},
+                        runtime_state={},
+                        internet_remote_diagnostics=records,
+                        local_usernames=["AliceSecret"],
+                        connectivity_probe=lambda: {},
+                    )
+                    with zipfile.ZipFile(io.BytesIO(artifact.zip_bytes())) as archive:
+                        payload = json.loads(archive.read("internet-remote-diagnostics.json"))
+                        exported = "\n".join(archive.read(name).decode("utf-8") for name in archive.namelist())
+                    self.assertEqual(len(payload), 64)
+                    self.assertEqual(payload[0]["timestamp"], records[6]["timestamp"])
+                    self.assertEqual(payload[-1]["stage"], "room.create")
+                    self.assertEqual(payload[-1]["httpStatus"], 403)
+                    self.assertEqual(payload[-1]["originClass"], "loopback")
+                    self.assertEqual(len(payload[-1]["status"]), 32)
+                    self.assertIsNone(payload[-1]["elapsedMs"])
+                    self.assertIsNone(payload[-1]["peerCount"])
+                    self.assertIn("## Recent Internet Remote Diagnostics", artifact.markdown)
+                    self.assertIn("[REDACTED]", exported)
+                    for secret in ["token=secret", "AliceSecret", "private-room", "private-sdp", "private-turn"]:
+                        self.assertNotIn(secret, exported)
+
     def test_native_runtime_failure_uses_emergency_diagnostic_builder(self):
         cache_manager = SimpleNamespace(
             diagnostic_snapshot=lambda: {

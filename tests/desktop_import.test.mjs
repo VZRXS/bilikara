@@ -78,6 +78,82 @@ test('first-start inspection is silent for absent legacy records and skips disco
   assert.deepEqual(readFileSync(path.join(target, 'host-state.json')), before, 'Native-format inspection does not rewrite a checkpoint');
 });
 
+test('inspection validates actual formats and preserves rejected AppData and current native records', async t => {
+  const { home, env } = fixture(t), target = path.join(home, 'new installation 中文/runtime/data');
+  const known = process.platform === 'win32' ? path.join(env.APPDATA, 'bilikara')
+    : path.join(home, process.platform === 'darwin' ? 'Library/Application Support/bilikara' : 'share/bilikara');
+  const data = oldData(known);
+  writeFileSync(path.join(data, 'history.json'), '{"history":false}');
+  const original = dataInventory(data);
+  const rejected = await offline(['--inspect-first-start', '--data-dir', target], home, env);
+  assert.deepEqual(rejected.candidates, []);
+  assert.equal(rejected.rejected_candidates.length, 1);
+  assert.equal(realpathSync.native(rejected.rejected_candidates[0].source), realpathSync.native(known));
+  assert.match(rejected.rejected_candidates[0].error, /history\.json/);
+  assert.deepEqual(dataInventory(data), original, 'Inspection must not move, rewrite or lock old records');
+  assert.equal(existsSync(target), false);
+  await offline(['--start-without-import', '--data-dir', target], home, env);
+  const reopened = await offline(['--inspect-first-start', '--data-dir', target], home, env);
+  assert.deepEqual(reopened.candidates, []);
+  assert.deepEqual(reopened.rejected_candidates, [], 'Initialized native data never scans rejected external candidates again');
+  assert.deepEqual(dataInventory(data), original);
+
+  const checkpoint = path.join(target, 'host-state.json');
+  const malformed = Buffer.from('{"schema_version":1,"state":{"session_started_at":1,"session_played_file":"test.json"}}');
+  writeFileSync(checkpoint, malformed);
+  const before = dataInventory(target);
+  const report = await offline(['--inspect-first-start', '--data-dir', target], home, env);
+  assert.equal(report.destination_status, 'native', 'Corrupt native records never fall through to old-format conversion');
+  assert.match(report.destination_error, /host-state\.json.*Missing required field `updated_at`.*line 1/);
+  assert.deepEqual(report.candidates, []);
+  assert.deepEqual(report.rejected_candidates, []);
+  assert.deepEqual(dataInventory(target), before);
+  const hostEnv = { ...env }; delete hostEnv.BILIKARA_LIBAV_COMPANION;
+  const failure = await offline(['--static-dir', path.join(root, 'static'), '--data-dir', target, '--port', '0', '--headless', '--no-browser'], home, hostEnv, false);
+  assert.match(failure, /host-state\.json.*Missing required field `updated_at`/);
+  assert.deepEqual(readFileSync(checkpoint), malformed);
+  await offline(['--start-without-import', '--data-dir', target], home, env, false);
+  assert.deepEqual(readFileSync(checkpoint), malformed, 'Fresh-start recovery cannot overwrite corrupt native data');
+});
+
+test('offline selection rejects unrelated legacy shapes and reads native v1 without mutation', async t => {
+  const { home, env } = fixture(t), target = path.join(home, 'new/runtime/data'), source = path.join(home, 'old runtime 中文');
+  const data = path.join(source, 'data'); mkdirSync(data, { recursive: true });
+  for (const bytes of ['{}', '{"unrelated":true}', '{unfinished']) {
+    writeFileSync(path.join(data, 'state.json'), bytes);
+    const failure = await offline(['--inspect-legacy-import', '--data-dir', target, '--import-from', source], home, env, false);
+    assert.match(failure, /state\.json/);
+    assert.equal(readFileSync(path.join(data, 'state.json'), 'utf8'), bytes);
+    assert.equal(existsSync(target), false);
+  }
+  rmSync(path.join(data, 'state.json'));
+  const v1 = '{"schema_version":1,"state":{"session_started_at":1,"session_played_file":"test.json","updated_at":1}}';
+  writeFileSync(path.join(data, 'host-state.json'), v1);
+  const report = await offline(['--inspect-legacy-import', '--data-dir', target, '--import-from', source], home, env);
+  assert.equal(report.candidates.length, 1);
+  assert.deepEqual(readdirSync(data), ['host-state.json'], 'Read-only v1 inspection creates no upgrade backup or locks');
+  assert.equal(readFileSync(path.join(data, 'host-state.json'), 'utf8'), v1);
+});
+
+test('verified empty preview marker can initialize, while unknown records remain protected', async t => {
+  const { home, env } = fixture(t), data = path.join(home, 'runtime/data'); mkdirSync(data, { recursive: true });
+  const marker = path.join(data, '.bilikara-desktop-rust-preview'); writeFileSync(marker, 'desktop-rust-preview-v1\n');
+  const inspect = () => offline(['--inspect-first-start', '--data-dir', data], home, env);
+  const empty = await inspect();
+  assert.equal(empty.destination_status, 'empty'); assert.equal(empty.destination_error, null);
+  assert.deepEqual(readdirSync(data), ['.bilikara-desktop-rust-preview']);
+  const unknown = path.join(data, 'unrecognized.json'); writeFileSync(unknown, 'protected bytes');
+  const rejected = await inspect(); assert.equal(rejected.destination_status, 'unknown');
+  assert.match(rejected.destination_error, /Unrecognized data format/);
+  await offline(['--start-without-import', '--data-dir', data], home, env, false);
+  assert.equal(readFileSync(unknown, 'utf8'), 'protected bytes'); rmSync(unknown);
+  const hostEnv = { ...env }; delete hostEnv.BILIKARA_LIBAV_COMPANION;
+  const host = await RunningHost.start(executable, home, ['--static-dir', path.join(root, 'static'), '--data-dir', data, '--port', '0', '--headless', '--no-browser'], hostEnv);
+  try { assert.deepEqual((await host.api('/api/state')).session_users, []); } finally { await host.close(); }
+  assert.equal(readFileSync(marker, 'utf8'), 'desktop-rust-preview-v1\n');
+  assert.equal((await inspect()).destination_status, 'native');
+});
+
 test('failed first-start conversion can proceed normally without rediscovery, with manual import available later', async t => {
   const { home, env } = fixture(t), source = path.join(home, 'old runtime'), data = oldData(source);
   writeFileSync(path.join(data, 'history.json'), '{bad saved record');
@@ -281,12 +357,13 @@ test('offline mode rejects startup/network flags and unknown targets without ove
 });
 
 test('CI exercises actual import entry and native-feature recovery checks on the platform test matrix', () => {
-  const workflow = readFileSync(path.join(root, '.github/workflows/ci-bundle.yml'), 'utf8');
+  const workflow = readFileSync(path.join(root, '.github/workflows/desktop.yml'), 'utf8');
   const matrix = workflow.slice(workflow.indexOf('\n  test:'), workflow.indexOf('\n  bundle:'));
   const steps = matrix.split(/\n      - /);
   const check = steps.findIndex(s => s.includes('npm run test:native-import'));
   assert.ok(check >= 0); assert.equal(matrix.split('npm run test:native-import').length - 1, 1);
-  assert.ok(steps.findIndex(s => s.includes('rustup toolchain install')) < check);
+  const rust = steps.findIndex(s => s.includes('uses: ./.github/actions/rust-toolchain'));
+  assert.ok(rust >= 0 && rust < check);
   assert.ok(steps.findIndex(s => s.includes('npm ci')) < check);
   assert.ok(steps[check].includes('--features native-host --locked --target host-tuple --lib native_host::desktop_import'));
   assert.doesNotMatch(steps[check], /continue-on-error|if:|python|--port/);

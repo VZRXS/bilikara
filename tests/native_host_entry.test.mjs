@@ -38,7 +38,7 @@ test('declared missing Host fails; no ambient/stale/fixture fallback', async () 
 });
 
 test('native business CI runs once after real Linux prerequisite export and never uses Python transport', () => {
-  const workflow = readFileSync(path.join(root, '.github/workflows/ci-bundle.yml'), 'utf8').replace(/\r\n/g, '\n'), checks = workflow.slice(workflow.indexOf('\n  test:'), workflow.indexOf('\n  bundle:'));
+  const workflow = readFileSync(path.join(root, '.github/workflows/desktop.yml'), 'utf8').replace(/\r\n/g, '\n'), checks = workflow.slice(workflow.indexOf('\n  test:'), workflow.indexOf('\n  bundle:'));
   const command = 'npm run test:native-host'; assert.equal(checks.split('\n').filter(line => line.trim() === command).length, 1);
   assert.ok(checks.indexOf('BILIKARA_TEST_LIBAV_COMPANION=') < checks.indexOf(`\n          ${command}\n`));
   const block = checks.split(/\n      - /).find(step => step.includes(`\n          ${command}\n`)); assert.match(block, /set -euo pipefail/); assert.doesNotMatch(block, /python|if: runner.os/);

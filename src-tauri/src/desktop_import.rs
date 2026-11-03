@@ -26,6 +26,16 @@ struct Inspection {
     destination_status: String,
     pending: bool,
     candidates: Vec<PathBuf>,
+    #[serde(default)]
+    destination_error: Option<String>,
+    #[serde(default)]
+    rejected_candidates: Vec<RejectedSource>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RejectedSource {
+    source: PathBuf,
+    error: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -140,6 +150,10 @@ fn inspection(
     if report.schema_version != 1
         || !report.destination.is_absolute()
         || report.candidates.iter().any(|p| !p.is_absolute())
+        || report
+            .rejected_candidates
+            .iter()
+            .any(|candidate| !candidate.source.is_absolute())
     {
         return Err("导入检测结果不兼容。".into());
     }
@@ -485,8 +499,31 @@ fn choose_folder(app: &tauri::AppHandle) -> Result<Option<PathBuf>, String> {
         .transpose()
 }
 
-// Only known checkpoint/guard names are checked on an ordinary reopening.
-// The backend remains authoritative for directory validation and conversion.
+// A lightweight envelope check avoids an extra backend process on ordinary
+// native reopening. This is only routing: the Host validates all typed fields,
+// versions and record chunks, using the same reader as offline inspection.
+fn has_native_envelope(path: &Path) -> bool {
+    #[derive(Deserialize)]
+    struct Envelope {
+        #[serde(rename = "schema_version")]
+        _schema_version: u32,
+        #[serde(rename = "state")]
+        _state: std::collections::BTreeMap<String, serde::de::IgnoredAny>,
+    }
+    const CHECKPOINT_LIMIT: u64 = 32 * 1024 * 1024;
+    if !std::fs::symlink_metadata(path)
+        .is_ok_and(|meta| meta.is_file() && meta.len() <= CHECKPOINT_LIMIT)
+    {
+        return false;
+    }
+    std::fs::File::open(path).is_ok_and(|file| {
+        serde_json::from_reader::<_, Envelope>(std::io::BufReader::new(
+            file.take(CHECKPOINT_LIMIT + 1),
+        ))
+        .is_ok()
+    })
+}
+
 fn needs_startup_inspection(
     executable: &Path,
     platform: &str,
@@ -534,9 +571,7 @@ fn needs_startup_inspection(
     if std::fs::symlink_metadata(base.join(pending)).is_ok() {
         return Ok(true);
     }
-    Ok(!["host-state.json", ".bilikara-desktop-rust-preview"]
-        .into_iter()
-        .any(|name| std::fs::symlink_metadata(data.join(name)).is_ok()))
+    Ok(!has_native_envelope(&data.join("host-state.json")))
 }
 
 pub(crate) fn gate_startup(
@@ -578,6 +613,16 @@ fn workflow(app: &tauri::AppHandle, first_start: bool) -> Result<bool, String> {
     let mut confirmed_source = None;
     match workflow_inner(app, &backend, first_start, &mut confirmed_source) {
         Err(error) if first_start => {
+            // Unrecognized/corrupt current records are not a failed legacy
+            // conversion. Preserve them, without initializing empty defaults.
+            let report = inspection(&backend, None, true)?;
+            if report.pending
+                || !["missing", "empty", "legacy"].contains(&report.destination_status.as_str())
+            {
+                return Err(failure_message(&format!(
+                    "{error}\n\n当前数据已保留；不会自动转换或覆盖无法识别的新格式数据。"
+                )));
+            }
             // Handle failed legacy import once, before normal Host startup.
             // The staged transaction also backs up in-place legacy records;
             // native corruption and conflicting recovery remain protected.
@@ -659,11 +704,28 @@ fn workflow_inner(
         information(app, "已恢复原数据。接下来可以重新选择导入来源。");
         report = inspection(backend, None, first_start)?;
     }
+    validate_destination(&report)?;
+    if !report.rejected_candidates.is_empty() {
+        let details = report
+            .rejected_candidates
+            .iter()
+            .map(|candidate| format!("{}\n{}", candidate.source.display(), candidate.error))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        information(
+            app,
+            failure_message(&format!(
+                "以下旧数据无法识别或校验未通过，原数据已保留，不会自动导入：\n\n{details}\n\n可以正常启动；之后可运行「导入旧数据」选择其他 runtime 文件夹。"
+            )),
+        );
+        if first_start && report.candidates.is_empty() {
+            // Commit fresh native data once, so unchanged invalid external
+            // candidates cannot cause an import-warning loop on reopening.
+            return skip_import(backend, &report, true);
+        }
+    }
     if first_start && (report.destination_status == "native" || report.candidates.is_empty()) {
         return Ok(true);
-    }
-    if !["missing", "empty", "legacy", "native"].contains(&report.destination_status.as_str()) {
-        return Err("目标目录包含无法识别或未完成的数据。请保留这个目录，并在新解压的 bilikara 中运行导入工具。".into());
     }
     let mut selected = report.candidates.first().cloned();
     loop {
@@ -715,6 +777,16 @@ fn workflow_inner(
         success(app, &converted);
         return Ok(true);
     }
+}
+
+fn validate_destination(report: &Inspection) -> Result<(), String> {
+    if let Some(error) = &report.destination_error {
+        return Err(format!("{}\n{error}", report.destination.display()));
+    }
+    if !["missing", "empty", "legacy", "native"].contains(&report.destination_status.as_str()) {
+        return Err("目标目录包含无法识别或未完成的数据，原数据已保留。".into());
+    }
+    Ok(())
 }
 
 pub(crate) fn run(mut context: tauri::Context<tauri::Wry>) {
@@ -1003,6 +1075,9 @@ mod tests {
             b"invalid protected native data",
         )
         .unwrap();
+        assert!(needs_startup_inspection(&executable, "windows", |_| None).unwrap());
+        std::fs::write(root.join("runtime/data/host-state.json"),
+            br#"{"schema_version":1,"state":{"session_started_at":1,"session_played_file":"test.json","updated_at":1}}"#).unwrap();
         assert!(!needs_startup_inspection(&executable, "windows", |_| None).unwrap());
         std::fs::write(root.join("runtime/.data.bilikara-import.json"), b"pending").unwrap();
         assert!(needs_startup_inspection(&executable, "windows", |_| None).unwrap());
@@ -1020,8 +1095,67 @@ mod tests {
             assert!(needs_startup_inspection(&executable, platform, env).unwrap());
             let base = root.join(relative).join("native");
             std::fs::create_dir_all(&base).unwrap();
-            std::fs::write(base.join("host-state.json"), b"native fixture").unwrap();
+            std::fs::write(base.join("host-state.json"),
+                br#"{"schema_version":1,"state":{"session_started_at":1,"session_played_file":"test.json","updated_at":1}}"#).unwrap();
             assert!(!needs_startup_inspection(&executable, platform, env).unwrap());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn checkpoint_routing_uses_json_envelope_and_errors_precede_empty_candidates() {
+        let root = std::env::temp_dir().join(format!(
+            "bilikara envelope {}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("runtime/data")).unwrap();
+        let path = root.join("runtime/data/host-state.json");
+        for bytes in [
+            b"null".as_slice(),
+            b"{}",
+            b"{\"schema_version\":1,\"state\":[]}",
+            b"{\"schema_version\":\"1\",\"state\":{}}",
+            b"{\"schema_version\":1,\"state\":{",
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            assert!(
+                needs_startup_inspection(&root.join("bilikara-desktop.exe"), "windows", |_| None)
+                    .unwrap()
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(
+            root.join("runtime/data/.bilikara-desktop-rust-preview"),
+            b"marker alone",
+        )
+        .unwrap();
+        assert!(
+            needs_startup_inspection(&root.join("bilikara-desktop.exe"), "windows", |_| None)
+                .unwrap()
+        );
+        for (status, error) in [
+            (
+                "native",
+                Some("host-state.json: Missing required field `updated_at`"),
+            ),
+            (
+                "legacy",
+                Some("history.json: Invalid JSON syntax (line 1, column 2)"),
+            ),
+            ("unknown", None),
+        ] {
+            let report: Inspection = serde_json::from_value(serde_json::json!({"schema_version":1,
+                "destination":root.join("runtime/data"),"destination_status":status,
+                "destination_error":error,"pending":false,"candidates":[]}))
+            .unwrap();
+            assert!(
+                validate_destination(&report).is_err(),
+                "Empty candidate lists must not conceal invalid data"
+            );
         }
         std::fs::remove_dir_all(root).unwrap();
     }

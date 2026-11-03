@@ -45,8 +45,8 @@ pub(crate) fn encode_qr(payload: &str) -> Result<QrCode, QrImageError> {
 }
 
 /// Preserve UTF-8 payload bytes, choose a fitting standard QR version at M level,
-/// and render black/white pixels. Both existing callers use scale 10; the Remote
-/// UI supplies its own quiet space (border 0), while login uses border 4.
+/// and render black/white pixels. Host access and login use border 0 because
+/// their shared UI frame supplies the white space; explicit ABI borders remain supported.
 pub fn generate_qr_png(
     payload: &str,
     module_scale: u32,

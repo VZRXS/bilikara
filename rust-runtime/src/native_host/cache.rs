@@ -260,9 +260,9 @@ fn tick(
             *retained = false;
         }
     }
-    // Retry is the existing replacement-attempt path: it cancels old work,
-    // reserves a new AppState token, and keeps readable artifacts until publish.
-    // This map tracks only which effective inputs this pump has submitted.
+    // Download attempts capture quality/HiRes at admission. Preference changes
+    // apply to new work, not active/queued attempts or readable media. Retry is
+    // reserved for re-entry, executor changes and decoder compatibility changes.
     let mut replaced = Vec::new();
     if context.desktop {
         for item in items
@@ -270,21 +270,24 @@ fn tick(
             .filter(|item| usable_for(item) && plan.desired_ids.contains(&item.id))
         {
             let effective = effective_for(item);
-            if selections
+            let replace = selections
                 .get(&item.id)
-                .is_some_and(|(_, old, retained)| !retained || effective.changes_artifact(old))
-            {
+                .is_some_and(|(_, old, retained)| !retained || effective.requires_replacement(old));
+            if replace {
                 execute_cache_runtime(CacheRuntimeCommand::Retry {
                     job: job(context, item, &cookie, &policy, effective)?,
                     urgent: false,
                 })
                 .map_err(cache_error)?;
                 replaced.push(item.id.clone());
+                selections.insert(
+                    item.id.clone(),
+                    (item.item_incarnation_id.clone(), effective.clone(), true),
+                );
             }
-            selections.insert(
-                item.id.clone(),
-                (item.item_incarnation_id.clone(), effective.clone(), true),
-            );
+            selections
+                .entry(item.id.clone())
+                .or_insert_with(|| (item.item_incarnation_id.clone(), effective.clone(), true));
         }
     }
     let jobs = items

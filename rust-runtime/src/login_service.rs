@@ -215,7 +215,7 @@ fn observe_json(
     (result, diagnostic)
 }
 
-fn valid_qr_url(value: &str) -> bool {
+pub(crate) fn valid_qr_url(value: &str) -> bool {
     url::Url::parse(value).is_ok_and(|url| {
         url.scheme() == "https"
             && matches!(

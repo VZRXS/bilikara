@@ -1038,6 +1038,46 @@ fn refresh_cached_main_window_geometry(window: &tauri::Window) {
 }
 
 // Device-local presentation only. No AppState/media mutation or arbitrary path.
+pub(crate) fn playback_hint_path(window: &tauri::WebviewWindow) -> Result<PathBuf, String> {
+    host_ui_preference_path(window, crate::playback_hints::FILENAME)
+}
+
+fn host_ui_preference_path(
+    window: &tauri::WebviewWindow,
+    filename: &str,
+) -> Result<PathBuf, String> {
+    let backend = window
+        .try_state::<BackendProcess>()
+        .ok_or("Host unavailable")?;
+    presentation::authorize_window(window, &backend, &["main"])?;
+    crate::playback_hints::authorize_entry_path(window.url().map_err(|e| e.to_string())?.path())?;
+    let state = window
+        .try_state::<MainWindowGeometryState>()
+        .ok_or("window preferences unavailable")?;
+    Ok(state.storage_path()?.with_file_name(filename))
+}
+
+#[tauri::command]
+pub(crate) fn get_host_update_preferences(
+    window: tauri::WebviewWindow,
+) -> Result<Option<crate::update_preferences::Preferences>, String> {
+    crate::update_preferences::load(&host_ui_preference_path(
+        &window,
+        crate::update_preferences::FILENAME,
+    )?)
+}
+
+#[tauri::command]
+pub(crate) fn set_host_update_preferences(
+    window: tauri::WebviewWindow,
+    preferences: crate::update_preferences::Preferences,
+) -> Result<crate::update_preferences::Preferences, String> {
+    crate::update_preferences::save(
+        &host_ui_preference_path(&window, crate::update_preferences::FILENAME)?,
+        preferences,
+    )
+}
+
 #[tauri::command]
 pub(crate) fn get_host_layout(
     window: tauri::WebviewWindow,

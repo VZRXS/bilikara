@@ -165,6 +165,11 @@ async function openHost(ready) {
   }
   if(process.env.BILIKARA_BBDOWN_FIXTURE) {
     await require("./desktop_bbdown_case.js")({api,okay,capture,browser,evidence,directory,getPage:()=>page,
+      adoptPage:async(next)=>{
+        assert.equal(next.context(),page.context());
+        assert.equal(new URL(next.url()).origin,new URL(page.url()).origin);
+        page=next;clientId=await page.evaluate(()=>state.clientId);
+      },
       restart:async()=>{if(server.exitCode===null){await host.close();await stop(ready);}ready=await launch();host=await openHost(ready);},
       shutdown:async()=>{await host.close();await stop(ready);},getPid:()=>server.pid});
     // The case verifies active-child shutdown and restarts for the common receipt.

@@ -1,5 +1,5 @@
 use reqwest::StatusCode;
-use reqwest::blocking::{Client, Response};
+mod transport;
 use reqwest::header::{ACCEPT_ENCODING, CONTENT_RANGE, HeaderMap, HeaderName, HeaderValue, RANGE};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
+use transport::{Client, Response};
 
 const DOWNLOAD_SCHEMA_VERSION: u32 = 1;
 const MAX_CANDIDATES: usize = 64;
@@ -145,6 +146,23 @@ pub struct DownloadResult {
     pub average_bytes_per_second: u64,
 }
 
+fn media_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= 10 {
+            return attempt.error("Too many media redirects");
+        }
+        if attempt
+            .previous()
+            .first()
+            .is_some_and(crate::youtube::media_url_allowed)
+            && !crate::youtube::media_url_allowed(attempt.url())
+        {
+            return attempt.error("YouTube media redirect left the permitted CDN");
+        }
+        attempt.follow()
+    })
+}
+
 pub fn download_to_path<F>(
     request: &DownloadRequest,
     continue_download: F,
@@ -155,22 +173,21 @@ where
     download_with_redirects(
         request,
         None,
-        reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() >= 10 {
-                return attempt.error("Too many media redirects");
-            }
-            if attempt
-                .previous()
-                .first()
-                .is_some_and(crate::youtube::media_url_allowed)
-                && !crate::youtube::media_url_allowed(attempt.url())
-            {
-                return attempt.error("YouTube media redirect left the permitted CDN");
-            }
-            attempt.follow()
-        }),
+        media_redirects(),
+        &AtomicBool::new(false),
         continue_download,
     )
+}
+
+pub(crate) fn download_to_path_cancellable<F>(
+    request: &DownloadRequest,
+    cancel: &AtomicBool,
+    continue_download: F,
+) -> Result<DownloadResult, DownloadError>
+where
+    F: FnMut(DownloadProgress) -> bool,
+{
+    download_with_redirects(request, None, media_redirects(), cancel, continue_download)
 }
 
 #[cfg(feature = "native-host")]
@@ -186,6 +203,7 @@ where
         request,
         Some(maximum_bytes),
         crate::http_client::release_redirects(),
+        &AtomicBool::new(false),
         continue_download,
     )
 }
@@ -194,6 +212,7 @@ fn download_with_redirects<F>(
     request: &DownloadRequest,
     maximum_bytes: Option<u64>,
     redirects: reqwest::redirect::Policy,
+    cancel: &AtomicBool,
     mut continue_download: F,
 ) -> Result<DownloadResult, DownloadError>
 where
@@ -207,17 +226,7 @@ where
         ));
     }
 
-    let client = crate::http_client::builder()
-        .redirect(redirects)
-        .connect_timeout(Duration::from_millis(request.connect_timeout_ms))
-        .timeout(Duration::from_millis(request.request_timeout_ms))
-        .build()
-        .map_err(|_| {
-            DownloadError::new(
-                DownloadErrorKind::Network,
-                "failed to initialize HTTP client",
-            )
-        })?;
+    let client = Client::new(request, redirects, cancel)?;
 
     let mut last_error =
         DownloadError::new(DownloadErrorKind::Network, "all download candidates failed");
@@ -244,7 +253,7 @@ where
                     .for_candidate(candidate_index));
                 }
 
-                match download_candidate(
+                let outcome = download_candidate(
                     &client,
                     &url,
                     headers.clone(),
@@ -254,7 +263,15 @@ where
                     host_rewritten,
                     maximum_bytes,
                     &mut continue_download,
-                ) {
+                );
+                if cancel.load(Ordering::Acquire) {
+                    return Err(DownloadError::new(
+                        DownloadErrorKind::Cancelled,
+                        "download cancelled",
+                    )
+                    .for_candidate(candidate_index));
+                }
+                match outcome {
                     Ok(result) => return Ok(result),
                     // Another CDN or another transfer cannot fix a local file
                     // failure. Preserve that error instead of downloading the
@@ -392,14 +409,10 @@ where
     })?;
     let transport = parsed_url.scheme().to_string();
     let final_host = parsed_url.host_str().unwrap_or_default().to_string();
-    let response = client
-        .get(url)
-        .headers(headers.clone())
-        .send()
-        .map_err(|_| {
-            DownloadError::new(DownloadErrorKind::Network, "HTTP request failed")
-                .for_candidate(candidate_index)
-        })?;
+    let response = client.get(url, headers.clone()).map_err(|_| {
+        DownloadError::new(DownloadErrorKind::Network, "HTTP request failed")
+            .for_candidate(candidate_index)
+    })?;
     let status = response.status();
     if !status.is_success() {
         let mut error = DownloadError::new(
@@ -438,7 +451,7 @@ where
         ) {
             Err(MultipartError::RangeUnsupported) => {
                 let _ = fs::remove_file(&temp_path);
-                let fallback = client.get(url).headers(headers).send().map_err(|_| {
+                let fallback = client.get(url, headers).map_err(|_| {
                     DownloadError::new(DownloadErrorKind::Network, "HTTP fallback request failed")
                         .for_candidate(candidate_index)
                 })?;
@@ -660,7 +673,7 @@ where
 
     thread::scope(|scope| {
         for _ in 0..worker_count {
-            let client = client.clone();
+            let client = client.with_stop(stopped.clone());
             let url = url.to_string();
             let headers = headers.clone();
             let temp_path = temp_path.to_path_buf();
@@ -772,7 +785,7 @@ where
 fn download_segment(
     client: &Client,
     url: &str,
-    headers: HeaderMap,
+    mut headers: HeaderMap,
     temp_path: &Path,
     start: u64,
     end: u64,
@@ -780,17 +793,16 @@ fn download_segment(
     candidate_index: usize,
     downloaded_bytes: &AtomicU64,
 ) -> Result<(), MultipartError> {
-    let mut response = client
-        .get(url)
-        .headers(headers)
-        .header(RANGE, format!("bytes={start}-{end}"))
-        .send()
-        .map_err(|_| {
-            MultipartError::Download(
-                DownloadError::new(DownloadErrorKind::Network, "HTTP range request failed")
-                    .for_candidate(candidate_index),
-            )
-        })?;
+    headers.insert(
+        RANGE,
+        HeaderValue::from_str(&format!("bytes={start}-{end}")).expect("numeric range header"),
+    );
+    let mut response = client.get(url, headers).map_err(|_| {
+        MultipartError::Download(
+            DownloadError::new(DownloadErrorKind::Network, "HTTP range request failed")
+                .for_candidate(candidate_index),
+        )
+    })?;
     if response.status() == StatusCode::OK {
         return Err(MultipartError::RangeUnsupported);
     }
@@ -1307,6 +1319,101 @@ mod tests {
             TEST_MULTIPART_BYTES as u64
         );
         fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn cancellation_interrupts_stalled_headers_body_and_ranges_and_releases_sockets() {
+        use std::net::TcpListener;
+        use std::time::Instant;
+        for stage in ["headers", "body", "ranges"] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            listener.set_nonblocking(true).unwrap();
+            let (entered, ready) = mpsc::channel();
+            let server = thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(6);
+                let mut clients = Vec::new();
+                let count = if stage == "ranges" { 3 } else { 1 };
+                while clients.len() < count {
+                    let (mut socket, _) = match listener.accept() {
+                        Ok(value) => value,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "missing local test request");
+                            thread::sleep(Duration::from_millis(10));
+                            continue;
+                        }
+                        Err(error) => panic!("{error}"),
+                    };
+                    let entered = entered.clone();
+                    clients.push(thread::spawn(move || {
+                        // Accepted sockets can inherit the listener's mode on
+                        // Windows. Reads here must wait for the bounded timeout.
+                        socket.set_nonblocking(false).unwrap();
+                        socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                        let mut request = Vec::new();
+                        while !request.ends_with(b"\r\n\r\n") {
+                            let mut byte = [0]; socket.read_exact(&mut byte).unwrap(); request.push(byte[0]);
+                        }
+                        let request = String::from_utf8(request).unwrap();
+                        if stage != "headers" {
+                            let range = request.lines().find_map(|line|line.to_ascii_lowercase().strip_prefix("range: bytes=").map(str::to_owned));
+                            let header = if let Some(range) = &range {
+                                let (start,end)=range.split_once('-').unwrap();
+                                let length=end.parse::<u64>().unwrap()-start.parse::<u64>().unwrap()+1;
+                                format!("HTTP/1.1 206 Partial Content\r\nContent-Length: {length}\r\nContent-Range: bytes {range}/6291456\r\nConnection: close\r\n\r\n")
+                            } else {
+                                format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",if stage=="ranges" {6291456} else {1024})
+                            };
+                            socket.write_all(header.as_bytes()).unwrap();
+                            if stage != "ranges" || range.is_some() { entered.send(()).unwrap(); }
+                        } else { entered.send(()).unwrap(); }
+                        let mut byte=[0];
+                        // The peer must actually close its HTTP connection; no
+                        // detached reader is allowed to outlive cancellation.
+                        // Cancelling an unread response can close with TCP RST
+                        // (notably on macOS), rather than a graceful EOF. Both
+                        // prove the peer released the socket; a timeout does not.
+                        match socket.read(&mut byte) {
+                            Ok(0) => {}
+                            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+                            result => panic!("stalled socket did not close: {result:?}"),
+                        }
+                    }));
+                }
+                for client in clients {
+                    client.join().unwrap();
+                }
+            });
+            let root = test_dir(stage);
+            let input = request(
+                root.join("track.m4s"),
+                vec![candidate(format!("{base}/media"))],
+            );
+            let cancel = AtomicBool::new(false);
+            thread::scope(|scope| {
+                let download =
+                    scope.spawn(|| download_to_path_cancellable(&input, &cancel, |_| true));
+                for _ in 0..if stage == "ranges" { 2 } else { 1 } {
+                    ready.recv_timeout(Duration::from_secs(3)).unwrap();
+                }
+                let started = Instant::now();
+                cancel.store(true, Ordering::Release);
+                let error = download.join().unwrap().unwrap_err();
+                assert_eq!(error.kind, DownloadErrorKind::Cancelled);
+                assert!(
+                    started.elapsed() < Duration::from_secs(1),
+                    "{stage}: cancellation exceeded one second"
+                );
+                eprintln!("cancel {stage}: {} ms", started.elapsed().as_millis());
+            });
+            server.join().unwrap();
+            assert_eq!(
+                fs::read_dir(&root).unwrap().count(),
+                0,
+                "cancelled staging file leaked"
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]

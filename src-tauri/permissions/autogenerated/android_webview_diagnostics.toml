@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-android-webview-diagnostics"
+description = "Enables the android_webview_diagnostics command without any pre-configured scope."
+commands.allow = ["android_webview_diagnostics"]
+
+[[permission]]
+identifier = "deny-android-webview-diagnostics"
+description = "Denies the android_webview_diagnostics command without any pre-configured scope."
+commands.deny = ["android_webview_diagnostics"]

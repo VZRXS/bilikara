@@ -59,7 +59,13 @@ fn read(root: &Path, relative: &Path, limit: Option<u64>) -> Result<Option<Vec<u
 fn object(root: &Path, relative: &str) -> Result<Option<Value>, String> {
     read(root, Path::new(relative), None)?
         .map(|bytes| {
-            let value: Value = serde_json::from_slice(&bytes).map_err(|_| failure(relative))?;
+            let value: Value = serde_json::from_slice(&bytes).map_err(|error| {
+                format!(
+                    "{}: {}",
+                    failure(relative),
+                    crate::native_host_storage::json_error_detail(&error)
+                )
+            })?;
             if !value.is_object() {
                 return Err(failure(relative));
             }
@@ -77,6 +83,43 @@ pub(super) struct Import {
 }
 
 impl Import {
+    /// A filename/empty archive directory alone is not a legacy record. Keep
+    /// the explicit reader's supported empty-data import separate from detection.
+    pub(super) fn inspect(source: &Path) -> Result<(), String> {
+        let data = source.join("data");
+        let split_layout = ["player_state.json", "history.json", "session_users.json"]
+            .iter()
+            .any(|name| data.join(name).exists());
+        let unified = if split_layout {
+            None
+        } else {
+            object(&data, "state.json")?
+        };
+        if unified.as_ref().is_some_and(|value| {
+            ![
+                "current_item",
+                "playlist",
+                "history",
+                "session_history",
+                "session_users",
+                "player_settings",
+                "playback_mode",
+            ]
+            .iter()
+            .any(|key| value.get(key).is_some())
+        }) {
+            return Err(failure("state.json: no supported legacy state fields"));
+        }
+        let import = Self::read(source, "")?;
+        if !split_layout
+            && unified.is_none()
+            && !data.join("playlist_backup.json").exists()
+            && import.seed.session_archives.is_empty()
+        {
+            return Err(failure("legacy records: no supported record contents"));
+        }
+        Ok(())
+    }
     pub(super) fn fresh() -> Result<Self, String> {
         let now = super::now();
         let seed = serde_json::from_value(json!({"session_started_at":now,
@@ -272,8 +315,13 @@ impl Import {
         if let Some(item) = seed.get_mut("current_item") {
             strip_presentation(item);
         }
-        let seed: AppStateSeed =
-            serde_json::from_value(seed).map_err(|_| failure("desktop state shape"))?;
+        let seed: AppStateSeed = serde_json::from_value(seed).map_err(|error| {
+            format!(
+                "{}: {}",
+                failure("desktop state shape"),
+                crate::native_host_storage::json_error_detail(&error)
+            )
+        })?;
         let seed = app_state::prepare_import(seed)?;
         let mut cache = preferences::CachePolicy::default();
         if let Some(value) = object(&data, "cache_policy.json")? {
@@ -874,9 +922,11 @@ mod tests {
             song[field] = value;
             f.put("data/state.json", json!({"current_item":song}));
             let original = fs::read(f.source().join("data/state.json")).unwrap();
-            assert_eq!(
-                restore(&f.source(), &f.dest(), "").unwrap_err(),
-                failure("desktop state shape")
+            let error = restore(&f.source(), &f.dest(), "").unwrap_err();
+            assert!(error.starts_with(&failure("desktop state shape")));
+            assert!(
+                !error.contains("not a recognized legacy field")
+                    && !error.contains("not an integer")
             );
             assert!(!f.dest().exists());
             assert_eq!(

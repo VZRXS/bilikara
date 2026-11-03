@@ -88,11 +88,12 @@ for (const [name, options, marker] of [
   if (options.includes('--cache-policy')) {
     const cache = JSON.parse(readFileSync(path.join(evidence, 'cache-policy-summary.json')));
     assert.equal(cache.passed, true); assert.deepEqual(cache.desktopCounts, [1, 2, 4, 5]);
-    for (const fact of ['actualRustJobs', 'delayedReplacement', 'hiresFlac', 'effectiveNoop', 'atomicRejectedPatch', 'restartPersistence', 'transientPlayerFacts']) assert.equal(cache[fact], true, fact);
+    for (const fact of ['actualRustJobs', 'delayedReplacement', 'deferredPreferences', 'hiresFlac', 'effectiveNoop', 'atomicRejectedPatch', 'restartPersistence', 'transientPlayerFacts']) assert.equal(cache[fact], true, fact);
   }
   if (options.includes('--bbdown')) {
     const bbdown = JSON.parse(readFileSync(path.join(evidence, 'bbdown-summary.json')));
     assert.equal(bbdown.passed, true);
+    assert.equal(bbdown.deferredHires, true);
     assert.deepEqual(bbdown.outcomes.map(({ failure, children }) => [failure, children]), [['missing', 2], ['invalid', 2], ['exit', 2]]);
   }
 });

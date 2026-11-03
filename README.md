@@ -4,17 +4,29 @@
 
 [下载桌面版](https://github.com/VZRXS/bilikara/releases) · [开始使用](#开始使用) · [快速说明与常见问题](docs/quick-start.md) · [开发文档](#开发)
 
+<table>
+  <tr>
+    <td width="78%" align="center" valign="top">
+      <img src="images/host.png" alt="桌面 Host 主界面：左侧播放，右侧点歌队列与工作区导航" width="100%"><br>
+      <sub>桌面 Host</sub>
+    </td>
+    <td width="22%" align="center" valign="top">
+      <img src="images/android_host.png" alt="Android Host 播放页：同一歌曲、用户与播放位置" width="100%"><br>
+      <sub>Android Host</sub>
+    </td>
+  </tr>
+</table>
+
+> [!NOTE]
+> 自 v0.8.0 系列起提供 Android Host 测试版 APK。后续计划推出 Android 正式版及 iOS 版，具体版本与时间待定。
+> Android 版要求 WebView 111 及以上，Android 14 及以上系统通常满足要求；兼容模式最低适配 WebView 83（Android 11 初始版本）。实际兼容性取决于设备的 WebView。
+
 > [!IMPORTANT]
 > **从 v0.8.0-preview.2 及更早版本升级时，请下载对应系统与架构的完整包，并保留旧数据。** 简要步骤见 [升级说明](docs/upgrading.md)。
 
-<p align="center">
-  <img src="images/host.png" alt="Host 主界面：左侧播放，右侧点歌队列与工作区导航" width="1000"><br>
-  <sub>电脑播放与管理，手机参与点歌</sub>
-</p>
-
 ## 开始使用
 
-1. 从 [Releases](https://github.com/VZRXS/bilikara/releases) 下载并解压对应平台的完整包，Windows 打开 `bilikara-desktop.exe`，macOS 打开 `bilikara-desktop.app`。
+1. 桌面端从 [Releases](https://github.com/VZRXS/bilikara/releases) 下载并解压对应平台的完整包，Windows 打开 `bilikara-desktop.exe`，macOS 打开 `bilikara-desktop.app`；Android 端安装与设备架构匹配的测试版 APK。
 2. 在「本场用户」添加参与者，选择点歌人，再粘贴 Bilibili / YouTube 视频链接或 BV / av 号；也可搜索和浏览曲库。缓存完成后开始播放。
 3. 手机与电脑连接同一网络，打开电脑右上角「手机点歌」并扫码。异地使用时，先创建公网房间，再通过公网入口和房间密码连接。
 
@@ -22,45 +34,54 @@
 > **macOS 首次打开被系统拦截时**，先尝试打开 App，再前往「系统设置 → 隐私与安全性 → 安全性」，找到 bilikara 并点击「仍要打开」，按系统提示确认。完成一次授权后即可正常启动。
 
 手机连接、来源拉取、轮转排序和旧场次导出等具体用法见 [快速说明与常见问题](docs/quick-start.md)。
+公网网页能打开仍不保证设备间可连接；连接阶段、网络限制和管理员可选 TURN 见 [公网 Remote 网络说明](docs/internet-remote-network.md)。
 
 ## 找歌与点歌
 
 - **快速点歌**：支持 Bilibili 链接、BV / av 号、b23.tv 分享文案及常见 YouTube 单视频链接；可点歌或顶到下一首。
 - **搜索与发现**：搜索共享曲库或本地曲库，按类别、作品名、歌手浏览；点击封面查看歌曲详情。
-- **来源与试试运气**：按 UID 拉取 UP 主稿件、收藏夹等元数据，供来源、本地搜索与试试运气共用；共享曲库、类别和歌手浏览使用在线共享数据库。拉取任务排队处理，失败可重试。
+- **来源与试试运气**：按 UID 拉取 UP 主稿件、收藏夹等元数据，供来源、本地搜索与试试运气共用；共享曲库、类别和歌手浏览使用在线共享数据库。拉取任务排队处理，失败可重试；Host 可在拉取期间多选、调整来源顺序和移除本地来源，详见[来源管理](docs/source-management.md)。
 - **分 P 与音轨**：选择视频画面和音频轨道，播放时随时切换原唱、伴奏等音轨。
 
-<p align="center">
-  <img src="images/remote_search.png" alt="手机搜索共享曲库，点击封面查看详情并点歌" width="280"><br>
-  <sub>搜索共享曲库</sub>
-</p>
-
-<p align="center">
-  <img src="images/host_categories.png" alt="Host 发现页：类别封面列表可向下滚动" width="460"><br>
-  <sub>发现 → 类别：向下滚动浏览更多主题</sub>
-</p>
+<table>
+  <tr>
+    <td width="33%" align="center" valign="top">
+      <img src="images/remote_search.png" alt="Remote 搜索共享曲库，点击封面查看详情并点歌" width="100%"><br>
+      <sub>搜索 → 共享曲库</sub>
+    </td>
+    <td width="33%" align="center" valign="top">
+      <img src="images/remote_categories.png" alt="Remote 发现页：浏览类别与主题" width="100%"><br>
+      <sub>发现 → 类别</sub>
+    </td>
+    <td width="33%" align="center" valign="top">
+      <img src="images/remote_favorites.png" alt="Remote 来源页：浏览 UID 671767 的公开收藏夹歌曲" width="100%"><br>
+      <sub>来源 → 收藏夹</sub>
+    </td>
+  </tr>
+</table>
 
 ## 手机控制
 
 扫码并选择本场身份后，手机可以点歌、调整队列和控制播放。轻点编号可查看拖动提示，按住编号或手柄上下拖动，松手后提交；也可使用歌曲右侧菜单移除或顶歌。队列被其他设备改动时会提示重新拖动。
 
-<p align="center">
-  <img src="images/remote_top.png" alt="手机快速点歌与队列" width="280"><br>
-  <sub>点歌与管理队列</sub>
-</p>
+点击或上划底部播放栏展开控制抽屉，可暂停、重唱、切歌、前后跳转 15 秒、切换音轨，或调整音量、音画延迟和升降调。竖屏长按切歌向左展开重唱，松手后点选，或拖到重唱后松手执行；横屏直接显示重唱。进度条第一次点按显示拖拽球，再次点按或拖动才定位。从抽屉右上角「评价」进入视频打分，为已播放的歌曲选择 1～5 星。抽屉手势与控件优先级见[快速说明](docs/quick-start.md#如何使用播放抽屉与进度条)。
 
-点击底部播放栏展开控制抽屉，可暂停、切歌、前后跳转 15 秒、切换音轨，或调整音量、音画延迟和升降调。**从抽屉右上角「评价」进入视频打分**，为已播放的歌曲选择 1～5 星。
-
-<p align="center">
-  <img src="images/remote_control_panel.png" alt="播放控制抽屉：音轨、进度、音量、音画延迟与升降调" width="280"><br>
-  <sub>播放控制</sub>
-</p>
-
-## 组织一场点歌
-
-电脑的「本场用户」定义轮转顺序，支持多选、批量拖动和删除，以及改名。改名同步到绑定同一身份的手机；已有歌曲、历史与导出保留点歌时的名字，之后点的歌使用新名字。Remote 可以修改自己的名字，整场名单由电脑管理，避免多人误操作。
-
-普通点歌按用户轮转；「顶歌」放到下一首，「立即播放」会替换当前节目，拖动排序保留人工安排。需要恢复轮转时使用「重新排序」。重新打开软件时，选择继续上一场可保留队列；关闭提示或等待倒计时结束会开新一场，旧场次记录仍保留。
+<table>
+  <tr>
+    <td width="33%" align="center" valign="top">
+      <img src="images/remote_top.png" alt="Remote 快速点歌与队列管理" width="100%"><br>
+      <sub>点歌与管理队列</sub>
+    </td>
+    <td width="33%" align="center" valign="top">
+      <img src="images/remote_control_panel.png" alt="Remote 播放控制抽屉：音轨、进度、音量、音画延迟与升降调" width="100%"><br>
+      <sub>播放控制</sub>
+    </td>
+    <td width="33%" align="center" valign="top">
+      <img src="images/remote_rating.png" alt="Remote 视频打分页：为当前歌曲选择星级并保存" width="100%"><br>
+      <sub>视频打分</sub>
+    </td>
+  </tr>
+</table>
 
 ## 历史与歌单导出
 
@@ -76,23 +97,33 @@
 
 **双屏模式需在系统显示设置中选择「扩展」，不能使用「复制」或镜像模式。** Windows 可按 `Win + P` 选择「扩展」。
 
-<p align="center">
-  <img src="images/fullscreen.png" alt="全屏播放与右上角手机点歌二维码" width="960"><br>
-  <sub>全屏播放与扫码入口；双屏的连接与设置见快速说明</sub>
-</p>
+<table>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="images/dual_screen_control.png" alt="双屏显示：电脑保留点歌队列与播放控制台" width="100%"><br>
+      <sub>控制台：点歌与播放控制</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="images/fullscreen.png" alt="双屏显示：观众屏完整视频与右上角手机点歌二维码" width="100%"><br>
+      <sub>观众屏：播放与扫码入口</sub>
+    </td>
+  </tr>
+</table>
 
 ## 设置与维护
 
 「运行设置」可扫码登录 Bilibili、选择清晰度与下载器、调整缓存数量和切歌延迟；「设置」可切换中英日语言、三种主题，以及检查更新、查看公告和导出诊断信息。
 
+原生 Host 会保留自动检查与预览版选择；开启自动检查后，每次启动检查一次，已有更新操作时等待结束后补查。详见[升级与更新说明](docs/upgrading.md)。
+
 <table>
   <tr>
-    <td align="center" valign="top" width="40%">
-      <img src="images/server_settings.png" alt="运行设置：Bilibili 登录二维码与 1080P 高帧率清晰度" width="360"><br>
+    <td width="35%" align="center" valign="top">
+      <img src="images/server_settings.png" alt="运行设置菜单：下载、缓存和 Bilibili 扫码登录" width="100%"><br>
       <sub>运行设置与扫码登录</sub>
     </td>
-    <td align="center" valign="top" width="60%">
-      <img src="images/ui_settings.png" alt="Host 设置页：语言、主题、更新与维护" width="600"><br>
+    <td width="65%" align="center" valign="top">
+      <img src="images/ui_settings.png" alt="设置工作区：语言、主题、更新与维护" width="100%"><br>
       <sub>语言、外观与维护</sub>
     </td>
   </tr>
@@ -100,6 +131,7 @@
 
 - 歌曲会提前缓存，失败后可重试；退出后清理播放缓存，歌单和播放器设置会保留。
 - 默认使用内置 Rust Native，也可选择 BBDown 或 DownKyi / aria2c。Bilibili 登录二维码过期后自动刷新，凭据保存在本机，请勿分享登录凭据或完整数据目录。
+- Hi-Res 与清晰度都在新建下载任务时生效，不会中断正在下载的任务或自动重下已缓存歌曲。[自动音量（实验性功能）](docs/automatic-volume.md)默认关闭，须由 Host 明确设定基准。
 - 遇到播放或启动问题，可在设置中导出诊断包。Windows 数据位于应用旁的 `runtime/data/`；macOS 位于 `~/Library/Application Support/bilikara/data/`。
 
 ## 开发

@@ -3,8 +3,10 @@ body { margin: 0; }
 main {
   max-width: 40rem;
   margin: auto;
+  padding: 1.5rem;
   padding: max(1.5rem, env(safe-area-inset-top)) max(1.5rem, env(safe-area-inset-right))
     max(1.5rem, env(safe-area-inset-bottom)) max(1.5rem, env(safe-area-inset-left));
   line-height: 1.7;
 }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.9rem; }
+button { min-height: 44px; padding: 8px 16px; border-radius: 14px; font: inherit; cursor: pointer; }

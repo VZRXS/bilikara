@@ -14,6 +14,7 @@ extern "C" fn request_exit(_: libc::c_int) {
 }
 
 pub(super) const MARKER: &str = ".bilikara-desktop-rust-preview";
+pub(super) const MARKER_BYTES: &[u8] = b"desktop-rust-preview-v1\n";
 
 pub(super) fn unavailable() -> ApiError {
     ApiError::new(
@@ -61,7 +62,7 @@ pub(super) fn preview_root(path: &Path) -> Result<PathBuf, String> {
         if !std::fs::symlink_metadata(&marker)
             .map_err(|e| e.to_string())?
             .is_file()
-            || std::fs::read(&marker).map_err(|e| e.to_string())? != b"desktop-rust-preview-v1\n"
+            || std::fs::read(&marker).map_err(|e| e.to_string())? != MARKER_BYTES
         {
             return Err("Invalid old preview directory marker".into());
         }

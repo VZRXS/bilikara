@@ -1,6 +1,7 @@
 /* Shared read-only Local/Public Remote access card used by the Host and the
    presentation output. Surface-specific CSS owns only positioning, opening,
    and the Host's expanded management controls. */
+:root { --qr-frame-padding: 3px; }
 .remote-access-popover {
   width: min(390px, calc(100vw - 32px));
 }
@@ -199,7 +200,7 @@
   width: 160px;
   height: 160px;
   box-sizing: border-box;
-  padding: 3px;
+  padding: var(--qr-frame-padding);
   place-items: center;
   justify-self: center;
   overflow: hidden;

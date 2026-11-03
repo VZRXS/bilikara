@@ -12,7 +12,8 @@
   let remainingMs = 10000, deadline = 0;
 
   function paused() {
-    return document.hidden || sessionChoice.matches(":hover, :focus-within");
+    return document.hidden || sessionChoice.matches(":focus-within")
+      || (window.matchMedia("(hover: hover) and (pointer: fine)").matches && sessionChoice.matches(":hover"));
   }
   function updateDismissButton() {
     dismissButton.classList.toggle("is-close-glyph", paused() || failed || sessionChoiceBusy);
@@ -91,8 +92,10 @@
     const button = event.target.closest("[data-session-choice]");
     if (button) void chooseSession(button);
   });
-  sessionChoice.addEventListener("mouseenter", syncCountdown);
-  sessionChoice.addEventListener("mouseleave", syncCountdown);
+  for (const name of ["pointerenter", "pointerleave"]) sessionChoice.addEventListener(name, event => {
+    if (event.pointerType === "touch" || !window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
+    syncCountdown();
+  });
   sessionChoice.addEventListener("focusin", syncCountdown);
   sessionChoice.addEventListener("focusout", () => queueMicrotask(syncCountdown));
   document.addEventListener("visibilitychange", syncCountdown);

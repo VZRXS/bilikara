@@ -1,0 +1,17 @@
+name: Repository Rust toolchain
+description: Install only the repository-pinned toolchain in a job-local Rustup home.
+runs:
+  using: composite
+  steps:
+    - name: Select job-local Rustup home
+      shell: bash
+      run: |
+        # Leave the runner's preinstalled toolchains intact and outside rust-cache's identity.
+        printf 'RUSTUP_HOME=%s/bilikara-ci-rustup\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+    - name: Install and report repository toolchain
+      shell: bash
+      run: |
+        rustup toolchain install
+        rustup show active-toolchain
+        rustc --version
+        rustup toolchain list

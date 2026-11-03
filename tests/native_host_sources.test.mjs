@@ -57,6 +57,11 @@ test('startup refresh overlaps foreground UP/favorites, shares a source and pres
     assert.equal(state.gatcha.last_result.rebuild.current_uid,'11','foreground completion hid background progress');
     await assert.rejects(host.api('/api/gatcha/refresh',{}),{status:409});
     await assert.rejects(host.api('/api/gatcha/source/remove',{source:'uid',id:'22'}),{status:409});
+    const version=(await host.api('/api/gatcha/browse')).source_order_version;
+    await host.api('/api/gatcha/sources/edit',{source:'uid',expected_version:version,edit:{action:'move',id:'22',before_id:'11'}});
+    assert.deepEqual((await host.api('/api/gatcha/browse')).owners.map(owner=>owner.uid),['22','11']);
+    await assert.rejects(host.api('/api/gatcha/sources/edit',{source:'uid',expected_version:version,edit:{action:'remove',ids:['22']}}),{status:409});
+    state=await host.api('/api/state'); assert.equal(state.gatcha.background_busy,true); assert.equal(state.gatcha.last_result.rebuild.current_uid,'11');
     await host.api('/api/gatcha/uids/add',{uid:'11',queue:true});
     await waitFor(async()=> (await host.api('/api/state')).gatcha.source_queue.active?.uid==='11','same-source follower was not admitted',5000);
     releaseBackground(); state=await idle(host);
@@ -66,9 +71,56 @@ test('startup refresh overlaps foreground UP/favorites, shares a source and pres
     await waitFor(()=>provider.posts.flatMap(([,body])=>body.records||[]).length>=3,'missing independent source deltas',5000);
     const rows=provider.posts.flatMap(([,body])=>body.records||[]);
     for(const bvid of ['BVTEST000011','BVTEST000022','BVFAV0000456']) assert.equal(rows.filter(row=>row.bvid===bvid).length,1,'a reused source appended twice');
+    const display=(await host.api('/api/gatcha/browse')).source_order_version;
+    await host.api('/api/gatcha/sources/edit',{source:'uid',expected_version:display,edit:{action:'move',id:'22',before_id:'11'}});
+    const displayBytes=readFileSync(path.join(data,'gatcha_source_order.json'),'utf8');
     assert.equal((await host.api('/api/gatcha/refresh',{})).started,true,'startup consumed manual cooldown'); await idle(host);
+    assert.equal(readFileSync(path.join(data,'gatcha_source_order.json'),'utf8'),displayBytes,'actual refresh retains display preferences');
+    assert.deepEqual((await host.api('/api/gatcha/browse')).owners.map(owner=>owner.uid),['22','11']);
+    assert.deepEqual(JSON.parse(readFileSync(path.join(data,'gatcha_uids.json'))).uids,['11','22'],'display preference leaves configured scan order intact');
     await assert.rejects(host.api('/api/gatcha/refresh',{}),{status:429});
   } finally {releaseBackground(); if(host)await host.close(); await provider.close(); rmSync(home,{recursive:true,force:true});}
+});
+
+test('deleting a saved favorite during its real pull clears placeholders and fences late results', {skip:process.platform!=='linux'?'local TLS trust fixture requires native Linux':false,timeout:60000},async()=>{
+  const {home,data}=seed(); let host, hold=false, entered=false, completed=false, release;
+  const barrier=new Promise(resolve=>{release=resolve;});
+  writeFileSync(path.join(data,'gatcha_favlist.json'),JSON.stringify({schema_version:2,folders:['10','11'].map(id=>({uid:'42',id,title:`karaoke ${id}`})),items:[]}));
+  writeFileSync(path.join(data,'BBDown.data'),'SESSDATA=fixture; bili_jct=fixture',{mode:0o600});
+  const provider=await videoFixture(async target=>{
+    const url=new URL(target,'https://api.bilibili.com');
+    if(url.pathname.endsWith('/nav'))return nav;
+    if(url.pathname.endsWith('/list-all'))return {code:0,data:{list:[10,11].map(id=>({id,title:`karaoke ${id}`,attr:0,media_count:1}))}};
+    if(url.pathname.endsWith('/resource/list')){
+      const id=url.searchParams.get('media_id');
+      if(hold&&id==='10'){entered=true;await barrier;}
+      return {code:0,data:{medias:[{bvid:`BVFAV00000${id}`,title:`karaoke ${id}`,duration:90,upper:{mid:42,name:'Fixture'}}],has_more:false}};
+    }
+    assert.fail(`unexpected removal fixture route ${url.pathname}`);
+  });
+  try{
+    host=await RunningHost.start(executable,home,['--headless','--port','0','--data-dir',data,'--static-dir',path.join(root,'static')],{...isolatedEnvironment(home),...provider.environment,BILIKARA_CF_API_URL:provider.base});
+    await idle(host); hold=true;
+    await host.api('/api/gatcha/favlist',{uid:'42',folder_ids:['10'],folder_titles:{'10':'karaoke 10'},queue:true});
+    await waitFor(()=>entered,'queued favorite did not enter the held response',5000);
+    const version=(await host.api('/api/gatcha/favlist/browse')).source_order_version;
+    await host.api('/api/gatcha/sources/edit',{source:'favlist',expected_version:version,edit:{action:'remove',ids:['42:10']}});
+    for(const route of ['/api/state','/api/internet-remote/state']){
+      const state=await host.api(route);
+      assert.equal(state.gatcha.source_queue.active,null,'deleted source must not return as a queued placeholder');
+      assert.equal(state.gatcha.background_busy,true,'deletion must not release the real pull lease');
+    }
+    await assert.rejects(host.api('/api/gatcha/refresh',{}),{status:409});
+    await host.api('/api/gatcha/favlist',{uid:'42',folder_ids:['11'],queue:true});
+    assert.deepEqual((await host.api('/api/state')).gatcha.source_queue.pending.map(job=>job.folder_ids),[['11']]);
+    release(); const final=await idle(host);
+    assert.deepEqual(final.gatcha.source_queue.failed,[],'late cancellation must not restore the deleted failure entry');
+    assert.deepEqual(final.gatcha.source_queue.pending,[]);
+    const saved=JSON.parse(readFileSync(path.join(data,'gatcha_favlist.json')));
+    assert.deepEqual(saved.folders.map(folder=>folder.id),['11']);
+    assert.ok(saved.items.length>0); assert.ok(saved.items.every(item=>item.fav_folder_id==='11'),'late data must not recreate deleted membership');
+    completed=true;
+  }finally{release();if(host)await host.close();await provider.close();if(completed)rmSync(home,{recursive:true,force:true});else process.stderr.write(`source-removal failure fixture retained: ${home}\n`);}
 });
 
 test('real UID/favorites preview and explicit selection preserve independent cached metadata and public folder boundaries', {skip:process.platform!=='linux'?'verified Linux local TLS fixture':false,timeout:60000},async()=>{

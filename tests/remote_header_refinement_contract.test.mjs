@@ -390,7 +390,7 @@ assert.ok(contains(".remote-menu-section-toggle-chevron", this.styles));
 assert.ok(contains(".remote-menu-panel .remote-tooltip-bubble", this.styles));
 status_opacity_rule = this.styles.match(new RegExp("\\.remote-menu-status-info \\.remote-info-button\\s*\\{([^}]*)\\}",""))[1];
 assert.ok(contains("opacity: 1", status_opacity_rule));
-assert.ok(contains("max-height: var(--remote-menu-available-height, calc(100dvh - 68px));", this.styles));
+assert.ok(contains("max-height: var(--remote-menu-available-height, calc(calc(var(--legacy-vh, 1dvh) * 100) - 68px));", this.styles));
 assert.ok(!contains("max-height: min(620px", this.styles));
 (await this.assert_declaration_parity(".cache-panel-label", ".remote-menu-setting-label", ["color", "font-size", "line-height", "letter-spacing", "text-transform"]));
 assert.ok(contains("font-weight: 400", this.styles.match(new RegExp("\\.remote-menu-setting-label\\s*\\{([^}]*)\\}",""))[1]));

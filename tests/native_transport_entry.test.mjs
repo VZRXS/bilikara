@@ -14,7 +14,7 @@ test('transport browser command validates arguments before building or starting 
 });
 
 test('normal transport gate runs once after actual native inputs and installed Chromium; old drivers are retired', () => {
-  const workflow=readFileSync(path.join(root,'.github/workflows/ci-bundle.yml'),'utf8');
+  const workflow=readFileSync(path.join(root,'.github/workflows/desktop.yml'),'utf8');
   const checks=workflow.slice(workflow.indexOf('\n  test:'),workflow.indexOf('\n  bundle:'));
   const command='npm run test:native-transport', entry='npm run test:native-transport-entry';
   for(const invocation of [command,entry]) assert.equal(checks.split('\n').filter(line=>line.trim()===invocation).length,1);

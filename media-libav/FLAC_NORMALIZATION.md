@@ -1,15 +1,13 @@
-# M5 follow-on：FLAC-in-MP4 → native FLAC
+# FLAC-in-MP4 → native FLAC 契约
 
-增量起点是本地 `work/v0.8.0` HEAD `ed62ecb`（开始时干净、比 tracking ref 超前 7 个提交）。
-已有 companion 只有 H.264/AAC → MP4，已有 Pure Rust FLAC normalization 保持原实现。
-本次给同一 C packet loop 和 Rust staging/publisher 增加 `CopyProfile::Flac`；没有第二套
-writer、loader、事务管理或 CLI 应用。Rust 入口为
+`CopyProfile::Flac` 复用同一 C packet loop 和 Rust staging/publisher。
+Rust 入口为
 `LibavMetadataProbe::copy_profile(&CopyRemuxRequest, CopyProfile::Flac, &AtomicBool)`。
 原 `copy_remux_mp4` 仍选 `CopyProfile::Mp4`，默认启动、Pure Rust 和生产 CLI 路由不变。
 
 支持可信、稳定、本地、只读、自包含 MP4-family 文件中**恰好一个 FLAC audio stream**。
 格式由 demuxer/codec 确定，扩展名不授予权限；video、额外 audio、artwork 等任一额外
-stream 都违反契约。源 `moov`/`mdat` envelope 使用既有 S3 检查：metadata probe 成功
+stream 都违反契约。源 `moov`/`mdat` envelope 使用 normalization 的结构检查：metadata probe 成功
 不能覆盖 missing-mdat 失败。输入仍是 fd-only，禁止 subordinate open 和网络。
 
 输出是独立实验目标中的 native `.flac`，含 `fLaC`、正常 metadata header 和完整
@@ -21,9 +19,9 @@ stream 都违反契约。源 `moov`/`mdat` envelope 使用既有 S3 检查：met
 `start_time`、initial/trailing padding、seek preroll、packet PTS/DTS/duration、skip/discard
 side data、stream duration 和已知 STREAMINFO sample count 检查可见偏移、
 间隙、裁剪、重复和配置改变；不兼容时返回 `unsupported_container_layout`。
-DASH 封装可能产生毫秒级时间戳量化（实测最大 1.5 ms）。FLAC 帧头解析器提供真实
-block sample count；按本次选择的兼容策略，逐帧边界与时长允许最多 **200 ms** 的
-容器时间差（包含边界）。这是放宽后的兼容阈值，不是实测舍入误差的典型范围。
+DASH 封装可能产生时间戳量化。FLAC 帧头解析器提供真实 block sample count；
+逐帧边界与时长允许最多 **200 ms** 的容器时间差（包含边界）。
+这是兼容阈值，不代表典型舍入误差。
 已知 STREAMINFO 总采样数与实际帧累计总数也采用同一 200 ms 容差；范围内的
 非零错误总数在输出头部修正为实际帧累计值，未知零值原样保留。`nb_frames` 仅作
 容器提示，不再因它与遍历包数不符单独拒绝；包遍历、payload 和实际帧时长检查仍保留。
@@ -35,13 +33,13 @@ demux PTS/DTS 仍须从零严格连续，不把实际偏移、裁剪或间隙当
 不在支持范围，raw FLAC 不保留容器 edit lists、gaps、trims 或 presentation offsets。
 不会通过改变音频样本修复时间。fixture 演示的是这个连续、未裁剪的常见 profile。
 
-**实现依据和 metadata 政策**：实际读取现存 prefix 对应的 9.0.1 `avformat.h`、
+**实现依据和 metadata 政策**：以固定 9.0.1 `avformat.h`、
 `codec_par.h`、`packet.h` 及 `flacenc.c`、`flacenc_header.c`、`flacdec.c`、`mov.c`。
 `mov_read_dfla` 导出完整 STREAMINFO；`avcodec_parameters_copy` 深拷贝配置；
 FLAC muxer 用 `write_header=1` 写正常头，音频 packet 原样写入。输出重开后逐字节检查
 预期 extradata 和解码配置，包含 bit depth；仅允许上面明确修正的总采样数字段
 变化，其余 STREAMINFO 字节（包括已有 MD5）保持不变。新增协商 exports 为 `bm_flac_info_v1`、
-`bm_copy_flac_v1`，使用原 M5 request/result layout/release；旧 companion 的 FLAC 请求
+`bm_copy_flac_v1`，使用共享 remux request/result layout/release；旧 companion 的 FLAC 请求
 显式 `unavailable`，其原有 MP4/probe/scan 仍可用。
 
 STREAMINFO 的 rate/channels/bits 和 mandatory block bounds 只做窄检查，已知 total samples
@@ -67,16 +65,16 @@ scratch。已存在目标、初检后竞态目标、源的 hardlink/symlink 均�
 发布成功后的晚取消/清理失败继续返回成功及窄 cleanup warning，不删除 published file，
 没有新 crash-durability 声明。
 
-从仓库根目录运行（使用已存在的 FFmpeg prefix，不重建 M0）：
+从仓库根目录运行（使用同构建测试 FFmpeg prefix）：
 
 ```bash
-M5_FLAC_PREFIX="$PWD/.tmp/m1-libav-9/ffmpeg-prefix"
-M5_FLAC_OUT=/tmp/bilikara-m5-flac
-cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-companion --prefix "$M5_FLAC_PREFIX" --out "$M5_FLAC_OUT/companion" --test
+FLAC_PREFIX="/absolute/test-prefix"
+FLAC_OUT=/tmp/bilikara-flac
+cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-companion --prefix "$FLAC_PREFIX" --out "$FLAC_OUT/companion" --test
 cargo build --manifest-path rust-runtime/Cargo.toml --locked --example libav_metadata
 rust-runtime/target/debug/examples/libav_metadata compare \
-  "$M5_FLAC_OUT/companion/libbilikara_media_libav.so" "$M5_FLAC_PREFIX" \
-  "$PWD/.tmp/m1-libav-9/fixtures/flac.mp4" synthetic-flac-96k24 \
+  "$FLAC_OUT/companion/libbilikara_media_libav.so" "$FLAC_PREFIX" \
+  "/absolute/fixtures/flac.mp4" synthetic-flac-96k24 \
   --flac audio
 ```
 
@@ -85,7 +83,7 @@ rust-runtime/target/debug/examples/libav_metadata compare \
 比较器先完成 companion 契约，再做独立 CLI/Pure Rust 对照；失败不授权 fallback。
 Pure Rust 无法处理的输入记录 `not_comparable`，不扩展其实现。
 
-比较沿用 M2 metadata 和 M3 scan summaries。FLAC 编码内容逐字节按顺序比较，忽略 packet
+比较使用 metadata 和 packet-scan summaries。FLAC 编码内容逐字节按顺序比较，忽略 packet
 分组和 MP4 容器 PTS；packet-count equality 不是跨 demuxer 音频等价规则。
 PCM oracle 仅在 `examples/libav_metadata/flac.rs` 的 TEST/DIAGNOSTIC driver 中，采用同构建
 `-map 0:0 -c:a pcm_s32le -f s32le pipe:1`，无 `-ar`/`-ac`/filters。它必须完整到 EOF，
@@ -101,42 +99,26 @@ Claxon 沿用现有 dev dependency，按 frame 迭代；其已有 unsupported �
 Claxon 使用 frame buffer。报告只含 allowlisted summaries，不存 PCM、encoded payload、
 tags、私有输入路径、stderr 或凭证，也没有 file/diff/PCM hash ledger。
 
-有限 live suite（继承 M1/M2/M3、原 MP4/extended HE-AAC 测试，复用 M5 lifecycle helper）：
+有限 live suite（包含 metadata/scan、MP4/extended HE-AAC 和共享 lifecycle 检查）：
 
 ```bash
 npm run test:media -- \
-  --companion "$M5_FLAC_OUT/companion/libbilikara_media_libav.so" \
-  --prefix "$M5_FLAC_PREFIX" --fixtures "$PWD/.tmp/m1-libav-9/fixtures" \
-  --long-fixture /tmp/bilikara_media_native_research_20260901_ijcpsG/fixtures/synthetic_hires_large.mp4 \
-  --out "$M5_FLAC_OUT/live" --flac \
-  --old-companion "$PWD/.tmp/m1-libav-9/companion/libbilikara_media_libav.so" \
-  --shim-test "$M5_FLAC_OUT/companion/test_shim" \
-  --remux-old-companion /tmp/bilikara-m3/companion/libbilikara_media_libav.so \
-  --fault-companion "$M5_FLAC_OUT/companion/libbilikara_media_libav_test.so" \
-  --fragmented-fixture /tmp/bilikara-s3-rereview.00YXcZ/fragmented.m4a \
-  --flac-old-companion /tmp/bilikara-m5/companion/libbilikara_media_libav.so
+  --companion "$FLAC_OUT/companion/libbilikara_media_libav.so" \
+  --prefix "$FLAC_PREFIX" --fixtures "/absolute/fixtures" \
+  --long-fixture /absolute/fixtures/synthetic_hires_large.mp4 \
+  --out "$FLAC_OUT/live" --flac \
+  --old-companion "/absolute/previous-metadata-companion.so" \
+  --shim-test "$FLAC_OUT/companion/test_shim" \
+  --remux-old-companion /absolute/previous-scan-companion.so \
+  --fault-companion "$FLAC_OUT/companion/libbilikara_media_libav_test.so" \
+  --fragmented-fixture /absolute/fixtures/fragmented.m4a \
+  --flac-old-companion /absolute/previous-remux-companion.so
 ```
 
-新增 fixture evidence：既有 96 kHz / 24-bit stereo（96,000 samples/channel）、一个
-48 kHz / 16-bit stereo 控制（48,000 samples/channel、左右声道不同、含满幅正负值）、
-合法 unknown STREAMINFO variant。所有小输出做完整 PCM/Claxon 对照，source decode
-还与完整已知 WAV PCM 直接比较。比较器单 bit 修改、丢失 sample、左右声道交换负控均须失败。
-不以 metadata/comments/padding 的差异代替 PCM 比较。
-FLAC-specific 拒绝集包括 wrong codec/kind、audio+video、两 audio、raw 输入、missing-mdat、
-mandatory STREAMINFO length 错误，以及有实际 edit list 的 offset/trim fixture。
-时间容差覆盖正负 200 ms 边界与超界拒绝、曾被旧阈值拒绝的 3 ms 偏差，以及
-中途超界但结尾回到范围内的拒绝。C shim 另验证正负边界内外 1 微秒；通过的
-容器时间差样例仍须保持整段 PCM、Claxon 独立解码结果和真实采样总数一致。
-已知 STREAMINFO 总数比实际帧多或少 50 ms、200 ms 的样例放行并修正，超过
-200 ms 一个采样点拒绝。放行样例通过 Claxon 完整解码，并要求输出逐字节等于
-未改源元数据的基准输出，源文件不变。未知总数仍保留为未知。额外的 nb_frames
-提示误差不阻断规范化，真实 corrupt packet/非 EOF 错误和裁剪拒绝断言保持。
-同一个实际 publisher/lifecycle helper 以 `CopyProfile::Flac` 再运行，覆盖 collision、
-第三次真实写包后的取消、真实 trailer 后注入 EIO、非 EOF read error/corrupt/配置变化、
-晚取消、cleanup warning、源字节不变、零 owned scratch 和 fd 数稳定。
-
-最终 Linux gate 在稳定 patch 上运行 runtime fmt/clippy/test/release build、Python 强制 native
-suite/compilation 和 diff check。未修改的 `rust/`、`src-tauri/` 和 frontend build 复用已接受
-M5 handoff 所引用的 `.tmp/m1-libav-9/gate-{rust,src-tauri,frontend}-*.log`，作用域仅限未改层。
-不重复打包 UI/Tauri，不要求 Windows/macOS/WebView。真实 Hi-Res 历史问题、DownKyi policy、
-其他 codec profile、backend promotion 和 CLI removal 均不在本次结论内。
+验证要求：保留 16/24-bit stereo、未知 STREAMINFO 总数和已知 WAV PCM 的完整
+PCM/Claxon 对照；单 bit 改动、丢失 sample 和声道交换负控必须失败。覆盖错误
+codec/kind、多轨、raw 输入、missing-mdat、错误 STREAMINFO 和 edit-list 裁剪。
+时间与总采样数检查必须覆盖正负 200 ms 边界、超出一个采样点和中途超界；
+放行时仍需保持完整 PCM、实际采样总数及源文件不变，未知总数保持未知。
+通过实际 publisher 检查取消、读写及 trailer 错误、竞争目标、配置变化、
+晚取消和 cleanup warning，并验证无 owned scratch 或描述符泄漏。

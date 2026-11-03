@@ -4,7 +4,7 @@ This roadmap records current product direction and ownership. It is not a build 
 
 ## v0.8 — convergence and release stabilization
 
-**Preview 2 has shipped. Preview 3 is in preparation**, concentrating safe engineering retirement and desktop experience fixes before a quieter stabilization period. Preserve approved Preview 1 behavior and subsequent fixes. A source commit or an Actions development artifact is not a public release.
+**Stable v0.8.0 has shipped. The Android Host APK remains a beta.** Preserve approved Preview 1 behavior and subsequent fixes. A source commit or an Actions development artifact is not a public release.
 
 ### Delivered ownership
 
@@ -14,13 +14,16 @@ This roadmap records current product direction and ownership. It is not a build 
 - Extracted-package qualification uses `verify-native-desktop` and actual installed Host execution. Construction, media, frontend and native business/HTTP/browser regressions use existing Rust/Node entries; replaced Python drivers and unused policy copies are deleted. Real-library checks run after their required prefix is prepared.
 - Windows/macOS bundle jobs retain native architecture, signing, extraction/round-trip, Host and updater checks. Linux local/native fixtures do not substitute for foreign platform execution, physical displays, Android devices or user acceptance.
 
-### Preview 3 experience and acceptance
+### Stable release experience and acceptance
 
 - Current additions include native YouTube single-video quick requests and stable-ID session-user editing, with synchronized device names and immutable historical request labels. Shared components serve Host, local Remote and public Remote.
 - Preserve queue rotation, priority/manual placement, stale command rejection, archived-session export, authentication and data recovery. Stabilize playback recovery, fullscreen and audience-video geometry against the released desktop baseline; shared user editors retain keyboard focus, bounded geometry and entry/exit motion across navigation and window resizing.
 - Updates include the external updater's readiness acknowledgement, recovery and restart-failure reporting. Validate actual installed packages; describe the one-time full-package transition from published older versions honestly.
 - Desktop first initialization offers confirmed import from known bilikara data locations, with manual folder selection. Failed confirmed legacy sources are isolated into recoverable backups; declining or failed import allows normal startup without repeated offers, and native reopening bypasses discovery. The separate offline tool remains usable after first launch, converting legacy records or copying validated native data with complete backups, explicit replacement consent, active-Host locking and recovery. Successful GUI import moves source data into a recoverable backup. Storage defaults remain unchanged; native platform/package acceptance still applies.
-- Preview 3 remains unpublished until the development artifacts are tested and release is explicitly approved. Passing CI does not establish venue audio/video, physical dual-screen behavior or every network/provider condition.
+- Host source management combines persistent ordering and batch removal with selection. Pull completion waits for captured gestures; real edit conflicts still cancel stale work. Remote gains Restart and touch playback-sheet gestures, with native inputs and scrolling retaining priority.
+- Startup update/channel preferences persist across native restarts and port changes; a busy update operation defers rather than loses the startup check. Quality and HiRes changes apply to newly created downloads, while cancellation closes an old transfer before replacement.
+- Internet Remote reports transport, authentication and synchronization stages. Trusted optional TURN configuration is application-ready; the independent signaling service still needs its companion issuance contract before relay activation. Local relay tests do not establish public deployment or venue reachability.
+- Subsequent releases require artifact qualification and explicit publication approval. Passing CI does not establish venue audio/video, physical dual-screen behavior or every network/provider condition.
 
 ### Remaining Python and retirement
 

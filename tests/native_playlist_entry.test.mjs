@@ -8,7 +8,7 @@ test('playlist stress entry runs the current host-native test artifact; CI keeps
   const scripts = JSON.parse(readFileSync(path.join(root,'package.json'),'utf8')).scripts;
   assert.equal(scripts['test:playlist-stress'],'node tests/run_playlist_stress.mjs');
   assert.equal(scripts['test:playlist-entry'],'node --test tests/native_playlist_entry.test.mjs');
-  const workflow = readFileSync(path.join(root,'.github/workflows/ci-bundle.yml'),'utf8');
+  const workflow = readFileSync(path.join(root,'.github/workflows/desktop.yml'),'utf8');
   const block = workflow.split('      - name: Rust Checks and Build')[1].split('      - name: Verify frontend')[0];
   assert.match(block,/cd \.\.\/rust-runtime[\s\S]*cargo test --locked/);
   assert.equal(workflow.includes('npm run test:playlist-stress\n'),false,'normal integration already runs in cargo test');

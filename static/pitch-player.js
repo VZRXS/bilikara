@@ -1,7 +1,8 @@
 /* Playback-only Signalsmith adapter. User settings remain owned by AppState. */
 (() => {
   "use strict";
-  const moduleUrl = new URL("vendor/signalsmith-stretch/SignalsmithStretch.js", document.currentScript.src).href;
+  const moduleUrl = new URL(window.BilikaraWebViewCompatibility?.engine === 83
+    ? "vendor/signalsmith-stretch/SignalsmithStretch83.js" : "vendor/signalsmith-stretch/SignalsmithStretch.js", document.currentScript.src).href;
   const contexts = new WeakMap();
   const timeoutMs = 10000;
 

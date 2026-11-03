@@ -72,8 +72,8 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
 .request-workspace-modal { z-index: calc(var(--host-layer-modal) - 1); }
 :root .request-workspace-modal > .selection-modal-card {
   width: min(1280px, calc(100vw - 48px));
-  height: min(1000px, calc(100dvh - 48px));
-  max-height: calc(100dvh - 48px);
+  height: min(1000px, calc(calc(var(--legacy-vh, 1vh) * 100) - 48px)); height: min(1000px, calc(100dvh - 48px));
+  max-height: calc(calc(var(--legacy-vh, 1vh) * 100) - 48px); max-height: calc(100dvh - 48px);
   grid-template-rows: minmax(0, 1fr);
   padding: 0;
 }
@@ -128,8 +128,8 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   .request-workspace-modal { padding: 12px; }
   :root .request-workspace-modal > .selection-modal-card {
     width: calc(100vw - 24px);
-    height: calc(100dvh - 24px);
-    max-height: calc(100dvh - 24px);
+    height: calc(calc(var(--legacy-vh, 1vh) * 100) - 24px); height: calc(100dvh - 24px);
+    max-height: calc(calc(var(--legacy-vh, 1vh) * 100) - 24px); max-height: calc(100dvh - 24px);
   }
 }
 .audio-variant-popover .audio-variant-list {
@@ -247,8 +247,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
 }
 :root :is(.session-user-rename-head .banner-close, .selection-modal-head .banner-close, .binding-sheet-close,
   #confirm-close,
-  .rating-close, .song-detail-close, .stage-control-tray-head .banner-close,
-  .playback-sheet-collapse),
+  .rating-close, .song-detail-close, .stage-control-tray-head .banner-close),
 :root[data-host-layout="portrait"] #binding-modal .selection-modal-head .banner-close {
   width: var(--panel-header-control-size);
   min-width: var(--panel-header-control-size);
@@ -380,14 +379,20 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   /* Controls have a -4px optical offset: both outer insets are 16px. */
   padding: 20px 16px 4px 20px;
   align-items: start;
-  grid-template-columns: minmax(0, 1fr) auto minmax(min-content, 1fr);
+  grid-template-columns: minmax(0, 1fr) 44px minmax(min-content, 1fr);
 }
 :root .playback-sheet-status-label { grid-column: 1; grid-row: 1; }
 :root[data-ui-client="remote"] #playback-sheet-collapse { grid-column: 2; grid-row: 1; background: transparent; }
+/* Keep the handle on the header's first-line center while its invisible
+   44px target extends around the former 32px icon slot. */
+:root .playback-sheet-collapse {
+  margin-top: calc(var(--panel-header-control-offset) - 6px);
+  margin-bottom: calc(-1 * var(--panel-header-control-offset) - 6px);
+}
 /* Equal outer tracks center collapse; the actions' minimum width shifts it
    left only when the right-hand buttons need more room. */
 :root .playback-sheet-status-actions { grid-column: 3; grid-row: 1; flex-wrap: nowrap; }
-:root .playback-sheet-status-header.is-stacked-actions { grid-template-columns: minmax(0, 1fr) auto; }
+:root .playback-sheet-status-header.is-stacked-actions { grid-template-columns: minmax(0, 1fr) 44px; }
 :root .playback-sheet-status-header.is-stacked-actions .playback-sheet-collapse { grid-column: 2; }
 :root .playback-sheet-status-header.is-stacked-actions .playback-sheet-status-actions { grid-column: 1 / -1; grid-row: 2; }
 
@@ -418,6 +423,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
 /* This footer scrolls with the settings content; it cannot obscure that content. */
 :root .settings-workspace-body .cache-panel-footer { border-top-color: transparent; }
 
+:root .playback-restart-popover::before,
 :root :is(.app-shell[data-narrow-tool-layout="overlay"] .host-workspace-region,
   .session-user-rename-panel, .confirm-popover, .selection-modal-card, .app-shell .song-detail-card,
   .song-detail-card, .rating-card, .volume-adjust-popover, .audio-variant-popover,
@@ -427,11 +433,162 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   .app-shell[data-stage-controls-layout="popup"] .stage-control-tray) {
   background: var(--modal-card-bg);
   border: var(--modal-card-border);
-  border-radius: 18px;
+  border-radius: var(--floating-panel-radius, 18px);
   box-shadow: var(--rating-card-shadow);
   backdrop-filter: blur(var(--modal-surface-blur));
   -webkit-backdrop-filter: blur(var(--modal-surface-blur));
 }
+
+/* Only the collapsed popup is a floating capsule. Desktop Host and landscape
+   use ordinary circles in the control row, without an enclosing surface. */
+:root .playback-song-actions {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-self: end;
+  width: 44px;
+  height: 44px;
+}
+:root .playback-song-actions.is-expanded { width: 94px; gap: 6px; }
+:root [data-playback-restart-anchor] { position: relative; z-index: 2; }
+:root .playback-song-actions button {
+  /* Native tap highlights can linger after a captured hold is released.
+     These controls already own pressed and keyboard-focus feedback. */
+  -webkit-tap-highlight-color: transparent;
+}
+:root .playback-restart-popover {
+  --floating-panel-radius: 999px;
+  box-sizing: border-box;
+  width: 100px;
+  height: 52px;
+  padding: 4px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+}
+:root .playback-restart-popover {
+  position: absolute;
+  inset: auto;
+  margin: 0;
+  z-index: 1;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  opacity: 1;
+  transform: none;
+}
+:root .playback-restart-popover::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  pointer-events: none;
+  clip-path: inset(4px 4px 4px 52px round 22px);
+}
+:root .playback-restart-popover[hidden],
+:root .playback-song-actions .playback-restart-action[hidden] { display: none; }
+:root .playback-restart-popover.is-open::before { animation: playback-capsule-open 240ms ease both; }
+:root .playback-restart-popover.is-closing::before { animation: playback-capsule-close 240ms ease both; }
+@keyframes playback-capsule-open {
+  0% { clip-path: inset(4px 4px 4px 52px round 22px); }
+  35% { clip-path: inset(0 0 0 48px round 26px); }
+  100% { clip-path: inset(0 round 26px); }
+}
+@keyframes playback-capsule-close {
+  0% { clip-path: inset(0 round 26px); }
+  65% { clip-path: inset(0 0 0 48px round 26px); }
+  100% { clip-path: inset(4px 4px 4px 52px round 22px); }
+}
+:root .playback-restart-popover button,
+:root .playback-song-actions .playback-restart-action {
+  box-sizing: border-box;
+  flex: 0 0 44px;
+  width: 44px;
+  min-width: 44px;
+  max-width: 44px;
+  height: 44px;
+  min-height: 44px;
+  max-height: 44px;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: var(--player-btn-border, 1px solid var(--line));
+  border-radius: 50%;
+  background: var(--btn-secondary-bg);
+  color: var(--ink);
+  box-shadow: none;
+  transform: none;
+  transition: background 120ms ease, border-color 120ms ease;
+  touch-action: manipulation;
+}
+:root .playback-song-actions .playback-restart-action:disabled {
+  background: var(--remote-secondary-button-disabled-bg, var(--btn-secondary-bg));
+  color: var(--remote-secondary-button-disabled-color, var(--muted));
+  cursor: default;
+}
+:root .playback-restart-popover > .playback-restart-action {
+  position: relative;
+  opacity: 0;
+  clip-path: inset(0 0 0 44px);
+  transition: opacity 180ms ease, background 120ms ease, border-color 120ms ease;
+}
+:root .playback-restart-popover.is-open > .playback-restart-action { opacity: 1; animation: playback-capsule-action-open 240ms ease both; }
+:root .playback-restart-popover.is-closing > .playback-restart-action { animation: playback-capsule-action-close 240ms ease both; }
+@keyframes playback-capsule-action-open {
+  0%, 35% { clip-path: inset(0 0 0 44px); }
+  100% { clip-path: inset(0); }
+}
+@keyframes playback-capsule-action-close {
+  0% { clip-path: inset(0); }
+  65%, 100% { clip-path: inset(0 0 0 44px); }
+}
+:root [data-playback-restart-anchor][aria-haspopup="menu"] { touch-action: none; }
+:root .playback-restart-popover .playback-restart-action:not(:disabled):is(:active, .is-held-target),
+:root .playback-song-actions.is-expanded .playback-restart-action:not(:disabled):active { background: var(--host-control-pressed-bg); border-color: var(--accent); }
+/* Inline Next retains its existing feedback. Remote pointer use must not
+   inherit a keyboard outline from modal focus restoration. */
+:root:not([data-remote-input-modality="pointer"]) .playback-restart-popover button:focus-visible,
+:root:not([data-remote-input-modality="pointer"]) .playback-song-actions.is-expanded .playback-restart-action:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+:root .playback-restart-popover svg,
+:root .playback-song-actions .playback-restart-action svg { width: 26px; height: 26px; }
+/* Playback gestures must not select button labels or SVG text. Keep editable
+   fields outside this rule so numbers and ranges retain their native behavior. */
+:root :is(
+  .playback-sheet,
+  .presentation-host-controls,
+  .stage-control-tray,
+  .stage-extended-controls,
+  .volume-adjust-popover,
+  .playback-restart-popover
+) :is(button, button *),
+:root :is(.playback-dock, .audio-variant-button, .audio-variant-toggle),
+:root :is(.playback-dock, .audio-variant-button, .audio-variant-toggle) * {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+:root .playback-restart-popover.is-hint {
+  pointer-events: auto;
+}
+:root .playback-restart-popover.is-hint .playback-restart-action:disabled { opacity: 1; cursor: default; }
+:root .playback-sheet-panel.is-spacious-transport .playback-song-actions { grid-area: next; }
+:root :is(.player-control-row, .presentation-host-transport-row):is(:has(.playback-song-actions.is-expanded), :where([data-legacy-has~="r0"])) {
+  --playback-song-actions-width: 94px;
+}
+@media (hover: hover) and (pointer: fine) {
+  :root:is(:has(.app-shell), :where([data-legacy-has~="r1"])) .playback-restart-popover .playback-restart-action:not(:disabled):hover,
+  :root:is(:has(.app-shell), :where([data-legacy-has~="r1"])) .playback-song-actions.is-expanded .playback-restart-action:not(:disabled):hover { border-color: var(--accent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root .playback-restart-popover::before { animation-duration: 1ms !important; }
+  :root .playback-restart-popover.is-hint { transition: none; }
+  :root .playback-restart-popover > .playback-restart-action,
+  :root .playback-restart-popover button,
+  :root .playback-song-actions.is-expanded .playback-restart-action { transition: none; animation-duration: 1ms !important; }
+}
+:root .source-tools .source-remove-selected.drag-over { background: var(--red); color: white; }
 
 /* Passive feedback belongs inside the fullscreen/audience root, never a body portal. */
 :root .presentation-feedback-card {
@@ -654,10 +811,57 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
 :root :is(.cache-advanced-tooltip, .remote-tooltip-bubble)[data-i18n],
 :root :is(.cache-advanced-tooltip, .remote-tooltip-bubble) [data-i18n] { white-space: pre-line; }
 
+/* Playback hints reuse the i bubble, including its tokens and motion.
+   Remote uses holds; Host also supports hover and keyboard focus. */
+:root .playback-control-hint {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+:root .remote-tooltip-bubble.playback-control-hint { white-space: pre-line; }
+:root .playback-control-hint[hidden] { display: none; }
+:root :is(.player-control-row .player-transport-button,
+  .presentation-host-transport-row .presentation-host-seek-button,
+  .presentation-host-transport-row .presentation-host-play,
+  .presentation-host-transport-row .presentation-host-next,
+  .playback-song-actions .playback-restart-action) {
+  /* Keep a held slide between icons under the shared pointer gesture owner. */
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
 /* Peer cards align their corner axes within each row/column. Keep the
    established outer panel and insets; exact concentric subtraction would
    flatten small cards into nearly square corners. */
 :root { --request-inner-card-radius: 16px; }
+
+/* One cache status surface for the audience screen and single-screen fullscreen. */
+.presentation-download-status {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 28px;
+  background: radial-gradient(circle at center, #25201d, #050505 72%);
+  color: rgba(255, 255, 255, 0.86);
+  text-align: center;
+  pointer-events: none;
+}
+.presentation-download-status[hidden] { display: none; }
+.presentation-download-title { max-width: 900px; font-size: clamp(18px, 2.4vw, 30px); font-weight: 650; }
+.presentation-download-detail { font-size: clamp(14px, 1.6vw, 20px); line-height: 1.5; white-space: pre-line; }
+.presentation-download-status progress { width: min(360px, 100%); height: 8px; border: 0; border-radius: 999px; accent-color: var(--accent); }
+.presentation-download-status progress[hidden] { display: none; }
+.presentation-download-status progress::-webkit-progress-bar { background: rgba(255, 255, 255, 0.18); border-radius: 999px; }
+.presentation-download-status progress::-webkit-progress-value { background: var(--accent); border-radius: 999px; }
+.presentation-download-status progress::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
 :root :is(#host-workspace-request, .request-workspace, .search-card-surface, .request-panel,
   .gatcha-panel, .selection-modal, .binding-sheet)
   :is(.follow-up-button, .tag-browser-tag, .category-browser-card, .search-result-item) {
@@ -707,7 +911,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   line-height: 16px;
 }
 :root :is(#host-workspace-request, .request-workspace, .request-panel, .selection-modal, .binding-sheet)
-  .follow-up-button:has(.follow-up-avatar) .follow-up-count {
+  .follow-up-button:is(:has(.follow-up-avatar), :where([data-legacy-has~="r2"])) .follow-up-count {
   padding-inline-end: 32px;
 }
 :root :is(#host-workspace-request, .request-workspace, .request-panel, .selection-modal, .binding-sheet)
@@ -762,7 +966,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   overflow: hidden;
   white-space: pre;
 }
-.follow-up-button:has(.follow-up-avatar) .request-card-title-remainder {
+.follow-up-button:is(:has(.follow-up-avatar), :where([data-legacy-has~="r2"])) .request-card-title-remainder {
   width: calc(100% - 32px);
 }
 .request-card-title-track {
@@ -794,8 +998,10 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
 }
 
 /* Large overflow moves left continuously; small overflow keeps its existing
-   back-and-forth motion. The second copy is visual only, never announced. */
+   back-and-forth motion. The second copy is visual only, never announced.
+   The explicit Host target preserves specificity in the legacy :any adapter. */
 :root .is-text-marquee-loop { position: relative; }
+:root #current-title.is-text-marquee-loop > .text-marquee-loop-track,
 :root :is(#current-title, .playback-dock-title, .playback-dock-requester, .playback-metadata-field, .request-card-title-remainder).is-text-marquee-loop > .text-marquee-loop-track {
   animation: text-marquee-loop var(--text-marquee-loop-duration) linear infinite;
   animation-play-state: var(--text-marquee-play-state, running);
@@ -813,6 +1019,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   to { transform: translateX(calc(-1 * var(--text-marquee-loop-distance))); }
 }
 @media (prefers-reduced-motion: reduce) {
+  :root #current-title.is-text-marquee-loop > .text-marquee-loop-track,
   :root :is(#current-title, .playback-dock-title, .playback-dock-requester, .playback-metadata-field, .request-card-title-remainder).is-text-marquee-loop > .text-marquee-loop-track { animation: none; }
   :root .is-text-marquee-loop > .text-marquee-copy { display: none; }
 }
@@ -878,7 +1085,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
 }
 
 /* Related browse back actions share one role across Host and Remote. */
-:root :is(.tag-browser-back, #follow-browse-back, #favlist-browse-back, #catalog-advanced-back, #sources-follow-back) {
+:root :is(.tag-browser-back, .android-settings-back, #follow-browse-back, #favlist-browse-back, #catalog-advanced-back, #sources-follow-back) {
   height: var(--host-control-height, 44px);
   min-height: var(--host-control-height, 44px);
   padding: 0 14px;
@@ -891,15 +1098,17 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   line-height: 1;
   box-shadow: none;
 }
-:root:not([data-ui-client="remote"]) :is(.tag-letter-button, .tag-browser-back,
+:root:not([data-ui-client="remote"]) :is(.tag-letter-button, .tag-browser-back, .android-settings-back,
   #follow-browse-back, #favlist-browse-back, #catalog-advanced-back,
-  .av-sync-step-button, .av-sync-reset-button, [data-volume-step], [data-volume-reset]) {
+  .av-sync-step-button, .av-sync-reset-button, [data-volume-step], [data-volume-reset],
+  .critical-banner-region .banner-action) {
   transition: transform 120ms ease, background 120ms ease, border-color 120ms ease;
 }
 @media (hover: hover) and (pointer: fine) {
-  :root:not([data-ui-client="remote"]) :is(.tag-letter-button, .tag-browser-back,
+  :root:not([data-ui-client="remote"]) :is(.tag-letter-button, .tag-browser-back, .android-settings-back,
     #follow-browse-back, #favlist-browse-back, #catalog-advanced-back,
-    .av-sync-step-button, .av-sync-reset-button, [data-volume-step], [data-volume-reset]):hover:not(:disabled) {
+    .av-sync-step-button, .av-sync-reset-button, [data-volume-step], [data-volume-reset],
+    .critical-banner-region .banner-action):hover:not(:disabled) {
     transform: translateY(-1px);
     background: var(--host-control-hover-bg);
     border-color: var(--sync-button-hover-border);
@@ -908,25 +1117,28 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
     transform: translateY(-2px);
   }
 }
-:root:not([data-ui-client="remote"]) :is(.tag-letter-button, .tag-browser-back,
+:root:not([data-ui-client="remote"]) :is(.tag-letter-button, .tag-browser-back, .android-settings-back,
   #follow-browse-back, #favlist-browse-back, #catalog-advanced-back,
-  .av-sync-step-button, .av-sync-reset-button, [data-volume-step], [data-volume-reset]):active:not(:disabled) {
+  .av-sync-step-button, .av-sync-reset-button, [data-volume-step], [data-volume-reset],
+  .critical-banner-region .banner-action):active:not(:disabled) {
   transform: none;
   background: var(--host-control-pressed-bg);
   border-color: var(--sync-focus-border);
 }
 @media (prefers-reduced-motion: reduce) {
-  :root:not([data-ui-client="remote"]) :is(.tag-letter-button, .tag-browser-back,
+  :root:not([data-ui-client="remote"]) :is(.tag-letter-button, .tag-browser-back, .android-settings-back,
     #follow-browse-back, #favlist-browse-back, #catalog-advanced-back,
-    .av-sync-step-button, .av-sync-reset-button, [data-volume-step], [data-volume-reset]) {
+    .av-sync-step-button, .av-sync-reset-button, [data-volume-step], [data-volume-reset],
+    .critical-banner-region .banner-action) {
     transition: none;
   }
 }
-:root :is(.tag-letter-button, .tag-browser-back, #follow-browse-back,
+:root :is(.tag-letter-button, .tag-browser-back, .android-settings-back, #follow-browse-back,
   #favlist-browse-back, #sources-follow-back, #catalog-advanced-back):focus-visible,
-:root:not([data-ui-client="remote"]) :is(.av-sync-step-button, .av-sync-reset-button):focus-visible {
+:root:not([data-ui-client="remote"]) :is(.av-sync-step-button, .av-sync-reset-button,
+  .critical-banner-region .banner-action):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-:root:not([data-ui-client="remote"]) .browse-search-bar:has(> .category-browser-tabs) { --browse-track-inset: 2px; }
+:root:not([data-ui-client="remote"]) .browse-search-bar:is(:has(> .category-browser-tabs), :where([data-legacy-has~="r3"])) { --browse-track-inset: 2px; }
 :root:not([data-ui-client="remote"]) .category-browser-tabs { padding-top: 2px; }

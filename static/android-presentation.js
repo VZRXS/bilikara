@@ -15,6 +15,7 @@
     "deactivate_local_presentation", "mark_presentation_host_ready", "mark_presentation_controller_ready",
     "publish_presentation_playback_state", "show_presentation_display_identifiers",
     "dismiss_presentation_display_identifiers", "diagnostics",
+    "get_playback_restart_hint_seen", "mark_playback_restart_hint_seen",
   ]);
 
   function dispatch(name, payload) {

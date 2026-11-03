@@ -6,7 +6,7 @@ import { buildNativeHost } from './native_runtime_artifacts.mjs';
 import { TransportFixture, transportVideos } from './native_transport_support.mjs';
 import { waitFor } from './native_host_support.mjs';
 
-const executable = await buildNativeHost();
+const executable = process.env.BILIKARA_TRANSPORT_HOST || await buildNativeHost();
 const options = {skip: process.platform !== 'linux' ? 'actual Linux local TLS fixture' : false, timeout: 60000};
 
 test('actual catalog replies can exceed 512KiB while local HTTP keeps the full data', options, async () => {

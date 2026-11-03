@@ -102,6 +102,7 @@ class RustAppStateStoreTest(unittest.TestCase):
         store.add_item(item("c"), requester_name="Alice")
         self.assertTrue(store.mark_item_playback_started("a"))
         self.assertTrue(advance_to_next(store))
+        self.assertTrue(store.mark_item_playback_started("b"))
 
         restarted = self.store()
         before_restore = restarted.snapshot()

@@ -235,6 +235,10 @@
     const overlay = ensureOverlay(root);
     renderOverlay(overlay, scene.overlay || { visible: false }, options);
     if (options.showDownloadProgress) renderDownloadProgress(root, scene);
+    else {
+      const download = root.querySelector(".presentation-download-status");
+      if (download && !download.hidden) download.hidden = true;
+    }
     return overlay;
   }
 

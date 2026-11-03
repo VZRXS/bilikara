@@ -5,11 +5,18 @@
   let observedTask;
   let observedSources;
   let observedQueue;
+  let observedEdits;
   function takeSourceChanges(task = {}) {
     const completed = task.source_queue?.completed;
     const queuedChanges = ["uids", "favorites"].filter(key => Number(completed?.[key]) > 0
       && completed[key] !== observedQueue?.[key]);
     observedQueue = completed && {...completed};
+    const edits = task.source_edit_revisions;
+    for (const key of ["uids", "favorites"]) {
+      if (observedEdits && Number.isSafeInteger(edits?.[key]) && edits[key] !== observedEdits[key]
+        && !queuedChanges.includes(key)) queuedChanges.push(key);
+    }
+    observedEdits = edits && {...edits};
     const sources = task.last_result?.rebuild?.sources;
     if (!sources) { observedSources = undefined; return queuedChanges; }
     const previous = observedSources;
@@ -19,7 +26,8 @@
   }
   function takeCompletion(task = {}, saving = false) {
     const signature = JSON.stringify([task.busy, task.background_busy, task.last_status,
-      task.last_updated_at, task.last_message, task.last_error]);
+      task.last_updated_at, task.last_message, task.last_error,
+      task.last_result?.operation, task.last_result?.source_order_version]);
     // The initial server snapshot is a baseline, not a new completion. Compare
     // server observations, never the phone's clock with the Host's clock.
     if (observedTask === undefined) { observedTask = signature; return false; }
@@ -100,6 +108,16 @@
     const status = sourceState(task, source);
     return status ? translate(status === "queued" ? "gatcha.sourceWaiting" : `gatcha.source${status[0].toUpperCase()}${status.slice(1)}`) : fallback;
   }
+  function selectedFolderId(task, selected, requested) {
+    // A queued folder is not in the saved library yet. Its trusted queue entry
+    // still owns a browsable empty detail while the repository returns "".
+    const status = sourceState(task, {folderId: requested});
+    return String(selected || ((status === "running" || status === "queued") ? requested : "") || "");
+  }
+  function selectedFolder(task, folders, selected) {
+    return [...(folders || []), ...queuedSources(task, "favorites", (folders || []).map(folder => folder.id))]
+      .find(folder => String(folder.id) === selected) || null;
+  }
   function syncCard(card, task = {}, translate) {
     const status = sourceState(task, card.dataset);
     const active = status === "running";
@@ -133,5 +151,5 @@
     }
   }
   root.BilikaraSourceStatus = {sync, syncCard, sourceState, emptyText, setBusy, queueReload, flush, takeCompletion, takeSourceChanges,
-    queuedSources, rememberSource};
+    queuedSources, rememberSource, selectedFolderId, selectedFolder};
 })(window);

@@ -1,14 +1,17 @@
 // Render the production fullscreen/input functions with an actual decoded video.
 // The native window bridge is simulated; this is not OS-window certification.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
 import { chromium } from 'playwright';
 
 const app = readFileSync(new URL('../static/app.js', import.meta.url), 'utf8');
 const section = (start, end) => app.slice(app.indexOf(start), app.indexOf(end, app.indexOf(start)));
 const helper = readFileSync(new URL('../static/fullscreen-controls.js', import.meta.url), 'utf8');
+const renderer = readFileSync(new URL('../static/presentation-renderer.js', import.meta.url), 'utf8');
 const styles = readFileSync(new URL('../static/styles.css', import.meta.url), 'utf8');
+const surfaces = readFileSync(new URL('../static/ui-surfaces.css', import.meta.url), 'utf8');
 const media = readFileSync(new URL('./fixtures/bbdown/video-reordered-start.mp4', import.meta.url)).toString('base64');
 
 test('Edge/Chromium fullscreen keeps entry quiet and restores real pointer, keyboard and touch controls', { timeout: 60000 }, async t => {
@@ -23,16 +26,21 @@ test('Edge/Chromium fullscreen keeps entry quiet and restores real pointer, keyb
     #panel:is(.is-tauri-fullscreen,:fullscreen) { position:fixed; inset:0; width:100%; height:100%; }
     #video { width:100%; height:100%; object-fit:contain; }
     #enter { position:absolute; right:30px; top:20px; z-index:2; }
+    ${surfaces}
     ${styles.slice(styles.indexOf('.player-panel:is(:fullscreen, :-webkit-full-screen, .is-tauri-fullscreen).is-player-cursor-hidden'),
       styles.indexOf('.audio-variant-button:hover', styles.indexOf('body.is-presentation-stage-only.is-presentation-cursor-hidden')))}
     </style><section id="panel" class="player-panel"><video id="video" loop muted tabindex="0" src="data:video/mp4;base64,${media}"></video><button id="enter">Fullscreen</button></section>`);
   await page.addScriptTag({ content: helper });
+  await page.addScriptTag({ content: renderer });
   await page.addScriptTag({ content: `
     const video=document.getElementById('video');
-    const elements={playerPanel:document.getElementById('panel')};
+    const elements={playerPanel:document.getElementById('panel'),playerFrame:document.getElementById('panel')};
     const state={localPlaybackStartState:'established',localPlayerControlsHideTimer:null,
       playerFullscreenTransitioning:false,playerFullscreenRevision:0,data:{current_item:{id:'fixture'}}};
     let nativeMode=true, nativeCalls=0;
+    let fixtureScene={generation:1,revision:1,currentItemIdentity:'fixture',title:'缓存中的歌曲',displayMetadata:{cacheStatus:'ready',cacheDetail:'Ready'}};
+    const currentPresentationScene=()=>fixtureScene;
+    const presentationRendererApi=()=>BilikaraPresentationRenderer;
     const playerControlsAutoHideMs=5000;
     const fullscreenControlHover={reset(){}};
     const canTogglePlayerFullscreen=()=>!state.playerFullscreenTransitioning;
@@ -44,6 +52,7 @@ test('Edge/Chromium fullscreen keeps entry quiet and restores real pointer, keyb
     const activeLocalPlayerElements=()=>({video,audio:null});
     const addMountedPlayerListener=(target,name,fn,options)=>target.addEventListener(name,fn,options);
     function setPlayerFullscreenRemotePinned(){} function renderPlayerFullscreenButton(){}
+    ${section('function renderCurrentPresentationScene()', 'function presentationSyncApi()')}
     function hideFullscreenRequestToast(){} function hidePlayerDelayOverlay(){}
     function hasLocalAdvanceDelayOverlay(){return false;} function t(key){return key;}
     function setAppMessage(message){throw Error(message);}
@@ -130,5 +139,31 @@ test('Edge/Chromium fullscreen keeps entry quiet and restores real pointer, keyb
   await page.keyboard.press('Escape'); await page.waitForFunction(() => !isPlayerPanelFullscreen());
   assert.notEqual(await cursor(),'none');
   assert.equal(await page.evaluate(() => video === window.originalVideo),true);
+  // Controlled scene inputs exercise the shared rendered status component and
+  // both fullscreen paths. This is not a native download or OS-window proof.
+  for(const native of [true,false]) {
+    await page.evaluate(value=>{
+      nativeMode=value;
+      fixtureScene.displayMetadata={cacheStatus:'downloading',cacheDetail:'下载中 37%',cacheProgress:37};
+    },native);
+    await page.locator('#enter').click();
+    const download=page.locator('.presentation-download-status'),progress=download.locator('progress');
+    await download.waitFor({state:'visible'});
+    assert.equal(await progress.evaluate(node=>node.value),37);
+    assert.equal(await download.locator('[data-download-detail]').textContent(),'下载中 37%');
+    const identity=await download.elementHandle();
+    if(native&&process.env.BILIKARA_RESTART_SCREENSHOTS) {
+      mkdirSync(process.env.BILIKARA_RESTART_SCREENSHOTS,{recursive:true});
+      await page.screenshot({path:path.join(process.env.BILIKARA_RESTART_SCREENSHOTS,'fullscreen-cache-component-700.png')});
+    }
+    await page.evaluate(()=>{fixtureScene.displayMetadata={cacheStatus:'failed',cacheDetail:'缓存失败'};renderCurrentPresentationScene();});
+    assert.equal(await progress.isVisible(),false);assert.equal(await download.isVisible(),true);
+    await page.locator('#enter').click();await download.waitFor({state:'hidden'});
+    assert.equal(await identity.evaluate(node=>node===document.querySelector('.presentation-download-status')),true);
+    assert.equal(await page.evaluate(()=>video===window.originalVideo),true);
+    await page.evaluate(()=>{fixtureScene.displayMetadata={cacheStatus:'ready',cacheDetail:'Ready'};});
+    await page.locator('#enter').click();assert.equal(await download.isVisible(),false);
+    await page.locator('#enter').click();
+  }
   assert.deepEqual(errors,[]);
 });

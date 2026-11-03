@@ -474,6 +474,36 @@ fn http_role_resource_sse_and_capability_failures_are_detected() {
     }
 }
 #[test]
+fn origin_rejection_reads_the_final_status_before_sending_a_body() {
+    let fixture = Fixture::new("early-origin");
+    let host = fixture.start().unwrap();
+    host.check(&fixture.inspect().unwrap()).unwrap();
+    assert_eq!(
+        fs::read_to_string(fixture.executable.with_extension("origin-body")).unwrap(),
+        "0",
+        "An early 403 must finish the probe without racing a request body against connection closure"
+    );
+    drop(host);
+    fixture.gone();
+}
+
+#[test]
+fn origin_rejection_never_accepts_a_closed_connection_as_a_403() {
+    let fixture = Fixture::new("closed-origin");
+    let host = fixture.start().unwrap();
+    let error = host
+        .check(&fixture.inspect().unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("origin rejection") && error.contains("I/O"),
+        "{error}"
+    );
+    drop(host);
+    fixture.gone();
+}
+
+#[test]
 fn transport_failures_identify_the_stage_without_leaking_capabilities() {
     for (mode, reason) in [("closed-health", "I/O"), ("stall", "timeout")] {
         let fixture = Fixture::new(mode);

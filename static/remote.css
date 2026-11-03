@@ -252,8 +252,8 @@ textarea::placeholder {
   position: relative;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
-  height: clamp(390px, 48dvh, 430px);
-  max-height: calc(100dvh - max(32px, env(safe-area-inset-top, 0px) + env(safe-area-inset-bottom, 0px)));
+  height: clamp(390px, calc(var(--legacy-vh, 1vh) * 48), 430px); height: clamp(390px, 48dvh, 430px);
+  max-height: calc(calc(var(--legacy-vh, 1vh) * 100) - max(32px, env(safe-area-inset-top, 0px) + env(safe-area-inset-bottom, 0px))); max-height: calc(calc(var(--legacy-vh, 1dvh) * 100) - max(32px, env(safe-area-inset-top, 0px) + env(safe-area-inset-bottom, 0px)));
   overflow: hidden;
 }
 
@@ -263,12 +263,12 @@ textarea::placeholder {
 }
 
 .request-panel[data-request-size="browse"] {
-  height: clamp(430px, 53dvh, 460px);
+  height: clamp(430px, calc(var(--legacy-vh, 1vh) * 53), 460px); height: clamp(430px, 53dvh, 460px);
   max-height: none;
 }
 
 .request-panel[data-request-size="browse-deep"] {
-  height: clamp(700px, 86dvh, 740px);
+  height: clamp(700px, calc(var(--legacy-vh, 1vh) * 86), 740px); height: clamp(700px, 86dvh, 740px);
   max-height: none;
 }
 
@@ -315,7 +315,7 @@ h1 {
   padding: 0 2px;
 }
 
-.remote-header:has(.remote-menu-toggle[aria-expanded="true"]) {
+.remote-header:is(:has(.remote-menu-toggle[aria-expanded="true"]), :where([data-legacy-has~="r16"])) {
   /* The anchored menu must remain clickable over the fixed playback dock. */
   z-index: calc(var(--remote-layer-dock) + 1);
 }
@@ -493,7 +493,7 @@ h1 {
   top: calc(100% + 12px);
   right: 0;
   width: min(340px, calc(100vw - 32px));
-  max-height: var(--remote-menu-available-height, calc(100dvh - 76px));
+  max-height: var(--remote-menu-available-height, calc(calc(var(--legacy-vh, 1vh) * 100) - 76px)); max-height: var(--remote-menu-available-height, calc(calc(var(--legacy-vh, 1dvh) * 100) - 76px));
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -514,11 +514,11 @@ h1 {
 }
 
 .remote-menu-panel > * { flex-shrink: 0; }
-.remote-menu-panel:has(.remote-menu-settings-content:not(.hidden)) {
+.remote-menu-panel:is(:has(.remote-menu-settings-content:not(.hidden)), :where([data-legacy-has~="r17"])) {
   padding-bottom: 16px;
 }
 .remote-menu-panel .remote-tooltip-bubble:not(.is-visible):not(.is-closing):not(:popover-open) { display: none; }
-.remote-menu-panel:has(.remote-share-card.is-dual) { width: min(390px, calc(100vw - 32px)); }
+.remote-menu-panel:is(:has(.remote-share-card.is-dual), :where([data-legacy-has~="r18"])) { width: min(390px, calc(100vw - 32px)); }
 .remote-menu-panel .remote-share-card {
   width: 100%;
   min-width: 0;
@@ -1038,7 +1038,7 @@ h1 {
   margin-bottom: 0;
 }
 
-.remote-search-toolbar:not(:has(> *)) {
+.remote-search-toolbar:not(:is(:has(> *), :where([data-legacy-has~="r19"]))) {
   display: none;
 }
 
@@ -1623,7 +1623,7 @@ h1 {
 
 .player-control-row {
   display: grid;
-  grid-template-columns: 44px 48px 44px minmax(88px, 1fr) 44px;
+  grid-template-columns: 44px 48px 44px minmax(88px, 1fr) var(--playback-song-actions-width, 44px);
   gap: clamp(4px, 1.2vw, 6px);
   align-items: center;
   width: 100%;
@@ -1944,7 +1944,7 @@ button[data-control-action="next-track"] {
   z-index: 1;
   width: min(620px, 100%);
   max-height: min(82vh, 760px);
-  max-height: min(82dvh, 760px);
+  max-height: min(calc(var(--legacy-vh, 1vh) * 82), 760px); max-height: min(82dvh, 760px);
   display: flex;
   flex-direction: column;
   padding: 20px;
@@ -2031,7 +2031,7 @@ button[data-control-action="next-track"] {
 .pool-config-sheet .binding-sheet-panel {
   width: min(720px, 100%);
   max-height: min(88vh, 820px);
-  max-height: min(88dvh, 820px);
+  max-height: min(calc(var(--legacy-vh, 1vh) * 88), 820px); max-height: min(88dvh, 820px);
 }
 
 .pool-config-section {
@@ -2552,7 +2552,7 @@ select:disabled {
 /* Native modal semantics; visual tokens match the existing Remote sheets. */
 .history-export-dialog {
   width: min(560px, calc(100% - 32px - env(safe-area-inset-left) - env(safe-area-inset-right)));
-  max-height: calc(100dvh - 32px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  max-height: calc(calc(var(--legacy-vh, 1vh) * 100) - 32px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); max-height: calc(calc(var(--legacy-vh, 1dvh) * 100) - 32px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
   margin: auto;
   padding: 20px;
   border: var(--modal-card-border);
@@ -2895,18 +2895,6 @@ select:disabled {
   min-height: var(--remote-form-control-height);
 }
 
-.source-uploader-actions {
-  display: block;
-}
-
-.source-refresh-button {
-  width: auto;
-  min-height: var(--remote-form-control-height);
-  border-radius: var(--remote-form-control-radius);
-  white-space: nowrap;
-}
-
-
 #favlist-list-view,
 #favlist-items-view,
 #sources-follow-list-view,
@@ -2955,26 +2943,6 @@ select:disabled {
 #sources-follow-items-view .follow-browser-head {
   margin-bottom: 4px;
 }
-
-.source-uid-form {
-  min-width: 0;
-  margin: 0;
-  align-self: start;
-  gap: 8px;
-}
-
-#sources-follow-uid-form {
-  grid-template-columns: minmax(0, 1fr) auto auto;
-}
-
-.source-uid-form input {
-  height: var(--remote-form-control-height);
-}
-
-.source-uid-form .primary-button {
-  min-height: var(--remote-form-control-height);
-}
-
 
 .remote-search-browser-view .search-results {
   display: grid;
@@ -3570,7 +3538,7 @@ select:disabled {
   }
 
   .remote-menu-panel {
-    max-height: var(--remote-menu-available-height, calc(100dvh - 68px));
+    max-height: var(--remote-menu-available-height, calc(calc(var(--legacy-vh, 1vh) * 100) - 68px)); max-height: var(--remote-menu-available-height, calc(calc(var(--legacy-vh, 1dvh) * 100) - 68px));
   }
 
   .action-row {
@@ -3749,7 +3717,7 @@ body.remote-identity-modal-open {
   z-index: 1;
   width: min(520px, 100%);
   max-height: calc(100vh - 28px);
-  max-height: calc(100dvh - 28px);
+  max-height: calc(calc(var(--legacy-vh, 1vh) * 100) - 28px); max-height: calc(100dvh - 28px);
   overflow: auto;
   padding: 20px;
   border: var(--modal-card-border);
@@ -3834,7 +3802,7 @@ body.remote-identity-modal-open {
 
 .rating-body {
   max-height: calc(100vh - var(--remote-modal-inset-top) - var(--remote-modal-inset-bottom) - 2px);
-  max-height: calc(100dvh - var(--remote-modal-inset-top) - var(--remote-modal-inset-bottom) - 2px);
+  max-height: calc(calc(var(--legacy-vh, 1vh) * 100) - var(--remote-modal-inset-top) - var(--remote-modal-inset-bottom) - 2px); max-height: calc(calc(var(--legacy-vh, 1dvh) * 100) - var(--remote-modal-inset-top) - var(--remote-modal-inset-bottom) - 2px);
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -4385,7 +4353,7 @@ body.remote-identity-modal-open {
   padding-bottom: var(--remote-safe-area-bottom);
   width: 100%;
   max-height: 86vh;
-  max-height: 86dvh;
+  max-height: calc(var(--legacy-vh, 1vh) * 86); max-height: 86dvh;
   overflow: hidden;
   border: var(--modal-card-border);
   border-bottom: 0;
@@ -4420,7 +4388,7 @@ body.remote-identity-modal-open {
   z-index: 2;
   display: grid;
   flex: 0 0 auto;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) 44px minmax(0, 1fr);
   align-items: center;
   min-height: 56px;
   padding: 6px 12px;
@@ -4429,6 +4397,8 @@ body.remote-identity-modal-open {
 }
 
 .playback-sheet-status-label {
+  justify-self: start;
+  max-width: 100%;
   min-width: 0;
   margin: 0;
   overflow: hidden;
@@ -4443,10 +4413,13 @@ body.remote-identity-modal-open {
 }
 
 .playback-sheet-collapse {
+  position: relative;
+  z-index: 0;
+  justify-self: center;
   display: inline-grid;
   place-items: center;
-  width: 44px;
-  min-width: 44px;
+  width: 132px;
+  min-width: 132px;
   height: 44px;
   min-height: 44px;
   padding: 0;
@@ -4458,8 +4431,22 @@ body.remote-identity-modal-open {
 }
 
 .playback-sheet-collapse svg {
+  display: none;
   pointer-events: none;
 }
+
+.playback-sheet-collapse::after {
+  content: "";
+  width: 30px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--muted);
+  pointer-events: none;
+}
+/* The larger transparent handle shares the old 44px layout slot. Adjacent
+   labels/actions retain their own hit targets above its extra side area. */
+.playback-sheet-status-label,
+.playback-sheet-status-actions { position: relative; z-index: 1; }
 
 :root:not([data-remote-input-modality="pointer"]) .playback-sheet-collapse:focus-visible {
   outline: 2px solid var(--accent);
@@ -4529,6 +4516,7 @@ body.remote-identity-modal-open {
   scrollbar-gutter: auto;
   -webkit-overflow-scrolling: touch;
 }
+.playback-sheet-panel:not(.has-scrollable-body) { touch-action: pan-x; }
 
 .playback-sheet-primary,
 .playback-sheet-secondary {
@@ -4602,7 +4590,7 @@ body.remote-identity-modal-open {
 
 .playback-metadata-popover {
   z-index: 45;
-  max-height: min(224px, calc(100dvh - 32px));
+  max-height: min(224px, calc(calc(var(--legacy-vh, 1vh) * 100) - 32px)); max-height: min(224px, calc(100dvh - 32px));
   overflow: visible;
   text-align: left;
   user-select: text;
@@ -4756,7 +4744,7 @@ body.remote-identity-modal-open {
 
 /* Matches v0.8.0-preview.1: 44px seek/next with a 48px play/pause circle. */
 .playback-sheet .player-control-row {
-  grid-template-columns: 44px 48px 44px minmax(88px, 1fr) 44px;
+  grid-template-columns: 44px 48px 44px minmax(88px, 1fr) var(--playback-song-actions-width, 44px);
 }
 
 .playback-sheet-settings-card {
@@ -4860,7 +4848,7 @@ body.remote-identity-modal-open {
   display: none;
 }
 
-html:has(body.playback-sheet-scroll-locked),
+html:is(:has(body.playback-sheet-scroll-locked), :where([data-legacy-has~="r20"])),
 body.playback-sheet-scroll-locked {
   overscroll-behavior: none;
 }
@@ -4873,7 +4861,7 @@ html.remote-modal-scroll-locked {
 
 @media (max-width: 699px) and (min-height: 521px) {
   .playback-sheet-panel {
-    max-height: calc(100dvh - max(12px, var(--remote-safe-area-top)));
+    max-height: calc(calc(var(--legacy-vh, 1vh) * 100) - max(12px, var(--remote-safe-area-top))); max-height: calc(calc(var(--legacy-vh, 1dvh) * 100) - max(12px, var(--remote-safe-area-top)));
   }
 }
 
@@ -4908,7 +4896,7 @@ html.remote-modal-scroll-locked {
   .playback-sheet-panel {
     width: min(880px, 100%);
     padding-bottom: 0;
-    max-height: min(86dvh, 760px);
+    max-height: min(calc(var(--legacy-vh, 1vh) * 86), 760px); max-height: min(86dvh, 760px);
     border-bottom: var(--modal-card-border);
     border-radius: 24px;
   }
@@ -4926,6 +4914,34 @@ html.remote-modal-scroll-locked {
   }
 }
 
+/* A short landscape sheet has two independent scroll owners. The settings
+   column must not make the song/transport column scroll with it. */
+@media (min-width: 700px) {
+  .playback-sheet-body {
+    grid-template-rows: minmax(0, 1fr);
+    overflow-y: hidden;
+  }
+
+  .playback-sheet-primary,
+  .playback-sheet-secondary {
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .playback-sheet-primary > * { flex: 0 0 auto; }
+  .playback-sheet-primary .player-control-row {
+    /* Let the seek track yield the last few pixels at the two-column floor;
+       the fixed transport targets must remain inside their scroll owner. */
+    grid-template-columns: 44px 48px 44px minmax(0, 1fr) var(--playback-song-actions-width, 44px);
+  }
+  .playback-sheet-primary:not(.is-scrollable) {
+    overflow-y: hidden;
+    touch-action: pan-x;
+  }
+}
+
 @media (orientation: landscape) {
   .playback-sheet {
     padding: max(8px, var(--remote-safe-area-top))
@@ -4936,7 +4952,7 @@ html.remote-modal-scroll-locked {
 
   .playback-sheet-panel {
     width: min(880px, 100%);
-    max-height: calc(100dvh - max(8px, var(--remote-safe-area-top)) - max(8px, var(--remote-safe-area-bottom)));
+    max-height: calc(calc(var(--legacy-vh, 1vh) * 100) - max(8px, var(--remote-safe-area-top)) - max(8px, var(--remote-safe-area-bottom))); max-height: calc(calc(var(--legacy-vh, 1dvh) * 100) - max(8px, var(--remote-safe-area-top)) - max(8px, var(--remote-safe-area-bottom)));
     padding-bottom: 0;
     border-bottom: var(--modal-card-border);
   }
@@ -5648,7 +5664,7 @@ html[data-remote-transport="internet-pending"] body {
 .internet-remote-join-overlay.hidden { display: none; }
 
 /* Public QR uses the same bounded frame as the Host, without text padding. */
-.remote-access-qr-placeholder:has(svg) {
+.remote-access-qr-placeholder:is(:has(svg), :where([data-legacy-has~="r21"])) {
   width: 100%;
   height: 100%;
   min-width: 0;
@@ -5749,3 +5765,59 @@ button:active { transform: none !important; }
 
 .request-panel :is(.message, .search-message, .tag-browser-message, .gatcha-message) { display: none; }
 .request-panel .search-empty { grid-column: 1 / -1; }
+
+/* Vertical motion belongs to the dock/header. The body retains native scrolling. */
+.playback-dock,
+.playback-sheet-status-header { touch-action: pan-x; }
+.playback-sheet-status-header,
+.playback-sheet-status-header *,
+.playback-dock-meta,
+.playback-sheet-summary-copy :is(#current-meta, #current-requester, #current-cache-state) {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+.playback-sheet.is-gesture-measuring .playback-sheet-panel {
+  transition: none;
+  transform: none;
+}
+:root[data-ui-client="remote"] .playback-sheet.is-gesturing .playback-sheet-panel {
+  position: fixed;
+  left: var(--sheet-gesture-left);
+  top: var(--sheet-gesture-top);
+  width: var(--sheet-gesture-width);
+  height: var(--sheet-gesture-height);
+  max-height: none;
+  margin: 0;
+  border-radius: var(--sheet-gesture-radius) var(--sheet-gesture-radius)
+    var(--sheet-gesture-bottom-radius) var(--sheet-gesture-bottom-radius);
+  transform: translateY(var(--sheet-gesture-translate));
+  transition: none;
+  will-change: transform, clip-path;
+}
+.playback-sheet.is-gesturing .playback-sheet-backdrop {
+  transition: none;
+}
+.playback-sheet.is-gesturing .playback-sheet-body {
+  flex: 0 0 auto;
+  width: var(--sheet-gesture-content-width);
+  height: var(--sheet-gesture-body-height);
+  pointer-events: none;
+}
+.playback-sheet.is-gesturing .playback-sheet-status-header {
+  width: var(--sheet-gesture-header-width);
+  flex-shrink: 0;
+  background: transparent;
+}
+.playback-sheet.is-gesturing :is(.playback-sheet-status-label, .playback-sheet-status-actions) {
+  pointer-events: none;
+}
+.playback-sheet.is-gesturing .playback-sheet-collapse {
+  position: relative;
+}
+.playback-sheet-dock-ghost {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 68px;
+  pointer-events: none;
+}

@@ -60,6 +60,8 @@ class Node {
     }
   }
   removeAttribute(name) { delete this.attributes[name]; }
+  hasAttribute(name) { return Object.hasOwn(this.attributes, name); }
+  getAttribute(name) { return this.attributes[name] ?? null; }
   append(...nodes) { nodes.forEach((node) => this.appendChild(node)); }
   appendChild(node) { node.parentNode = this; this.children.push(node); return node; }
   replaceChildren(...nodes) {
@@ -71,7 +73,7 @@ class Node {
     const match = (node) => {
       if (selector.startsWith(".")) return node.classList.contains(selector.slice(1));
       const data = selector.match(/^\\[data-([^\\]]+)\\]$/);
-      return data ? Object.hasOwn(node.attributes, \`data-\${data[1]}\`) : false;
+      return data ? Object.hasOwn(node.attributes, \`data-\${data[1]}\`) : node.tagName.toLowerCase() === selector;
     };
     const visit = (node) => {
       for (const child of node.children) {
@@ -144,6 +146,19 @@ renderer.renderOverlay(second, { ...scene.overlay, rows: [] }, { primaryIndex: n
 const emptyBadgeHidden = badge.classList.contains("is-empty");
 renderer.renderOverlay(second, scene.overlay);
 const audienceNumbers = [...second.querySelector("[data-delay-list]").children].map(node => node.querySelector(".queue-badge-label").textContent);
+const downloadScene = { ...scene, revision: 9, displayMetadata: { cacheStatus: "downloading", cacheDetail: "<b>Preparing</b>", cacheProgress: null } };
+renderer.renderScene(root, downloadScene, { showDownloadProgress: true });
+const download = root.querySelector(".presentation-download-status"), progress = download.querySelector("progress");
+const indeterminate = !progress.hidden && !progress.hasAttribute("value");
+renderer.renderScene(root, { ...downloadScene, displayMetadata: { ...downloadScene.displayMetadata, cacheProgress: 37.5 } }, { showDownloadProgress: true });
+const downloadPercent = progress.value, downloadVisible = !download.hidden;
+const downloadText = download.querySelector("[data-download-detail]").textContent;
+renderer.renderScene(root, { ...downloadScene, displayMetadata: { cacheStatus: "ready", cacheDetail: "Ready" } }, { showDownloadProgress: true });
+const readyHidesDownload = download.hidden;
+renderer.renderScene(root, { ...downloadScene, displayMetadata: { cacheStatus: "failed", cacheDetail: "Failed" } }, { showDownloadProgress: true });
+const failedVisible = !download.hidden && progress.hidden;
+renderer.renderScene(root, downloadScene, { showDownloadProgress: false });
+const windowedHidesDownload = download.hidden;
 process.stdout.write(JSON.stringify({
   videoPreserved: root.children[0] === video && video.src === "media/video.mp4",
   audioPreserved: root.children[1] === audio && audio.src === "media/audio.m4a",
@@ -159,6 +174,9 @@ process.stdout.write(JSON.stringify({
   cardsPreserved,
   clearedCacheStates, badgeCacheStates, consoleNumbers, consolePlayHidden, subtitleHidden, emptyBadgeHidden,
   playGlyph, errorGlyph, audienceNumbers, audiencePlayRestored: !Object.hasOwn(play.attributes, "hidden") && !badge.classList.contains("is-empty"),
+  indeterminate, downloadPercent, downloadVisible, downloadText, readyHidesDownload, failedVisible, windowedHidesDownload,
+  downloadReused: root.querySelector(".presentation-download-status") === download,
+  downloadCount: root.children.filter(node => node.classList.contains("presentation-download-status")).length,
 }));
 `);
 completed = (await runNative(this.node, ["-e", script], process.env, 5 * 1000, root));
@@ -202,6 +220,15 @@ result = (await this.run_renderer());
 assert.deepEqual(result["titleText"], "<script>bad()</script>");
 assert.ok(!contains("innerHTML", this.source));
 },
+async test_fullscreen_download_surface_reuses_nodes_and_clears_on_ready_or_exit() {
+const result = await this.run_renderer();
+assert.equal(result.indeterminate, true);
+assert.equal(result.downloadVisible, true);
+assert.equal(result.downloadPercent, 37.5);
+assert.equal(result.downloadText, "<b>Preparing</b>");
+for (const key of ["readyHidesDownload", "failedVisible", "windowedHidesDownload", "downloadReused"]) assert.equal(result[key], true, key);
+assert.equal(result.downloadCount, 1);
+},
 async test_renderer_never_constructs_or_synchronizes_media() {
 let forbidden;
 for (const forbidden of iterableValues(["createElement(\"video\")", "createElement(\"audio\")", "BroadcastChannel", "localStorage", "playbackRate", "drift", "currentTime", "mountMedia"])) {
@@ -213,4 +240,5 @@ test("PresentationRendererTest.test_rendering_reuses_overlay_and_preserves_host_
 test("PresentationRendererTest.test_song_cache_states_are_independent_and_preserve_card_nodes", async () => { const instance = Object.create(PresentationRendererTest); await instance.setUpClass(); await instance.test_song_cache_states_are_independent_and_preserve_card_nodes(); });
 test("PresentationRendererTest.test_shared_badges_preserve_play_glyph_and_console_queue_numbering", async () => { const instance = Object.create(PresentationRendererTest); await instance.setUpClass(); await instance.test_shared_badges_preserve_play_glyph_and_console_queue_numbering(); });
 test("PresentationRendererTest.test_user_content_is_assigned_as_text", async () => { const instance = Object.create(PresentationRendererTest); await instance.setUpClass(); await instance.test_user_content_is_assigned_as_text(); });
+test("PresentationRendererTest.test_fullscreen_download_surface_reuses_nodes_and_clears_on_ready_or_exit", async () => { const instance = Object.create(PresentationRendererTest); await instance.setUpClass(); await instance.test_fullscreen_download_surface_reuses_nodes_and_clears_on_ready_or_exit(); });
 test("PresentationRendererTest.test_renderer_never_constructs_or_synchronizes_media", async () => { const instance = Object.create(PresentationRendererTest); await instance.setUpClass(); await instance.test_renderer_never_constructs_or_synchronizes_media(); });

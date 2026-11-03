@@ -49,6 +49,7 @@ panel.requestFullscreen = async () => { domCalls.push('enter'); document.fullscr
 document.exitFullscreen = async () => { domCalls.push('exit'); document.fullscreenElement = null; };
 function presentationCompositionActive() {return state.presentationSession.phase !== 'inactive';}
 function renderPlayerFullscreenButton() {renders++;}
+function renderCurrentPresentationScene() {}
 function setPlayerFullscreenRemotePinned() {}
 function hideFullscreenRequestToast() {}
 function hasLocalAdvanceDelayOverlay() {return false;}

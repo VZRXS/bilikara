@@ -64,6 +64,8 @@ pub struct BilibiliLoginUpdate {
     pub message: String,
     #[serde(default)]
     pub qr_image: String,
+    #[serde(default)]
+    pub login_url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -81,6 +83,8 @@ pub struct BilibiliLoginSnapshot {
     pub message: String,
     pub data_path: String,
     pub qr_image: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub login_url: String,
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +115,7 @@ struct BilibiliLoginState {
     state: BilibiliLoginStatus,
     message: String,
     qr_image: String,
+    login_url: String,
 }
 
 impl Default for BilibiliLoginState {
@@ -119,6 +124,7 @@ impl Default for BilibiliLoginState {
             state: BilibiliLoginStatus::Idle,
             message: "未登录".to_string(),
             qr_image: String::new(),
+            login_url: String::new(),
         }
     }
 }
@@ -442,6 +448,7 @@ impl RuntimeStatusService {
             state: BilibiliLoginStatus::Starting,
             message,
             qr_image: String::new(),
+            login_url: String::new(),
         };
         self.bilibili_generation
     }
@@ -451,6 +458,12 @@ impl RuntimeStatusService {
         expected_generation: Option<u64>,
         update: BilibiliLoginUpdate,
     ) -> bool {
+        if update.login_url.len() > 4096
+            || (!update.login_url.is_empty()
+                && !crate::login_service::valid_qr_url(&update.login_url))
+        {
+            return false;
+        }
         if expected_generation.is_some_and(|value| value != self.bilibili_generation) {
             return false;
         }
@@ -458,6 +471,7 @@ impl RuntimeStatusService {
             state: update.state,
             message: update.message,
             qr_image: update.qr_image,
+            login_url: update.login_url,
         };
         true
     }
@@ -506,6 +520,11 @@ impl RuntimeStatusService {
             state,
             message,
             data_path: facts.data_path,
+            login_url: if logged_in || state != BilibiliLoginStatus::Waiting {
+                String::new()
+            } else {
+                self.bilibili_login.login_url.clone()
+            },
             qr_image: if logged_in {
                 String::new()
             } else {
@@ -613,6 +632,7 @@ mod tests {
                 state: BilibiliLoginStatus::Failed,
                 message: "stale".to_string(),
                 qr_image: String::new(),
+                login_url: String::new(),
             },
         ));
         assert_eq!(
@@ -628,6 +648,53 @@ mod tests {
     }
 
     #[test]
+    fn login_link_rejects_foreign_origins_and_resets_with_its_generation() {
+        let mut service = RuntimeStatusService::default();
+        let generation = service.begin_bilibili_login("start".into());
+        for url in [
+            "https://example.test/",
+            "http://account.bilibili.com/",
+            "https://account.bilibili.com:8443/",
+            "https://user@passport.bilibili.com/",
+        ] {
+            assert!(!service.set_bilibili_login(
+                Some(generation),
+                BilibiliLoginUpdate {
+                    state: BilibiliLoginStatus::Waiting,
+                    message: String::new(),
+                    qr_image: String::new(),
+                    login_url: url.into()
+                }
+            ));
+        }
+        assert!(service.set_bilibili_login(
+            Some(generation),
+            BilibiliLoginUpdate {
+                state: BilibiliLoginStatus::Waiting,
+                message: String::new(),
+                qr_image: String::new(),
+                login_url: "https://passport.bilibili.com/fixture".into()
+            }
+        ));
+        service.begin_bilibili_login("replacement".into());
+        assert!(
+            service
+                .bilibili_snapshot(BilibiliLoginFacts {
+                    logged_in: false,
+                    data_exists: false,
+                    data_path: String::new()
+                })
+                .login_url
+                .is_empty()
+        );
+        // Legacy FFI callers omit the additive field; no link is invented.
+        let old: BilibiliLoginUpdate =
+            serde_json::from_value(serde_json::json!({"state":"waiting","qr_image":"old"}))
+                .unwrap();
+        assert!(old.login_url.is_empty());
+    }
+
+    #[test]
     fn bilibili_snapshot_combines_owned_state_with_filesystem_facts() {
         let mut service = RuntimeStatusService::default();
         let generation = service.begin_bilibili_login("starting".to_string());
@@ -637,8 +704,15 @@ mod tests {
                 state: BilibiliLoginStatus::Waiting,
                 message: "scan".to_string(),
                 qr_image: "data:image/png;base64,abc".to_string(),
+                login_url: "https://account.bilibili.com/fixture".to_string(),
             },
         ));
+        let waiting = service.bilibili_snapshot(BilibiliLoginFacts {
+            logged_in: false,
+            data_exists: false,
+            data_path: String::new(),
+        });
+        assert_eq!(waiting.login_url, "https://account.bilibili.com/fixture");
         let logged_in = service.bilibili_snapshot(BilibiliLoginFacts {
             logged_in: true,
             data_exists: true,
@@ -647,6 +721,9 @@ mod tests {
         assert!(logged_in.logged_in);
         assert_eq!(logged_in.state, BilibiliLoginStatus::LoggedIn);
         assert!(logged_in.qr_image.is_empty());
+        assert!(logged_in.login_url.is_empty());
+        let serialized = serde_json::to_value(&logged_in).unwrap();
+        assert!(serialized.get("login_url").is_none());
 
         service.reset_bilibili_login();
         let invalid = service.bilibili_snapshot(BilibiliLoginFacts {

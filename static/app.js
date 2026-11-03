@@ -1,3 +1,4 @@
+let playbackRestartMenu = null;
 // Keep range focus cues for keyboard use without leaving them after touch input.
 document.addEventListener("pointerdown", () => {
   document.documentElement.dataset.hostInputModality = "pointer";
@@ -400,6 +401,8 @@ const state = {
   updateAutomaticEnabled: true,
   updateAutomaticAttemptedChannels: new Set(),
   startupUpdateCheckScheduled: false,
+  updatePreferenceSaveInFlight: false,
+  updatePreferencesHydration: null,
   updateCheckRequestInFlight: false,
   manualUpdateCheck: null,
   reportedLastInstall: "",
@@ -551,6 +554,7 @@ const elements = {
   bbdownLoginQrImage: document.getElementById("bbdown-login-qr-image"),
   bbdownLoginQrText: document.getElementById("bbdown-login-qr-text"),
   bbdownLoginMessage: document.getElementById("bbdown-login-message"),
+  bbdownLoginLink: document.getElementById("bbdown-login-link"),
   bbdownLoginRefresh: document.getElementById("bbdown-login-refresh"),
   cacheLimitSlider: document.getElementById("cache-limit-slider"),
   cacheLimitScale: document.getElementById("cache-limit-scale"),
@@ -954,9 +958,9 @@ function setAppMessage(message, isError = false) {
 }
 
 function fullscreenRequestNotice() {
-  return state.fullscreenRequestNotice ||= window.BilikaraIncomingRequest.create(
+  return state.fullscreenRequestNotice || (state.fullscreenRequestNotice = window.BilikaraIncomingRequest.create(
     elements.fullscreenRequestToast, t,
-  );
+  ));
 }
 
 function hideFullscreenRequestToast() {
@@ -992,7 +996,7 @@ function renderPresentationFeedback() {
   state.presentationFeedbackSnapshot = next;
   const dualScreen = state.presentationSession?.mode === "localDualScreen"
     && ["activating", "active"].includes(state.presentationSession.phase);
-  state.presentationFeedbackView ||= feedback.create(elements.presentationFeedback, t);
+  if (!state.presentationFeedbackView) state.presentationFeedbackView = feedback.create(elements.presentationFeedback, t);
   if (previous && (previous.session !== next.session || previous.item !== next.item)) {
     state.presentationFeedbackView.hide();
     state.presentationActionFeedback = null;
@@ -1020,7 +1024,7 @@ function showPresentationOperationFeedback(changes) {
     expiresAt: Date.now() + feedback.durationMs,
   }));
   state.presentationActionFeedback = feedback.recent(state.presentationActionFeedback, notices);
-  state.presentationFeedbackView ||= feedback.create(elements.presentationFeedback, t);
+  if (!state.presentationFeedbackView) state.presentationFeedbackView = feedback.create(elements.presentationFeedback, t);
   if (isAudiencePlayerSurface()) state.presentationFeedbackView.show(state.presentationActionFeedback);
   publishPresentationOutputState();
 }
@@ -1030,7 +1034,8 @@ function confirmPresentationPlaybackFeedback(session) {
     && isCurrentHostPlaybackSession(session, session.video, session.audio)
     && hostPlaybackSessionObservedPlaying(session, session.video, session.audio)) {
     session.presentationFeedbackPlayPending = false;
-    showPresentationOperationFeedback({ kind: "play", value: "" });
+    showPresentationOperationFeedback({ kind: session.presentationFeedbackPlayKind || "play", value: "" });
+    session.presentationFeedbackPlayKind = null;
   }
 }
 
@@ -1738,6 +1743,7 @@ function renderCurrentPresentationScene() {
   }
   renderer.renderScene(elements.playerFrame, currentPresentationScene(), {
     compact: !isPlayerPanelFullscreen(),
+    showDownloadProgress: isPlayerPanelFullscreen(),
     manageVisibility: false,
     now: Date.now(),
   });
@@ -1831,6 +1837,7 @@ function publishPresentationOutputState(session = state.hostPlaybackSession) {
     incomingRequest: state.presentationIncomingRequest || null,
     actionFeedback: state.presentationActionFeedback || null,
     remoteAccess: remoteAccessForPresentation(),
+    remoteMenuVisible: Boolean(window.BilikaraAndroidPresentation && state.remoteQrPinned),
     internetRemote: {
       active: Boolean(state.internetRemoteDisplay?.active),
       hint: String(state.internetRemoteDisplay?.hint || "").slice(0, 512),
@@ -3168,6 +3175,7 @@ function renderPresentationHostSurface(session = state.hostPlaybackSession) {
       || !playback.canSkip
       || state.presentationHostControlBusy;
   }
+  playbackRestartMenu?.refresh();
 }
 
 function publishPresentationPlaybackState(session = state.hostPlaybackSession) {
@@ -3807,6 +3815,53 @@ function hydrateLocalPreferences() {
   applyTheme(state.theme);
 }
 
+async function hydrateNativeUpdatePreferences() {
+  const store = globalThis.BilikaraHostUpdates?.preferences;
+  if (!store) return;
+  const saved = await store.load();
+  if (saved === null) {
+    // Migrate choices from this origin once, before the first automatic check.
+    await store.save({automatic: state.updateAutomaticEnabled, preview: state.updatePreviewEnabled});
+  } else {
+    if (!saved || Object.keys(saved).length !== 2 || typeof saved.automatic !== "boolean" || typeof saved.preview !== "boolean") {
+      throw new Error(t("service.updatePreferencesFailed"));
+    }
+    state.updateAutomaticEnabled = saved.automatic;
+    state.updatePreviewEnabled = saved.preview;
+    writeLocalPreference(storageKeys.updateAutomatic, saved.automatic);
+    writeLocalPreference(storageKeys.updatePreview, saved.preview);
+  }
+}
+
+async function saveUpdatePreference(control, key) {
+  if (state.updatePreferenceSaveInFlight) return false;
+  const checked = Boolean(control.checked);
+  state.updatePreferenceSaveInFlight = true;
+  control.setAttribute("aria-busy", "true");
+  renderUpdatePreviewControl();
+  try {
+    await state.updatePreferencesHydration;
+    const preferences = {
+      automatic: key === "automatic" ? checked : state.updateAutomaticEnabled,
+      preview: key === "preview" ? checked : state.updatePreviewEnabled,
+    };
+    await globalThis.BilikaraHostUpdates?.preferences?.save(preferences);
+    state.updateAutomaticEnabled = preferences.automatic;
+    state.updatePreviewEnabled = preferences.preview;
+    writeLocalPreference(storageKeys.updateAutomatic, preferences.automatic);
+    writeLocalPreference(storageKeys.updatePreview, preferences.preview);
+    return true;
+  } catch {
+    state.updateAutomaticEnabled = false;
+    setAppMessage(t("service.updatePreferencesFailed"), true);
+    return false;
+  } finally {
+    state.updatePreferenceSaveInFlight = false;
+    control.removeAttribute("aria-busy");
+    renderUpdatePreviewControl();
+  }
+}
+
 function normalizeRequestSubview(value, fallback = "quick") {
   const candidate = String(value || "").trim().toLowerCase();
   return ["quick", "search", "discover", "sources"].includes(candidate)
@@ -3865,7 +3920,7 @@ function activeRequestScrollOwner() {
   if (subview === "sources") {
     const mode = normalizeSourcesMode(state.sourcesMode);
     if (mode === "favorites") {
-      return elements.sourcesFavoritesScroll;
+      return state.favlistBrowseSelectedFolderId ? elements.favlistSongResults : elements.sourcesFavoritesScroll;
     }
     return state.followBrowseSelectedUid
       ? elements.followSongResults
@@ -4025,6 +4080,9 @@ function syncHostSearchCounts() {
     const total = known ? data.matched_count : search.items.length;
     const label = known ? "pagination.countTotal" : "pagination.countReturned";
     summary.textContent = t(label, {count: total});
+    const container = mode === "shared" ? elements.larkSearchResults : elements.searchResults;
+    const record = androidBrowsePages.get(container);
+    if (record && !record.frame.hidden) record.pager.update(androidBrowseOptions(container, search.items, t("search.empty")));
   }
 }
 
@@ -4157,6 +4215,7 @@ function activateRequestSubview(subview, { focusTab = false } = {}) {
   }
   rememberRequestScrollPosition();
   const changed = state.requestSubview !== nextSubview;
+  if (changed) leaveSourceEditors();
   if (changed) {
     closeRequestDetailForNavigation();
   }
@@ -4230,6 +4289,7 @@ function activateSourcesMode(mode, { focusTab = false } = {}) {
   }
   rememberRequestScrollPosition();
   const changed = state.sourcesMode !== nextMode;
+  if (changed) leaveSourceEditors();
   if (changed) {
     closeRequestDetailForNavigation();
   }
@@ -4743,7 +4803,7 @@ function rememberHostWorkspaceScrollPosition(workspace = state.activeHostWorkspa
   if (!normalized || !elements.hostWorkspaceRegion) {
     return;
   }
-  state.hostWorkspaceScrollPositions ||= {};
+  if (!state.hostWorkspaceScrollPositions) state.hostWorkspaceScrollPositions = {};
   state.hostWorkspaceScrollPositions[normalized] = Math.max(
     0,
     Number(elements.hostWorkspaceRegion.scrollTop || 0),
@@ -4778,6 +4838,10 @@ function activateHostWorkspace(workspace, { inputOrigin = "pointer" } = {}) {
     rememberRequestScrollPosition();
   }
   const changed = state.activeHostWorkspace !== nextWorkspace;
+  if (changed) {
+    leaveSourceEditors();
+    state.sessionUserEditor?.setMode("");
+  }
   const interactiveActivation = inputOrigin === "pointer" || inputOrigin === "keyboard";
   if (changed && interactiveActivation) {
     beginHostWorkspaceTransition(state.activeHostWorkspace, nextWorkspace);
@@ -5223,20 +5287,73 @@ function setStageControlTrayOpen(open, { restoreFocus = false, moveFocus = true 
   }
 }
 
+// Shared by desktop and Android: wrap only complete titles, otherwise use
+// the existing short-overflow motion or continuous long-title loop.
+function measureCurrentTitle({allowTwoLines, titleHeightSlack}) {
+  const titleNode = elements.currentTitle;
+  const titleTextNode = elements.currentTitleText || titleNode;
+  const titleStyle = titleNode ? window.getComputedStyle(titleNode) : null;
+  const titleTextStyle = titleTextNode ? window.getComputedStyle(titleTextNode) : null;
+  const titlePaintPadding = (parseFloat(titleTextStyle?.paddingTop) || 0)
+    + (parseFloat(titleTextStyle?.paddingBottom) || 0);
+  const titleLineHeight = parseFloat(titleStyle?.lineHeight || "0") || 0;
+  const titleAvailableWidth = titleNode?.clientWidth || 0;
+  const titleNaturalWidth = titleTextNode?.scrollWidth || 0;
+  const titleOverflowDistance = Math.max(0, titleNaturalWidth - titleAvailableWidth);
+  const titleOverflowsSingleLine = titleOverflowDistance > 1;
+  let titleNaturalWrappedHeight = titleLineHeight;
+  if (allowTwoLines && titleOverflowsSingleLine && titleNode && titleTextNode) {
+    titleNode.classList.add("is-measuring-two-line");
+    titleNaturalWrappedHeight = titleTextNode.scrollHeight - titlePaintPadding;
+    titleNode.classList.remove("is-measuring-two-line");
+  }
+  const titleFitsWithinTwoLines = titleNaturalWrappedHeight <= (titleLineHeight * 2) + 1;
+  const titleCanUseTwoLines = allowTwoLines
+    && titleOverflowsSingleLine
+    && titleFitsWithinTwoLines
+    && titleLineHeight > 0
+    && titleHeightSlack >= titleLineHeight + 4;
+  titleNode?.classList.toggle("is-two-line", titleCanUseTwoLines);
+  if (titleNode) {
+    titleNode.dataset.visibleLines = titleCanUseTwoLines ? "2" : "1";
+    titleNode.dataset.singleLineOverflow = String(titleOverflowsSingleLine);
+    titleNode.dataset.fitsWithinTwoLines = String(titleFitsWithinTwoLines);
+    titleNode.dataset.naturalWrappedHeight = String(Math.round(titleNaturalWrappedHeight * 100) / 100);
+    titleNode.dataset.heightSlack = String(Math.round(titleHeightSlack * 100) / 100);
+  }
+  if (titleOverflowsSingleLine && !titleCanUseTwoLines && titleNode) {
+    const durationSeconds = Math.max(6, Math.min(16, 3 + (titleOverflowDistance / 28)));
+    titleNode.style.setProperty("--host-current-title-marquee-offset", `${-titleOverflowDistance}px`);
+    titleNode.style.setProperty("--host-current-title-marquee-duration", `${durationSeconds}s`);
+    titleNode.classList.add("is-scrolling");
+    globalThis.BilikaraTextMarquee?.configure(titleNode, titleTextNode, titleAvailableWidth, titleNaturalWidth);
+  } else {
+    globalThis.BilikaraTextMarquee?.reset(titleNode, titleTextNode);
+  }
+  return titleCanUseTwoLines;
+}
+
 function measurePersistentStage() {
   state.stageMeasureFrame = null;
   if (!elements.appShell || !elements.leftColumn || !elements.playerPanel) {
     return "compact";
   }
+  const titleNode = elements.currentTitle;
+  titleNode?.classList.remove("is-two-line", "is-scrolling");
+  titleNode?.style.removeProperty("--host-current-title-marquee-offset");
+  titleNode?.style.removeProperty("--host-current-title-marquee-duration");
+  if (titleNode) {
+    titleNode.dataset.visibleLines = "1";
+  }
   if (globalThis.BilikaraHostLayout?.isPortrait()) {
-    globalThis.BilikaraTextMarquee?.reset(elements.currentTitle, elements.currentTitleText);
+    // Phone controls scroll independently, leaving room for a complete two-line title.
+    measureCurrentTitle({allowTwoLines: true, titleHeightSlack: Infinity});
     const changed = elements.appShell.dataset.stageControlsLayout !== "inline";
     elements.appShell.dataset.stageMode = "portrait";
     elements.appShell.dataset.stageControlsLayout = "inline";
     elements.appShell.dataset.stageControlDensity = "compact";
     elements.playerPanel.style.removeProperty("--stage-frame-inline-size");
     elements.playerPanel.style.removeProperty("--stage-frame-block-size");
-    elements.currentTitle?.classList.remove("is-two-line", "is-scrolling");
     if (changed || !state.stageControlTrayOpen) {
       clearStageControlTrayPosition();
       setStageControlTrayOpen(true, {moveFocus: false});
@@ -5245,14 +5362,6 @@ function measurePersistentStage() {
     return "portrait";
   }
   const narrowShell = Boolean(window.matchMedia?.("(max-width: 1179px)")?.matches);
-  const titleNode = elements.currentTitle;
-  const titleTextNode = elements.currentTitleText || titleNode;
-  titleNode?.classList.remove("is-two-line", "is-scrolling");
-  titleNode?.style.removeProperty("--host-current-title-marquee-offset");
-  titleNode?.style.removeProperty("--host-current-title-marquee-duration");
-  if (titleNode) {
-    titleNode.dataset.visibleLines = "1";
-  }
   const presentationActive = presentationCompositionActive();
   const presentationContextChanged = state.stageMeasuredPresentationActive !== presentationActive;
   state.stageMeasuredPresentationActive = presentationActive;
@@ -5320,22 +5429,6 @@ function measurePersistentStage() {
           ? fullFrameWithInlineControlsFits && inlineFitSlack >= fitHysteresis
           : fullFrameWithInlineControlsFits;
   const controlLayout = inlineControls ? "inline" : "popup";
-  const titleStyle = titleNode ? window.getComputedStyle(titleNode) : null;
-  const titleTextStyle = titleTextNode ? window.getComputedStyle(titleTextNode) : null;
-  const titlePaintPadding = (parseFloat(titleTextStyle?.paddingTop) || 0)
-    + (parseFloat(titleTextStyle?.paddingBottom) || 0);
-  const titleLineHeight = parseFloat(titleStyle?.lineHeight || "0") || 0;
-  const titleAvailableWidth = titleNode?.clientWidth || 0;
-  const titleNaturalWidth = titleTextNode?.scrollWidth || 0;
-  const titleOverflowDistance = Math.max(0, titleNaturalWidth - titleAvailableWidth);
-  const titleOverflowsSingleLine = titleOverflowDistance > 1;
-  let titleNaturalWrappedHeight = titleLineHeight;
-  if (!narrowShell && titleOverflowsSingleLine && titleNode && titleTextNode) {
-    titleNode.classList.add("is-measuring-two-line");
-    titleNaturalWrappedHeight = titleTextNode.scrollHeight - titlePaintPadding;
-    titleNode.classList.remove("is-measuring-two-line");
-  }
-  const titleFitsWithinTwoLines = titleNaturalWrappedHeight <= (titleLineHeight * 2) + 1;
   const popupHeightSlack = innerHeight - (
     headerHeight
       + variantHeight
@@ -5345,28 +5438,7 @@ function measurePersistentStage() {
       + (panelGap * persistentRowGapCount)
   );
   const titleHeightSlack = inlineControls ? inlineHeightSlack : popupHeightSlack;
-  const titleCanUseTwoLines = !narrowShell
-    && titleOverflowsSingleLine
-    && titleFitsWithinTwoLines
-    && titleLineHeight > 0
-    && titleHeightSlack >= titleLineHeight + 4;
-  titleNode?.classList.toggle("is-two-line", titleCanUseTwoLines);
-  if (titleNode) {
-    titleNode.dataset.visibleLines = titleCanUseTwoLines ? "2" : "1";
-    titleNode.dataset.singleLineOverflow = String(titleOverflowsSingleLine);
-    titleNode.dataset.fitsWithinTwoLines = String(titleFitsWithinTwoLines);
-    titleNode.dataset.naturalWrappedHeight = String(Math.round(titleNaturalWrappedHeight * 100) / 100);
-    titleNode.dataset.heightSlack = String(Math.round(titleHeightSlack * 100) / 100);
-  }
-  if (titleOverflowsSingleLine && !titleCanUseTwoLines && titleNode) {
-    const durationSeconds = Math.max(6, Math.min(16, 3 + (titleOverflowDistance / 28)));
-    titleNode.style.setProperty("--host-current-title-marquee-offset", `${-titleOverflowDistance}px`);
-    titleNode.style.setProperty("--host-current-title-marquee-duration", `${durationSeconds}s`);
-    titleNode.classList.add("is-scrolling");
-    globalThis.BilikaraTextMarquee?.configure(titleNode, titleTextNode, titleAvailableWidth, titleNaturalWidth);
-  } else {
-    globalThis.BilikaraTextMarquee?.reset(titleNode, titleTextNode);
-  }
+  const titleCanUseTwoLines = measureCurrentTitle({allowTwoLines: !narrowShell, titleHeightSlack});
   if (titleCanUseTwoLines) {
     headerHeight = elements.playerPanel.querySelector(".panel-head")?.getBoundingClientRect().height || headerHeight;
   }
@@ -6403,10 +6475,12 @@ async function fetchState() {
   const previousOffsetMs = currentAvOffsetMs();
   const previousData = state.data;
   const sequence = ++state.remoteAccessRequestSequence;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
   let response, payload;
   try {
     response = await fetch("/api/state", {
-      headers: clientHeaders(), signal: AbortSignal.timeout(10_000),
+      headers: clientHeaders(), signal: controller.signal,
     });
     payload = await parseApiResponse(response, "/api/state");
     if (!response.ok || !payload.ok || !validatedHostSnapshotIdentity(payload.data)) {
@@ -6418,9 +6492,12 @@ async function fetchState() {
       : ["TimeoutError", "AbortError"].includes(error.name) ? "timeout" : "network";
     updateRemoteAccessFailure({ kind, status: response?.status }, sequence);
     throw error;
+  } finally {
+    clearTimeout(timeout);
   }
   updateRemoteAccessFailure(null, sequence);
   if (!acceptHostStateSnapshot(payload.data)) {
+    if (state.hasValidStateResponse) scheduleStartupAppUpdateCheck();
     return false;
   }
   state.hasValidStateResponse = true;
@@ -6511,10 +6588,11 @@ async function searchCatalog(query, {offset = 0, limit = 80} = {}) {
 }
 
 
-async function fetchD1Browse({ kind = "name", letter = "", query = "", tag = "", locale = "", limit = 100 } = {}) {
+async function fetchD1Browse({ kind = "name", letter = "", query = "", tag = "", locale = "", offset = 0, limit = 100 } = {}) {
   const params = new URLSearchParams();
   params.set("kind", kind === "artist" ? "artist" : "name");
   params.set("limit", String(limit));
+  if (offset) params.set("offset", String(offset));
   const normalizedLetter = String(letter || "").trim().toUpperCase();
   const normalizedQuery = String(query || "").trim();
   const normalizedTag = String(tag || "").trim();
@@ -6618,7 +6696,7 @@ async function fetchD1CategoryBrowse({ tags = [], query = "", offset = 0, limit 
   };
 }
 
-async function fetchGatchaBrowse(uid = "", query = "") {
+async function fetchGatchaBrowse(uid = "", query = "", page = null) {
   const params = new URLSearchParams();
   const normalizedUid = String(uid || "").trim();
   const normalizedQuery = String(query || "").trim();
@@ -6628,6 +6706,7 @@ async function fetchGatchaBrowse(uid = "", query = "") {
   if (normalizedQuery) {
     params.set("q", normalizedQuery);
   }
+  if (page) { params.set("offset", String(page.offset)); params.set("limit", String(page.limit)); }
   const queryString = params.toString();
   const response = await fetch(`/api/gatcha/browse${queryString ? `?${queryString}` : ""}`, {
     cache: "no-store",
@@ -6640,7 +6719,7 @@ async function fetchGatchaBrowse(uid = "", query = "") {
   return payload.data || { owners: [], items: [] };
 }
 
-async function fetchGatchaFavlistBrowse(folderId = "", query = "") {
+async function fetchGatchaFavlistBrowse(folderId = "", query = "", page = null) {
   const params = new URLSearchParams();
   const normalizedFolderId = String(folderId || "").trim();
   const normalizedQuery = String(query || "").trim();
@@ -6650,6 +6729,7 @@ async function fetchGatchaFavlistBrowse(folderId = "", query = "") {
   if (normalizedQuery) {
     params.set("q", normalizedQuery);
   }
+  if (page) { params.set("offset", String(page.offset)); params.set("limit", String(page.limit)); }
   const queryString = params.toString();
   const response = await fetch(`/api/gatcha/favlist/browse${queryString ? `?${queryString}` : ""}`, {
     cache: "no-store",
@@ -7184,11 +7264,13 @@ async function confirmDeveloperAction() {
 }
 
 function hideSearchResults() {
+  hideAndroidBrowsePages(elements.searchResults);
   elements.searchResults.innerHTML = "";
   elements.searchResults.classList.add("hidden");
 }
 
 function hideLarkSearchResults() {
+  hideAndroidBrowsePages(elements.larkSearchResults);
   if (!elements.larkSearchResults) {
     return;
   }
@@ -7660,7 +7742,87 @@ function createSearchResultItem(item, options = {}) {
   return row;
 }
 
+// Android browse results reuse Remote's page model, gestures, footer and cache.
+// Desktop keeps its existing scrolling/append workflow.
+const androidBrowsePages = new WeakMap();
+function androidBrowseEnabled() {
+  return document.documentElement.dataset.hostPlatform === "android" && Boolean(window.BilikaraResultPager);
+}
+function androidBrowseFrame(container, renderPage) {
+  let record = androidBrowsePages.get(container);
+  if (!record) {
+    const frame = document.createElement("div");
+    frame.className = "android-result-frame";
+    container.before(frame); frame.append(container);
+    record = {frame, renderPage};
+    record.pager = window.BilikaraResultPager.create(container, {
+      footer: frame, translate: t, reportError: message => setAppMessage(message, true),
+      renderItems: (items, message, target = container) => record.renderPage(items, message, target),
+    });
+    androidBrowsePages.set(container, record);
+  }
+  record.renderPage = renderPage;
+  record.frame.hidden = container.classList.contains("hidden");
+  return record;
+}
+function hideAndroidBrowsePages(container) {
+  const record = androidBrowsePages.get(container);
+  if (record) { record.frame.hidden = true; record.pager.hide(); }
+}
+function androidBrowseOptions(container, items, emptyText) {
+  const owner = requestDetailOriginForContainer(container)?.key;
+  let data = {}, key = owner, loading = false, load = null;
+  if (owner === "shared" || owner === "local") {
+    const mode = state.searchModeState[owner];
+    data = mode.pageData || {}; loading = mode.loading;
+    key = JSON.stringify([owner, mode.submitted, mode.seq, owner === "shared" ? state.larkSearchSeq : 0]);
+    const query = mode.submitted;
+    if (typeof data.has_more === "boolean") load = page => (owner === "shared" ? searchCatalog : searchGatchaCache)(query, page);
+  } else if (owner === "name" || owner === "artist") {
+    const mode = d1BrowseModeState(owner);
+    data = mode.itemData || {}; loading = state.d1BrowseLoading;
+    const query = {kind:owner, letter:mode.letter, tag:mode.tag, locale:mode.locale, query:mode.query};
+    key = JSON.stringify([query, mode.seq]);
+    if (typeof data.has_more === "boolean") load = page => fetchD1Browse({...query, ...page});
+  } else if (owner === "categories") {
+    const category = selectedCategoryBrowseDefinition();
+    data = {matched_count:state.categoryBrowseMatchedCount, has_more:state.categoryBrowseHasMore};
+    loading = state.categoryBrowseLoading;
+    const query = {tags:category?.tags || [], query:state.categoryBrowseQuery};
+    key = JSON.stringify([query, state.categoryBrowseSeq]);
+    load = page => fetchD1CategoryBrowse({...query, ...page});
+  } else if (owner === "followed" || owner === "favorites") {
+    const favorites = owner === "favorites";
+    data = (favorites ? state.favlistBrowseData : state.followBrowseData) || {};
+    const selected = favorites ? state.favlistBrowseSelectedFolderId : state.followBrowseSelectedUid;
+    const query = String(data.query || ""); loading = favorites ? state.favlistBrowseLoading : state.followBrowseLoading;
+    key = JSON.stringify([owner, selected, query, favorites ? state.favlistBrowseSeq : state.followBrowseSeq]);
+    if (typeof data.has_more === "boolean") load = page => (favorites ? fetchGatchaFavlistBrowse : fetchGatchaBrowse)(selected, query, page);
+  }
+  const limited = !load;
+  const total = !limited && Number.isSafeInteger(data.matched_count) && data.matched_count >= 0
+    ? data.matched_count : limited || data.has_more === false ? items.length : null;
+  return {key, items, emptyText, total, hasMore:Boolean(data.has_more), limited, load, loading, language:state.language,
+    readSize:["shared","local"].includes(owner) ? 72 : undefined};
+}
+function androidGridPages(container, items, key, renderPage, {loading = false, emptyText = ""} = {}) {
+  const record = androidBrowseFrame(container, renderPage);
+  const signature = JSON.stringify([key, items]);
+  if (record.signature !== signature) { record.signature = signature; record.items = items; }
+  record.pager.update({key, items:record.items, total:items.length, pageSize:12,
+    limited:true, loading, emptyText, language:state.language});
+}
+
 function renderSearchResultItems(container, items, emptyText = t("search.empty")) {
+  if (container && androidBrowseEnabled() && requestDetailOriginForContainer(container)) {
+    container.classList.remove("hidden");
+    const record = androidBrowseFrame(container, (page, message, target) => renderSearchResultPage(target, page, message, container));
+    record.pager.update(androidBrowseOptions(container, items, emptyText));
+    return;
+  }
+  renderSearchResultPage(container, items, emptyText);
+}
+function renderSearchResultPage(container, items, emptyText, originContainer = container) {
   if (!container) {
     return;
   }
@@ -7675,7 +7837,7 @@ function renderSearchResultItems(container, items, emptyText = t("search.empty")
     return;
   }
 
-  const requestOrigin = requestDetailOriginForContainer(container);
+  const requestOrigin = requestDetailOriginForContainer(originContainer);
   items.forEach((item) => {
     const row = createSearchResultItem(item, { requestOrigin });
     container.appendChild(row);
@@ -7883,16 +8045,16 @@ function d1BrowseItemKey(item) {
 
 function d1BrowseModeState(kind = state.d1BrowseKind || state.discoverMode) {
   const normalized = kind === "artist" ? "artist" : "name";
-  state.d1BrowseModes[normalized] ||= {
+  if (!state.d1BrowseModes[normalized]) state.d1BrowseModes[normalized] = {
     level: "alphabet", letter: "", tag: "", locale: "", query: "", data: null,
     tagData: null, itemData: null, loading: false, seq: 0, error: "",
     scrollPositions: { alphabet: 0, tags: 0, items: 0 },
   };
   const mode = state.d1BrowseModes[normalized];
   mode.level = normalizedD1BrowseLevel(mode.level);
-  mode.scrollPositions ||= { alphabet: 0, tags: 0, items: 0 };
-  mode.tagData ??= mode.level === "tags" ? mode.data : null;
-  mode.itemData ??= mode.level === "items" ? mode.data : null;
+  if (!mode.scrollPositions) mode.scrollPositions = { alphabet: 0, tags: 0, items: 0 };
+  if (mode.tagData == null) mode.tagData = mode.level === "tags" ? mode.data : null;
+  if (mode.itemData == null) mode.itemData = mode.level === "items" ? mode.data : null;
   return mode;
 }
 
@@ -8040,6 +8202,9 @@ function renderD1BrowseView() {
     queryInput.placeholder = d1BrowseSearchPlaceholder(kind);
   }
   if (alphabet) {
+    const collapsed = globalThis.document?.documentElement?.dataset?.hostPlatform === "android" && level !== "alphabet";
+    alphabet.classList.toggle("hidden", collapsed);
+    view.classList.toggle("is-browsing-tags", collapsed);
     alphabet.innerHTML = "";
     D1_BROWSE_LETTERS.forEach((letter) => {
       const button = document.createElement("button");
@@ -8072,9 +8237,27 @@ function renderD1BrowseView() {
     current.textContent = parts.join(" / ");
   }
   if (tagGrid) {
-    tagGrid.innerHTML = "";
+    if (!androidBrowseEnabled()) tagGrid.innerHTML = "";
     tagGrid.classList.toggle("hidden", level === "items");
-    if (level !== "items") {
+    if (level === "items") hideAndroidBrowsePages(tagGrid);
+    if (androidBrowseEnabled() && level !== "items") {
+      const emptyText = state.d1BrowseLoading ? t("search.browseLoading")
+        : level === "alphabet" ? d1BrowsePickLetterText(kind) : t("search.browseNoTags");
+      androidGridPages(tagGrid, level === "alphabet" || state.d1BrowseLoading ? [] : tags,
+        JSON.stringify([kind, mode.letter, mode.query, mode.seq]), (entries, message, target) => {
+          target.replaceChildren();
+          if (!entries.length) {
+            const empty = document.createElement("div"); empty.className = "search-empty"; empty.textContent = message; target.append(empty);
+          }
+          for (const entry of entries) {
+            const button = document.createElement("button"); button.type = "button"; button.className = "tag-browser-tag";
+            button.dataset.tag = String(entry.tag || ""); button.dataset.locale = String(entry.locale || "");
+            const name = document.createElement("span"); name.className = "tag-browser-tag-name"; name.textContent = String(entry.tag || "");
+            const count = document.createElement("span"); count.className = "tag-browser-tag-count";
+            count.textContent = t("search.browseTagCount", {count:Number(entry.count || 0)}); button.append(name, count); target.append(button);
+          }
+        }, {loading:state.d1BrowseLoading, emptyText});
+    } else if (level !== "items") {
       if (state.d1BrowseLoading) {
         const loading = document.createElement("div");
         loading.className = "search-empty";
@@ -8113,6 +8296,7 @@ function renderD1BrowseView() {
     if (level === "items") {
       renderSearchResultItems(results, items, state.d1BrowseLoading ? t("search.browseLoading") : t("search.larkNoResults"));
     } else {
+      hideAndroidBrowsePages(results);
       results.innerHTML = "";
       results.classList.add("hidden");
     }
@@ -8808,10 +8992,13 @@ function renderCategoryBrowseView() {
   home?.classList.toggle("hidden", Boolean(selected));
   detail?.classList.toggle("hidden", !selected);
   if (grid && !selected) {
-    grid.innerHTML = "";
-    categories.forEach((category) => {
-      grid.appendChild(createCategoryBrowseCard(category));
+    if (androidBrowseEnabled()) androidGridPages(grid, categories, "categories-home", (entries, _message, target) => {
+      target.replaceChildren(...entries.map(category => createCategoryBrowseCard(category)));
     });
+    else {
+      grid.innerHTML = "";
+      categories.forEach(category => grid.appendChild(createCategoryBrowseCard(category)));
+    }
   }
   if (!selected) {
     window.BilikaraBrowseSearch?.reset(view.querySelector("[data-category-browse-search]"));
@@ -8956,30 +9143,111 @@ function followOwnerDisplayName(owner) {
 }
 
 const sourceRemovalEditors = new Map();
+function sourceBrowseReady(source) {
+  const editor = sourceRemovalEditors.get(source);
+  return !(source === "uid" ? state.followBrowseLoading : state.favlistBrowseLoading)
+    && !editor?.interacting && !editor?.pending;
+}
+function leaveSourceEditors() {
+  for (const editor of sourceRemovalEditors.values()) editor?.leave();
+}
 function sourceRemovalEditor(source) {
   if (!sourceRemovalEditors.has(source)) {
     sourceRemovalEditors.set(source, window.BilikaraSourceRemoval?.create(
       source === "uid" ? elements.followUpGrid : elements.favlistGrid, {
         source, translate: t, reportError: message => setAppMessage(message, true),
-        remove: async target => {
-          await apiPost("/api/gatcha/source/remove", target);
+        message: setAppMessage,
+        bindHelp: info => bindHostContextualInfo(info, { actionHelp: false }),
+        onIdle: () => window.BilikaraSourceStatus?.flush(source === "uid" ? "uids" : "favorites"),
+        post: body => apiPost("/api/gatcha/sources/edit", body),
+        reload: async () => {
           state.gatchaCandidate = null;
           renderGatchaWorkspace();
-          if (source === "uid") await loadFollowBrowse({ uid: "", query: "" });
-          else await loadFavlistBrowse({ folderId: "", query: "" });
-          setAppMessage(t("sources.removedLocal"));
+          if (source === "uid") {
+            state.followBrowseRenderSignature = "";
+            await loadFollowBrowse({ uid: state.followBrowseSelectedUid, query: state.followBrowseQuery, keepQuery: true });
+          } else {
+            state.favlistBrowseRenderSignature = "";
+            await loadFavlistBrowse({ folderId: state.favlistBrowseSelectedFolderId, query: state.favlistBrowseQuery, keepQuery: true });
+          }
         },
+        refresh: () => source === "uid" ? renderFollowBrowse() : renderFavlistBrowse(),
+        confirm: (editor, captured, message) => {
+          openConfirm({type: "remove-sources", sourceEditor: editor, captured,
+            message, anchorElement: editor.trashSlot, anchorSide: "above",
+            primaryLabel: t("sources.removeSelected")});
+          elements.confirmCancel.focus({preventScroll:true});
+        },
+        closeConfirmation: editor => {
+          if (state.confirmIntent?.sourceEditor === editor) closeConfirm();
+        },
+        renderPage: (rows, message, container, editor) => renderHostSourceCardPage(container, rows, message, source, editor),
       },
     ));
   }
   return sourceRemovalEditors.get(source);
 }
 
+function renderHostSourceCardPage(container, rows, emptyText, source, editor) {
+  const favorites = source === "favlist", nodes = [];
+  for (const entry of rows) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = favorites ? "follow-up-button favlist-browse-button" : "follow-up-button";
+    button.classList.toggle("source-card-placeholder", Boolean(entry.placeholder));
+    button.dataset[favorites ? "folderId" : "uid"] = entry.id;
+    button.title = entry.title;
+    const name = document.createElement("span");
+    name.className = favorites ? "follow-up-name favlist-browse-name" : "follow-up-name";
+    name.textContent = entry.title;
+    const count = document.createElement("span");
+    count.className = favorites ? "follow-up-count favlist-browse-count" : "follow-up-count";
+    count.textContent = entry.placeholder ? "" : t(favorites ? "favlist.mediaCount" : "follow.countSongs", {
+      count: Number((favorites ? entry.media_count : entry.count) || entry.count || 0),
+    });
+    button.append(name, count);
+    if (entry.avatar_url) {
+      const avatar = document.createElement("img");
+      avatar.className = "follow-up-avatar";
+      avatar.alt = ""; avatar.loading = "lazy"; avatar.referrerPolicy = "no-referrer";
+      avatar.src = entry.avatar_url; button.append(avatar);
+    }
+    window.BilikaraSourceStatus?.syncCard(button, state.data?.gatcha, t);
+    button.dataset.contentSignature = JSON.stringify([entry, state.language,
+      window.BilikaraSourceStatus.sourceState(state.data?.gatcha, favorites ? {folderId:entry.id} : {uid:entry.id})]);
+    nodes.push(editor?.card(button, entry) || button);
+  }
+  if (!nodes.length) {
+    const empty = document.createElement("div"); empty.className = "search-empty";
+    empty.textContent = emptyText; nodes.push(empty);
+  }
+  // Keep capture, focus and unchanged card nodes through progress-only snapshots.
+  for (const node of [...container.children]) if (!nodes.includes(node)) node.remove();
+  nodes.forEach((node, index) => {
+    if (container.children[index] !== node) container.insertBefore(node, container.children[index] || null);
+  });
+}
+
+function updateHostSourceEditor(source, entries, data, {loading, detail, filter, emptyText}) {
+  const editor = sourceRemovalEditor(source);
+  const records = entries.map(entry => ({...entry,
+    id:String(source === "uid" ? entry.uid : entry.id),
+    placeholder:Boolean(entry.placeholder),
+    title:source === "uid" ? followOwnerDisplayName(entry)
+      : String(entry.title || (entry.placeholder ? t("favlist.folder") + " " + entry.folder_id : entry.id || t("favlist.folder"))),
+  }));
+  editor?.update({records, version:data?.source_order_version, editable:data?.source_order_editable,
+    editRevision:state.data?.gatcha?.source_edit_revisions?.[source === "uid" ? "uids" : "favorites"],
+    count:data?.source_order_count, loading,
+    active:!detail && state.requestSubview === "sources"
+      && state.sourcesMode === (source === "uid" ? "uids" : "favorites")
+      && state.activeHostWorkspace === "request", filter, language:state.language, emptyText});
+}
+
 function renderFollowBrowse() {
   if (!elements.followUpGrid || !elements.followSongResults) {
     return;
   }
-  sourceRemovalEditor("uid")?.sync();
   const owners = Array.isArray(state.followBrowseData?.owners) ? state.followBrowseData.owners : [];
   const items = Array.isArray(state.followBrowseData?.items) ? state.followBrowseData.items : [];
   const hasSelectedUid = Boolean(state.followBrowseSelectedUid);
@@ -8991,10 +9259,15 @@ function renderFollowBrowse() {
     selected: state.followBrowseSelectedUid,
     sourceState: window.BilikaraSourceStatus.sourceState(state.data?.gatcha, {uid: state.followBrowseSelectedUid}),
     owners,
+    editorState: [state.followBrowseData?.source_order_version, state.followBrowseData?.source_order_editable],
     placeholders,
     items,
     language: state.language,
     query: state.followBrowseQuery,
+  });
+  updateHostSourceEditor("uid", [...placeholders, ...owners], state.followBrowseData, {
+    loading:state.followBrowseLoading, detail:hasSelectedUid, filter:state.followBrowseQuery,
+    emptyText:state.followBrowseLoading ? t("follow.loadingOwners") : t("follow.noOwners"),
   });
   if (signature === state.followBrowseRenderSignature) {
     return;
@@ -9006,48 +9279,7 @@ function renderFollowBrowse() {
 
   if (!hasSelectedUid) {
     window.BilikaraBrowseSearch?.reset(elements.followSearchForm);
-    elements.followUpGrid.innerHTML = "";
     elements.followSongResults.innerHTML = "";
-    if (!owners.length && !placeholders.length) {
-      const empty = document.createElement("div");
-      empty.className = "search-empty";
-      empty.textContent = state.followBrowseLoading ? t("follow.loadingOwners") : t("follow.noOwners");
-      elements.followUpGrid.appendChild(empty);
-    } else {
-      [...placeholders, ...owners].forEach((owner) => {
-        const displayName = followOwnerDisplayName(owner);
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = owner.placeholder ? "follow-up-button source-card-placeholder" : "follow-up-button";
-        button.dataset.uid = String(owner.uid || "");
-        button.title = displayName;
-
-        const name = document.createElement("span");
-        name.className = "follow-up-name";
-        name.textContent = displayName;
-
-        const count = document.createElement("span");
-        count.className = "follow-up-count";
-        // A queued source has no count yet; its status label fills this line.
-        count.textContent = owner.placeholder ? "" : t("follow.countSongs", { count: Number(owner.count || 0) });
-
-        button.append(name, count);
-        window.BilikaraSourceStatus?.syncCard(button, state.data?.gatcha, t);
-
-        if (owner.avatar_url) {
-          const avatar = document.createElement("img");
-          avatar.className = "follow-up-avatar";
-          avatar.src = owner.avatar_url;
-          avatar.alt = "";
-          avatar.loading = "lazy";
-          avatar.referrerPolicy = "no-referrer";
-          button.append(avatar);
-        }
-
-        elements.followUpGrid.appendChild(sourceRemovalEditor("uid")?.card(button,
-          { id: button.dataset.uid, title: button.title, placeholder: owner.placeholder }) || button);
-      });
-    }
     setFollowBrowseMessage("");
     return;
   }
@@ -9124,16 +9356,16 @@ async function refreshFollowBrowseAfterGatchaUidAdd(uid = "") {
 
 function selectedFavlistFolder() {
   const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
-  return folders.find((folder) => String(folder.id || "") === state.favlistBrowseSelectedFolderId) || null;
+  return window.BilikaraSourceStatus.selectedFolder(state.data?.gatcha, folders, state.favlistBrowseSelectedFolderId);
 }
 
 function renderFavlistBrowse() {
   if (!elements.favlistGrid || !elements.favlistSongResults) {
     return;
   }
-  sourceRemovalEditor("favlist")?.sync();
   const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
   const items = Array.isArray(state.favlistBrowseData?.items) ? state.favlistBrowseData.items : [];
+  elements.sourcesFavoritesScroll?.classList.toggle("is-detail-view", Boolean(state.favlistBrowseSelectedFolderId));
   const placeholders = window.BilikaraSourceStatus?.queuedSources?.(state.data?.gatcha, "favorites",
     folders.map((folder) => folder?.folder_id || folder?.id)) || [];
   const signature = JSON.stringify({
@@ -9141,10 +9373,15 @@ function renderFavlistBrowse() {
     selected: state.favlistBrowseSelectedFolderId,
     sourceState: window.BilikaraSourceStatus.sourceState(state.data?.gatcha, {folderId: state.favlistBrowseSelectedFolderId}),
     folders,
+    editorState: [state.favlistBrowseData?.source_order_version, state.favlistBrowseData?.source_order_editable],
     placeholders,
     items,
     language: state.language,
     query: state.favlistBrowseQuery,
+  });
+  updateHostSourceEditor("favlist", [...placeholders, ...folders], state.favlistBrowseData, {
+    loading:state.favlistBrowseLoading, detail:Boolean(state.favlistBrowseSelectedFolderId), filter:state.favlistBrowseQuery,
+    emptyText:state.favlistBrowseLoading ? t("favlist.loadingFolders") : t("favlist.noBrowseFolders"),
   });
   if (signature === state.favlistBrowseRenderSignature) {
     return;
@@ -9157,53 +9394,7 @@ function renderFavlistBrowse() {
 
   if (!hasSelectedFolder) {
     window.BilikaraBrowseSearch?.reset(elements.favlistSearchForm);
-    elements.favlistGrid.innerHTML = "";
     elements.favlistSongResults.innerHTML = "";
-    if (!folders.length && !placeholders.length) {
-      const empty = document.createElement("div");
-      empty.className = "search-empty";
-      empty.textContent = state.favlistBrowseLoading ? t("favlist.loadingFolders") : t("favlist.noBrowseFolders");
-      elements.favlistGrid.appendChild(empty);
-    } else {
-      [...placeholders, ...folders].forEach((folder) => {
-        const folderId = String(folder.id || "").trim();
-        const title = String(folder.title
-          || (folder.placeholder ? `${t("favlist.folder")} ${folder.folder_id}` : folderId || t("favlist.folder"))).trim();
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = folder.placeholder
-          ? "follow-up-button favlist-browse-button source-card-placeholder"
-          : "follow-up-button favlist-browse-button";
-        button.dataset.folderId = folderId;
-        button.title = title;
-
-        const name = document.createElement("span");
-        name.className = "follow-up-name favlist-browse-name";
-        name.textContent = title;
-
-        const count = document.createElement("span");
-        count.className = "follow-up-count favlist-browse-count";
-        count.textContent = folder.placeholder
-          ? ""
-          : t("favlist.mediaCount", { count: Number(folder.media_count || folder.count || 0) });
-
-        button.append(name, count);
-        window.BilikaraSourceStatus?.syncCard(button, state.data?.gatcha, t);
-
-        if (folder.avatar_url) {
-          const avatar = document.createElement("img");
-          avatar.className = "follow-up-avatar favlist-browse-avatar";
-          avatar.src = folder.avatar_url;
-          avatar.alt = "";
-          avatar.loading = "lazy";
-          avatar.referrerPolicy = "no-referrer";
-          button.append(avatar);
-        }
-
-        elements.favlistGrid.appendChild(sourceRemovalEditor("favlist")?.card(button,
-          { id: folderId, title, placeholder: folder.placeholder }) || button);
-      });
-    }
     setFavlistBrowseMessage("");
     return;
   }
@@ -9256,9 +9447,8 @@ async function loadFavlistBrowse({
       return;
     }
     state.favlistBrowseData = nextData;
-    state.favlistBrowseSelectedFolderId = String(
-      nextData.selected_folder_id ?? state.favlistBrowseSelectedFolderId ?? "",
-    );
+    state.favlistBrowseSelectedFolderId = window.BilikaraSourceStatus.selectedFolderId(
+      state.data?.gatcha, nextData.selected_folder_id, state.favlistBrowseSelectedFolderId);
     if (!keepQuery && elements.favlistSearchQuery) {
       elements.favlistSearchQuery.value = String(nextData.query || "");
     }
@@ -9294,19 +9484,10 @@ async function refreshFavlistBrowseAfterPull() {
 function scheduleFavlistBrowseReloadFromState(previousSnapshot, nextSnapshot) {
   const previousUpdatedAt = Number(previousSnapshot?.gatcha_favlist_updated_at || 0);
   const nextUpdatedAt = Number(nextSnapshot?.gatcha_favlist_updated_at || 0);
-  if (!state.favlistBrowseData || state.favlistBrowseLoading || !nextUpdatedAt || nextUpdatedAt <= previousUpdatedAt) {
+  if (!state.favlistBrowseData || !nextUpdatedAt || nextUpdatedAt <= previousUpdatedAt) {
     return;
   }
-  if (state.favlistBrowseReloadTimer) {
-    window.clearTimeout(state.favlistBrowseReloadTimer);
-  }
-  state.favlistBrowseReloadTimer = window.setTimeout(() => {
-    state.favlistBrowseReloadTimer = null;
-    if (!state.favlistBrowseData || state.favlistBrowseLoading) {
-      return;
-    }
-    refreshFavlistBrowseAfterPull();
-  }, 0);
+  window.BilikaraSourceStatus?.queueReload("favorites", () => sourceBrowseReady("favlist"), refreshFavlistBrowseAfterPull);
 }
 
 async function previewGatchaUidAddFromInput(input, {
@@ -9779,13 +9960,17 @@ function syncGatchaTaskTerminalMessage() {
         : status === "partial"
           ? t("gatcha.refreshPartial")
           : t("gatcha.refreshFailed");
-    const message = task.last_result?.operation === "remove_source"
-      ? t("sources.removedLocal") : localizedGatchaTaskMessage(task.last_message, status) || fallback;
+    const operation = task.last_result?.operation;
+    const message = operation === "source_order" ? t("sources.orderSaved")
+      : operation === "source_cleanup" ? t(status === "partial" ? "sources.removedCleanupPending" : "sources.cleanupDone")
+      : ["remove_source", "remove_sources"].includes(operation)
+        ? t(status === "partial" ? "sources.removedCleanupPending" : "sources.removedLocal")
+        : localizedGatchaTaskMessage(task.last_message, status) || fallback;
     const detail = task.last_error ? `${message} ${task.last_error}` : message;
     setGatchaUidMessage(detail, status !== "success");
   }
   // Each committed source becomes visible while the rest of the batch runs.
-  if ((completed || changedSources.includes("uids")) && (state.followBrowseData || state.followBrowseLoading)) window.BilikaraSourceStatus?.queueReload("uids", () => !state.followBrowseLoading, () => {
+  if ((completed || changedSources.includes("uids")) && (state.followBrowseData || state.followBrowseLoading)) window.BilikaraSourceStatus?.queueReload("uids", () => sourceBrowseReady("uid"), () => {
     state.followBrowseRenderSignature = "";
     void loadFollowBrowse({
       uid: state.followBrowseSelectedUid,
@@ -9793,7 +9978,7 @@ function syncGatchaTaskTerminalMessage() {
       keepQuery: true,
     });
   });
-  if ((completed || changedSources.includes("favorites")) && (state.favlistBrowseData || state.favlistBrowseLoading)) window.BilikaraSourceStatus?.queueReload("favorites", () => !state.favlistBrowseLoading, () => {
+  if ((completed || changedSources.includes("favorites")) && (state.favlistBrowseData || state.favlistBrowseLoading)) window.BilikaraSourceStatus?.queueReload("favorites", () => sourceBrowseReady("favlist"), () => {
     state.favlistBrowseRenderSignature = "";
     void loadFavlistBrowse({
       folderId: state.favlistBrowseSelectedFolderId,
@@ -9824,6 +10009,9 @@ function renderGatchaUidFace() {
     return;
   }
   state.gatchaUidFaceRenderSignature = signature;
+  if (state.gatchaFavlistIntent) {
+    setTextContent(document.getElementById("gatcha-favlist-count"), t("favlist.folderCount", {count:state.gatchaFavlistIntent.folders.length}));
+  }
 
   setTextContent(elements.gatchaTag, t("gatcha.tag"));
   setTextContent(elements.gatchaTitle, t("gatcha.title"));
@@ -9886,11 +10074,17 @@ function disconnectClient() {
 function render() {
   if (state.desktopClosing) return;
   window.BilikaraAnnouncements?.sync();
-  if (window.BilikaraNativeSession?.syncSessionChoice()) return;
+  const sessionChoicePending = window.BilikaraNativeSession?.syncSessionChoice();
   const data = state.data;
   if (!data) {
     return;
   }
+  // Runtime preferences and LAN invitations do not depend on the restored
+  // session. Keep them visible while Rust waits for the Host's choice, without
+  // mounting its player or rendering the unresolved queue/roster.
+  renderCacheSettings(data.bbdown, data.ffmpeg, data.cache_policy);
+  renderRemoteAccess(data.remote_access);
+  if (sessionChoicePending) return;
   if (window.BilikaraPresentationFeedback) renderPresentationFeedback();
 
   const currentItem = data.current_item;
@@ -9904,9 +10098,7 @@ function render() {
   renderRequesterSelect(data.session_users || []);
   renderCurrentRatingButton(currentItem);
   renderSessionUsers(data.session_users || []);
-  renderCacheSettings(data.bbdown, data.ffmpeg, data.cache_policy);
   renderPlaybackRepairControls(currentItem);
-  renderRemoteAccess(data.remote_access);
   renderHostWorkspaceSelection();
   renderGatchaWorkspace();
 
@@ -10056,6 +10248,7 @@ function setRemoteQrPinned(pinned, { dismissTransient = false } = {}) {
     document.dispatchEvent(new CustomEvent("bilikara:remote-access-menu", {
       detail: { expanded: state.remoteQrPinned },
     }));
+    if (window.BilikaraAndroidPresentation) publishPresentationOutputState();
     // Flush the replacement layout while transitions are disabled. Future
     // hover entries can animate, but this menu close must stay instantaneous.
     if (popup) void popup.offsetWidth;
@@ -10076,7 +10269,11 @@ function syncRemoteQrPreviewLayer() {
   const popup = elements.remoteMiniPopover;
   const control = elements.remoteMiniControl;
   if (!popup || !control || typeof popup.showPopover !== "function") return;
-  const preview = !state.remoteQrPinned && !control.classList.contains("is-qr-dismissed")
+  // A phone tap opens the full menu. A focus-triggered desktop preview can
+  // otherwise cover its trigger between pointerdown and pointerup.
+  const preview = window.matchMedia("(hover: hover) and (pointer: fine)").matches
+    && !window.BilikaraHostLayout?.isPortrait()
+    && !state.remoteQrPinned && !control.classList.contains("is-qr-dismissed")
     && control.matches(":hover, :focus-within");
   const sequence = popup.__bilikaraPreviewSequence = (popup.__bilikaraPreviewSequence || 0) + 1;
   if (preview) {
@@ -10730,6 +10927,7 @@ function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
     downloadState,
     bbdownTitle,
     login: bbdown?.login || { logged_in: Boolean(bbdown?.logged_in) },
+    sessionChoicePending: Boolean(state.data?.session_flags?.startup_choice_pending),
     language: state.language,
   });
 
@@ -10925,11 +11123,11 @@ function renderUpdatePreviewControl() {
   const accessibleText = eligible ? updateIndicatorAccessibleText(update) : "";
   if (elements.updateAutomaticCheckbox) {
     elements.updateAutomaticCheckbox.checked = state.updateAutomaticEnabled;
-    elements.updateAutomaticCheckbox.disabled = false;
+    elements.updateAutomaticCheckbox.disabled = state.updatePreferenceSaveInFlight;
   }
   if (elements.updatePreviewCheckbox) {
     elements.updatePreviewCheckbox.checked = state.updatePreviewEnabled;
-    elements.updatePreviewCheckbox.disabled = busy;
+    elements.updatePreviewCheckbox.disabled = busy || state.updatePreferenceSaveInFlight;
   }
   if (elements.updateCheckButton) {
     elements.updateCheckButton.disabled = busy;
@@ -10972,7 +11170,10 @@ function renderUpdatePreviewControl() {
       // The action already communicates checking; channel changes are not errors.
       statusText = "";
     } else {
-      statusText = String(update?.error || update?.message || "");
+      statusText = globalThis.document?.documentElement?.dataset?.hostPlatform === "android" && !update?.error
+        ? update?.state === "up_to_date" ? t("service.noUpdateAvailable")
+          : update?.supported === false ? t("service.featureUnavailable") : String(update?.message || "")
+        : String(update?.error || update?.message || "");
     }
     setTextContent(elements.appUpdateStatus, statusText);
   }
@@ -10990,9 +11191,9 @@ function renderPlaybackRepairControls(currentItem) {
     : t("service.noCurrentSong");
 }
 
-function renderBBDownLogin(login) {
+function renderBBDownLogin(login, { startIfNeeded = true } = {}) {
   const loggedIn = Boolean(login?.logged_in);
-  const signature = JSON.stringify(login || {});
+  const signature = JSON.stringify([login || {}, state.bbdownLoginRequesting]);
   if (signature !== state.bbdownLoginRenderSignature) {
     state.bbdownLoginRenderSignature = signature;
     if (elements.bbdownLoginButton) {
@@ -11005,6 +11206,22 @@ function renderBBDownLogin(login) {
     }
 
     setClassToggle(elements.bbdownLoginPanel, "hidden", loggedIn);
+    if (elements.bbdownLoginLink) {
+      let loginUrl = "";
+      const desktopLogin = document.documentElement.dataset.hostPlatform === "desktop"
+        && Boolean(window.BilikaraDesktopPlatform?.openBilibiliLogin);
+      try {
+        const url = new URL(login?.login_url || "");
+        if (!state.bbdownLoginRequesting && !loggedIn && login?.state === "waiting" && url.href.length <= 4096 && url.protocol === "https:"
+          && ["account.bilibili.com", "passport.bilibili.com"].includes(url.hostname)
+          && !url.username && !url.password && (!url.port || url.port === "443")) loginUrl = url.href;
+      } catch { /* Older Hosts do not publish a login link. */ }
+      if (desktopLogin && !loggedIn && !state.bbdownLoginRequesting) loginUrl = "https://account.bilibili.com/login";
+      elements.bbdownLoginLink.hidden = !loginUrl;
+      document.getElementById("bbdown-login-alternative").hidden = !loginUrl;
+      if (loginUrl) elements.bbdownLoginLink.href = loginUrl;
+      else elements.bbdownLoginLink.removeAttribute("href");
+    }
     if (!loggedIn) {
       const qrImage = String(login?.qr_image || "");
       const qrText = String(login?.qr_text || "");
@@ -11028,16 +11245,31 @@ function renderBBDownLogin(login) {
   }
 
   syncHostAccountPresentation();
+  syncAndroidLoginLabel();
   if (loggedIn) {
     return;
   }
-  maybeStartBBDownLogin(login);
+  if (startIfNeeded) maybeStartBBDownLogin(login);
+}
+
+function syncAndroidLoginLabel() {
+  if (document.documentElement.dataset.hostPlatform !== "android") return;
+  const button = elements.bbdownLoginButton;
+  const loggedIn = Boolean(state.data?.bbdown?.login?.logged_in || state.data?.bbdown?.logged_in);
+  if (!loggedIn) delete button.dataset.logoutArmed;
+  setTextContent(button.querySelector(".bbdown-login-label"), t(loggedIn
+    ? button.dataset.logoutArmed === "true" ? "service.logout" : "service.loggedIn"
+    : "service.notLoggedIn"));
 }
 
 function maybeStartBBDownLogin(login, options = {}) {
+  // The settings view can render before the restored session is resolved.
+  // Defer login side effects until Rust admits them; ordinary LAN QR rendering
+  // uses the existing snapshot and needs no provider request.
+  if (state.data?.session_flags?.startup_choice_pending) return;
   const loginState = String(login?.state || "idle");
   if (loginState !== "failed") state.bbdownExpiredRetryHandled = false;
-  if (!state.cacheSettingsOpen || state.bbdownLoginRequesting || login?.logged_in) {
+  if (!state.cacheSettingsOpen || state.bbdownLoginRequesting || state.bbdownWebLoginRequesting || login?.logged_in) {
     return;
   }
   // Refresh only the backend's explicit expiry result. Network/API failures
@@ -11063,7 +11295,7 @@ function maybeStartBBDownLogin(login, options = {}) {
 }
 
 async function startBBDownLogin(options = {}) {
-  if (state.bbdownLoginRequesting) return;
+  if (state.bbdownLoginRequesting || state.bbdownWebLoginRequesting) return;
   state.bbdownLoginRequesting = true;
   const controls = [elements.bbdownLoginButton, elements.bbdownLoginRefresh]
     .filter(Boolean).map(button => ({button, disabled: button.disabled}));
@@ -11071,6 +11303,9 @@ async function startBBDownLogin(options = {}) {
     button.disabled = true;
     button.setAttribute("aria-busy", "true");
   }
+  // QR and browser login belong to the same generation. Remove the previous
+  // link immediately, including while a manual or automatic refresh is pending.
+  renderBBDownLogin(state.data?.bbdown?.login, { startIfNeeded: false });
   try {
     await apiPostStateSnapshot("/api/bbdown/login/start", {
       force: Boolean(options.force),
@@ -11084,6 +11319,7 @@ async function startBBDownLogin(options = {}) {
       button.disabled = disabled;
       button.removeAttribute("aria-busy");
     }
+    renderBBDownLogin(state.data?.bbdown?.login, { startIfNeeded: false });
   }
 }
 
@@ -15484,11 +15720,13 @@ function beginHostPlaybackSessionOwnershipClaim(session) {
 
 function replaceHostPlayerView(...nodes) {
   const overlay = playerDelayOverlay();
+  const download = elements.playerFrame.querySelector(".presentation-download-status");
   const announcement = elements.presentationHostAnnouncement;
   elements.playerFrame.replaceChildren(...nodes);
   if (overlay) {
     elements.playerFrame.appendChild(overlay);
   }
+  if (download) elements.playerFrame.appendChild(download);
   if (announcement) {
     elements.playerFrame.appendChild(announcement);
   }
@@ -16226,6 +16464,16 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
             }
           }
         }
+        // The existing ordered seek-to-zero + play pair is the shared Restart
+        // affordance. Classify only confirmed adjacent commands on this same
+        // playback owner; ordinary seeks and delayed/unrelated plays stay distinct.
+        if (globalThis.BilikaraPresentationFeedback?.isRestartPair?.(playbackSession.presentationFeedbackPreviousControl, command)) {
+          playbackSession.presentationFeedbackPlayKind = "restart";
+          playbackSession.presentationFeedbackPlayPending = true;
+          confirmPresentationPlaybackFeedback(playbackSession);
+        }
+        playbackSession.presentationFeedbackPreviousControl = { action, seq, item_id: commandItemId,
+          playback_generation: expectedPlaybackGeneration, target_seconds: command.target_seconds, at: Date.now() };
       }
     }
   }
@@ -16239,7 +16487,7 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
 }
 
 async function ackRemotePlayerControl(seq) {
-  const pending = state.playerControlAckInFlight ??= new Set();
+  const pending = state.playerControlAckInFlight ?? (state.playerControlAckInFlight = new Set());
   if (pending.has(seq)) return;
   pending.add(seq);
   try {
@@ -17129,7 +17377,9 @@ function openConfirm(intent) {
 function closeConfirm({ restoreFocus = true } = {}) {
   closeCacheAdvancedInfo();
   const focusElement = state.confirmIntent?.focusElement;
+  const sourceEditor = state.confirmIntent?.sourceEditor;
   state.confirmIntent = null;
+  if (sourceEditor) sourceEditor.confirmation = null;
   state.confirmPopoverRenderSignature = "";
   renderConfirmPopover();
   if (restoreFocus && focusElement?.isConnected && typeof focusElement.focus === "function") {
@@ -17138,6 +17388,7 @@ function closeConfirm({ restoreFocus = true } = {}) {
 }
 
 function confirmPopoverAnchorElement(intent) {
+  if (intent?.anchorElement?.isConnected) return intent.anchorElement;
   const anchorElementId = String(intent?.anchorElementId || "").trim();
   return anchorElementId ? document.getElementById(anchorElementId) : null;
 }
@@ -17167,6 +17418,7 @@ function confirmPopoverRenderSignature(intent) {
     y: Math.round(Number(intent.y || 0)),
     anchorElementId: String(intent.anchorElementId || ""),
     anchorAlign: String(intent.anchorAlign || ""),
+    anchorSide: String(intent.anchorSide || ""),
     anchorGap: Math.round(Number(intent.anchorGap || 0)),
     anchorLeft: anchorRect ? Math.round(anchorRect.left) : 0,
     anchorTop: anchorRect ? Math.round(anchorRect.top) : 0,
@@ -17198,7 +17450,7 @@ function confirmPopoverPlacement(intent, width, popoverHeight) {
     }
 
     const aboveTop = anchorRect.top - popoverHeight - anchorGap;
-    if (rawTop + popoverHeight > window.innerHeight - margin && aboveTop >= margin) {
+    if ((intent.anchorSide === "above" || rawTop + popoverHeight > window.innerHeight - margin) && aboveTop >= margin) {
       rawTop = aboveTop;
     }
   }
@@ -17255,7 +17507,8 @@ function renderConfirmPopover() {
   const hideMessage = Boolean(intent.hideMessage);
   const isExport = intent.type === "export-history";
   const title = isExport ? t("history.exportTitle")
-    : intent.type === "install-app-update" ? t("service.appUpdate") : "";
+    : intent.type === "install-app-update" ? t("service.appUpdate")
+      : intent.type === "remove-sources" ? t("sources.removeSelected") : "";
   if (elements.confirmTitle) {
     elements.confirmTitle.textContent = title;
     elements.confirmTitle.classList.toggle("hidden", !title);
@@ -17581,10 +17834,9 @@ function openGatchaFavlistModal(uid, payload, { messageTarget = "gatcha" } = {})
     messageTarget,
     focusElement: document.activeElement,
   };
-  elements.gatchaFavlistModalText.textContent = t("favlist.chooseForUid", {
-    uid: payload?.uid || uid,
-    count: payload?.public_folder_count || folders.length,
-  });
+  elements.gatchaFavlistModalText.textContent = "";
+  elements.gatchaFavlistModalText.classList.add("hidden");
+  document.getElementById("gatcha-favlist-count").textContent = t("favlist.folderCount", {count:folders.length});
   elements.gatchaFavlistOptions.innerHTML = "";
   folders.forEach((folder) => {
     elements.gatchaFavlistOptions.appendChild(renderGatchaFavlistOption(folder));
@@ -18781,16 +19033,18 @@ async function requestAppUpdateCheck({ automatic = false, force = false } = {}) 
     ) {
       return false;
     }
-    state.updateAutomaticAttemptedChannels.add(channel);
   }
   if (state.updateCheckRequestInFlight) {
+    if (automatic) state.startupUpdateCheckScheduled = false;
     return false;
   }
   const currentUpdate = appUpdateStatus();
   if (isAppUpdateBusy(currentUpdate)) {
+    if (automatic) state.startupUpdateCheckScheduled = false;
     return false;
   }
 
+  if (automatic) state.updateAutomaticAttemptedChannels.add(channel);
   state.updateCheckRequestInFlight = true;
   if (!automatic) {
     state.updateManualVisibleChannel = "";
@@ -18807,6 +19061,10 @@ async function requestAppUpdateCheck({ automatic = false, force = false } = {}) 
     }, { timeoutMs: appUpdateCheckTimeoutMs });
     return true;
   } catch (error) {
+    if (automatic && error?.code === "update_busy") {
+      state.updateAutomaticAttemptedChannels.delete(channel);
+      state.startupUpdateCheckScheduled = false;
+    }
     if (!automatic) {
       state.manualUpdateCheck = null;
       setAppMessage(error?.message || t("service.updateFailed"), true);
@@ -18823,6 +19081,7 @@ function scheduleStartupAppUpdateCheck() {
   if (state.startupUpdateCheckScheduled || !state.hasValidStateResponse) {
     return false;
   }
+  if (state.updateCheckRequestInFlight || isAppUpdateBusy()) return false;
   state.startupUpdateCheckScheduled = true;
   if (!state.updateAutomaticEnabled) {
     return false;
@@ -19778,7 +20037,7 @@ async function handleLarkSearchSubmit(event) {
     });
     if (freshItems.length) {
       collectedItems.push(...freshItems);
-      appendSearchResultItems(elements.larkSearchResults, freshItems);
+      if (!androidBrowseEnabled()) appendSearchResultItems(elements.larkSearchResults, freshItems);
     }
     if (state.larkSearchSeq !== searchSeq) {
       return;
@@ -19788,6 +20047,7 @@ async function handleLarkSearchSubmit(event) {
     }
     modeState.pageData = page;
     modeState.items = collectedItems;
+    if (androidBrowseEnabled() && collectedItems.length) renderSearchResultItems(elements.larkSearchResults, collectedItems);
     modeState.message = collectedItems.length
       ? (partialFailure ? t("search.larkFoundPartial", { count: collectedItems.length }) : "")
       : partialFailure
@@ -19821,6 +20081,7 @@ async function handleLarkSearchSubmit(event) {
 }
 
 async function loadMoreHostSearchResults() {
+  if (androidBrowseEnabled()) return;
   for (const [source, container] of [["local", elements.searchResults], ["shared", elements.larkSearchResults]]) {
     const mode = state.searchModeState[source];
     const data = mode.pageData;
@@ -19972,20 +20233,24 @@ elements.dismissBackupButton.addEventListener("click", () => {
   dismissBackupBanner();
 });
 
-elements.backupBanner.addEventListener("mouseenter", () => {
+elements.backupBanner.addEventListener("pointerenter", (event) => {
+  if (!cacheAdvancedInfoSupportsHover(event)) return;
   pauseBackupBannerTimer();
 });
 
-elements.backupBanner.addEventListener("mouseleave", () => {
+elements.backupBanner.addEventListener("pointerleave", (event) => {
+  if (!cacheAdvancedInfoSupportsHover(event)) return;
   resumeBackupBannerTimer();
 });
 
-elements.dismissBackupButton.addEventListener("mouseenter", () => {
+elements.dismissBackupButton.addEventListener("pointerenter", (event) => {
+  if (!cacheAdvancedInfoSupportsHover(event)) return;
   state.backupDismissHover = true;
   updateBackupDismissButton();
 });
 
-elements.dismissBackupButton.addEventListener("mouseleave", () => {
+elements.dismissBackupButton.addEventListener("pointerleave", (event) => {
+  if (!cacheAdvancedInfoSupportsHover(event)) return;
   state.backupDismissHover = false;
   updateBackupDismissButton();
 });
@@ -20149,13 +20414,14 @@ elements.remoteMiniTrigger?.addEventListener("focus", () => {
   scheduleTopControlPopoverPositionSync();
 });
 
-elements.remoteMiniControl?.addEventListener("mouseenter", () => {
+elements.remoteMiniControl?.addEventListener("pointerenter", (event) => {
+  if (!cacheAdvancedInfoSupportsHover(event)) return;
   elements.remoteMiniControl?.classList.remove("is-qr-dismissed");
   syncRemoteQrPreviewLayer();
   scheduleTopControlPopoverPositionSync();
 });
 
-elements.remoteMiniControl?.addEventListener("mouseleave", () => {
+elements.remoteMiniControl?.addEventListener("pointerleave", () => {
   syncRemoteQrPreviewLayer();
 });
 elements.remoteMiniControl?.addEventListener("focusout", () => {
@@ -20196,6 +20462,41 @@ elements.presentationHostDisplayList?.addEventListener("click", (event) => {
   selectPresentationHostDisplay(option.dataset.presentationHostDisplayId || "");
 });
 
+function hostRestartContext(requirePresentation = true) {
+  const item = state.data?.current_item, generation = state.data?.playback_generation;
+  return { key: `${item?.id}:${item?.item_incarnation_id}:${generation}`,
+    itemId: item?.id, generation, title: item?.display_title || item?.title,
+    enabled: Boolean(item && (!requirePresentation || presentationCompositionActive()) && !state.presentationHostControlBusy && state.hostPlaybackSession?.readyCommitted
+      && isCurrentHostPlaybackSession(state.hostPlaybackSession)) };
+}
+function setHostRestartBusy(busy) {
+  state.presentationHostControlBusy = busy;
+  renderPresentationHostSurface();
+}
+async function restartHostPlayback(context) {
+  await globalThis.BilikaraPlaybackRestart.restart({ context,
+    isCurrent: () => hostRestartContext(false).key === context.key,
+    post: async (url, payload) => {
+      const outcome = await apiPostExactStateCommand(url, payload);
+      // Host-originated responses can precede their identical SSE snapshot.
+      // Consume accepted controls now; duplicate snapshots retain the FIFO guard.
+      if (outcome.snapshotAccepted) render();
+      return outcome;
+    } });
+  setFormMessage(t("player.restartSent"));
+}
+playbackRestartMenu = globalThis.BilikaraPlaybackRestart?.create({
+  extraHintControls: [{button: elements.playerFullscreenButton,
+    enabled: () => document.documentElement.dataset.hostPlatform === "android" && !isPlayerPanelFullscreen()}],
+  hoverHints: true,
+  alwaysInline: true,
+  firstUse: globalThis.BilikaraPlaybackRestart.firstUseStore?.("host", tauriInvoke("presentation")) || null,
+  anchor: elements.presentationHostNext, iconSource: elements.presentationHostBack,
+  getContext: hostRestartContext, label: t,
+  onBusy: setHostRestartBusy, onRestart: restartHostPlayback,
+  onError: () => setFormMessage(t("player.restartFailed"), true),
+});
+
 document.querySelectorAll("[data-presentation-host-action]").forEach((button) => {
   button.addEventListener("click", () => {
     handlePresentationHostControl(button.dataset.presentationHostAction || "", button)
@@ -20225,17 +20526,61 @@ elements.presentationIdentifyButton?.addEventListener("click", () => {
 });
 
 elements.bbdownLoginButton?.addEventListener("click", async () => {
+  if (elements.bbdownLoginButton.disabled) return;
   const loggedIn = Boolean(state.data?.bbdown?.login?.logged_in || state.data?.bbdown?.logged_in);
   if (!loggedIn) {
     await startBBDownLogin({ force: true });
     return;
   }
+  if (document.documentElement.dataset.hostPlatform === "android"
+      && elements.bbdownLoginButton.dataset.logoutArmed !== "true") {
+    elements.bbdownLoginButton.dataset.logoutArmed = "true";
+    syncAndroidLoginLabel();
+    return;
+  }
+  const button = elements.bbdownLoginButton;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
   try {
     await apiPostStateSnapshot("/api/bbdown/logout");
     setAppMessage(t("service.bbdownLoggedOut"));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
+  } finally {
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+    syncAndroidLoginLabel();
+  }
+});
+
+elements.bbdownLoginLink?.addEventListener("click", async event => {
+  event.preventDefault();
+  const link = elements.bbdownLoginLink;
+  if (link.hidden || !link.hasAttribute("href") || link.getAttribute("aria-busy") === "true") return;
+  const url = link.href;
+  link.setAttribute("aria-busy", "true");
+  const desktop = document.documentElement.dataset.hostPlatform === "desktop";
+  const controls = desktop ? [elements.bbdownLoginButton, elements.bbdownLoginRefresh]
+    .filter(Boolean).map(button => ({button, disabled: button.disabled})) : [];
+  if (desktop) state.bbdownWebLoginRequesting = true;
+  for (const {button} of controls) { button.disabled = true; button.setAttribute("aria-busy", "true"); }
+  try {
+    if (document.documentElement.dataset.hostPlatform === "android") {
+      if (!window.BilikaraAndroidPlatform?.openLoginLink) throw new Error(t("service.loginLinkUnavailable"));
+      await window.BilikaraAndroidPlatform.openLoginLink(url);
+    } else if (desktop) {
+      await window.BilikaraDesktopPlatform.openBilibiliLogin();
+    } else window.open(url, "_blank", "noopener,noreferrer");
+  } catch (error) { setAppMessage(desktop && typeof error === "string" ? error : t("service.loginLinkUnavailable"), true); }
+  finally {
+    if (desktop) state.bbdownWebLoginRequesting = false;
+    for (const {button, disabled} of controls) { button.disabled = disabled; button.removeAttribute("aria-busy"); }
+    link.removeAttribute("aria-busy");
+    if (desktop) {
+      try { await fetchState(); }
+      catch (error) { setAppMessage(error.message || t("error.stateFailed"), true); }
+    }
   }
 });
 
@@ -20316,8 +20661,7 @@ elements.resetOffsetCheckbox?.addEventListener("change", async (event) => {
 
 elements.updatePreviewCheckbox?.addEventListener("change", async (event) => {
   const hadVisibleUpdate = shouldPresentCurrentChannelUpdate();
-  state.updatePreviewEnabled = Boolean(event.target.checked);
-  writeLocalPreference(storageKeys.updatePreview, state.updatePreviewEnabled);
+  if (!await saveUpdatePreference(event.target, "preview")) return;
   state.manualUpdateCheck = null;
   state.updateManualVisibleChannel = "";
   renderUpdatePreviewControl();
@@ -20330,8 +20674,7 @@ elements.updatePreviewCheckbox?.addEventListener("change", async (event) => {
 });
 
 elements.updateAutomaticCheckbox?.addEventListener("change", async (event) => {
-  state.updateAutomaticEnabled = Boolean(event.target.checked);
-  writeLocalPreference(storageKeys.updateAutomatic, state.updateAutomaticEnabled);
+  if (!await saveUpdatePreference(event.target, "automatic")) return;
   state.manualUpdateCheck = null;
   state.updateManualVisibleChannel = "";
   renderUpdatePreviewControl();
@@ -20341,6 +20684,7 @@ elements.updateAutomaticCheckbox?.addEventListener("change", async (event) => {
 });
 
 elements.diagnosticCopyButton?.addEventListener("click", copyDiagnosticsMarkdown);
+window.addEventListener("bilikara:webview-diagnostics-error", event => setAppMessage(event.detail, true));
 elements.diagnosticPackageButton?.addEventListener("click", downloadDiagnosticsPackage);
 
 elements.avSyncPanel?.addEventListener("click", async (event) => {
@@ -21172,6 +21516,12 @@ elements.confirmOk.addEventListener("click", async () => {
 
   let keepBusyUntilApplicationExit = false;
   try {
+    if (intent.type === "remove-sources") {
+      const pending = intent.sourceEditor.confirmRemoval(intent.captured);
+      closeConfirm();
+      await pending;
+      return;
+    }
     if (intent.type === "clear-playlist") {
       await clearPlaylist();
       return;
@@ -21401,6 +21751,11 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     return;
   }
+  if (!isPlayerPanelFullscreen() && [...sourceRemovalEditors.values()].some(editor => editor?.handleEscape())) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    return;
+  }
   if (!isPlayerPanelFullscreen() && closeHostWorkspaceOverlay()) {
     event.preventDefault();
     return;
@@ -21446,6 +21801,7 @@ function handleFullscreenChange() {
     }
   }
   renderPlayerFullscreenButton();
+  renderCurrentPresentationScene();
 }
 
 document.addEventListener("fullscreenchange", handleFullscreenChange);
@@ -21743,16 +22099,21 @@ async function runRequestBusyAction(button, loadingLabel, action) {
     return;
   }
   const wasDisabled = button.disabled;
-  const originalText = button.textContent;
+  const originalLabel = button.getAttribute("aria-label");
   button.disabled = true;
   button.setAttribute("aria-busy", "true");
-  button.textContent = loadingLabel;
+  button.setAttribute("aria-label", loadingLabel);
   try {
     await action();
   } finally {
     button.disabled = wasDisabled;
     button.removeAttribute("aria-busy");
-    button.textContent = originalText;
+    // Navigation already displays loading in the detail view. Retain the
+    // card's name/count/avatar nodes and any newer accessible label.
+    if (button.getAttribute("aria-label") === loadingLabel) {
+      if (originalLabel === null) button.removeAttribute("aria-label");
+      else button.setAttribute("aria-label", originalLabel);
+    }
   }
 }
 
@@ -21899,6 +22260,9 @@ elements.requestWorkspace?.addEventListener("click", (event) => {
   }
   const letterButton = event.target.closest("[data-letter]");
   if (letterButton && elements.requestWorkspace.contains(letterButton)) {
+    if (document.documentElement.dataset.hostPlatform === "android") {
+      if (document.activeElement?.matches("input, textarea, [contenteditable='true']")) document.activeElement.blur();
+    }
     const kind = state.d1BrowseKind || "name";
     const mode = d1BrowseModeState(kind);
     const letter = String(letterButton.dataset.letter || "");
@@ -22097,13 +22461,13 @@ elements.favlistGrid?.addEventListener("click", async (event) => {
     t("favlist.loadingItems"),
     () => loadFavlistBrowse({ folderId, query: "" }),
   );
-  if (elements.sourcesFavoritesScroll) {
-    elements.sourcesFavoritesScroll.scrollTop = state.sourceItemScrollPositions.favorites;
+  if (elements.favlistSongResults) {
+    elements.favlistSongResults.scrollTop = state.sourceItemScrollPositions.favorites;
   }
 });
 
 elements.favlistBrowseBack?.addEventListener("click", () => {
-  state.sourceItemScrollPositions.favorites = Number(elements.sourcesFavoritesScroll?.scrollTop || 0);
+  state.sourceItemScrollPositions.favorites = Number(elements.favlistSongResults?.scrollTop || 0);
   state.favlistBrowseSelectedFolderId = "";
   if (elements.favlistSearchQuery) {
     elements.favlistSearchQuery.value = "";
@@ -22174,9 +22538,14 @@ elements.followSongResults?.addEventListener("scroll", () => {
 });
 
 elements.sourcesFavoritesScroll?.addEventListener("scroll", () => {
-  const bucket = state.favlistBrowseSelectedFolderId ? state.sourceItemScrollPositions : state.sourceParentScrollPositions;
-  bucket.favorites = Number(elements.sourcesFavoritesScroll.scrollTop || 0);
-  state.requestScrollPositions.sources.favorites = bucket.favorites;
+  if (state.favlistBrowseSelectedFolderId) return;
+  state.sourceParentScrollPositions.favorites = Number(elements.sourcesFavoritesScroll.scrollTop || 0);
+  state.requestScrollPositions.sources.favorites = state.sourceParentScrollPositions.favorites;
+});
+elements.favlistSongResults?.addEventListener("scroll", () => {
+  if (!state.favlistBrowseSelectedFolderId) return;
+  state.sourceItemScrollPositions.favorites = Number(elements.favlistSongResults.scrollTop || 0);
+  state.requestScrollPositions.sources.favorites = state.sourceItemScrollPositions.favorites;
 });
 
 elements.gatchaStage?.addEventListener("scroll", () => {
@@ -22307,7 +22676,15 @@ elements.modalFavlistPullForm?.addEventListener("submit", async (event) => {
 
 async function startPolling() {
   hydrateLocalPreferences();
+  let preferencesFailed = false;
+  state.updatePreferencesHydration = hydrateNativeUpdatePreferences().catch(() => {
+    // An unreadable native choice must not turn a previously disabled check on.
+    state.updateAutomaticEnabled = false;
+    preferencesFailed = true;
+  });
   await loadTranslations();
+  await state.updatePreferencesHydration;
+  if (preferencesFailed) setAppMessage(t("service.updatePreferencesFailed"), true);
   initializeHostShell();
   syncApplicationRestartAvailability();
   initSearchDetailController();

@@ -19,6 +19,7 @@ fn main() {
     }
     let app_manifest = tauri_build::AppManifest::new().commands(&[
         "android_alpha_status",
+        "android_webview_diagnostics",
         "set_window_fullscreen",
         "set_window_maximize_region",
         "set_window_chrome_theme",
@@ -26,9 +27,14 @@ fn main() {
         "apply_desktop_update",
         "get_host_layout",
         "set_host_layout",
+        "get_playback_restart_hint_seen",
+        "mark_playback_restart_hint_seen",
+        "get_host_update_preferences",
+        "set_host_update_preferences",
         "start_desktop_update",
         "cancel_desktop_update",
         "open_external_web_url",
+        "open_bilibili_login",
         "get_presentation_displays",
         "get_presentation_session",
         "show_presentation_display_identifiers",

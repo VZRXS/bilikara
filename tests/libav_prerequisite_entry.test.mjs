@@ -36,12 +36,12 @@ test('real local and CI entries keep required native validation after the prefix
   assert.equal(scripts['test:libav-wrapper'], 'node --test tests/libav_xtask_wrapper.test.mjs tests/libav_prerequisite_entry.test.mjs');
   assert.equal(scripts['test:libav-prerequisites'], 'node --test tests/libav_prerequisite_contract.test.mjs');
   assert.ok(!scripts['test:desktop-build'].includes('libav_prerequisite_contract'), 'early desktop fixtures cannot become an all-skipped real-library gate');
-  const workflow = readFileSync(path.join(root, '.github/workflows/ci-bundle.yml'), 'utf8').replace(/\r\n/g, '\n');
+  const workflow = readFileSync(path.join(root, '.github/workflows/desktop.yml'), 'utf8').replace(/\r\n/g, '\n');
   const job = workflow.slice(workflow.indexOf('\n  test:'), workflow.indexOf('\n  bundle:'));
   const wrapper = job.indexOf('npm run test:libav-wrapper'), real = job.indexOf('npm run test:libav-prerequisites');
   const prefix = job.indexOf('echo "BILIKARA_TEST_LIBAV_COMPANION=');
   assert.ok(wrapper >= 0 && prefix > wrapper && real > prefix);
-  for (const setup of ['actions/setup-node@v6', 'node-version: 24', 'rustup toolchain install', 'cargo build --manifest-path xtask/Cargo.toml --locked --target host-tuple']) assert.ok(job.indexOf(setup) >= 0 && job.indexOf(setup) < wrapper, setup);
+  for (const setup of ['actions/setup-node@v6', 'node-version: 24', 'uses: ./.github/actions/rust-toolchain', 'cargo build --manifest-path xtask/Cargo.toml --locked --target host-tuple']) assert.ok(job.indexOf(setup) >= 0 && job.indexOf(setup) < wrapper, setup);
   assert.ok(job.indexOf('bash media-libav/build-posix-libraries.sh') < prefix);
   assert.ok(job.indexOf('libav-companion --prefix') < prefix);
   const block = job.split(/^      - name:/m).find(step => step.includes('npm run test:libav-prerequisites'));
@@ -64,7 +64,7 @@ test('real local and CI entries keep required native validation after the prefix
 });
 
 test('actual required CI run block propagates failing npm and cannot hide it with a later success', async () => {
-  const workflow = readFileSync(path.join(root, '.github/workflows/ci-bundle.yml'), 'utf8').replace(/\r\n/g, '\n');
+  const workflow = readFileSync(path.join(root, '.github/workflows/desktop.yml'), 'utf8').replace(/\r\n/g, '\n');
   const block = workflow.split(/^      - name:/m).find(step => step.includes('npm run test:libav-prerequisites'));
   const script = block.split('run: |\n')[1].split('\n\n')[0].replace(/^          /gm, '');
   const gitBash = process.platform === 'win32' && process.env.ProgramFiles ? path.join(process.env.ProgramFiles, 'Git/bin/bash.exe') : undefined;
@@ -78,7 +78,7 @@ test('actual required CI run block propagates failing npm and cannot hide it wit
 test('actual timestamp gate passes the existing native companion path and preserves Cargo failures', async t => {
   const directory = ownedDirectory('timestamp gate'); t.after(() => rmSync(directory, { recursive: true, force: true }));
   const prefix = path.join(directory, 'prefix'); mkdirSync(path.join(prefix, 'bin'), { recursive: true });
-  const workflow = readFileSync(path.join(root, '.github/workflows/ci-bundle.yml'), 'utf8').replace(/\r\n/g, '\n');
+  const workflow = readFileSync(path.join(root, '.github/workflows/desktop.yml'), 'utf8').replace(/\r\n/g, '\n');
   const block = workflow.split(/^      - name:/m).find(step => step.includes('reordered_video_preserves_nonzero_start'));
   const script = block.split('run: |\n')[1].split('\n\n')[0].replace(/^          /gm, '');
   const gitBash = process.platform === 'win32' && process.env.ProgramFiles ? path.join(process.env.ProgramFiles, 'Git/bin/bash.exe') : undefined;

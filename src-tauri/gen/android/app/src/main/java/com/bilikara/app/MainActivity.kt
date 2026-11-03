@@ -11,15 +11,24 @@ class MainActivity : TauriActivity() {
     @JvmStatic @Keep
     fun renderRemoteExport(spec: String, destination: String): Int = PlaylistExport.renderRemote(spec, destination)
   }
+  private val webViewDiagnostics = HostWebViewDiagnostics(this)
   private val hostWindowControls = HostWindowControls(this)
   private val hostExports = HostExports(this)
-  private val hostPlatform = HostPlatform(this)
+  private val hostPlatform = HostPlatform(this, diagnostics = webViewDiagnostics)
   private val hostPresentation by lazy { HostPresentation(this) }
 
   // Gradle's APK versionName can differ from Tauri's base SemVer, especially
   // for preview/test builds. Rust reads this directly, not through HTTP input.
   @Keep
   fun installedAppVersion(): String = BuildConfig.VERSION_NAME
+
+  @Keep
+  fun showWebViewDiagnostics(webView: WebView) = webViewDiagnostics.show(webView)
+
+  override fun onWebViewCreate(webView: WebView) {
+    super.onWebViewCreate(webView)
+    webViewDiagnostics.checkOnCreate(webView)
+  }
 
   @Keep
   fun installHostWindowControls(webView: WebView, origin: String): Boolean {
@@ -56,6 +65,7 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onDestroy() {
+    webViewDiagnostics.destroy()
     hostPresentation.destroy()
     super.onDestroy()
   }

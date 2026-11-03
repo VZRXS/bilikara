@@ -95,8 +95,8 @@ test('actual Windows setup exports the initializer after architecture checks, wi
 });
 
 test('bundle CI executes the real MSVC header/path regression after native setup and before the libav recipe', () => {
-  const workflow = readFileSync(path.join(root, '.github/workflows/ci-bundle.yml'), 'utf8');
-  const bundle = workflow.slice(workflow.indexOf('\n  bundle:'), workflow.indexOf('\n  android-apk:'));
+  const workflow = readFileSync(path.join(root, '.github/workflows/desktop.yml'), 'utf8');
+  const bundle = workflow.slice(workflow.indexOf('\n  bundle:'), workflow.length);
   const setup = bundle.indexOf("run: ./scripts/setup_msvc.ps1 -Arch");
   const probe = bundle.indexOf('cargo test --manifest-path xtask/Cargo.toml --locked --target host-tuple windows_msvc_companion_paths_compile_generated_header -- --ignored');
   const libraries = bundle.indexOf('run: bash media-libav/build-windows.sh');

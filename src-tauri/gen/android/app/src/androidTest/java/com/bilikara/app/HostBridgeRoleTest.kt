@@ -23,6 +23,7 @@ class HostBridgeRoleTest {
     // This fixture does not start or impersonate the Rust application service.
     val server = ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))
     val origin = "http://127.0.0.1:${server.localPort}"
+    val preferenceName = "bilikara-update-role-fixture-${System.nanoTime()}"
     val worker = thread(isDaemon = true) {
       while (!server.isClosed) {
         try {
@@ -47,13 +48,16 @@ class HostBridgeRoleTest {
       ActivityScenario.launch<WindowTestActivity>(Intent(context, WindowTestActivity::class.java)).use { scenario ->
         lateinit var view: WebView
         lateinit var controls: HostWindowControls
+        lateinit var presentation: HostPresentation
         scenario.onActivity { activity ->
           view = WebView(activity)
           view.settings.javaScriptEnabled = true
           activity.setContentView(view)
           controls = HostWindowControls(activity)
           assertTrue(controls.install(view, origin))
-          assertTrue(HostPlatform(activity).install(view, origin))
+          assertTrue(HostPlatform(activity, preferenceName).install(view, origin))
+          presentation = HostPresentation(activity)
+          assertTrue(presentation.install(view, origin))
         }
         try {
           for (path in listOf("/", "/remote", "/remote.html", "/controller.html", "/audience", "/index.html")) {
@@ -73,9 +77,24 @@ class HostBridgeRoleTest {
               view.evaluateJavascript("""
                 window.bridgeReplies = {sent: true};
                 BilikaraHostWindow.onmessage = e => bridgeReplies.window = e.data;
-                BilikaraHostPlatform.onmessage = e => bridgeReplies.platform = JSON.parse(e.data).ok;
+                BilikaraHostPlatform.onmessage = e => {
+                  const reply = JSON.parse(e.data);
+                  if (reply.id === 'role-test') bridgeReplies.platform = reply.ok;
+                  else bridgeReplies[reply.id] = reply;
+                };
+                BilikaraHostPresentation.onmessage = e => {
+                  const reply = JSON.parse(e.data);
+                  bridgeReplies.presentation = reply.ok && typeof reply.data === 'boolean';
+                };
                 BilikaraHostWindow.postMessage('enter');
                 BilikaraHostPlatform.postMessage(JSON.stringify({id:'role-test',action:'environment'}));
+                if (!['/', '/index.html'].includes(location.pathname)) {
+                  BilikaraHostPlatform.postMessage(JSON.stringify({id:'diagnosticsDenied',action:'webview-diagnostics'}));
+                }
+                BilikaraHostPlatform.postMessage(JSON.stringify({id:'preferencesRead',action:'get-update-preferences'}));
+                BilikaraHostPlatform.postMessage(JSON.stringify({id:'preferencesSave',action:'save-update-preferences',preferences:{automatic:false,preview:true}}));
+                BilikaraHostPlatform.postMessage(JSON.stringify({id:'preferencesInvalid',action:'save-update-preferences',preferences:{automatic:'false',preview:true}}));
+                BilikaraHostPresentation.postMessage(JSON.stringify({id:'hint-role-test',command:'get_playback_restart_hint_seen',args:{}}));
               """.trimIndent(), null)
               view.postDelayed({
                 view.evaluateJavascript("JSON.stringify(bridgeReplies)") { value ->
@@ -90,15 +109,32 @@ class HostBridgeRoleTest {
             if (path in listOf("/", "/index.html")) {
               assertEquals("entered", replies.getString("window"))
               assertTrue(replies.getBoolean("platform"))
+              assertTrue(replies.getBoolean("presentation"))
+              assertTrue(replies.getJSONObject("preferencesRead").getBoolean("ok"))
+              if (path == "/") assertTrue(replies.getJSONObject("preferencesRead").isNull("data"))
+              else {
+                val saved = replies.getJSONObject("preferencesRead").getJSONObject("data")
+                assertFalse(saved.getBoolean("automatic"))
+                assertTrue(saved.getBoolean("preview"))
+              }
+              assertTrue(replies.getJSONObject("preferencesSave").getBoolean("ok"))
+              assertFalse(replies.getJSONObject("preferencesInvalid").getBoolean("ok"))
             } else {
               assertFalse("Window authority on $path", replies.has("window"))
               assertFalse("Platform authority on $path", replies.has("platform"))
+              assertFalse("WebView diagnostic authority on $path", replies.has("diagnosticsDenied"))
+              assertFalse("UI preference authority on $path", replies.has("presentation"))
+              assertFalse("Update preference read authority on $path", replies.has("preferencesRead"))
+              assertFalse("Update preference write authority on $path", replies.has("preferencesSave"))
               scenario.onActivity { assertEquals(orientation, it.requestedOrientation) }
             }
             scenario.onActivity { controls.setFullscreen(false) }
           }
         } finally {
-          scenario.onActivity { controls.setFullscreen(false); view.destroy() }
+          scenario.onActivity { activity ->
+            controls.setFullscreen(false); presentation.destroy(); view.destroy()
+            activity.getSharedPreferences(preferenceName, 0).edit().clear().commit()
+          }
         }
       }
     } finally {

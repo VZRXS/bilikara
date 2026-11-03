@@ -33,8 +33,12 @@
     "test:native-qr": "node --test tests/internet_qr_boundary.test.mjs",
     "test:native-images": "node --test tests/native_images.test.mjs",
     "test:native-login": "node --test tests/desktop_login_native.test.mjs",
+    "test:native-login-window": "node --test tests/desktop_web_login_window.test.mjs",
     "test:native-ratings": "node --test tests/native_ratings_browser.test.mjs",
-    "test:host-experience": "node --test tests/host_experience_browser.test.mjs tests/shared_host_layout_browser.test.mjs tests/source_removal_browser.test.mjs tests/fullscreen_player_browser.test.mjs",
+    "test:host-experience": "node --test tests/login_qr_browser.test.mjs tests/host_experience_browser.test.mjs tests/shared_host_layout_browser.test.mjs tests/android_phone_ui_browser.test.mjs tests/source_removal_browser.test.mjs tests/fullscreen_player_browser.test.mjs tests/native_startup_session_browser.test.mjs",
+    "test:playback-restart": "node --test tests/playback_restart.test.mjs tests/playback_restart_browser.test.mjs",
+    "test:app-updates": "node --test tests/app_update_startup.test.mjs tests/app_update_startup_browser.test.mjs",
+    "test:playback-sheet": "node --test tests/playback_sheet_gestures.test.mjs tests/playback_sheet_gestures_browser.test.mjs tests/playback_sheet_columns_browser.test.mjs",
     "test:native-users": "node --test tests/native_session_users_browser.test.mjs",
     "test:native-transport": "node --test tests/native_transport.test.mjs tests/native_transport_browser.test.mjs",
     "test:native-transport-entry": "node --test tests/native_transport_entry.test.mjs",
@@ -45,12 +49,17 @@
     "test:native-smoke": "node tests/run_native_smoke.mjs",
     "test:remote-load": "node --test tests/remote_sse_load.test.mjs",
     "test:frontend": "node --test tests/frontend_tests.test.mjs",
+    "test:android-webview": "node --test tests/android_webview_timeout.test.mjs tests/android_webview_browser.test.mjs tests/android_webview_legacy.test.mjs tests/android_webview_modes.test.mjs tests/android_webview83.test.mjs",
     "test:auxiliary": "node --test tests/signalsmith_vendor.test.mjs tests/tool_asset_metadata.test.mjs tests/tool_asset_workflows.test.mjs",
-    "test:remote-sync": "node --test tests/internet_remote_frontend_contract.test.mjs tests/internet_remote_ice.test.mjs tests/internet_remote_deployment.test.mjs",
-    "test:automatic-volume": "node --test tests/automatic_volume.test.mjs"
+    "test:remote-sync": "node --test tests/internet_remote_frontend_contract.test.mjs tests/internet_remote_ice.test.mjs tests/internet_remote_deployment.test.mjs tests/internet_remote_host_lifecycle.test.mjs tests/internet_remote_provisioning.test.mjs",
+    "test:automatic-volume": "node --test tests/automatic_volume.test.mjs",
+    "test:native-relay": "node tests/run_native_relay.mjs --output .tmp/internet-remote-relay",
+    "prepare:webview83": "node scripts/build_webview83.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.2",
+    "esbuild": "0.28.2",
+    "lightningcss": "1.33.0",
     "playwright": "1.63.0"
   }
 }

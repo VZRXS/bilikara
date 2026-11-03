@@ -1,7 +1,7 @@
 //! Explicit offline desktop import: narrowly discover legacy roots, then stage,
 //! validate and install using the existing reader. No Host, media or networking.
 use super::{desktop, desktop_import};
-use crate::native_host_storage::import_guard_path;
+use crate::native_host_storage::{NativeHostStorage, import_guard_path};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -32,7 +32,8 @@ fn format(data: &Path) -> Result<Format, String> {
     if data.join("desktop-import.pending").exists() {
         return Ok(Format::Incomplete);
     }
-    // A corrupt native checkpoint remains protected, never classified as legacy.
+    // Conservative ownership for transaction safety, not a validity verdict.
+    // Inspection below parses records; a bad native file never becomes legacy.
     if fs::symlink_metadata(data.join("host-state.json")).is_ok() {
         return Ok(Format::Native);
     }
@@ -50,11 +51,21 @@ fn format(data: &Path) -> Result<Format, String> {
     if data.join("played_sessions").is_dir() {
         return Ok(Format::Legacy);
     }
-    match fs::read_dir(data)
-        .map_err(|_| "Cannot inspect data directory")?
-        .next()
-    {
+    let mut entries = fs::read_dir(data).map_err(|_| "Cannot inspect data directory")?;
+    match entries.next() {
         None => Ok(Format::Empty),
+        // A verified old marker alone has no saved state. Preserve its empty
+        // preview bootstrap, without admitting unknown files or lost chunks.
+        Some(Ok(entry))
+            if entry.file_name() == desktop::MARKER
+                && entries.next().is_none()
+                && fs::symlink_metadata(entry.path()).is_ok_and(|meta| {
+                    meta.is_file() && meta.len() == desktop::MARKER_BYTES.len() as u64
+                })
+                && fs::read(entry.path()).is_ok_and(|bytes| bytes == desktop::MARKER_BYTES) =>
+        {
+            Ok(Format::Empty)
+        }
         Some(_) => Ok(Format::Unknown),
     }
 }
@@ -63,6 +74,35 @@ struct Source {
     selection: PathBuf,
     data: PathBuf,
     kind: Format,
+}
+
+fn validate_records(data: &Path, kind: Format) -> Result<(), String> {
+    match kind {
+        Format::Native => {
+            let seed = NativeHostStorage::inspect(data)
+                .map_err(|error| error.message)?
+                .ok_or("host-state.json is missing; original files preserved")?;
+            crate::app_state::prepare_import(seed).map(drop)
+        }
+        Format::Legacy => desktop_import::Import::inspect(
+            data.parent().ok_or("Missing legacy data parent")?,
+        ),
+        Format::Unknown => Err("Unrecognized data format: no supported native checkpoint or legacy records; original files preserved".into()),
+        Format::Incomplete => Err("desktop-import.pending: unfinished legacy import; original files preserved".into()),
+        Format::Missing | Format::Empty => Ok(()),
+    }
+}
+
+#[derive(Serialize)]
+struct RejectedSource {
+    source: PathBuf,
+    error: String,
+}
+
+#[derive(Default)]
+struct Discovery {
+    candidates: Vec<PathBuf>,
+    rejected_candidates: Vec<RejectedSource>,
 }
 
 fn source_root(selected: &Path) -> Result<Source, String> {
@@ -131,12 +171,12 @@ fn legacy_root(selected: &Path) -> Result<PathBuf, String> {
     Ok(source.selection)
 }
 
-fn discover(
+fn discover_checked(
     destination: &Path,
     executable: &Path,
     platform: &str,
     env: impl Fn(&str) -> Option<OsString>,
-) -> Vec<PathBuf> {
+) -> Discovery {
     let mut roots = Vec::new();
     if let Some(parent) = destination.parent() {
         roots.push(parent.to_owned());
@@ -177,15 +217,57 @@ fn discover(
     }
     let mut seen = HashSet::new();
     let current = destination.canonicalize().ok();
-    roots
-        .into_iter()
-        .filter_map(|root| source_root(&root).ok())
-        // Never offer to copy a native destination onto itself. Legacy
-        // in-place conversion remains a valid confirmed choice.
-        .filter(|source| source.kind != Format::Native || current.as_ref() != Some(&source.data))
-        .map(|source| source.selection)
-        .filter(|root| seen.insert(root.clone()))
-        .collect()
+    let mut discovery = Discovery::default();
+    for root in roots {
+        let source = match source_root(&root) {
+            Ok(source) => source,
+            Err(_) => {
+                // Absent roots and empty/WebView-only homes are not old records.
+                let data = root.join("data");
+                let error = match format(&data) {
+                    Ok(kind @ (Format::Unknown | Format::Incomplete)) => {
+                        validate_records(&data, kind).err()
+                    }
+                    Err(error) if fs::symlink_metadata(&data).is_ok() => Some(error),
+                    _ => None,
+                };
+                if let Some(error) = error
+                    && seen.insert(root.clone())
+                {
+                    discovery.rejected_candidates.push(RejectedSource {
+                        source: root,
+                        error,
+                    });
+                }
+                continue;
+            }
+        };
+        // Never offer to copy native destination onto itself. Legacy in-place
+        // conversion remains a valid confirmed choice.
+        if source.kind == Format::Native && current.as_ref() == Some(&source.data)
+            || !seen.insert(source.selection.clone())
+        {
+            continue;
+        }
+        match validate_records(&source.data, source.kind) {
+            Ok(()) => discovery.candidates.push(source.selection),
+            Err(error) => discovery.rejected_candidates.push(RejectedSource {
+                source: source.selection,
+                error,
+            }),
+        }
+    }
+    discovery
+}
+
+#[cfg(test)]
+fn discover(
+    destination: &Path,
+    executable: &Path,
+    platform: &str,
+    env: impl Fn(&str) -> Option<OsString>,
+) -> Vec<PathBuf> {
+    discover_checked(destination, executable, platform, env).candidates
 }
 
 fn inspect(
@@ -195,15 +277,24 @@ fn inspect(
     source: Option<&Path>,
     env: impl Fn(&str) -> Option<OsString>,
 ) -> Result<Value, String> {
-    let candidates = if let Some(source) = source {
-        vec![source_root(source)?.selection]
+    let discovery = if let Some(source) = source {
+        let source = source_root(source)?;
+        validate_records(&source.data, source.kind)
+            .map_err(|error| format!("{}: {error}", source.data.display()))?;
+        Discovery {
+            candidates: vec![source.selection],
+            ..Discovery::default()
+        }
     } else {
-        discover(destination, executable, platform, env)
+        discover_checked(destination, executable, platform, env)
     };
+    let kind = format(destination)?;
     Ok(json!({"schema_version":1,"destination":destination,
-        "destination_status":format(destination)?,
+        "destination_status":kind,
+        "destination_error":validate_records(destination, kind).err(),
         "pending":fs::symlink_metadata(import_guard_path(destination, "json")?).is_ok(),
-        "candidates":candidates}))
+        "candidates":discovery.candidates,
+        "rejected_candidates":discovery.rejected_candidates}))
 }
 
 fn inspect_first_start(
@@ -216,14 +307,16 @@ fn inspect_first_start(
     let pending = fs::symlink_metadata(import_guard_path(destination, "json")?).is_ok();
     // Reopening a native library never scans other locations or offers to
     // overwrite it. Malformed checkpoints remain native and protected.
-    let candidates = if !pending && matches!(kind, Format::Missing | Format::Empty | Format::Legacy)
+    let discovery = if !pending && matches!(kind, Format::Missing | Format::Empty | Format::Legacy)
     {
-        discover(destination, executable, platform, env)
+        discover_checked(destination, executable, platform, env)
     } else {
-        Vec::new()
+        Discovery::default()
     };
     Ok(json!({"schema_version":1,"destination":destination,
-        "destination_status":kind,"pending":pending,"candidates":candidates}))
+        "destination_status":kind,"destination_error":validate_records(destination, kind).err(),
+        "pending":pending,"candidates":discovery.candidates,
+        "rejected_candidates":discovery.rejected_candidates}))
 }
 
 fn private_options() -> OpenOptions {

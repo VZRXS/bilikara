@@ -7,6 +7,24 @@
   const trash = icon('<path d="M3 6h18M19 6v14H5V6m4 0V3h6v3M10 10v7M14 10v7"/>');
 
   class SessionUserEditor {
+    static get selectionIcon() { return checklist; }
+    static get trashIcon() { return trash; }
+    static toolHelp(button, id, bindHelp, slot) {
+      const region = slot || document.createElement("span");
+      if (!slot) { button.before(region); region.append(button); }
+      region.classList.add("editing-tool-help", "cache-advanced-info");
+      const tooltip = region.querySelector(".cache-advanced-tooltip") || document.createElement("span");
+      tooltip.className = "cache-advanced-tooltip"; tooltip.id = id; tooltip.setAttribute("role", "tooltip");
+      if (!tooltip.parentElement) region.append(tooltip);
+      button.setAttribute("data-contextual-info-anchor", ""); button.setAttribute("aria-describedby", id);
+      if (slot) region.setAttribute("aria-describedby", id);
+      bindHelp?.(region);
+      return label => {
+        tooltip.textContent = label; button.removeAttribute("title");
+        if (!slot) region.hidden = button.hidden;
+      };
+    }
+
     constructor({ stage, list, t, post, message, bindHelp }) {
       this.stage = stage;
       this.list = list;
@@ -32,9 +50,11 @@
       stage.append(this.footer);
       this.trash = this.footer.querySelector(".session-user-trash");
       this.trashSlot = this.trash.parentElement;
-      bindHelp?.(this.trashSlot);
       this.all = this.footer.querySelector(".session-user-select-all");
       this.count = this.footer.querySelector(".session-user-selection-count");
+      this.help = new Map([...this.footer.querySelectorAll("button")].map((button, index) => [button,
+        SessionUserEditor.toolHelp(button, button === this.trash ? "session-user-trash-help" : `session-user-tool-help-${index}`,
+          bindHelp, button === this.trash ? this.trashSlot : null)]));
       this.footer.addEventListener("click", event => {
         if (this.busy) return;
         const mode = event.target.closest("[data-mode]");
@@ -51,10 +71,12 @@
         if (["Enter", " "].includes(event.key) && event.target.matches(".session-user-name")) {
           event.preventDefault(); this.click(event);
         }
-        if (this.mode === "select" && event.altKey && ["ArrowUp", "ArrowDown"].includes(event.key)) {
-          event.preventDefault(); this.moveSelection(event.key === "ArrowUp" ? -1 : 1);
-        }
       });
+      // WebKit can begin native HTML dragging without a pointerdown. Record
+      // the same checkbox exclusion from its mouse press before dragstart.
+      list.addEventListener("mousedown", event => {
+        this.checkboxPress = this.mode === "select" && Boolean(event.target.closest(".session-user-order-number"));
+      }, { capture: true });
       list.addEventListener("dragstart", event => this.dragStart(event));
       list.addEventListener("dragover", event => this.dragOver(event));
       list.addEventListener("drop", event => this.drop(event));
@@ -75,8 +97,8 @@
         const drag = this.drag; this.finishDrag();
         void this.commit({ action: "remove", user_ids: drag.ids }, drag.version);
       });
-      // The numbered target owns touch dragging; swiping a tag's name or the
-      // surrounding list still scrolls vertically, without changing tag sizes.
+      // Normal mode keeps the numbered touch handle. Selection mode reserves
+      // its checkbox for clicks and lets the remaining tag drag the group.
       list.addEventListener("pointerdown", event => this.pointerDown(event));
       list.addEventListener("pointermove", event => this.pointerMove(event));
       list.addEventListener("pointerup", event => this.pointerUp(event));
@@ -147,7 +169,13 @@
         if (!entries.length) {
           const empty = document.createElement("div");
           empty.className = "request-session-user-notice session-user-empty";
-          empty.textContent = `${this.t("session.empty")} ${this.t("session.help")}`; empty.setAttribute("role", "status");
+          for (const [key, className] of [["session.empty", "session-user-prerequisite"], ["session.help", "session-user-guidance"]]) {
+            const line = document.createElement("p");
+            line.className = className;
+            line.textContent = this.t(key);
+            empty.append(line);
+          }
+          empty.setAttribute("role", "status");
           this.list.append(empty);
         }
         this.list.scrollTop = scrollTop;
@@ -161,7 +189,10 @@
       this.stage.dataset.editMode = this.mode;
       this.list.classList.toggle("is-empty", !this.entries.length);
       const empty = this.list.querySelector(".session-user-empty");
-      if (empty) empty.textContent = `${this.t("session.empty")} ${this.t("session.help")}`;
+      if (empty) {
+        empty.querySelector(".session-user-prerequisite").textContent = this.t("session.empty");
+        empty.querySelector(".session-user-guidance").textContent = this.t("session.help");
+      }
       this.all.hidden = this.mode !== "select";
       this.all.disabled = this.busy || !this.entries.length;
       this.all.textContent = this.t(this.selected.size && this.selected.size === this.entries.length ? "session.clearSelection" : "session.selectAll");
@@ -176,6 +207,9 @@
       this.trash.disabled = this.busy || (!this.drag && (this.mode !== "select" || !this.selected.size));
       this.trash.setAttribute("aria-label", this.t("session.deleteSelected"));
       this.trashSlot.querySelector('.cache-advanced-tooltip').textContent = this.t("session.dragToDelete");
+      for (const [button, syncHelp] of this.help) syncHelp(button === this.trash ? this.t("session.dragToDelete")
+        : button.getAttribute("aria-pressed") === "true" && button.dataset.mode ? this.t("sources.doneSelecting")
+        : button.getAttribute("aria-label") || button.textContent);
       if (this.busy) this.footer.setAttribute("aria-busy", "true"); else this.footer.removeAttribute("aria-busy");
       if (this.editor) {
         this.editor.node.setAttribute("aria-label", this.t("remoteIdentity.renameTitle"));
@@ -333,25 +367,32 @@
 
     dragStart(event) {
       const badge = event.target.closest(".session-user-badge");
-      if (!badge || this.busy || this.mode === "rename") { event.preventDefault(); return; }
+      if (!badge || this.busy || this.mode === "rename" || this.checkboxPress) { event.preventDefault(); return; }
       this.beginDrag(badge);
       event.dataTransfer.effectAllowed = "move";
       event.dataTransfer.setData("text/plain", this.drag.ids.join(","));
+      const dragImage = this.createDragImage(badge);
+      const box = badge.getBoundingClientRect();
+      // The 2px inset preserves the selected outline in the native snapshot.
+      event.dataTransfer.setDragImage(dragImage, box.width / 2 + 2, box.height / 2 + 2);
+    }
+
+    createDragImage(badge) {
       const dragImage = document.createElement("div");
       dragImage.className = "session-user-drag-image";
       dragImage.setAttribute("aria-hidden", "true");
       dragImage.dataset.editMode = this.mode;
       dragImage.style.setProperty("--session-user-row-height", getComputedStyle(this.stage).getPropertyValue("--session-user-row-height"));
       const clone = badge.cloneNode(true);
+      for (const node of [clone, ...clone.querySelectorAll("*")]) node.removeAttribute("id");
       clone.classList.remove("dragging"); clone.draggable = false;
       const box = badge.getBoundingClientRect();
       clone.style.width = `${box.width}px`;
       clone.style.height = `${box.height}px`;
       dragImage.append(clone);
       document.body.append(dragImage);
-      // The 2px inset preserves the selected outline in the native snapshot.
-      event.dataTransfer.setDragImage(dragImage, box.width / 2 + 2, box.height / 2 + 2);
       this.drag.image = dragImage;
+      return dragImage;
     }
 
     dragOver(event) {
@@ -398,16 +439,25 @@
     }
 
     pointerDown(event) {
-      if (event.pointerType === "mouse" || this.busy || this.mode === "rename" || !event.target.closest(".session-user-order-number")) return;
+      this.checkboxPress = this.mode === "select" && Boolean(event.target.closest(".session-user-order-number"));
+      if (event.pointerType === "mouse" || this.busy || this.mode === "rename") return;
       const badge = event.target.closest(".session-user-badge");
-      this.pointer = { id: event.pointerId, x: event.clientX, y: event.clientY, badge };
+      if (!badge || (this.mode === "select" ? this.checkboxPress : !event.target.closest(".session-user-order-number"))) return;
+      const box = badge.getBoundingClientRect();
+      this.pointer = { id: event.pointerId, x: event.clientX, y: event.clientY, badge,
+        offsetX: event.clientX - box.left + 2, offsetY: event.clientY - box.top + 2 };
       badge.setPointerCapture(event.pointerId);
     }
 
     pointerMove(event) {
       if (!this.pointer || this.pointer.id !== event.pointerId) return;
       if (!this.drag && Math.hypot(event.clientX - this.pointer.x, event.clientY - this.pointer.y) < 6) return;
-      if (!this.drag) this.beginDrag(this.pointer.badge);
+      if (!this.drag) {
+        this.beginDrag(this.pointer.badge);
+        this.createDragImage(this.pointer.badge).classList.add("is-pointer-drag-preview");
+      }
+      this.drag.image.style.left = `${event.clientX - this.pointer.offsetX}px`;
+      this.drag.image.style.top = `${event.clientY - this.pointer.offsetY}px`;
       event.preventDefault();
       this.pointer.overTrash = this.isOverTrash(event.clientX, event.clientY);
       this.trash.classList.toggle("drag-over", this.pointer.overTrash);
@@ -435,15 +485,7 @@
       else if (drag.overList) void this.commit({ action: "reorder", user_ids: drag.ids, before_user_id: drag.before }, drag.version);
     }
 
-    moveSelection(direction) {
-      if (!this.selected.size || this.busy) return;
-      const selectedIndexes = this.entries.map((user, index) => this.selected.has(user.id) ? index : -1).filter(index => index >= 0);
-      const edge = direction < 0 ? selectedIndexes[0] : selectedIndexes.at(-1);
-      const index = edge + direction;
-      if (index < 0 || index >= this.entries.length) return;
-      const before = direction < 0 ? this.entries[index] : this.entries[index + 1];
-      void this.commit({ action: "reorder", user_ids: [...this.selected], before_user_id: before?.id || null });
-    }
+
   }
 
   global.BilikaraSessionUserEditor = SessionUserEditor;

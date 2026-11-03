@@ -39,7 +39,46 @@ selection and applicable focus/scroll state. They do not reparent the player,
 recreate its media elements or create another Signalsmith graph. The existing
 `android-*` DOM hooks remain stable while the layout implementation is shared.
 
+Playback circles share their ordinary outline; disabled controls have no hover
+feedback or help. Restart becomes available after the current Host playback
+generation is ready. Desktop Host shows it inline and supports mouse-hover or
+keyboard-focus help; Remote keeps held-touch help. A portrait capsule first
+grows around Next, then extends left. Sliding onto Restart arms its pressed
+state; releasing there submits it, while moving away or cancelling does nothing.
+Opening the capsule is independent of media readiness: a visible, enabled Next
+can reveal it while Restart stays disabled, including across state refreshes.
+Only an enabled Restart may arm or submit a playback command.
+Next keeps its original node and visual layer throughout the animation.
+
+Remote's playback sheet uses the same surface morph for taps and drags. Its
+persistent top handle crossfades with the sheet content and has a wider invisible
+click target; rating and refresh retain priority where targets meet. Animation
+lays out the sheet once and moves/clips its outer surface instead of resizing
+its content every frame. Sheet surfaces and ordinary buttons may start a
+vertical drag. A button retains its normal press/tap feedback until at least
+12px of predominantly vertical movement claims the gesture; that release
+cannot activate the button. Text, range and select inputs retain their own
+gestures. An overflowing content body owns its
+whole scroll gesture, including at the top edge; the header remains available
+to dismiss. A first pointer gesture on the hidden seek thumb only reveals it;
+subsequent gestures seek, while keyboard navigation remains immediate.
+Single-screen fullscreen uses the audience screen's
+shared cache-status presentation, including indeterminate/progress and failure
+states, and hides it again when playback is ready or fullscreen exits.
+Fullscreen and the audience output both show incoming-request notices,
+including the first accepted song while idle. Restart is recognized from the
+existing adjacent, current-generation seek-to-zero and play commands after
+playback is observed; it shares a feedback slot with seek and play/pause.
+
 Desktop workspace and scroll ownership remain explicit:
+
+Sources and Session Users keep the same 8px list-to-tool spacing; desktop also
+shares their platform panel inset. Android Source pagination uses Remote's
+44px track and 4px bottom inset, in one native footer frame below the tools.
+The tools' reserved trash slot and the frame's 4px gap supply 8px between visible
+controls. Session-user name actions retain horizontal ellipsis and a 20px
+line with vertical paint room, so descenders such as `g` fit without increasing
+the badge's height.
 
 | Surface | Placement and scroll owner |
 | --- | --- |
@@ -51,6 +90,29 @@ Desktop workspace and scroll ownership remain explicit:
 
 Common components have one maintained structure, action definition and base
 style, rather than a shared initial render followed by a separate phone render:
+
+Source management combines ordering with selection on both pointer types.
+Checkbox regions select without starting a drag; the rest of each selected-mode
+card uses the grab cursor and moves the selected group, with a translucent
+preview. Clicking anywhere still selects. Ordinary mouse clicks browse, and
+phone holds enter selection. Both source and session-user selections use an
+inset border without changing their outer dimensions.
+Footer actions use the shared localized help bubble, including the inert
+source trash target. Switching workspaces or UP/favorites tabs exits selection;
+pagination retains it. Automatic source-completion reloads coalesce while a
+card is held or dragged, then resume after release/cancellation. Actual source
+version conflicts still reject edits. Both detail views keep their header and
+search controls fixed with hover paint room; only the result list scrolls.
+Interior insertion guides bisect the measured card gap; row edges keep their
+guides within the scroll boundary. Existing card/media nodes remain stable.
+Bounded local source edits use the repository commit lock without replacing a
+network refresh's status lease. Refresh publication retains the latest source
+membership, including during schema rebuilds, so deleted sources stay deleted.
+Deletion also prunes active queue placeholders and failure retry entries while
+retaining the in-flight worker's lease until it retires; late completion uses
+only the remaining source selection.
+The favorite chooser presents its folder count beside the section heading using
+the shared small count style. Its single body/footer gap equals the outer inset.
 
 - `session-user-editor.js` owns shared stable-ID roster editing, selection, rename,
   ordered batch dragging and deletion. `app.js` connects it to authoritative

@@ -17,6 +17,36 @@ struct AndroidBootstrap {
 
 type AndroidHostSetup = (bool, RemoteExportRenderer, String);
 
+// Fixed native UI action from the packaged startup document only. No URL or
+// provider name comes from JavaScript; Android resolves its active component.
+#[tauri::command]
+async fn android_webview_diagnostics(window: tauri::WebviewWindow) -> Result<(), String> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    window
+        .with_webview(move |webview| {
+            webview.jni_handle().exec(move |env, activity, view| {
+                let result = env.call_method(
+                    activity,
+                    "showWebViewDiagnostics",
+                    "(Landroid/webkit/WebView;)V",
+                    &[jni::objects::JValue::Object(view)],
+                );
+                if result.is_err() {
+                    let _ = env.exception_clear();
+                }
+                let _ = sender.send(
+                    result
+                        .map(|_| ())
+                        .map_err(|_| "无法打开 WebView 诊断".to_owned()),
+                );
+            });
+        })
+        .map_err(|error| error.to_string())?;
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|_| "WebView 诊断操作超时".to_owned())?
+}
+
 #[derive(Serialize)]
 struct AndroidAlphaStatus {
     schema_version: u32,
@@ -255,7 +285,10 @@ fn initialize(app: &tauri::App) -> Result<NativeHost, String> {
 
 pub(crate) fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![android_alpha_status])
+        .invoke_handler(tauri::generate_handler![
+            android_alpha_status,
+            android_webview_diagnostics
+        ])
         .setup(|app| {
             // Keep the local diagnostic page usable on a read/write failure.
             // Do not retry with empty defaults or delete the user's checkpoint.

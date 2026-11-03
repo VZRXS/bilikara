@@ -1059,11 +1059,42 @@ mod tests {
     }
 
     #[test]
+    fn confirmed_start_is_persisted_once_and_retained_after_reopening() {
+        let directory = TestDirectory::new();
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.current_item = Some(item("playing"));
+        snapshot(state.initialize_native(&directory.0, initial));
+        assert!(saved(&directory).session_played.is_empty());
+        snapshot(state.execute(AppStateRequest::MarkCurrentItemStarted {
+            schema_version: 1,
+            item_id: "playing".into(),
+            now: 40.0,
+        }));
+        let confirmed = saved(&directory).session_played;
+        assert_eq!(confirmed.len(), 1);
+        assert_eq!(confirmed[0].played_at, 40.0);
+        drop(state);
+        let mut reopened = AppState::default();
+        snapshot(reopened.initialize_native(&directory.0, seed()));
+        snapshot(reopened.execute(AppStateRequest::MarkCurrentItemStarted {
+            schema_version: 1,
+            item_id: "playing".into(),
+            now: 80.0,
+        }));
+        assert_eq!(saved(&directory).session_played, confirmed);
+    }
+
+    #[test]
     fn runtime_only_changes_do_not_rewrite_checkpoint_and_reset_cannot_revive_backup() {
         let directory = TestDirectory::new();
         let mut state = AppState::default();
         let mut initial = seed();
         initial.current_item = Some(item("playing"));
+        // Reconfirming an already recorded start only changes transient flags.
+        let mut entry = played();
+        entry.item_id = "playing".into();
+        initial.session_played = vec![entry];
         initial.backup = Some(BackupSeed {
             current_item: Some(item("backup")),
             playlist: vec![],

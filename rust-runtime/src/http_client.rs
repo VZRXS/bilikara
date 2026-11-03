@@ -13,6 +13,17 @@ pub(crate) fn builder() -> reqwest::blocking::ClientBuilder {
     builder
 }
 
+pub(crate) fn async_builder() -> reqwest::ClientBuilder {
+    let builder = reqwest::Client::builder();
+    #[cfg(target_os = "android")]
+    let builder =
+        builder.tls_certs_only(webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter().map(|der| {
+            reqwest::Certificate::from_der(der.as_ref())
+                .expect("compiled Mozilla root certificate must be valid DER")
+        }));
+    builder
+}
+
 #[cfg(feature = "native-host")]
 pub(crate) fn release_redirects() -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(|attempt| {

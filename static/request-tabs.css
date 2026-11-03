@@ -17,7 +17,7 @@
   --remote-segmented-control-active-bg: rgba(0, 210, 255, 0.18);
   --remote-segmented-control-active-color: var(--ink);
 }
-:root :is(.request-subview-tabs, .request-mode-tabs, .remote-request-tabs,
+:root :is(.android-page-tabs, .request-subview-tabs, .request-mode-tabs, .remote-request-tabs,
   .remote-request-secondary-nav, .remote-search-mode-tabs, .remote-discover-mode-tabs, .remote-sources-mode-tabs) {
   gap: 0;
   padding: 0 4px;
@@ -25,7 +25,7 @@
   border-radius: 18px;
   background: var(--remote-segmented-control-bg);
 }
-:root :is(.request-subview-tabs, .request-mode-tabs, .remote-request-tabs,
+:root :is(.android-page-tabs, .request-subview-tabs, .request-mode-tabs, .remote-request-tabs,
   .remote-search-mode-tabs, .remote-discover-mode-tabs, .remote-sources-mode-tabs) > button {
   box-sizing: border-box;
   flex: 1 0 auto;
@@ -47,13 +47,14 @@
   animation: none;
   transition: background 180ms ease, color 180ms ease;
 }
-:root :is(.request-subview-tabs, .request-mode-tabs, .remote-request-tabs,
-  .remote-search-mode-tabs, .remote-discover-mode-tabs, .remote-sources-mode-tabs) > button[aria-selected="true"] {
+:root :is(.android-page-tabs, .request-subview-tabs, .request-mode-tabs, .remote-request-tabs,
+  .remote-search-mode-tabs, .remote-discover-mode-tabs, .remote-sources-mode-tabs) > button[aria-selected="true"],
+:root .android-page-tabs > button[aria-pressed="true"] {
   background-color: var(--remote-segmented-control-active-bg);
   color: var(--remote-segmented-control-active-color);
   box-shadow: var(--remote-segmented-control-active-shadow);
 }
-:root :is(.request-subview-tabs, .request-mode-tabs) > button:focus-visible {
+:root :is(.android-page-tabs, .request-subview-tabs, .request-mode-tabs) > button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
@@ -93,6 +94,10 @@
 :root:not([data-host-layout="portrait"]) :is(.request-search-view, .request-discover-view, .request-sources-view) > .request-mode-panel {
   padding: var(--host-peer-panel-padding, 16px);
   padding-top: 18px;
+}
+/* Sources keep their owner's block padding, like Session Users. Other request
+   views retain their existing bottom inset. */
+:root:not([data-host-layout="portrait"]) :is(.request-search-view, .request-discover-view) > .request-mode-panel {
   padding-bottom: var(--host-peer-panel-inline-padding, 16px);
 }
 :root:not([data-host-layout="portrait"]) .request-discover-view .category-browser-home {
@@ -109,4 +114,31 @@ html[data-host-layout="portrait"] .request-mode-tabs {
   padding: 0;
   border: 0;
   background: transparent;
+}
+
+/* The same source action row serves Host and Remote. Its text field yields
+   width to the two actions, rather than switching to stacked phone controls. */
+:root .source-action-row:is(:has(> .source-uid-form), :where([data-legacy-has~="r23"])) { grid-template-columns: minmax(0, 1fr); }
+:root .source-uid-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
+  margin: 0;
+  align-self: start;
+  align-items: stretch;
+  gap: 8px;
+}
+:root .source-uid-form:is(:has(> .source-refresh-button), :where([data-legacy-has~="r24"])) { grid-template-columns: minmax(0, 1fr) auto auto; }
+:root .source-uid-form > input {
+  min-width: 0;
+  width: 100%;
+  height: 44px;
+}
+:root .source-uid-form > button {
+  min-width: 44px;
+  min-height: 44px;
+  height: 44px;
+  width: auto;
+  padding-inline: 12px;
+  white-space: nowrap;
 }

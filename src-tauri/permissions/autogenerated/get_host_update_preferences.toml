@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-host-update-preferences"
+description = "Enables the get_host_update_preferences command without any pre-configured scope."
+commands.allow = ["get_host_update_preferences"]
+
+[[permission]]
+identifier = "deny-get-host-update-preferences"
+description = "Denies the get_host_update_preferences command without any pre-configured scope."
+commands.deny = ["get_host_update_preferences"]

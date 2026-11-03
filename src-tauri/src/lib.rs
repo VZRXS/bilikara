@@ -5,6 +5,8 @@ mod backend_download;
 #[cfg(desktop)]
 mod backend_process;
 #[cfg(desktop)]
+mod bilibili_login;
+#[cfg(desktop)]
 mod desktop;
 #[cfg(desktop)]
 mod desktop_diagnostics;
@@ -15,9 +17,13 @@ mod desktop_storage;
 #[cfg(desktop)]
 mod platform;
 #[cfg(desktop)]
+mod playback_hints;
+#[cfg(desktop)]
 mod presentation;
 #[cfg(desktop)]
 mod presentation_geometry;
+#[cfg(desktop)]
+mod update_preferences;
 #[cfg(desktop)]
 mod window_chrome;
 #[cfg(desktop)]

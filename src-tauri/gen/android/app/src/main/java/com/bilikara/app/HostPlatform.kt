@@ -1,5 +1,6 @@
 package com.bilikara.app
 
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.webkit.WebView
@@ -10,7 +11,9 @@ import androidx.webkit.WebViewFeature
 import org.json.JSONObject
 
 /** Origin-scoped Android I/O only. Remote pages and subframes never get this bridge. */
-internal class HostPlatform(private val activity: AppCompatActivity) {
+internal class HostPlatform(private val activity: AppCompatActivity,
+  private val updatePreferenceName: String = "bilikara-update-preferences-v1",
+  private val diagnostics: HostWebViewDiagnostics = HostWebViewDiagnostics(activity)) {
   private var installed = false
   private val updater = HostUpdate(activity)
 
@@ -41,7 +44,15 @@ internal class HostPlatform(private val activity: AppCompatActivity) {
       }
       try {
         val data = when (input.optString("action")) {
+          "open-bilibili-login" -> {
+            val url = HostLoginLink.validated(input.optString("url")) ?: error("invalid_login_url")
+            activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE))
+            JSONObject().put("opened", true)
+          }
           "environment" -> environment()
+          "webview-diagnostics" -> { diagnostics.show(webView); JSONObject().put("shown", true) }
+          "get-update-preferences" -> updatePreferences()
+          "save-update-preferences" -> saveUpdatePreferences(input.getJSONObject("preferences"))
           else -> error("Unsupported platform action")
         }
         result.put("ok", true).put("data", data)
@@ -62,6 +73,22 @@ internal class HostPlatform(private val activity: AppCompatActivity) {
       .put("webview_package", webView?.packageName ?: "unknown")
       .put("webview_version", webView?.versionName ?: "unknown")
       .put("debug_build", BuildConfig.DEBUG)
+  }
+
+  private fun updatePreferences(): Any {
+    val stored = activity.getSharedPreferences(updatePreferenceName, 0)
+    if (!stored.contains("automatic") && !stored.contains("preview")) return JSONObject.NULL
+    check(stored.contains("automatic") && stored.contains("preview"))
+    return JSONObject().put("automatic", stored.getBoolean("automatic", true))
+      .put("preview", stored.getBoolean("preview", false))
+  }
+
+  private fun saveUpdatePreferences(input: JSONObject): JSONObject {
+    check(input.length() == 2 && input.get("automatic") is Boolean && input.get("preview") is Boolean)
+    val stored = activity.getSharedPreferences(updatePreferenceName, 0)
+    check(stored.edit().putBoolean("automatic", input.getBoolean("automatic"))
+      .putBoolean("preview", input.getBoolean("preview")).commit())
+    return input
   }
 
 }

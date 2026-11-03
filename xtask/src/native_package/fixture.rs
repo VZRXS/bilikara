@@ -42,6 +42,29 @@ fn respond(mut stream: TcpStream, listener: &TcpListener, mode: &str, version: &
         }
         headers.push_str(&line);
     }
+    if path == "/api/session-users/add" && matches!(mode, "early-origin" | "closed-origin") {
+        assert!(request.starts_with("POST "));
+        assert!(headers.contains("https://unrelated.invalid"));
+        assert!(size > 0);
+        if mode == "closed-origin" {
+            return;
+        }
+        stream
+            .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        stream.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut received = Vec::new();
+        reader.read_to_end(&mut received).unwrap();
+        fs::write(
+            std::env::current_exe().unwrap().with_extension("origin-body"),
+            received.len().to_string(),
+        )
+        .unwrap();
+        return;
+    }
+    if size > 0 && headers.to_ascii_lowercase().contains("expect: 100-continue") {
+        stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").unwrap();
+    }
     let mut body = vec![0; size];
     reader.read_exact(&mut body).unwrap();
     let mut status = 200;

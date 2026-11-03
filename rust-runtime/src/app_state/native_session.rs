@@ -41,6 +41,7 @@ pub(crate) struct NativeSession {
     pub library_source_active: bool,
     pub library_source_exclusive: bool,
     pub library_queue: crate::native_host::SourceQueue,
+    pub source_edit_revisions: [u64; 2],
     // Written with credential commits; read/consumed with task admission.
     // Failed or delayed callers must never write an intent back afterward.
     pub pending_library_refresh: Option<&'static str>,
@@ -790,6 +791,7 @@ impl AppState {
         );
         value["gatcha"] = json!(session.login.gacha_snapshot());
         value["gatcha"]["source_queue"] = session.library_queue.snapshot();
+        value["gatcha"]["source_edit_revisions"] = json!({"uids":session.source_edit_revisions[0],"favorites":session.source_edit_revisions[1]});
         value["capabilities"]["source_queue"] = json!(true);
         value["capabilities"]["source_queue_titles"] = json!(true);
         value["gatcha_favlist_updated_at"] = json!(session.favlist_updated_at);

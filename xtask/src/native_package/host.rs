@@ -552,7 +552,9 @@ impl RunningHost {
         }
         all.extend_from_slice(headers);
         let response = if let Some(body) = body {
-            let mut request = client.post(&url);
+            // Security rejection and private shutdown can return a final status
+            // without reading JSON. Avoid racing body writes against that close.
+            let mut request = client.post(&url).header("Expect", "100-continue");
             for (key, value) in all {
                 request = request.header(key, value);
             }

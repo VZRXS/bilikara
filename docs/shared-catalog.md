@@ -105,7 +105,7 @@ response interpretation. The separate monthly maintenance runner, local rating
 identity ledger, login/cache lifecycle, UI flow and public permissions retain
 their existing ownership. There is no parallel Android/desktop catalog backend.
 
-## Developer review transport (2026-09-29)
+## Developer review transport
 
 Review no longer calls `/export` or uses append/delete/reinsert to approve an
 existing video. It requires the matching Worker review API; an older Worker

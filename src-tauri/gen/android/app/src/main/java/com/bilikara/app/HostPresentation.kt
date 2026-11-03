@@ -1,9 +1,11 @@
 package com.bilikara.app
 
 import android.annotation.SuppressLint
+import android.app.Dialog
 import android.app.Presentation
 import android.content.Context
 import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.hardware.display.DisplayManager
 import android.net.Uri
 import android.os.Handler
@@ -17,7 +19,6 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceError
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -36,7 +37,11 @@ internal class HostPresentation(private val activity: AppCompatActivity) : Displ
   private var origin = ""
   private var output: WebView? = null
   private var presentation: Presentation? = null
-  private val identifiers = mutableListOf<Presentation>()
+  private data class Identifier(val dialog: Dialog, val view: WebView)
+  private val identifiers = mutableListOf<Identifier>()
+  private var identifierExpiry: Runnable? = null
+  private var identifierCompletion: (() -> Unit)? = null
+  private var identifiersVisible = false
   private var generation = 0L
   private var phase = "inactive"
   private var displayId = -1
@@ -104,10 +109,32 @@ internal class HostPresentation(private val activity: AppCompatActivity) : Displ
         val common = setOf("get_presentation_session", "deactivate_local_presentation")
         val allowed = if (stage) common + "mark_presentation_controller_ready" else common + setOf(
           "get_presentation_displays", "activate_local_presentation", "mark_presentation_host_ready",
+          "get_playback_restart_hint_seen", "mark_playback_restart_hint_seen",
           "publish_presentation_playback_state", "show_presentation_display_identifiers",
           "dismiss_presentation_display_identifiers", "diagnostics")
         require(command in allowed) { "unsupported_command" }
+        if (command == "show_presentation_display_identifiers") {
+          identify(args) {
+            try { reply.postMessage(response.put("ok", true).put("data", JSONObject.NULL).toString()) } catch (_: Exception) { }
+          }
+          return@addWebMessageListener
+        }
         val data: Any = when (command) {
+          "get_playback_restart_hint_seen" -> {
+            require(args.length() == 0) { "invalid_hint_request" }
+            activity.getSharedPreferences("host-ui-hints", Context.MODE_PRIVATE)
+              .getBoolean("playback-restart-v1", false)
+          }
+          "mark_playback_restart_hint_seen" -> {
+            require(args.length() == 0) { "invalid_hint_request" }
+            val storage = activity.getSharedPreferences("host-ui-hints", Context.MODE_PRIVATE)
+            if (!storage.getBoolean("playback-restart-v1", false) &&
+              !storage.edit().putBoolean("playback-restart-v1", true).commit()) {
+              storage.edit().putBoolean("playback-restart-v1", false).commit()
+              error("hint_persistence_failed")
+            }
+            true
+          }
           "get_presentation_displays" -> displays()
           "get_presentation_session" -> session()
           "activate_local_presentation" -> activate(args.getString("displayId"))
@@ -136,7 +163,6 @@ internal class HostPresentation(private val activity: AppCompatActivity) : Displ
             // existing master envelope, not a second playback state machine.
             JSONObject.NULL
           }
-          "show_presentation_display_identifiers" -> { identify(); JSONObject.NULL }
           "dismiss_presentation_display_identifiers" -> { dismissIdentifiers(); JSONObject.NULL }
           else -> diagnostics()
         }
@@ -223,7 +249,8 @@ internal class HostPresentation(private val activity: AppCompatActivity) : Displ
         setSupportMultipleWindows(false)
       }
       installBridge(view, true, lease)
-      val url = "$origin/controller.html?presentationGeneration=$lease"
+      val legacy = Uri.parse(host?.url ?: "").fragment == "bilikara-legacy"
+      val url = "$origin/controller.html?presentationGeneration=$lease" + if (legacy) "#bilikara-legacy" else ""
       view.webViewClient = object : WebViewClient() {
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = request.url.toString() != url
         override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -317,27 +344,82 @@ internal class HostPresentation(private val activity: AppCompatActivity) : Displ
     emit(host, "displays-changed", displays())
   }
 
-  private fun identify() {
+  @SuppressLint("SetJavaScriptEnabled")
+  private fun identify(args: JSONObject, complete: () -> Unit) {
     require(phase == "inactive" && foreground) { "display_busy" }
+    val requested = args.optJSONArray("displayIds") ?: error("invalid_displays")
+    require(requested.length() in 1..16) { "invalid_displays" }
+    val ids = (0 until requested.length()).map { requested.optString(it) }.toSet()
+    val displays = manager.displays.filter { it.isValid }
+    require(ids.all { id -> displays.any { it.displayId.toString() == id } }) { "display_unavailable" }
+    val theme = args.optString("theme").takeIf { it in setOf("light", "dark", "blue") } ?: "light"
+    val language = args.optString("language").takeIf { it in setOf("zh", "en", "ja") } ?: "zh"
     dismissIdentifiers()
-    val allIds = manager.displays.filter { it.isValid }.map { it.displayId }
-    for (target in targets()) {
-      val dialog = Presentation(activity, target, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
-      dialog.setContentView(TextView(dialog.context).apply {
-        text = "bilikara\n${allIds.indexOf(target.displayId) + 1}\n${target.mode.physicalWidth} × ${target.mode.physicalHeight}"
-        textSize = 48f
-        gravity = Gravity.CENTER
-        setTextColor(Color.WHITE)
-        setBackgroundColor(Color.BLACK)
-      })
-      dialog.window?.addFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
-      try { dialog.show(); identifiers.add(dialog) } catch (_: WindowManager.InvalidDisplayException) { }
+    identifierCompletion = complete
+    identifiersVisible = false
+    fun expire(delay: Long) {
+      identifierExpiry?.let { handler.removeCallbacks(it) }
+      identifierExpiry = Runnable { dismissIdentifiers() }.also { handler.postDelayed(it, delay) }
     }
-    val current = identifiers.toList()
-    handler.postDelayed({ current.forEach { it.dismiss(); identifiers.remove(it) } }, 4000)
+    // A failed local page load must still retire every window and the RPC.
+    expire(5000)
+    for ((index, display) in displays.withIndex()) {
+      if (display.displayId.toString() !in ids) continue
+      val currentHost = display.displayId == controllerDisplayId()
+      val dialog: Dialog = if (currentHost) Dialog(activity) else
+        Presentation(activity, display, android.R.style.Theme_DeviceDefault_NoActionBar)
+      val view = WebView(dialog.context).apply {
+        setBackgroundColor(Color.TRANSPARENT)
+        settings.javaScriptEnabled = true
+        settings.allowFileAccess = false
+        settings.allowContentAccess = false
+      }
+      val identifier = Identifier(dialog, view)
+      identifiers.add(identifier)
+      dialog.setContentView(view)
+      dialog.window?.apply {
+        setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        setElevation(0f)
+        setWindowAnimations(0)
+        clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+        addFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
+      }
+      val role = if (currentHost) "host" else if (isAudienceDisplay(display.displayId, controllerDisplayId())) "audience" else "unavailable"
+      view.webViewClient = object : WebViewClient() {
+        override fun shouldOverrideUrlLoading(webView: WebView, request: WebResourceRequest): Boolean =
+          request.url.scheme != "http" || request.url.authority != Uri.parse(origin).authority || request.url.path != "/display-identifier.html"
+        override fun onPageFinished(webView: WebView, url: String) {
+          if (identifier !in identifiers || !foreground || phase != "inactive") return
+          try {
+            dialog.show()
+            val density = view.resources.displayMetrics.density
+            val size = (128 * density).toInt()
+            dialog.window?.apply {
+              decorView.setPadding(0, 0, 0, 0)
+              decorView.elevation = 0f
+              setLayout(size, size)
+              setGravity(Gravity.TOP or Gravity.LEFT)
+              attributes = attributes.apply { x = (24 * density).toInt(); y = (24 * density).toInt() }
+            }
+            if (!identifiersVisible) { identifiersVisible = true; expire(3000) }
+          } catch (_: WindowManager.InvalidDisplayException) { dismissIdentifiers() }
+        }
+      }
+      view.loadUrl("$origin/display-identifier.html?number=${index + 1}&theme=$theme&language=$language&role=$role")
+    }
   }
 
-  private fun dismissIdentifiers() { identifiers.forEach { it.dismiss() }; identifiers.clear() }
+  private fun dismissIdentifiers() {
+    identifierExpiry?.let { handler.removeCallbacks(it) }
+    identifierExpiry = null
+    val previous = identifiers.toList()
+    identifiers.clear()
+    previous.forEach { it.dialog.dismiss(); it.view.stopLoading(); it.view.destroy() }
+    identifiersVisible = false
+    val complete = identifierCompletion
+    identifierCompletion = null
+    complete?.invoke()
+  }
 
   private fun record(code: String) {
     events.addLast(JSONObject().put("at_ms", System.currentTimeMillis()).put("event", code)

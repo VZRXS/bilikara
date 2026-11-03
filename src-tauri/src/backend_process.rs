@@ -81,6 +81,17 @@ impl BackendProcess {
         request_update(self, "/api/app/export-status", serde_json::json!({}))
     }
 
+    pub(crate) fn web_login(
+        &self,
+        operation: &str,
+        body: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        if !matches!(operation, "begin" | "complete" | "cancel") {
+            return Err("invalid login operation".into());
+        }
+        request_update(self, &format!("/api/app/bilibili-login/{operation}"), body)
+    }
+
     pub(crate) fn export_in_progress(&self) -> bool {
         self.active_downloads.load(Ordering::Acquire) > 0
     }
@@ -373,7 +384,9 @@ fn request_update(
         .map_err(|_| "backend unavailable")?;
     stream
         .set_read_timeout(Some(Duration::from_secs(
-            if route == "/api/app/update/activate" {
+            if route == "/api/app/bilibili-login/complete" {
+                12
+            } else if route == "/api/app/update/activate" {
                 // The updater has a bounded 10s readiness handshake; leave time
                 // for failure cleanup and the authoritative Host error response.
                 30

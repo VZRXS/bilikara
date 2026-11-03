@@ -3,18 +3,39 @@ import { test } from 'node:test';
 import http from 'node:http';
 import path from 'node:path';
 import os from 'node:os';
+import timersPromises from 'node:timers/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { parseOptions, runLoad, summary } from '../tools/load_test_remote_sse.mjs';
 import { runNative, root } from './desktop_construction_support.mjs';
 import { buildNativeHost } from './native_runtime_artifacts.mjs';
 import { RunningHost } from './native_host_support.mjs';
 
+// Keep socket deadlines real while Node's test clock controls only the load
+// duration and reconnect delay. A fixed wall window cannot prove two timeouts.
+const realTimeout = globalThis.setTimeout;
 async function fixture(handler) {
-  const sockets = new Set(), requests = [];
-  const server = http.createServer((request, response) => {requests.push({method: request.method, path: request.url, headers: request.headers}); handler(request, response, requests.length);});
-  server.on('connection', socket => {sockets.add(socket); socket.on('close', () => sockets.delete(socket));});
+  const sockets = new Set(), requests = [], events = [], started = performance.now();
+  let closed = 0;
+  const event = (kind, client) => events.push({kind, client, ms: Math.round(performance.now() - started)});
+  const server = http.createServer((request, response) => {
+    requests.push({method: request.method, path: request.url, headers: request.headers});
+    event('request', new URL(request.url, 'http://fixture').searchParams.get('client_id'));
+    handler(request, response, requests.length);
+  });
+  server.on('connection', socket => {sockets.add(socket); socket.on('close', () => {sockets.delete(socket); closed++; event('close');});});
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  return {requests, sockets, base: `http://127.0.0.1:${server.address().port}`, async close() {for (const socket of sockets) socket.destroy(); await new Promise(resolve => server.close(resolve));}};
+  return {requests, sockets, events, get closed() {return closed;}, base: `http://127.0.0.1:${server.address().port}`,
+    async waitFor(predicate) {
+      const deadline = performance.now() + 2000;
+      while (!predicate()) {
+        assert.ok(performance.now() < deadline, 'bounded real socket lifecycle: ' + JSON.stringify(events));
+        await new Promise(resolve => realTimeout(resolve, 5));
+      }
+      // Let the client error/abort continuations settle before advancing time.
+      await new Promise(setImmediate);
+    },
+    async close() {for (const socket of sockets) socket.destroy(); await new Promise(resolve => server.close(resolve));}};
 }
 const args = base => parseOptions([base, '--clients', '4', '--duration', '.8', '--connect-timeout', '1', '--reconnect-delay', '.25']);
 
@@ -56,19 +77,53 @@ test('concurrent read-only streams retain multiline, fragmented UTF-8, state rev
   } finally {await service.close();}
 });
 
-test('HTTP, wrong content type, interrupted and quiet timed-out streams fail and retry without lingering sockets', async () => {
+test('HTTP, wrong content type, interrupted and quiet timed-out streams fail and retry without lingering sockets', async t => {
   for (const mode of ['status', 'type', 'interrupted', 'quiet']) {
     const service = await fixture((_request, response) => {
       if (mode === 'status') {response.writeHead(503); response.end('offline');}
       else if (mode === 'type') {response.writeHead(200, {'Content-Type': 'text/plain'}); response.end('wrong');}
       else {response.writeHead(200, {'Content-Type': 'text/event-stream'}); response.flushHeaders(); if (mode === 'interrupted') response.destroy();}
     });
+    t.mock.timers.enable({apis: ['setTimeout']});
+    const controlledDelay = timersPromises.setTimeout;
+    const reconnects = t.mock.method(timersPromises, 'setTimeout', (...arguments_) => controlledDelay(...arguments_));
+    syncBuiltinESMExports();
+    const run = runLoad({...args(service.base), duration: mode === 'quiet' ? .8 : .4, connectTimeout: .08});
+    let result;
     try {
-      const result = await runLoad({...args(service.base), duration: .8, connectTimeout: .08});
+      // Server-side close can precede the client's error continuation. A
+      // registered reconnect delay proves that continuation consumed the error.
+      await service.waitFor(() => service.closed === 4 && reconnects.mock.callCount() === 4);
+      t.mock.timers.tick(249); await new Promise(setImmediate);
+      assert.equal(service.requests.length, 4, 'no retry before the configured 250ms delay');
+      t.mock.timers.tick(1);
+      await service.waitFor(() => service.closed === 8 && reconnects.mock.callCount() === 8);
+      if (mode === 'quiet') {
+        // Cancel real open sockets too, not only sleeping reconnect tasks.
+        t.mock.timers.tick(250);
+        await service.waitFor(() => service.requests.length === 12 && service.sockets.size === 4);
+        t.mock.timers.tick(300);
+      } else {
+        // Stop sleeping clients before their third admission at mock time 500ms.
+        t.mock.timers.tick(150);
+      }
+      result = await run;
       assert.equal(result.status, 1, mode);
-      for (const stats of result.snapshots) {assert.ok(stats.errors >= 2, mode); assert.ok(stats.reconnects >= 1, mode); assert.ok(stats.last_error, mode);}
-      await new Promise(resolve => setTimeout(resolve, 25)); assert.equal(service.sockets.size, 0, mode);
-    } finally {await service.close();}
+      for (const stats of result.snapshots) {
+        assert.equal(stats.errors, 2, mode);
+        assert.equal(stats.attempts, mode === 'quiet' ? 3 : 2, mode);
+        assert.equal(stats.reconnects, stats.attempts - 1, mode); assert.ok(stats.last_error, mode);
+        if (mode === 'quiet') {assert.ok(stats.successful_connections >= 2); assert.equal(stats.last_error, 'connection timed out');}
+      }
+      await service.waitFor(() => service.sockets.size === 0);
+      assert.equal(service.closed, mode === 'quiet' ? 12 : 8, 'every owned socket closes');
+    } catch (error) {
+      t.mock.timers.tick(800); result ??= await run;
+      t.diagnostic(JSON.stringify({mode, node: process.version, platform: process.platform,
+        runtime: result?.runtime, clients: result?.snapshots, events: service.events,
+        registeredReconnects: reconnects.mock.callCount(), openSockets: service.sockets.size}));
+      throw error;
+    } finally {t.mock.timers.tick(800); await run; t.mock.reset(); t.mock.timers.reset(); syncBuiltinESMExports(); await service.close();}
   }
 });
 

@@ -1,4 +1,5 @@
 mod configured_refresh;
+mod source_order;
 mod source_removal;
 use crate::bilibili_service::{BilibiliHttpClient, BilibiliServiceError};
 use crate::gatcha_refresh::RefreshControl;
@@ -7,6 +8,8 @@ pub(crate) use configured_refresh::execute_configured_refresh;
 pub(crate) use configured_refresh::rebuild_needed;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+pub use source_order::SourceEdit;
+pub(crate) use source_order::validate_edit as validate_source_edit;
 pub(crate) use source_removal::validate_source_removal;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fs;
@@ -50,6 +53,16 @@ pub enum GatchaOperation {
     RemoveSource {
         source: String,
         id: String,
+    },
+    EditSources {
+        source: String,
+        expected_version: String,
+        edit: SourceEdit,
+    },
+    PreviewSourceEdit {
+        source: String,
+        expected_version: String,
+        edit: SourceEdit,
     },
     PoolConfigSnapshot,
     PoolConfigUpdate {
@@ -192,6 +205,19 @@ pub(crate) fn execute_gatcha_controlled(
     if let GatchaOperation::RemoveSource { source, id } = &request.operation {
         validate_source_removal(source, id)?;
     }
+    if let GatchaOperation::EditSources {
+        source,
+        expected_version,
+        edit,
+    }
+    | GatchaOperation::PreviewSourceEdit {
+        source,
+        expected_version,
+        edit,
+    } = &request.operation
+    {
+        validate_source_edit(source, expected_version, edit)?;
+    }
     if !requires_mutation_lock(&request.operation) {
         if matches!(
             request.operation,
@@ -211,7 +237,12 @@ pub(crate) fn execute_gatcha_controlled(
     let _guard = repository_guard()?;
     // A destructive edit must read the existing file strictly, not seed a
     // missing configuration as an incidental effect of deleting a favorite.
-    if !matches!(request.operation, GatchaOperation::RemoveSource { .. }) {
+    if !matches!(
+        request.operation,
+        GatchaOperation::RemoveSource { .. }
+            | GatchaOperation::EditSources { .. }
+            | GatchaOperation::PreviewSourceEdit { .. }
+    ) {
         uid_snapshot(&request.paths.uid_file, &request.default_uids)?;
     }
     execute_gatcha_operation(request, control)
@@ -220,7 +251,10 @@ pub(crate) fn execute_gatcha_controlled(
 fn requires_mutation_lock(operation: &GatchaOperation) -> bool {
     matches!(
         operation,
-        GatchaOperation::PoolConfigUpdate { .. } | GatchaOperation::RemoveSource { .. }
+        GatchaOperation::PoolConfigUpdate { .. }
+            | GatchaOperation::RemoveSource { .. }
+            | GatchaOperation::EditSources { .. }
+            | GatchaOperation::PreviewSourceEdit { .. }
     )
 }
 
@@ -238,6 +272,63 @@ fn execute_gatcha_operation(
     match &request.operation {
         GatchaOperation::RemoveSource { source, id } => {
             source_removal::remove_source(&request.paths, source, id)
+        }
+        GatchaOperation::EditSources {
+            source,
+            expected_version,
+            edit,
+        } => match edit {
+            SourceEdit::Remove { ids } => {
+                source_removal::remove_sources(&request.paths, source, ids, Some(expected_version))
+            }
+            SourceEdit::Cleanup { ids } => {
+                source_removal::cleanup_sources(&request.paths, source, ids, expected_version)
+            }
+            SourceEdit::Move { id, before_id } => source_order::move_source(
+                &request.paths,
+                source,
+                expected_version,
+                id,
+                before_id.as_deref(),
+            ),
+            SourceEdit::MoveMany { ids, before_id } => source_order::move_sources_controlled(
+                &request.paths,
+                source,
+                expected_version,
+                ids,
+                before_id.as_deref(),
+                true,
+            ),
+        },
+        GatchaOperation::PreviewSourceEdit {
+            source,
+            expected_version,
+            edit,
+        } => {
+            if let SourceEdit::Move { id, before_id } = edit {
+                source_order::move_source_controlled(
+                    &request.paths,
+                    source,
+                    expected_version,
+                    id,
+                    before_id.as_deref(),
+                    false,
+                )
+            } else if let SourceEdit::MoveMany { ids, before_id } = edit {
+                source_order::move_sources_controlled(
+                    &request.paths,
+                    source,
+                    expected_version,
+                    ids,
+                    before_id.as_deref(),
+                    false,
+                )
+            } else {
+                Err(error(
+                    "invalid_request",
+                    "Only source moves have a read-only preview",
+                ))
+            }
         }
         GatchaOperation::UidSnapshot => {
             uid_snapshot(&request.paths.uid_file, &request.default_uids)
@@ -661,6 +752,8 @@ fn add_uid_source(
     client: &BilibiliHttpClient,
     control: &RefreshControl,
 ) -> Result<Value, GatchaRepositoryError> {
+    let was_member = normalized_strings(uid_snapshot(&paths.uid_file, &[])?.get("uids"))
+        .contains(&uid.to_owned());
     let profile = fetch_profile(client, uid)?;
     let uid = text_value(&profile, "uid");
     let (added, uids, cache) = control.commit(|| {
@@ -668,6 +761,9 @@ fn add_uid_source(
         let mut uid_payload = uid_snapshot(paths.uid_file.as_path(), &[])?;
         let mut uids = normalized_strings(uid_payload.get("uids"));
         let added = !uids.contains(&uid);
+        if added && was_member {
+            return Err(error("cancelled", "来源已删除，已丢弃过期拉取结果"));
+        }
         if added {
             uids.push(uid.clone());
         }
@@ -779,6 +875,9 @@ fn refresh_all(
             let (known_profile, existing) = {
                 let _guard = repository_guard()?;
                 let uid_payload = uid_snapshot(&paths.uid_file, &[])?;
+                if !normalized_strings(uid_payload.get("uids")).contains(uid) {
+                    return Err(error("cancelled", "来源已删除，已丢弃过期拉取结果"));
+                }
                 let cache = load_cache(&paths.cache_file);
                 let existing = cache
                     .pointer(&format!("/uids/{uid}"))
@@ -835,6 +934,9 @@ fn refresh_all(
                     added_entries.extend(array(&value, "entries").iter().cloned());
                 }
                 results.push(summary);
+            }
+            Err(failure) if failure.kind == "cancelled" => {
+                control.check()?;
             }
             Err(failure) => errors.push(json!({"uid": uid, "error": failure.message})),
         }
@@ -1060,6 +1162,12 @@ fn refresh_favlist(
     if selected.as_ref().is_some_and(HashSet::is_empty) {
         return Err(error("invalid_request", "请选择至少一个收藏夹"));
     }
+    let existing_folders: HashSet<_> = array(&load_favlist(&paths.favlist_file), "folders")
+        .iter()
+        .filter_map(Value::as_object)
+        .filter(|folder| text_map(folder, "uid") == uid)
+        .map(folder_id)
+        .collect();
     let folders = fetch_favlist_folders(client, &uid)?;
     let mut matched = 0;
     let mut item_count = 0;
@@ -1091,7 +1199,14 @@ fn refresh_favlist(
         let result = control.source(format!("favlist:{uid}:{folder_id}"), || {
             let fresh = fetch_favlist_entries_controlled(client, &uid, folder, None, control)?;
             let (entries, item_count) = control.commit(|| {
-                persist_favlist_source(paths, &uid, &folder_id, &fresh, Some(&summary))
+                persist_favlist_source_expected(
+                    paths,
+                    &uid,
+                    &folder_id,
+                    &fresh,
+                    Some(&summary),
+                    existing_folders.contains(&folder_id),
+                )
             })?;
             Ok(json!({"uid":uid,"folder_id":folder_id,"item_count":item_count,"entries":entries}))
         });
@@ -1103,7 +1218,10 @@ fn refresh_favlist(
                     additions.extend(array(&value, "entries").iter().cloned());
                 }
             }
-            Err(failure) if failure.kind == "cancelled" => return Err(failure),
+            Err(failure) if failure.kind == "cancelled" => {
+                control.check()?;
+                continue;
+            }
             Err(failure) => {
                 errors.push(json!({"uid":uid,"folder_id":folder_id,"error":failure.message}))
             }
@@ -1139,9 +1257,20 @@ fn persist_favlist_source(
     incoming: &[Value],
     replacement: Option<&Value>,
 ) -> Result<(Vec<Value>, usize), GatchaRepositoryError> {
+    persist_favlist_source_expected(paths, uid, id, incoming, replacement, replacement.is_none())
+}
+
+fn persist_favlist_source_expected(
+    paths: &GatchaPaths,
+    uid: &str,
+    id: &str,
+    incoming: &[Value],
+    replacement: Option<&Value>,
+    require_existing: bool,
+) -> Result<(Vec<Value>, usize), GatchaRepositoryError> {
     let _guard = repository_guard()?;
     let mut current = load_favlist(&paths.favlist_file);
-    if replacement.is_none()
+    if require_existing
         && !array(&current, "folders")
             .iter()
             .filter_map(Value::as_object)
@@ -2237,7 +2366,8 @@ fn browse_uid(
         .take(bounded_limit)
         .collect();
     let next_offset = offset.saturating_add(items.len()).min(matched_count);
-    Ok(json!({
+    let display = source_order::project(paths, "uid", &mut owners, "uid");
+    let mut result = json!({
         "owners": owners,
         "selected_uid": valid_selected,
         "query": query.trim(),
@@ -2248,7 +2378,12 @@ fn browse_uid(
         "next_offset": next_offset,
         "items": items,
         "updated_at": number(&cache, "updated_at"),
-    }))
+    });
+    result
+        .as_object_mut()
+        .unwrap()
+        .extend(display.as_object().unwrap().clone());
+    Ok(result)
 }
 
 fn browse_favlist(
@@ -2346,7 +2481,8 @@ fn browse_favlist(
         .take(bounded_limit)
         .collect();
     let next_offset = offset.saturating_add(items.len()).min(matched_count);
-    Ok(json!({
+    let display = source_order::project(paths, "favlist", &mut folders, "id");
+    let mut result = json!({
         "folders": folders,
         "selected_folder_id": selected,
         "query": query.trim(),
@@ -2357,7 +2493,12 @@ fn browse_favlist(
         "next_offset": next_offset,
         "items": items,
         "updated_at": number(&payload, "updated_at"),
-    }))
+    });
+    result
+        .as_object_mut()
+        .unwrap()
+        .extend(display.as_object().unwrap().clone());
+    Ok(result)
 }
 
 fn candidate_payload(entry: &Map<String, Value>, source: &str, uid: Option<&String>) -> Value {
@@ -3390,6 +3531,19 @@ mod tests {
             persist_favlist_source(&paths, "1", "10", &[json!({"bvid":"BVSTALE"})], None)
                 .unwrap_err()
                 .kind,
+            "cancelled"
+        );
+        assert_eq!(
+            persist_favlist_source_expected(
+                &paths,
+                "1",
+                "10",
+                &[json!({"bvid":"BVSTALE"})],
+                Some(&json!({"uid":"1","id":"10"})),
+                true
+            )
+            .unwrap_err()
+            .kind,
             "cancelled"
         );
         let stopped = RefreshControl::default();

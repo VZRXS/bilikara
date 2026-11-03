@@ -303,6 +303,7 @@ fn cancel(data_path: &Path, logout: bool) -> Result<Value, LoginError> {
                 state: BilibiliLoginStatus::Failed,
                 message: "退出登录失败：凭证文件无法删除".into(),
                 qr_image: String::new(),
+                login_url: String::new(),
             },
         );
     }
@@ -320,7 +321,7 @@ fn run(data_path: &Path, generation: u64) -> Result<Value, LoginError> {
         || status_service().active_bilibili_generation() == Some(generation),
         |qr, message| {
             let png = if image.is_empty() {
-                let png = crate::generate_qr_png(qr, 10, 4)
+                let png = crate::generate_qr_png(qr, 10, 0)
                     .map_err(|_| LoginError::new(502, "login_qr", "无法生成二维码"))?;
                 image = format!("data:image/png;base64,{}", STANDARD.encode(&png));
                 Some(png)
@@ -352,6 +353,7 @@ fn run(data_path: &Path, generation: u64) -> Result<Value, LoginError> {
                         state: BilibiliLoginStatus::Waiting,
                         message: message.into(),
                         qr_image: image.clone(),
+                        login_url: qr.into(),
                     },
                 );
             }
@@ -376,11 +378,13 @@ fn run(data_path: &Path, generation: u64) -> Result<Value, LoginError> {
                 state: BilibiliLoginStatus::LoggedIn,
                 message: "BBDown 已登录".into(),
                 qr_image: String::new(),
+                login_url: String::new(),
             },
             Ok(false) => BilibiliLoginUpdate {
                 state: BilibiliLoginStatus::Idle,
                 message: "未登录".into(),
                 qr_image: String::new(),
+                login_url: String::new(),
             },
             Err(error) => {
                 diagnostic.result = login_service::error_result(&error);
@@ -388,6 +392,7 @@ fn run(data_path: &Path, generation: u64) -> Result<Value, LoginError> {
                     state: BilibiliLoginStatus::Failed,
                     message: error.message,
                     qr_image: String::new(),
+                    login_url: String::new(),
                 }
             }
         };

@@ -12,7 +12,7 @@ const fragment = source.slice(source.indexOf("function maybeStartBBDownLogin("),
   const state = {cacheSettingsOpen:true,bbdownLoginRequesting:false};
   const document = {documentElement:{dataset:{hostPlatform:"android"}}};
   const context = {state, document, elements:{bbdownLoginButton:controls[0],bbdownLoginRefresh:controls[1]},
-    BilikaraHostLayout:{isPortrait:()=>portrait},render(){},setAppMessage(){},
+    BilikaraHostLayout:{isPortrait:()=>portrait},render(){},renderBBDownLogin(){},setAppMessage(){},
     apiPostStateSnapshot(){requests++;return new Promise(resolve=>{finish=resolve;});}};
   vm.createContext(context);
   vm.runInContext(fragment,context);

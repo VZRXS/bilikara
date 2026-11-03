@@ -51,7 +51,7 @@
 }
 
 /* Shared SVG close mark: no font metrics or optical padding compensation. */
-:is(.banner-close, .binding-sheet-close, .rating-close, .song-detail-close):has(> .close-icon) {
+:is(.banner-close, .binding-sheet-close, .rating-close, .song-detail-close):is(:has(> .close-icon), :where([data-legacy-has~="r22"])) {
   display: inline-grid;
   place-items: center;
 }

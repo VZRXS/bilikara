@@ -356,15 +356,32 @@ const commandsByRole = {
       const next = structuredClone(state.data);
       next.state_revision += 1;
       next.revision += 1;
-      next.playlist.push({ id: "notice-demo", display_title: "新点歌曲目", cache_status: "pending" });
+      // While idle, the first accepted request is promoted straight to current.
+      // This is a display snapshot contract, not a provider/download fixture.
+      next.playback_generation += 1;
+      next.playback_program = { item_id: "notice-demo", item_incarnation_id: "notice-incarnation",
+        selected_audio_variant_id: "", artifact_set_id: null };
+      next.current_item = { id: "notice-demo", item_incarnation_id: "notice-incarnation",
+        selected_audio_variant_id: "", artifact_set_id: "", video_media_url: "", audio_variants: [],
+        display_title: "新点歌曲目", cache_status: "pending" };
       if (!acceptHostStateSnapshot(next)) throw Error("fixture snapshot rejected");
     });
     await controller.waitForFunction(() => document.querySelector("#controller-request-toast.is-visible")?.textContent.includes("新点歌曲目"));
+    assert.equal(await controller.locator('#controller-request-toast').isVisible(), true, 'The audience notice must actually render');
+    await controller.waitForFunction(() => getComputedStyle(document.querySelector('#controller-request-toast')).opacity === '1');
     await controller.screenshot({ path: path.join(evidence, `${engine}-incoming-request.png`) });
     await controller.waitForTimeout(4800);
     await host.evaluate(() => publishPresentationOutputState());
     await controller.waitForTimeout(200);
     assert.equal(await controller.locator("#controller-request-toast").isVisible(), false);
+    // Retire the owned first-song display fixture before the independent cache
+    // cases below, retaining the same strict snapshot/program validation.
+    await host.evaluate(() => {
+      const next = structuredClone(state.data);
+      next.state_revision += 1; next.revision += 1; next.playback_generation += 1;
+      next.current_item = null; next.playback_program = null;
+      if (!acceptHostStateSnapshot(next)) throw Error("fixture retirement rejected");
+    });
 
     // Progress uses the existing role-scoped relay, including isolated reloads.
     // These are display fixtures, not evidence of a real media download.

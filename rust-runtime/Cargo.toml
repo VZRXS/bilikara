@@ -23,12 +23,12 @@ required-features = ["native-host"]
 name = "bilikara-updater"
 
 [features]
-native-host = ["dep:axum", "dep:tokio", "dep:tokio-util", "qrcode/svg", "dep:time"]
+native-host = ["dep:axum", "dep:tokio-util", "qrcode/svg", "dep:time"]
 
 [dependencies]
 base64 = "0.22"
 axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "json", "tokio"] }
-tokio = { version = "1", optional = true, features = ["rt-multi-thread", "net", "sync", "time", "fs", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "fs", "io-util"] }
 tokio-util = { version = "0.7", optional = true, features = ["io"] }
 time = { version = "0.3", optional = true }
 bilikara_rust = { path = "../rust" }

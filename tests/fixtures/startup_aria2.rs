@@ -19,6 +19,7 @@ fn main() {
     drop(log);
     match arguments[1].as_str() {
         "--version" => {
+            fs::write(root.join("probe.pid"), std::process::id().to_string()).unwrap();
             let deadline = Instant::now() + Duration::from_secs(30);
             while !root.join("release").exists() {
                 assert!(Instant::now() < deadline);

@@ -108,7 +108,9 @@
   touch-action: manipulation;
 }
 .search-input-wrap > .search-clear-button[hidden] { display: none; }
-:root:not([data-ui-client="remote"]) .search-input-wrap > .search-clear-button:hover { color: var(--ink); }
+@media (hover: hover) and (pointer: fine) {
+  :root:not([data-ui-client="remote"]) .search-input-wrap > .search-clear-button:hover { color: var(--ink); }
+}
 .search-input-wrap > .search-clear-button:disabled { opacity: .55; cursor: default; }
 .search-input-wrap > .search-clear-button:focus-visible { outline: 2px solid var(--accent); outline-offset: -4px; }
 .search-input-wrap > .search-clear-button svg { width: 17px; height: 17px; }

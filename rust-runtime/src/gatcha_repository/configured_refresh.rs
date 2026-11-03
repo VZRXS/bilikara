@@ -95,6 +95,9 @@ fn rebuild_schema(
     }
     for (index, uid) in configured.iter().enumerate() {
         control.check()?;
+        if !normalized_strings(uid_snapshot(&paths.uid_file, &[])?.get("uids")).contains(uid) {
+            continue;
+        }
         if completed.contains(uid) {
             continue;
         }
@@ -164,15 +167,12 @@ fn rebuild_schema(
     let mut known_bvids = HashSet::new();
     control.commit(|| {
         let _guard = repository_guard()?;
-        // Keep source edits made during the nonblocking startup rebuild. As in
-        // the old adapter, rebuilt values win for already rebuilt UID keys.
+        // Keep source edits made during the startup rebuild; rebuilt values
+        // win only for members that are still configured at publication.
         let latest_uid = uid_snapshot(&paths.uid_file, &[])?;
-        let mut all_uids = configured.clone();
-        for uid in normalized_strings(latest_uid.get("uids")) {
-            if !all_uids.contains(&uid) {
-                all_uids.push(uid);
-            }
-        }
+        // Membership comes from the latest durable source list. A completed
+        // checkpoint cannot resurrect a source deleted while HTTP was pending.
+        let all_uids = normalized_strings(latest_uid.get("uids"));
         uid_temp["uids"] = json!(all_uids);
         merge_missing(&mut uid_temp, &latest_uid, "profiles");
         let latest_cache = load_cache(&paths.cache_file);
@@ -192,6 +192,13 @@ fn rebuild_schema(
         }
         merge_missing(&mut cache_temp, &latest_cache, "uids");
         merge_missing(&mut cache_temp, &latest_cache, "profiles");
+        retain_rebuild_members(
+            &mut uid_temp,
+            &mut cache_temp,
+            &mut fav_temp,
+            &latest_uid,
+            &load_favlist(&paths.favlist_file),
+        );
         for payload in [&mut uid_temp, &mut cache_temp, &mut fav_temp] {
             payload["updated_at"] = json!(unix_timestamp());
         }
@@ -256,5 +263,105 @@ fn merge_missing(target: &mut Value, source: &Value, field: &str) {
                 .entry(key.clone())
                 .or_insert_with(|| value.clone());
         }
+    }
+}
+
+// Called under the repository mutation lock immediately before publication.
+fn retain_rebuild_members(
+    uid: &mut Value,
+    cache: &mut Value,
+    fav: &mut Value,
+    latest_uid: &Value,
+    latest_fav: &Value,
+) {
+    let members = normalized_strings(latest_uid.get("uids"));
+    uid["uids"] = json!(members);
+    if let Some(records) = uid["profiles"].as_object_mut() {
+        records.retain(|key, _| members.contains(key));
+    }
+    for field in ["uids", "profiles", "uid_checkpoints"] {
+        if let Some(records) = cache[field].as_object_mut() {
+            records.retain(|key, _| members.contains(key));
+        }
+    }
+    let folders = array(latest_fav, "folders");
+    let keys: HashSet<_> = folders
+        .iter()
+        .filter_map(Value::as_object)
+        .map(|folder| {
+            (
+                first_text(folder, &["uid", "mid"])
+                    .unwrap_or_else(|| text_value(latest_fav, "uid")),
+                folder_id(folder),
+            )
+        })
+        .collect();
+    let keep = |entry: &Value| {
+        keys.contains(&(
+            text_value(entry, "fav_uid"),
+            text_value(entry, "fav_folder_id"),
+        ))
+    };
+    let rebuilt: Vec<_> = array(fav, "items")
+        .iter()
+        .filter(|entry| keep(entry))
+        .cloned()
+        .collect();
+    // Prefer rebuilt records for folders covered by this checkpoint, while
+    // retaining newly added folders and their independently committed songs.
+    let rebuilt_keys: HashSet<_> = array(fav, "folders")
+        .iter()
+        .filter_map(Value::as_object)
+        .map(|folder| {
+            (
+                first_text(folder, &["uid", "mid"]).unwrap_or_else(|| text_value(fav, "uid")),
+                folder_id(folder),
+            )
+        })
+        .collect();
+    let mut items = rebuilt;
+    items.extend(
+        array(latest_fav, "items")
+            .iter()
+            .filter(|entry| {
+                keep(entry)
+                    && !rebuilt_keys.contains(&(
+                        text_value(entry, "fav_uid"),
+                        text_value(entry, "fav_folder_id"),
+                    ))
+            })
+            .cloned(),
+    );
+    fav["folders"] = latest_fav["folders"].clone();
+    fav["uid"] = latest_fav["uid"].clone();
+    fav["uids"] = latest_fav["uids"].clone();
+    fav["items"] = json!(dedupe_entries(&items));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn rebuild_keeps_current_membership_and_new_sources_without_resurrecting_deletions() {
+        let mut uid = json!({"uids":["1","2"],"profiles":{"1":{},"2":{},"3":{}}});
+        let mut cache = json!({"uids":{"1":["rebuilt"],"2":["deleted"],"3":["new"]},"profiles":{"2":{}},"uid_checkpoints":{"2":{}}});
+        let song = |owner: &str, id: &str, title: &str| json!({"bvid":title,"fav_uid":owner,"fav_folder_id":id});
+        let mut fav = json!({"uid":"1","folders":[{"uid":"1","id":"10"},{"uid":"2","id":"10"}],
+            "items":[song("1","10","BVKEEP"),song("2","10","BVDELETE")]});
+        let latest_uid = json!({"uids":["3","1"]});
+        let latest_fav = json!({"uid":"1","uids":["1","3"],"folders":[{"uid":"1","id":"10"},{"uid":"3","id":"20"}],
+            "items":[song("1","10","BVOLD"),song("3","20","BVNEW")]});
+        retain_rebuild_members(&mut uid, &mut cache, &mut fav, &latest_uid, &latest_fav);
+        assert_eq!(uid["uids"], json!(["3", "1"]));
+        assert!(uid["profiles"].get("2").is_none());
+        for field in ["uids", "profiles", "uid_checkpoints"] {
+            assert!(cache[field].get("2").is_none());
+        }
+        assert_eq!(cache["uids"]["3"], json!(["new"]));
+        assert_eq!(fav["folders"], latest_fav["folders"]);
+        assert_eq!(
+            fav["items"],
+            json!([song("1", "10", "BVKEEP"), song("3", "20", "BVNEW")])
+        );
     }
 }

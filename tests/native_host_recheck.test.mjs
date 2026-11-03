@@ -17,6 +17,66 @@ function home(t) { const directory = mkdtempSync(path.join(tmpdir(), 'native rec
 function start(directory, env, ...args) { return RunningHost.start(executable, directory, ['--headless', '--port', '0', '--data-dir', path.join(directory, 'data'), '--static-dir', path.join(root, 'static'), ...args], env); }
 const linuxOnly = process.platform !== 'linux' ? 'local TLS trust fixture requires native Linux' : false;
 
+test('native HiRes and video quality changes preserve captured attempts and apply to new downloads', {skip:linuxOnly,timeout:60000},async t=>{
+  assert.ok(process.env.BILIKARA_TEST_LIBAV_COMPANION&&existsSync(process.env.BILIKARA_TEST_LIBAV_COMPANION),'required real native media companion is missing');
+  const directory=mkdtempSync(path.join(tmpdir(),'native cache preferences ')); let host, completed=false, hold=true, release;
+  const barrier=new Promise(resolve=>{release=resolve;});
+  const mediaRequests=[];
+  const files={video:readFileSync(path.join(root,'tests/fixtures/bbdown/video.mp4')),aac:readFileSync(path.join(root,'tests/fixtures/bbdown/audio.m4a')),flac:readFileSync(path.join(root,'tests/fixtures/bbdown/audio-flac.mp4'))};
+  const provider=await videoFixture(async (target,headers)=>{
+    const url=new URL(target,'https://api.bilibili.com');
+    if(url.pathname==='/x/web-interface/wbi/view')return {code:0,data:{aid:123,bvid:'BV1xx411c7mD',title:'Fixture',owner:{mid:42,name:'Fixture'},pages:[{page:1,cid:457,duration:1,part:'original'}]}};
+    if(url.pathname.endsWith('/nav'))return {code:0,data:{wbi_img:{img_url:`https://example.invalid/${'a'.repeat(32)}.png`,sub_url:`https://example.invalid/${'b'.repeat(32)}.png`}}};
+    if(url.pathname==='/x/player/wbi/playurl')return {code:0,data:{dash:{
+      video:[16,64,80].map(id=>({id,codecid:7,baseUrl:`https://api.bilibili.com/fixture/video-${id}.mp4`,bandwidth:10})),
+      audio:[{id:30280,baseUrl:'https://api.bilibili.com/fixture/audio-aac.m4a',bandwidth:10}],
+      flac:{audio:{id:30251,baseUrl:'https://api.bilibili.com/fixture/audio-flac.mp4',bandwidth:20}}
+    }}};
+    if(url.pathname.startsWith('/fixture/')){
+      mediaRequests.push(url.pathname);
+      if(hold)await barrier;
+      const data=files[url.pathname.includes('video-')?'video':url.pathname.includes('flac')?'flac':'aac'];
+      const match=/^bytes=(\d+)-(\d*)$/u.exec(headers.range||'');
+      const begin=match?Number(match[1]):0,end=match&&match[2]?Number(match[2]):data.length-1;
+      return {fixtureResponse:{rawBody:data.subarray(begin,end+1),status:match?206:200,headers:{'Content-Type':'video/mp4','Accept-Ranges':'bytes',...(match?{'Content-Range':`bytes ${begin}-${end}/${data.length}`}:{})}}};
+    }
+    return {code:0,data:{}};
+  });
+  const item=async id=>{const state=await host.api('/api/state');return [state.current_item,...state.playlist].find(value=>value?.id===id);};
+  const ready=async id=>waitFor(async()=>{const value=await item(id);if(value?.cache_status==='failed')assert.fail(value.cache_message);return value?.cache_status==='ready'?value:undefined;},'native media did not become ready',15000);
+  const add=async()=>{const state=await host.api('/api/playlist/add',{url:'https://www.bilibili.com/video/BV1xx411c7mD',requester_name:'Fixture',allow_repeat:true});return (state.playlist.length?state.playlist:[state.current_item]).at(-1).id;};
+  try{
+    host=await start(directory,{...isolatedEnvironment(directory),...provider.environment,BILIKARA_CF_API_URL:'',BILIKARA_CATALOG_SHEETS_URL:''});
+    await host.api('/api/session-users/add',{name:'Fixture'});
+    await host.api('/api/cache-policy',{max_cache_items:2,video_quality:'1080P 高清',audio_hires:true});
+    const first=await add();await waitFor(()=>mediaRequests.length===2,'first transfer did not reach the local barrier',5000);
+    const second=await add();await waitFor(async()=> (await item(second)).cache_status==='queued','second attempt was not queued',5000);
+    const initial=[...mediaRequests];assert.deepEqual(initial.sort(),['/fixture/audio-flac.mp4','/fixture/video-80.mp4']);
+    await host.api('/api/cache-policy',{audio_hires:false});await delay(450);
+    assert.equal(mediaRequests.length,2,'HiRes change restarted a captured download');
+    await host.api('/api/cache-policy',{video_quality:'360P 流畅'});await delay(450);
+    assert.equal(mediaRequests.length,2,'quality change restarted a captured download');
+    assert.equal((await item(first)).cache_status,'downloading');assert.equal((await item(second)).cache_status,'queued');
+    hold=false;release();await ready(first);const secondReady=await ready(second);
+    assert.equal(mediaRequests.filter(value=>value==='/fixture/video-80.mp4').length,2,'queued video must retain its captured quality');
+    assert.equal(mediaRequests.filter(value=>value==='/fixture/audio-flac.mp4').length,2,'queued audio must retain its captured HiRes choice');
+    const third=await add();const state=await host.api('/api/state');
+    await host.api('/api/player/next',{playback_generation:state.playback_generation});const thirdReady=await ready(third);
+    assert.equal(mediaRequests.filter(value=>value==='/fixture/video-16.mp4').length,1);
+    assert.equal(mediaRequests.filter(value=>value==='/fixture/audio-aac.m4a').length,1);
+    const count=mediaRequests.length;
+    await host.api('/api/cache-policy',{video_quality:'720P 高清',audio_hires:true});await delay(450);
+    assert.equal(mediaRequests.length,count,'ready media must not be redownloaded by a preference change');
+    assert.equal((await item(second)).artifact_set_id,secondReady.artifact_set_id);
+    assert.equal((await item(third)).artifact_set_id,thirdReady.artifact_set_id);
+    await host.api('/api/cache/retry',{item_id:third,expected_item_incarnation_id:thirdReady.item_incarnation_id,force:true});
+    const rebuilt=await ready(third);assert.notEqual(rebuilt.artifact_set_id,thirdReady.artifact_set_id);
+    assert.equal(mediaRequests.filter(value=>value==='/fixture/video-64.mp4').length,1);
+    assert.equal(mediaRequests.filter(value=>value==='/fixture/audio-flac.mp4').length,3,'explicit recache must use the latest preference');
+    completed=true;
+  }finally{hold=false;release();if(host)await host.close();await provider.close();if(completed)rmSync(directory,{recursive:true,force:true});else process.stderr.write(`cache preference failure fixture retained: ${directory}\n`);}
+});
+
 test('real BBDown Dolby-only cache preserves independent ordered requested audio pages', { skip: linuxOnly, timeout: 120000 }, async t => {
   assert.ok(process.env.BILIKARA_TEST_LIBAV_COMPANION && existsSync(process.env.BILIKARA_TEST_LIBAV_COMPANION), 'required real native media companion is missing');
   const directory = home(t), control = path.join(directory, 'child'); mkdirSync(control); writeFileSync(path.join(control, 'mode'), 'dolby');

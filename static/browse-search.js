@@ -80,7 +80,7 @@
     form.setAttribute("role", "search");
     submit.removeAttribute("data-i18n");
     input.removeAttribute("data-i18n-placeholder");
-    input.id ||= `browse-search-query-${++nextId}`;
+    if (!input.id) input.id = `browse-search-query-${++nextId}`;
     const field = createField(input);
     input.setAttribute("enterkeyhint", "search");
     submit.setAttribute("aria-controls", input.id);

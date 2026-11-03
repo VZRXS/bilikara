@@ -125,7 +125,11 @@ assert.ok(contains("font: 400 20px/0 sans-serif", this.styles));
 assert.ok(contains("#dismiss-backup-button.is-close-glyph", this.styles));
 assert.ok(contains(`.critical-banner-region .backup-actions .banner-action,
 .critical-banner-region .backup-actions .next-button,
-.critical-banner-region .backup-actions .banner-close`, this.styles));
+.selection-modal-actions .toolbar-button`, this.styles));
+const closeRule = this.styles.match(/\.critical-banner-region \.backup-actions \.banner-close\s*\{([^}]*)\}/)[1];
+for (const property of ["width", "min-width", "max-width", "height", "min-height", "max-height"]) {
+  assert.ok(contains(`${property}: var(--panel-header-control-size)`, closeRule));
+}
 assert.ok(contains(`.selection-modal-actions .toolbar-button,
 .selection-modal-actions .next-button`, this.styles));
 assert.ok(contains("background: var(--btn-secondary-bg)", this.styles));
@@ -439,7 +443,8 @@ let owner;
 owner = this.script.slice(sourceIndex(this.script, "function activeRequestScrollOwner"), sourceIndex(this.script, "function normalizedD1BrowseLevel"));
 assert.ok(contains("state.followBrowseSelectedUid", owner));
 assert.ok(contains("elements.followSongResults", owner));
-assert.ok(contains("#request-sources-followed-scroll.is-detail-view #follow-song-results", this.styles));
+assert.ok(contains("state.favlistBrowseSelectedFolderId ? elements.favlistSongResults : elements.sourcesFavoritesScroll", owner));
+assert.ok(contains(".source-browse-scroll.is-detail-view :is(#follow-song-results, #favlist-song-results)", this.styles));
 assert.ok(contains("overflow-y: hidden", this.styles));
 assert.ok(contains("overflow-y: auto", this.styles));
 },

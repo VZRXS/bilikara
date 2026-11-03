@@ -4,6 +4,7 @@
   function create({platform, desktop, android, request}) {
     if (platform === "desktop") return {
       manualRelease: true,
+      preferences: desktop?.updatePreferences,
       environment: async () => undefined,
       install: includePreview => desktop.startUpdate(includePreview),
       cancel: () => desktop.cancelUpdate(),
@@ -11,6 +12,7 @@
     };
     if (platform === "android") return {
       manualRelease: false,
+      preferences: android?.updatePreferences,
       environment: async () => android?.environment().catch(() => ({})) || {},
       async install(includePreview) {
         if (!android) throw new Error("Android update adapter unavailable");

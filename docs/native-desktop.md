@@ -208,7 +208,7 @@ are retired, along with desktop construction and libav prerequisite test drivers
 Media-operation and native business drivers now use Node and native artifacts;
 remaining Source Host/FFI consumers stay active until faithful replacements
 preserve their coverage. Remaining Python verification and publication
-entries stay explicit; these cutovers do not publish Preview 3 or retire all CI
+entries stay explicit; these cutovers do not publish a release or retire all CI
 Python requirements.
 
 `python -m bilikara` is the Source entry; `start_bilikara.sh` and the debug-log
@@ -266,6 +266,90 @@ contracts, not media playback or foreign native window/signature behavior.
 Chromium and WebKit, including editable waiting ratings, shared control geometry,
 seek gestures and download status across isolated audience storage. Its shell
 relay fixture does not qualify native monitor/fullscreen or device behavior.
+
+`npm run test:playback-restart` separately checks the shared restart affordances
+against an actual isolated native Host, Chromium and short synthetic media.
+Linux needs the cached native alpha build, the pinned Chromium and a test-only
+`ffmpeg` executable; none becomes a product dependency. Set
+`BILIKARA_TEST_NATIVE_ALPHA_BINARY` to reuse the native binary and
+`BILIKARA_RESTART_SCREENSHOTS` to keep screenshots outside the checkout.
+Desktop Host keeps Restart and Next visible in every window shape, including
+the 700px minimum-width portrait console and mixed mouse/touch input. The shared
+component's trusted Host option enables inline actions independently of viewport
+orientation; its grid reserves their actual width. No popup/first-use animation
+is needed there. Remote and Android Host retain the responsive behavior below.
+Portrait holds the existing Next button for half a second to open a capsule
+to its left. Release over Next never skips; a fresh tap chooses restart or Next.
+Alternatively, keep holding and drag into Restart to arm it, then release there
+to activate; moving away or cancelling does nothing. Both paths dismiss the capsule and suppress the hold's compatibility
+click; any fresh tap also dismisses it. The original Next remains painted in
+place throughout capsule entry/exit and the first-use demonstration.
+Landscape exposes two ordinary circular actions directly in the control row,
+without an enclosing capsule. Two-column Remote sheets give progress its own
+row when the left column alone has sufficient viewport height; scrolling in
+the settings column does not block it. Shorter viewports retain compact controls.
+Both use 44px targets and the existing -15s arrow geometry; only the portrait
+popup uses equal capsule insets. Opening the capsule does not require media
+readiness: Restart can remain disabled while Next reveals the menu. Ordinary
+state refreshes retain it; only a ready, current action can arm or submit.
+The circular transport SVG buttons also show their current localized label after
+a half-second hold, using the shared i-bubble tokens and 120ms opacity/3px motion.
+Holding and sliding between circles switches the annotation; release, leaving the
+buttons, cancellation, scrolling or a changed song retires it. Ordinary held
+explanations do not submit playback commands. Next in usable portrait controls
+adds "slide left to restart"; sliding into Restart arms it until release.
+Landscape Next omits that instruction because Restart is already
+exposed; desktop Host also shows only the ordinary Next label. First-use discovery
+remains the passive capsule animation, while these
+bubbles require an actual hold. The annotation owns no focus or pointer hit area,
+and retains its node/anchor through exit with guarded rapid reopening.
+Restart activates without a confirmation dialog. Orientation is
+measured from the viewport; no URL/storage override or settings switch is used.
+The original Next node, its command guards and all seek controls remain intact.
+Both reuse the generation-bound native seek/play FIFO, preserve the media nodes and never
+retry uncertain mutations. The test covers cancellation, keyboard focus,
+current-song replacement and viewport bounds; it does not qualify physical
+Android, native windowing or public Remote deployment. Ordinary frontend tests
+run only the focused command regressions and do not launch browsers/build Rust.
+
+The restart capsule demonstrates itself once when usable portrait controls first
+become visible. Its extra restart icon is disabled and sends no playback command;
+touching that preview cannot seek through to the covered progress control.
+The existing Next action remains usable during the preview.
+User input interrupts it immediately; landscape does not consume the hint.
+Remote stores a versioned seen flag in site storage; denied storage limits it to
+the current page. Native desktop Host keeps `playback-restart-hint-v1.json`
+beside window preferences, independent of its randomly assigned HTTP port.
+Android uses a fixed private SharedPreferences flag. The two no-argument shell
+commands are limited to the current main Host origin/path; Remote and audience
+windows receive no authority. Missing/failed native preference reads suppress
+the optional hint. These are device-local UI preferences, not Runtime state,
+and carry no song, user, room or credential data.
+
+`npm run test:playback-sheet` is the explicit local rendered gesture gate, with
+the same cached native alpha/Chromium and synthetic-media prerequisites as the
+restart gate. It tests the default dock-to-sheet morph and a trusted local
+comparison build of the bottom-slide variant; there is no product URL/storage
+selector. Both retain click/tap, keyboard, modal focus and document scroll
+ownership. The dock, expanded header, surface and ordinary buttons can start
+vertical touch/pen gestures. Buttons yield only after 12px of predominantly
+vertical intent, preserving taps and suppressing a claimed gesture's click.
+Text, range and select inputs retain their gestures; overflowing content owns
+its whole scroll gesture, including at the top edge. Movement is painted once
+per animation frame without continuous measurements or permanent timers.
+The slide variant catches up at twice the initial finger displacement, then
+tracks it; the morph interpolates the existing surfaces and fades their content.
+Clicks use that same measured interpolation, including reversal during a pending
+animation. The persistent top handle crossfades with the content for both
+clicks and drags; its expanded hit area yields to rating and refresh controls.
+Release projects position by a bounded recent velocity to decide an endpoint.
+Cancellation, viewport/current-song changes and overlapping modal operations
+discard owned frames/capture and restore the appropriate modal state.
+The browser tests exercise real Chromium touch input, first-use persistence,
+flicks, reversal, cancellation, reduced motion, node identity and 320/360px
+portrait plus landscape geometry. They do not certify physical iOS/Android or
+native window behavior. Ordinary frontend verification runs only small policy
+and preference contracts; it does not start this browser gate.
 
 Playwright is locked to 1.63.0 with its matching browsers. The older 1.55.1
 test client could hang Chromium AudioWorklet loading; upgrading the test client
@@ -361,6 +445,20 @@ The macOS aria2 recipe and bundle metadata/README gates use Node; native compile
 signature and public archive round-trip gates remain required on macOS. AWS CLI
 still uses third-party Python for the independent R2 publication jobs. The broader
 CI Python setup stays while source/FFI and other live verification consumers remain.
+
+Pushes to `main` run desktop validation and nonpublishing bundles to maintain
+default-branch caches; documentation/image-only pushes skip these builds.
+Rustup uses a job-local home containing the repository-pinned toolchain, leaving
+preinstalled runner toolchains untouched and outside the Rust cache identity.
+The single `.github/workflows/ci-bundle.yml` entry starts independent Desktop and
+Mobile groups at the caller's commit. Each group runs its own Test matrix before
+its Bundle matrix; neither waits for the other group's tests. Desktop keeps the
+native Windows/macOS package matrix. Mobile currently validates on Linux and
+bundles Android ARM64, including actual APK signing checks; iOS is not yet part
+of the matrix. The reusable `desktop.yml` and `mobile.yml` have no standalone
+push/PR/manual triggers. Tag publication still waits for both groups; ordinary
+branch runs only upload workflow artifacts. Cache summaries report hits and keys, while
+the restore/save steps and job timings remain the source for performance diagnosis.
 
 `npm run test:native-http` runs the current Rust HTTP integration binary with
 diagnostic requests terminated by a local rejecting proxy. `test:remote-load`
@@ -553,6 +651,20 @@ known locations before launching the Host and asks if a legacy candidate exists;
 neither startup nor the updater silently imports them. Existing native checkpoints
 bypass external discovery, and no candidate produces no dialog. Shell logs and
 WebView directories do not count as initialized application data.
+
+Detection checks record contents, not just filenames. On Windows it considers
+the installation's `runtime` and known `%LOCALAPPDATA%/bilikara` and
+`%APPDATA%/bilikara` homes; AppData never replaces the portable data default.
+Read-only inspection reuses the native schema/chunk reader and legacy converter
+without creating locks or migration backups. Only supported, validated records
+are offered for import. Rejected external candidates remain untouched and show
+their path and diagnostic; fresh startup continues and subsequent native
+reopening does not rediscover them. An invalid current native checkpoint remains
+protected rather than being reclassified as legacy or replaced with empty data.
+Checkpoint errors identify missing fields or JSON error class/line/column,
+without exposing saved values. Ordinary reopening uses a bounded, buffered
+envelope check before the Host's full validation, avoiding an extra inspection
+process or external-directory scan.
 
 Keep the installation in a writable directory and move its complete `runtime`
 directory with it. Read-only installations fail rather than falling back to
@@ -1033,6 +1145,24 @@ override. Desktop QR credentials remain in `BBDown.data`; active credentials are
 passed to BBDown through its `-c` argument. `bilikara_native` is a separate local
 Host/Remote browser identity cookie and is never a Bilibili credential.
 
+Desktop **Open login page** opens Bilibili's normal website in a separate,
+ephemeral native window, rather than opening the QR confirmation URL in an
+external browser. Complete the official login there; the shell reads only the
+required Bilibili cookies, and the Rust Host verifies them before saving the
+existing `BBDown.data` format. Closing the window cancels that attempt. QR login
+remains available. The website receives no application IPC permissions; app
+launches, downloads and unrelated top-level navigation are blocked. This window
+is an exception to the shared Host/audience WebView store: it never reads an
+external browser's profile. Official verification/CAPTCHA availability still
+depends on Bilibili and the platform WebView.
+
+`npm run test:native-login` checks the private import/verification/persistence
+boundary against isolated TLS fixtures. `npm run test:native-login-window`
+additionally requires Linux X11 tools (`Xvfb`, `openbox`, `scrot`, `xdotool`) and
+checks an actual ephemeral Tauri WebView against a local HTTP fixture, including
+HttpOnly reads, denied IPC/downloads and store isolation. Neither gate logs into
+a real Bilibili account or qualifies Windows/macOS website compatibility.
+
 Zero or missing playback duration is accepted as a transient observation.
 Playback commands keep working; history-start and rating-threshold transitions
 wait for a positive observed duration. No duration from an earlier observation
@@ -1046,6 +1176,14 @@ kill-on-close Job Object and watches the shell process handle. Download children
 inherit the job; if shutdown hangs after shell death, a five-second watchdog
 exits the Host so the owning Job handle closes. The explicitly detached update
 installer can finish after Host exit. Windows process behavior and native dialogs still require platform testing.
+
+On Linux, supervised BBDown/aria2c processes receive a kernel parent-death
+signal before executing. A parent check closes the startup race, so Host crashes
+and forced termination also stop the tools when Rust cleanup cannot run. Normal
+cancellation and timeouts still terminate and reap the owned process group. This
+protection is limited to these supervised download tools; the detached update
+installer retains its separate lifetime. Windows retains the Job Object policy
+above; this Linux mechanism does not establish macOS crash-cleanup behavior.
 
 The supported HTTP surface follows this repository's Host/Remote callers.
 Registered LAN Remote actions include remove/play-now/move-next in the
@@ -1265,65 +1403,3 @@ Architecture: this is Rust-owned stateful policy in `rust-runtime`, not a new
 pure `rust/` rule. Python changes are only command/HTTP/cache-sync adapters;
 there is no Python policy mirror, new FFI symbol or external service operation.
 The gesture is vanilla JavaScript and adds no third-party dependency.
-
-### Deferral change and validation record (2026-10-03)
-
-Complete changed-file inventory:
-
-- Runtime: `rust-runtime/src/app_state.rs`,
-  `rust-runtime/src/app_state/native_session.rs`,
-  `rust-runtime/src/native_host/api.rs`.
-- Compatibility transport: `bilikara/server.py`, `bilikara/store.py`.
-- Host UI: `static/app.js`, `static/index.html`, `static/styles.css`,
-  `static/i18n.json`, new `static/queue-defer.js`.
-- Tests: `rust-runtime/src/app_state/native_persistence.rs`,
-  `rust-runtime/src/app_state/native_session/tests.rs`,
-  `rust-runtime/tests/native_host_http.rs`, `tests/test_app_state_store.py`,
-  `tests/test_host_playback_session_frontend.py`, new `tests/browser/queue_defer.cjs`.
-- Documentation: `docs/native-desktop.md`.
-
-The following exact commands were run in **each** of `rust/`, `rust-runtime/`
-and `src-tauri/`: `cargo fmt --check`,
-`cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`,
-`cargo build --release --locked`. Formatting, Clippy and release compilation
-passed for all three. Core tests: 233 passed. Tauri tests: 105 passed, one ignored
-after rerunning with native-window access outside the sandbox. Runtime's full
-test gate remains failing in the unchanged live Windows gateway comparison;
-`cargo test --manifest-path rust-runtime/Cargo.toml --locked --lib` reproduced
-it outside the sandbox (340 passed, one failed, eight ignored).
-
-Additional root-directory commands:
-
-| Command | Result |
-| --- | --- |
-| `cargo clippy --manifest-path rust-runtime/Cargo.toml --all-targets --features native-host --locked -- -D warnings` | Passed (also run from the crate directory without `--manifest-path`). |
-| `cargo test --manifest-path rust-runtime/Cargo.toml --features native-host --locked` | Full run failed in the gateway comparison and `isolated_root_never_enrolls_existing_data` (`\\?\` Windows path-prefix expectation). Neither path was modified. |
-| `cargo test --manifest-path rust-runtime/Cargo.toml --locked --features native-host --lib defer_current` | Passed. |
-| `cargo test --manifest-path rust-runtime/Cargo.toml --locked --features native-host --test native_host_http` | Passed, including Host admission, Remote rejection, stale/invalid drops. |
-| `cargo test --manifest-path rust-runtime/Cargo.toml --locked --features native-host -- --skip live_windows_gateways_match_net_ip_configuration --skip isolated_root_never_enrolls_existing_data` | 467 unit and two integration tests passed; eight unit/one integration ignored. Diagnostic isolation run only, not a full-gate pass. |
-| `cargo test --manifest-path src-tauri/Cargo.toml --locked windows_fullscreen::native_tests::tauri_native_fullscreen_preserves_normal_and_maximized_placement -- --exact` | Passed outside the sandbox, followed by a passing full Tauri rerun. |
-| `$env:BILIKARA_REQUIRE_RUST_LIB='1'; python -m unittest tests.test_app_state_store tests.test_host_playback_session_frontend tests.test_async_action_guards tests.test_list_flip_frontend tests.test_host_build_review_repair -v` | 115 passed. Covers atomic persistence, zero playhead on A's return, stale observations, SSE-first delivery, and unchanged ordinary countdown. |
-| `$env:BILIKARA_REQUIRE_RUST_LIB='1'; python -m unittest discover -s tests -v` | 1811 tests: seven failures, one error, 129 skipped on the final rerun; see below. |
-| `python -m compileall -q bilikara` | Passed. |
-| `python -m py_compile start_bilikara.py build_bundle.py` | Passed. |
-| `node --check static/app.js` and `node --check static/queue-defer.js` | Passed. |
-| `node tests/browser/queue_defer.cjs .tmp/queue-defer-browser` | Passed: 1440/700px mouse, 700px mixed input, 393px touch; visible insertion markers, jitter, cancellation, duplicate/pending guards, long-list autoscroll. Screenshots inspected. |
-| `npm ci` | Passed; lockfiles/dependencies unchanged. |
-| `npm run build` | Native Host compiled, then staging failed: `Prepare the pinned BBDown vendor before packaging`. No installable package verified. |
-| `git diff --check` | Passed. |
-
-Browser validation used the existing test-only Playwright installation through
-`NODE_PATH=C:\Users\kevin\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\node_modules`
-and installed Edge; it did not add a runtime dependency. Windows temporary-file,
-browser and native-window checks required execution outside the sandbox.
-The remaining Python failures are in unchanged bundle/cache paths: two
-ffprobe resolution tests disagree with the required pinned libav prefix, and
-six BBDown lookup/update tests find the local vendor instead of their temporary
-fixtures. The initial new persistence-test fixture used the obsolete `state.json`
-path; it was corrected to the adapter's backup file and passes in both the
-115-test targeted suite and the final full rerun.
-Physical Android, native WebView drag/drop and audible playback acceptance remain
-unverified. Ignored tests require explicitly provisioned real media/companion
-fixtures, public YouTube access, staged packages, Linux TLS trust/POSIX or macOS;
-these existing gates were not weakened. Full release acceptance is **not** claimed.
-These local validation results predate the requested commit/push and CI dispatch.

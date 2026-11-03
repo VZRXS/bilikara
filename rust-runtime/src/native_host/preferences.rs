@@ -318,11 +318,12 @@ impl MediaSelection {
         }
     }
 
-    pub(crate) fn changes_artifact(&self, other: &Self) -> bool {
+    /// User quality/HiRes preferences are captured by each download attempt.
+    /// Only executor or decoder compatibility changes replace retained work.
+    pub(crate) fn requires_replacement(&self, other: &Self) -> bool {
         self.force_avc != other.force_avc
             || self.source != other.source
-            || self.quality != other.quality
-            || self.audio_hires != other.audio_hires
+            || (self.avc_cap != other.avc_cap && self.quality != other.quality)
     }
 }
 
@@ -520,7 +521,7 @@ mod tests {
             policy.download_source = source.into();
             let changed = MediaSelection::for_youtube(&policy, &player, true);
             assert_eq!(changed, native);
-            assert!(!changed.changes_artifact(&native));
+            assert!(!changed.requires_replacement(&native));
         }
     }
 
@@ -545,7 +546,7 @@ mod tests {
         let capped = MediaSelection::new(&policy, &player, true);
         assert!(capped.force_avc);
         assert_eq!(capped.quality, "480P 清晰");
-        assert!(selection.changes_artifact(&capped));
+        assert!(selection.requires_replacement(&capped));
     }
     #[test]
     fn validates_entire_patch_and_defaults_to_native_choices() {
@@ -605,7 +606,7 @@ mod tests {
         );
         assert!(
             MediaSelection::new(&bbdown, &PlayerMedia::default(), true)
-                .changes_artifact(&MediaSelection::new(&native, &PlayerMedia::default(), true))
+                .requires_replacement(&MediaSelection::new(&native, &PlayerMedia::default(), true))
         );
     }
 
@@ -629,9 +630,9 @@ mod tests {
         assert_eq!(selected.quality, "480P 清晰");
         assert_eq!(selected.avc_cap, "480P 清晰");
         let next=policy.updated(&json!({"max_cache_items":1,"reset_offset_on_next":true,"video_quality":"720P 高清"})).unwrap();
-        assert!(!selected.changes_artifact(&MediaSelection::new(&next, &player, true)));
+        assert!(!selected.requires_replacement(&MediaSelection::new(&next, &player, true)));
         let next = next.updated(&json!({"audio_hires":true})).unwrap();
-        assert!(selected.changes_artifact(&MediaSelection::new(&next, &player, true)));
+        assert!(!selected.requires_replacement(&MediaSelection::new(&next, &player, true)));
         let unknown = PlayerMedia::default();
         assert!(unknown.usable());
         assert!(
@@ -646,6 +647,39 @@ mod tests {
             MediaSelection::new(&policy, &player, false).avc_cap,
             policy.video_quality
         );
+    }
+
+    #[test]
+    fn quality_and_hires_wait_for_new_attempts_but_executor_and_decoder_changes_replace() {
+        let policy = CachePolicy::default();
+        let player = PlayerMedia::reported(
+            &json!({"hevc_supported":false,"avc_supported":true,"max_avc_quality_index":0}),
+        )
+        .unwrap();
+        let captured = MediaSelection::new(&policy, &player, true);
+        for patch in [
+            json!({"audio_hires":false}),
+            json!({"video_quality":"360P 流畅"}),
+            json!({"video_quality":"720P 高清","audio_hires":false}),
+        ] {
+            let next = MediaSelection::new(&policy.updated(&patch).unwrap(), &player, true);
+            assert_ne!(next, captured);
+            assert!(!next.requires_replacement(&captured));
+        }
+        let changed_source = MediaSelection::new(
+            &policy
+                .updated(&json!({"download_source":"bbdown"}))
+                .unwrap(),
+            &player,
+            true,
+        );
+        assert!(changed_source.requires_replacement(&captured));
+        let restricted_player = PlayerMedia::reported(
+            &json!({"hevc_supported":false,"avc_supported":true,"max_avc_quality_index":4}),
+        )
+        .unwrap();
+        let restricted = MediaSelection::new(&policy, &restricted_player, true);
+        assert!(restricted.requires_replacement(&captured));
     }
 
     #[test]

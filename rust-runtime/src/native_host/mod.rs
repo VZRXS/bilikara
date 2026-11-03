@@ -259,12 +259,11 @@ pub(crate) fn token() -> Result<String, ApiError> {
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 pub(crate) fn qr_image(value: &str) -> Result<String, ApiError> {
-    render_qr(value, true)
+    access_qr_image(value)
 }
 
 pub(crate) fn access_qr_image(value: &str) -> Result<String, ApiError> {
-    // Access cards supply the legacy desktop's 3px outer frame. Login QR
-    // images keep their own four-module quiet zone via qr_image instead.
+    // Access and login cards share the UI's fixed 3px white frame.
     render_qr(value, false)
 }
 
@@ -702,6 +701,9 @@ async fn handle_inner(
             | "/api/app/update/activate"
             | "/api/app/update/install"
             | "/api/app/update/cancel"
+            | "/api/app/bilibili-login/begin"
+            | "/api/app/bilibili-login/complete"
+            | "/api/app/bilibili-login/cancel"
     ) && method == Method::POST
         && context.desktop
     {
@@ -722,6 +724,19 @@ async fn handle_inner(
                 200,
                 json!({"ok":true,"data":{"active":context.export_slots.available_permits() == 0,"language":language}}),
             ));
+        }
+        if let Some(operation) = path.strip_prefix("/api/app/bilibili-login/") {
+            let operation = operation.to_owned();
+            let bytes = axum::body::to_bytes(request.into_body(), 20 * 1024)
+                .await
+                .map_err(|_| ApiError::invalid("Invalid login operation"))?;
+            let body: Value = serde_json::from_slice(&bytes)
+                .map_err(|_| ApiError::invalid("Invalid login operation"))?;
+            let result =
+                tokio::task::spawn_blocking(move || login::web_login(&context, &operation, &body))
+                    .await
+                    .map_err(|_| ApiError::invalid("Login operation failed"))??;
+            return Ok(json_response(200, json!({"ok":true,"data":result})));
         }
         if path.starts_with("/api/app/update/") {
             let bytes = axum::body::to_bytes(request.into_body(), 1024)
@@ -819,6 +834,7 @@ async fn handle_inner(
 
 enum EntryPage {
     Host,
+    LegacyHost,
     Remote,
     DisplayIdentifier(String),
     Controller(u64),
@@ -830,6 +846,18 @@ fn host_entry_page(query: &str) -> Result<EntryPage, ApiError> {
         .iter()
         .filter(|(key, _)| key == "page")
         .collect::<Vec<_>>();
+    let modes = parameters
+        .iter()
+        .filter(|(key, _)| key == "webviewMode")
+        .collect::<Vec<_>>();
+    if !modes.is_empty() {
+        // A fixed presentation choice after the ordinary Host authorization.
+        // No caller-supplied destination, capability or persistent setting.
+        if pages.is_empty() && modes.len() == 1 && modes[0].1 == "legacy" {
+            return Ok(EntryPage::LegacyHost);
+        }
+        return Err(ApiError::invalid("Invalid WebView mode"));
+    }
     if pages.is_empty() {
         return Ok(EntryPage::Host);
     }
@@ -875,6 +903,7 @@ fn session_entry(page: EntryPage, token: &str) -> Response {
     );
     let (location, lifetime) = match page {
         EntryPage::Host => ("/".to_owned(), ""),
+        EntryPage::LegacyHost => ("/#bilikara-legacy".to_owned(), ""),
         // Preserve ordinary Remote recognition when the browser is closed.
         // This does not extend the lifetime of process-private Host authority.
         EntryPage::Remote => ("/remote".to_owned(), "; Max-Age=31536000"),
@@ -1070,6 +1099,36 @@ mod tests {
     }
 
     #[test]
+    fn legacy_entry_keeps_the_host_cookie_and_a_fixed_local_mode_destination() {
+        let response = session_entry(
+            host_entry_page("webviewMode=legacy").unwrap(),
+            "private-host",
+        );
+        assert_eq!(
+            response.headers()["set-cookie"],
+            "bilikara_native=private-host; Path=/; HttpOnly; SameSite=Strict"
+        );
+        let body = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(axum::body::to_bytes(response.into_body(), 4096))
+            .unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(html.contains("url=/#bilikara-legacy"));
+        assert!(html.contains("href=\"/#bilikara-legacy\""));
+        assert!(!html.contains("private-host"));
+        for invalid in [
+            "webviewMode=unknown",
+            "webviewMode=legacy&webviewMode=legacy",
+            "page=controller&presentationGeneration=1&webviewMode=legacy",
+            "webviewMode=https://evil.invalid",
+            "webviewMode=%22%3E%3Cscript%3E",
+        ] {
+            assert!(host_entry_page(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
     fn only_remote_entry_cookies_survive_browser_session_close() {
         let remote = session_entry(EntryPage::Remote, "remote-device");
         let cookie = remote.headers()["set-cookie"].to_str().unwrap();
@@ -1152,10 +1211,10 @@ mod tests {
             .quiet_zone(false)
             .build();
         assert_eq!(String::from_utf8(svg).unwrap(), expected);
-        assert_ne!(
+        assert_eq!(
             image,
             qr_image(url).unwrap(),
-            "Login codes retain their internal quiet zone"
+            "Login and access codes share the UI-provided quiet zone"
         );
     }
 }

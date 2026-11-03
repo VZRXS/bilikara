@@ -97,10 +97,18 @@ export async function verifyLauncher(output) {
       try {
         if (firstImport) {
           const dialog = await importDialog();
-          assert.equal(existsSync(path.join(firstData, 'host-state.json')), false, 'no checkpoint before consent');
+          const invalidRecords = ['first-start-failure', 'first-start-external-failure', 'manual-first-failure'].includes(name);
+          if (!invalidRecords || name === 'first-start-external-failure') {
+            assert.equal(existsSync(path.join(firstData, 'host-state.json')), false, 'no checkpoint before consent or external-error notice');
+          }
           assert.doesNotMatch(existsSync(log) ? readFileSync(log, 'utf8') : '', /child_pid=/, 'inspection must not start the Host');
           await command(['windowactivate', '--sync', dialog]);
-          if (name === 'first-start-skip') {
+          if (invalidRecords) {
+            if (name === 'manual-first-failure') assert.match(await command(['getwindowname', dialog]), /导入未完成/, 'manual failure must show an error rather than an import completion notice');
+            // Invalid records are identified before an import is offered. The
+            // one error notice replaces consent followed by a conversion error.
+            await acceptDialog(`${name}-notice.png`);
+          } else if (name === 'first-start-skip') {
             const screenshot = await runNative(tools.scrot, ['-u', path.join(output, 'first-start-path-choice.png')], env, 10000, temporary);
             assert.equal(screenshot.status, 0, screenshot.stderr);
             await command(['key', 'Tab', 'Return']);
@@ -113,12 +121,8 @@ export async function verifyLauncher(output) {
             assert.doesNotMatch(existsSync(log) ? readFileSync(log, 'utf8') : '', /child_pid=/);
             await command(['windowactivate', '--sync', picker]); await command(['key', 'Escape']);
           } else await command(['key', 'Return']);
-          await waitFor(() => existsSync(path.join(firstData, 'host-state.json')), 'consented conversion must commit', 30000);
-          if (name === 'manual-first-failure') {
-            const notice = await importDialog();
-            assert.match(await command(['getwindowname', notice]), /导入未完成/, 'manual failure must show an error rather than an import completion notice');
-          }
-          if (name !== 'first-start-skip') await acceptDialog(['first-start-failure', 'first-start-external-failure', 'manual-first-failure'].includes(name) ? `${name}-notice.png` : undefined); // Completion/failure notice precedes normal startup.
+          await waitFor(() => existsSync(path.join(firstData, 'host-state.json')), 'consented conversion or preserved fresh-start backup must commit', 30000);
+          if (name === 'first-start') await acceptDialog(); // Completion notice precedes normal startup.
           assert.equal(JSON.parse(readFileSync(path.join(firstData, 'host-state.json'))).state.player_settings.volume_percent, name === 'first-start' ? 43 : 100);
           if (name === 'manual-first-failure') {
             assert.equal(await app.waitForExit(30), true, 'failed manual tool must close after its error notice');
@@ -226,16 +230,14 @@ export async function verifyLauncher(output) {
           assert.equal(inspected.status, 0, inspected.stderr); assert.deepEqual(JSON.parse(inspected.stdout).candidates, [], 'failure/decline does not rediscover source on the next launch');
         }
         if (name === 'first-start-external-failure') {
-          assert.equal(existsSync(firstSource), false, 'failed external source must leave its discovery path');
-          const backups = readdirSync(path.join(path.dirname(firstData), 'legacy-backup'))
-            .map(n => path.join(path.dirname(firstData), 'legacy-backup', n, 'data'));
-          assert.ok(backups.some(p => readFileSync(path.join(p, 'player_state.json')).equals(legacyBytes)
-            && readFileSync(path.join(p, 'history.json'), 'utf8') === '{broken legacy history'));
-          const anotherEnv = {...appEnv, ...isolatedEnvironment(path.join(home, 'another home'))};
+          assert.ok(existsSync(firstSource), 'unrecognized external data is not moved without confirmed import consent');
+          assert.deepEqual(readFileSync(path.join(firstSource, 'player_state.json')), legacyBytes);
+          assert.equal(readFileSync(path.join(firstSource, 'history.json'), 'utf8'), '{broken legacy history');
           const inspected = await runNative(path.join(installed, '_internal/bilikara-desktop-host'),
-            ['--inspect-first-start', '--data-dir', path.join(home, 'another fresh installation/data')], anotherEnv, 30000, temporary);
+            ['--inspect-first-start'], appEnv, 30000, temporary);
           assert.equal(inspected.status, 0, inspected.stderr);
-          assert.deepEqual(JSON.parse(inspected.stdout).candidates, [], 'another fresh installation must not discover the isolated failed source');
+          assert.deepEqual(JSON.parse(inspected.stdout).candidates, [], 'native reopening does not offer unrecognized external records');
+          assert.deepEqual(JSON.parse(inspected.stdout).rejected_candidates, [], 'no repeated external-error notice after normal startup');
         }
         results.push({ backend: name, realTauri: true, ready: true, windowClose: true, childReaped: true, listenerClosed: true });
       } finally {

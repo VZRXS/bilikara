@@ -1,0 +1,242 @@
+name: Mobile
+
+on:
+  workflow_call:
+    secrets:
+      ANDROID_BETA_KEYSTORE_BASE64:
+        required: false
+      ANDROID_KEYSTORE_BASE64:
+        required: false
+      ANDROID_KEYSTORE_PASSWORD:
+        required: false
+      ANDROID_KEY_ALIAS:
+        required: false
+      ANDROID_KEY_PASSWORD:
+        required: false
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  test:
+    name: Test (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Android
+            os: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install locked Node dependencies
+        run: npm ci
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+
+      - name: Install pinned Android signing tools
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Setup repository Rust toolchain
+        uses: ./.github/actions/rust-toolchain
+
+      - name: Cache Rust test builds
+        id: rust-cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            ./rust -> target
+            ./rust-runtime -> target
+          cache-workspace-crates: true
+          shared-key: android-test-workspace-v1
+
+      - name: Validate native Host and Android packaging contract
+        run: |
+          cargo fmt --manifest-path rust/Cargo.toml --check
+          cargo clippy --manifest-path rust/Cargo.toml --all-targets --locked -- -D warnings
+          cargo test --manifest-path rust/Cargo.toml --locked
+          cargo fmt --manifest-path rust-runtime/Cargo.toml --check
+          cargo clippy --manifest-path rust-runtime/Cargo.toml --features native-host --all-targets --locked -- -D warnings
+          cargo test --manifest-path rust-runtime/Cargo.toml --features native-host --locked
+          BILIKARA_REQUIRE_ANDROID_SIGNING_TESTS=1 node --test tests/android_release.test.mjs
+          npm run test:frontend
+
+      - name: Summarize Rust test cache
+        if: always()
+        env:
+          CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
+        run: |
+          printf '### Android test cache\n\nRust exact hit: `%s` (see restore/save steps for details).\n' "${CACHE_HIT:-unavailable}" >> "$GITHUB_STEP_SUMMARY"
+
+  bundle:
+    name: Bundle (${{ matrix.platform }} ${{ matrix.label }})
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Android
+            os: ubuntu-latest
+            label: ARM64
+            rust_target: aarch64-linux-android
+            tauri_target: aarch64
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install locked Node dependencies
+        run: npm ci
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          # The action's default also requests the unavailable legacy "tools" package.
+          packages: platform-tools
+
+      - name: Prepare native YouTube binding generator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev
+
+      - name: Install pinned Android tools
+        run: |
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          yt_ndk="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64"
+          echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--target=aarch64-linux-android24 --sysroot=$yt_ndk/sysroot -resource-dir=$yt_ndk/lib/clang/18" >> "$GITHUB_ENV"
+
+      - name: Setup repository Rust toolchain
+        uses: ./.github/actions/rust-toolchain
+
+      - name: Install Android Rust target
+        run: rustup target add "${{ matrix.rust_target }}"
+
+      - name: Cache Rust builds
+        id: rust-cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            ./rust -> target
+            ./rust-runtime -> target
+            ./src-tauri -> target
+          cache-workspace-crates: true
+          shared-key: android-apk-workspace-v1
+          key: android-36-ndk-27.0.12077973
+
+      - name: Cache Gradle dependencies
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          add-job-summary: never
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+
+      - name: Resolve APK and prepare signing
+        id: android
+        env:
+          # Never expose the persistent beta key to pull-request builds or tags.
+          ANDROID_BETA_KEYSTORE_BASE64: ${{ github.event_name == 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/') && secrets.ANDROID_BETA_KEYSTORE_BASE64 || '' }}
+          ANDROID_KEYSTORE_BASE64: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_KEYSTORE_BASE64 || '' }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          ANDROID_KEY_ALIAS: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_KEY_ALIAS || '' }}
+          ANDROID_KEY_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_KEY_PASSWORD || '' }}
+        run: node scripts/android_release.mjs
+
+      - name: Build APK
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          ANDROID_KEY_ALIAS: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_KEY_ALIAS || '' }}
+          ANDROID_KEY_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_KEY_PASSWORD || '' }}
+          RELEASE_APK: ${{ steps.android.outputs.release }}
+        run: |
+          chmod +x src-tauri/gen/android/gradlew
+          if [ "$RELEASE_APK" = "true" ]; then
+            npm exec -- tauri android build --apk --target "${{ matrix.tauri_target }}" --ci
+          else
+            npm exec -- tauri android build --debug --apk --target "${{ matrix.tauri_target }}" --ci
+          fi
+
+      - name: Stage and verify APK
+        env:
+          APK_NAME: ${{ steps.android.outputs.apk }}
+          RELEASE_APK: ${{ steps.android.outputs.release }}
+          APK_SIGNING_MODE: ${{ steps.android.outputs.signing }}
+        run: |
+          variant=debug
+          if [ "$RELEASE_APK" = "true" ]; then variant=release; fi
+          mapfile -t apks < <(find src-tauri/gen/android/app/build/outputs/apk -type f -name "*${variant}.apk")
+          test "${#apks[@]}" = 1
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "${apks[0]}" > "$RUNNER_TEMP/android-apk-signature.txt"
+          cat "$RUNNER_TEMP/android-apk-signature.txt"
+          node scripts/android_release.mjs --verify-signature "$RUNNER_TEMP/android-apk-signature.txt" "$APK_SIGNING_MODE"
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 -v 4 "${apks[0]}"
+          cp "${apks[0]}" "$APK_NAME"
+
+      - name: Upload APK test artifact
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.android.outputs.apk }}
+          archive: false
+          if-no-files-found: error
+
+      - name: Upload signed APK to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ steps.android.outputs.apk }}
+          generate_release_notes: ${{ contains(github.ref_name, '-preview.') }}
+          prerelease: ${{ contains(github.ref_name, '-preview.') }}
+          draft: true
+
+      - name: Summarize Rust cache
+        if: always()
+        env:
+          CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
+        run: |
+          printf '### Android bundle cache\n\nRust exact hit: `%s` (see restore/save steps for details).\n' "${CACHE_HIT:-unavailable}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove temporary signing file
+        if: always()
+        run: |
+          if [ -n "${ANDROID_KEYSTORE_PATH:-}" ] && [ "$ANDROID_KEYSTORE_PATH" = "$RUNNER_TEMP/bilikara-android-release.jks" ]; then
+            rm -f -- "$ANDROID_KEYSTORE_PATH"
+          fi
+          rm -f -- "$RUNNER_TEMP/bilikara-android-beta.p12"

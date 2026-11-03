@@ -26,10 +26,18 @@ function setup(native = true, orientationType = "portrait-primary", width = 412,
   const dock=get("android-host-dock"), tools=get("android-page-tools");
   dock.children=["playback","queue","request","users","my"].map(p=>{const n=new Node(p);n.dataset.androidPage=p;return n;});
   tools.children=["queue","history","request","random"].map(p=>{const n=new Node(p);n.dataset.androidWorkspace=p;return n;});
-  get("top-controls").append(get("cache-settings"),get("presentation-settings"));
+  get("top-controls").append(get("remote-mini-control"),get("presentation-settings"),get("cache-settings"));
   get("cache-panel").append(get("host-account-settings"));
   get("cache-usage-side").append(get("bbdown-status-row"));
   get("host-account-settings").append(get("bbdown-login-panel"));
+  get("android-display-settings").className = "settings-section android-display-settings";
+  get("settings-body").append(get("android-display-settings"));
+  for (const name of ["queue", "history", "request", "users"]) {
+    get(name + "-header").append(get(name + "-heading"));
+    get(name + "-heading").append(get("workspace-" + name + "-heading"));
+  }
+  get("android-my-heading").append(get("android-my-title"));
+  get("settings-heading").append(get("android-settings-back"));
   const workspaceButtons = Object.entries({queue:"queue",history:"queue",request:"request",random:"request",users:"users",settings:"my"})
     .map(([workspace,page])=>{const n=get("work-rail-"+workspace);n.dataset.hostWorkspace=workspace;n.dataset.compactPage=page;return n;});
   for(const [id,attr,modes] of [["android-layout-switch","androidLayoutMode",["auto","desktop","phone"]],["android-orientation-switch","androidOrientationMode",["system","landscape","portrait"]]]) {
@@ -51,6 +59,7 @@ function setup(native = true, orientationType = "portrait-primary", width = 412,
   const window={innerWidth:width,innerHeight:850,screen:{orientation},BilikaraLayoutPolicy:{resolveLayout},BilikaraHostWindowPreferences:{client,orientation:platform === "android"},addEventListener:(k,fn)=>{listeners[k]=fn;},matchMedia:()=>({matches:true})};
   const context={window,history,state,elements,clearTimeout:()=>{},t:key=>key,
     document:{querySelectorAll:selector=>selector==='[data-host-workspace]'?workspaceButtons:[],documentElement:root,getElementById:get,querySelector:selector=>selector.includes("settings-workspace-body") ? get("settings-body") : requestTabs,createElement:tag=>new Node(tag),createComment:()=>new Node("anchor"),addEventListener:()=>{}},
+    leaveSourceEditors:()=>{state.sourceEditCancels=(state.sourceEditCancels||0)+1;},
     syncSessionUserControls:()=>{},syncHostAccountPresentation:()=>{},
     syncCachePanelVisibility:()=>{},schedulePersistentStageMeasurement:()=>{},
     setAppMessage:message=>calls.push(message),
@@ -84,8 +93,7 @@ for (const width of [320, 390, 600]) {
   assert.deepEqual(narrow.calls,[],"Resizing desktop must not navigate Android pages");
 }
 const mobile=setup();
-assert.equal(mobile.get("presentation-settings").parentElement.className,"settings-section android-display-settings");
-assert.equal(mobile.get("presentation-settings").parentElement.parentElement.id,"settings-body");
+assert.equal(mobile.get("presentation-settings").parentElement.id,"top-controls");
 assert.equal(mobile.root.dataset.hostPage,"playback");
 assert.equal(mobile.elements.hostWorkspaceRegion.hidden,true);
 assert.equal(mobile.get("cache-settings").parentElement.id,"android-settings-slot");
@@ -112,7 +120,7 @@ mobile.clickPage("my");
 assert.equal(mobile.window.BilikaraHostLayout.settingsEmbedded(),true);
 assert.equal(mobile.state.cacheSettingsOpen,true);
 assert.equal(mobile.get("host-account-settings").parentElement.id,"android-account-slot");
-assert.equal(mobile.get("bbdown-status-row").parentElement.id,"host-account-settings");
+assert.equal(mobile.get("bbdown-status-row").parentElement.id,"android-account-heading");
 assert.equal(mobile.get("bbdown-login-panel").parentElement.id,"host-account-settings");
 mobile.get("android-open-settings").listeners.click();
 assert.equal(mobile.window.BilikaraHostLayout.settingsEmbedded(),false);

@@ -1480,7 +1480,28 @@ def remove_gatcha_source(source: str, source_id: str, *, on_done: callable | Non
         raise BilibiliError(GATCHA_TASK_BUSY_MESSAGE)
     try:
         result = _rust_gatcha_repository("remove_source", source=source, id=source_id)
-        _set_gatcha_task_status(status="success", result=result)
+        _set_gatcha_task_status(status="partial" if result.get("cleanup_pending") else "success", result=result)
+        return result
+    finally:
+        rust_runtime.release_gatcha_refresh()
+        if on_done is not None:
+            on_done()
+
+
+def edit_gatcha_sources(source: object, expected_version: object, edit: object, *, on_done: callable | None = None) -> dict:
+    """Thin source-Host adapter; Rust owns validation, versioning and persistence."""
+    if isinstance(edit, dict) and edit.get("action") == "move":
+        task = gatcha_task_snapshot()
+        if task.get("busy") or task.get("background_busy"):
+            raise BilibiliError(GATCHA_TASK_BUSY_MESSAGE)
+        preview = _rust_gatcha_repository("preview_source_edit", source=source, expected_version=expected_version, edit=edit)
+        if preview.get("changed") is False:
+            return preview
+    if not rust_runtime.try_begin_gatcha_refresh(busy_message=GATCHA_TASK_BUSY_MESSAGE, exclusive=True):
+        raise BilibiliError(GATCHA_TASK_BUSY_MESSAGE)
+    try:
+        result = _rust_gatcha_repository("edit_sources", source=source, expected_version=expected_version, edit=edit)
+        _set_gatcha_task_status(status="partial" if result.get("cleanup_pending") else "success", result=result)
         return result
     finally:
         rust_runtime.release_gatcha_refresh()

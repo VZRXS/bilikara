@@ -81,6 +81,7 @@ let loadCalls = 0;
 function closeOpenMenus() { closeCalls += 1; }
 function loadPlayedSessions() { loadCalls += 1; return Promise.resolve(true); }
 function closeRequestDetailForNavigation() {}
+function leaveSourceEditors() {}
 function rememberRequestScrollPosition() {}
 function syncRequestSubviewSelection() {}
 function restoreRequestScrollPosition() {}

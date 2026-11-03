@@ -138,6 +138,7 @@ def build_diagnostic_artifact(
             runtime_state=runtime_state,
             browser_info=browser_info or {},
             export_diagnostics=export_diagnostics or [],
+            internet_remote_diagnostics=internet_remote_diagnostics or [],
             local_usernames=redaction_names,
             connectivity_probe=connectivity_probe,
             native_error=exc,
@@ -169,6 +170,7 @@ def _build_emergency_diagnostic_artifact(
     runtime_state: dict[str, Any],
     browser_info: dict[str, Any],
     export_diagnostics: list[dict[str, Any]],
+    internet_remote_diagnostics: list[dict[str, Any]],
     local_usernames: list[str],
     connectivity_probe: Callable[[], dict[str, Any]] | None,
     native_error: BaseException,
@@ -214,6 +216,7 @@ def _build_emergency_diagnostic_artifact(
     configs = _collect_configs(local_usernames)
     logs = _collect_logs(local_usernames)
     exports = _sanitize_export_diagnostics(export_diagnostics, local_usernames)
+    remote_records = _emergency_remote_summary(internet_remote_diagnostics, local_usernames)
     files = {
         "system.json": _json_bytes(system),
         "tools-and-tasks.json": _json_bytes(tools_and_tasks),
@@ -222,6 +225,7 @@ def _build_emergency_diagnostic_artifact(
         "disk.json": _json_bytes(disk),
         "connectivity.json": _json_bytes(connectivity),
         "export-diagnostics.json": _json_bytes(exports),
+        "internet-remote-diagnostics.json": _json_bytes(remote_records),
     }
     files.update(
         {f"config/{name}": _json_bytes(payload) for name, payload in configs.items()}
@@ -238,6 +242,7 @@ def _build_emergency_diagnostic_artifact(
         disk=disk,
         connectivity=connectivity,
         export_diagnostics=exports,
+        internet_remote_diagnostics=remote_records,
         logs=logs,
     )
     return DiagnosticArtifact(markdown=markdown, files=files)
@@ -527,6 +532,38 @@ def _sanitize_export_diagnostics(
     return sanitized_items
 
 
+def _emergency_remote_summary(
+    records: list[dict[str, Any]],
+    local_usernames: list[str],
+) -> list[dict[str, Any]]:
+    # Keep a bounded operational summary when the native builder cannot run.
+    # Nested transport payloads stay with Rust's typed sanitizer; copying them
+    # raw here could disclose candidate addresses, SDP or TURN credentials.
+    if not isinstance(records, list):
+        return []
+    text_limits = {
+        "timestamp": 64, "stage": 64, "status": 32, "originClass": 16,
+        "errorCode": 64, "errorMessage": 256,
+    }
+    integer_limits = {"httpStatus": 999, "elapsedMs": 3_600_000, "peerCount": 100}
+    result = []
+    for record in records[-64:]:
+        if not isinstance(record, dict):
+            continue
+        entry = {}
+        for key, limit in text_limits.items():
+            value = record.get(key)
+            entry[key] = (
+                redact_text(value, local_usernames=local_usernames)[:limit]
+                if isinstance(value, str) else None
+            )
+        for key, limit in integer_limits.items():
+            value = record.get(key)
+            entry[key] = value if type(value) is int and 0 <= value <= limit else None
+        result.append(entry)
+    return result
+
+
 def _build_markdown(
     *,
     system: dict[str, Any],
@@ -537,6 +574,7 @@ def _build_markdown(
     disk: dict[str, Any],
     connectivity: dict[str, Any],
     export_diagnostics: list[dict[str, Any]] | None = None,
+    internet_remote_diagnostics: list[dict[str, Any]] | None = None,
     logs: dict[str, str],
 ) -> str:
     lines = [
@@ -615,6 +653,12 @@ def _build_markdown(
             )
     else:
         lines.append("No recent export attempts recorded.")
+
+    lines.extend(["", "## Recent Internet Remote Diagnostics", ""])
+    if internet_remote_diagnostics:
+        lines.append(_json_code_block(internet_remote_diagnostics))
+    else:
+        lines.append("No recent Internet Remote attempts recorded.")
 
     if logs:
         recent_lines: list[str] = []

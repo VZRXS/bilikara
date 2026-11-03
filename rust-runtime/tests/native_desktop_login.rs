@@ -151,7 +151,8 @@ fn shared_desktop_login_publication_and_generation_contract() {
         assert_eq!(pixels.depth, png::BitDepth::One);
         assert_eq!(pixels.color, png::ColorType::Grayscale);
         assert_eq!(pixels.width, pixels.height);
-        pixels.decode(0, 0, pixels.width, pixels.height, 0, payload);
+        assert_eq!(pixels.bytes[0], 0, "Login PNG has no internal white border");
+        pixels.decode(0, 0, pixels.width, pixels.height, 40, payload);
         assert_eq!(
             fixture.login("start", json!({"force":false}))["generation"],
             Value::Null

@@ -3,9 +3,8 @@
   "use strict";
   function newestAddition(previous, next) {
     if (!previous || !next) return null;
-    const previousCurrent = String(previous.current_item?.id || "");
-    const nextCurrent = String(next.current_item?.id || "");
-    if (nextCurrent && previousCurrent !== nextCurrent) return null;
+    if (previous.session_generation !== next.session_generation
+      || previous.session_flags?.startup_choice_pending || next.session_flags?.startup_choice_pending) return null;
     const known = new Set([previous.current_item, ...(Array.isArray(previous.playlist) ? previous.playlist : [])]
       .map(item => String(item?.id || "")).filter(Boolean));
     const added = [...(Array.isArray(next.playlist) ? next.playlist : []), next.current_item]

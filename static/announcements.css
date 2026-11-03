@@ -2,13 +2,13 @@
 #announcements-modal { padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
 #announcements-modal .announcement-card {
   width: min(680px, 100%);
-  max-height: min(82dvh, 760px);
+  max-height: min(calc(var(--legacy-vh, 1vh) * 82), 760px); max-height: min(82dvh, 760px);
   grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
   box-sizing: border-box;
 }
-#announcements-modal .announcement-card:has(> #announcements-status:not(:empty)) { grid-template-rows: auto minmax(0, 1fr) auto; }
-#announcements-modal .announcement-card:has(> #announcements-content:empty) { grid-template-rows: auto auto; }
+#announcements-modal .announcement-card:is(:has(> #announcements-status:not(:empty)), :where([data-legacy-has~="r11"])) { grid-template-rows: auto minmax(0, 1fr) auto; }
+#announcements-modal .announcement-card:is(:has(> #announcements-content:empty), :where([data-legacy-has~="r12"])) { grid-template-rows: auto auto; }
 #announcements-modal .selection-modal-head { display: flex; justify-content: space-between; gap: 16px; margin: 0; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
 #announcements-close { flex-shrink: 0; }
 #announcements-status { margin: 0; color: var(--accent); font-size: 13px; font-weight: 500; line-height: 1.5; }
@@ -32,4 +32,4 @@
 .announcement-markdown > :first-child { margin-top: 0; }
 .announcement-markdown > :last-child { margin-bottom: 0; }
 .announcement-empty { margin: 0; color: var(--muted); font-size: 14px; }
-@media (max-width: 480px) { #announcements-modal .announcement-card { max-height: 88dvh; } }
+@media (max-width: 480px) { #announcements-modal .announcement-card { max-height: calc(var(--legacy-vh, 1vh) * 88); max-height: 88dvh; } }

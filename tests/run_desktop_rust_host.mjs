@@ -116,6 +116,7 @@ export async function runDesktopBrowser(evidence, options = [], environment = pr
         writeFileSync(path.join(evidence,'bbdown-fixture-source.json'),JSON.stringify({source,target:nativeTarget(),executable:tool,source_sha256:createHash('sha256').update(readFileSync(source)).digest('hex'),image_sha256:createHash('sha256').update(bytes).digest('hex')},null,2));
       }
       Object.assign(env,{BILIKARA_BBDOWN_FIXTURE:tool,BILIKARA_BBDOWN_FIXTURE_ROOT:folder,BILIKARA_BBDOWN_MEDIA:home});writeFileSync(path.join(folder,'mode'),'slow');
+      if(!real)env.BILIKARA_BBDOWN_PAIR_FAILURES='1';
     }
     const driver=shared?'tests/browser/shared_native_host.cjs':policy||bbdown?'tests/live_desktop_import.js':'tests/live_desktop_rust_host.js';
     const checked=await runNative(process.execPath,[driver,path.resolve(evidence)],env,240000);

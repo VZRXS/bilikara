@@ -13,8 +13,8 @@ const ratingDialog = require('./browser/remote_rating_dialog.cjs');
 let alpha, desktop;
 before(async () => {
   if (process.platform !== 'linux') return;
-  alpha = await buildNativeAlpha();
-  desktop = await buildNativeHost();
+  alpha = process.env.BILIKARA_TEST_NATIVE_ALPHA_BINARY || await buildNativeAlpha();
+  desktop = process.env.BILIKARA_TEST_NATIVE_HOST_BINARY || await buildNativeHost();
 }, { timeout: 300000 });
 
 async function open(t, engine, role = 'host', input = {}, desktopEntry = false) {
@@ -576,7 +576,20 @@ for (const [name, engine] of [['Chromium', chromium], ['WebKit', webkit]]) {
         };
         document.addEventListener('dragover', observeFirstMarker);
       });
-      await source.dragTo(first, { sourcePosition: { x: 5, y: 18 }, targetPosition: { x: 2, y: 18 } });
+      if (mode === 'select') {
+        // A checkbox gesture only selects; it must never reorder the roster.
+        const before = await page.evaluate(() => state.sessionUserEditor.entries.map(user => user.id));
+        const checkbox = await source.locator('.session-user-checkbox').boundingBox(), target = await first.boundingBox();
+        await page.mouse.move(checkbox.x + checkbox.width / 2, checkbox.y + checkbox.height / 2);
+        await page.mouse.down(); await page.mouse.move(target.x + 2, target.y + 18, { steps: 5 }); await page.mouse.up();
+        assert.deepEqual(await page.evaluate(() => state.sessionUserEditor.entries.map(user => user.id)), before);
+        const native = (await host.api('/api/state')).session_user_entries.map(user => user.id);
+        assert.deepEqual(native, before);
+        assert.equal(await page.locator('.session-user-drag-image').count(), 0);
+      }
+      // Selection reserves the numbered/checkbox region for clicks. Start the
+      // actual HTML drag on the name, retaining the first-edge marker check.
+      await source.locator('.session-user-name').dragTo(first, { targetPosition: { x: 2, y: 18 } });
       assert.equal(await page.evaluate(() => firstMarkerPainted), true, `${mode || 'normal'} first marker is actually painted during HTML dragging`);
       await page.waitForFunction(id => state.sessionUserEditor.entries[0].id === id && !state.sessionUserEditor.busy, sourceId);
       assert.equal((await host.api('/api/state')).session_user_entries[0].id, sourceId, 'Actual HTML drop reaches the native atomic reorder');
@@ -929,14 +942,20 @@ for (const [name, engine] of [['Chromium', chromium], ['WebKit', webkit]]) {
     }
     await page.route('**/fixture-cover', route => route.fulfill({ contentType: 'image/svg+xml', body:
       '<svg xmlns="http://www.w3.org/2000/svg" width="90" height="500"><rect width="90" height="500" fill="orange"/></svg>' }));
-    for (const width of [700, 1280, 1920]) {
-      await page.setViewportSize({ width, height: 1080 });
+    for (const [width, height] of [[700, 600], [700, 1080], [1280, 1080], [1920, 1080]]) {
+      await page.setViewportSize({ width, height });
+      // Resizing into the narrow desktop layout folds an idle tool sheet.
+      // Settle that layout and open it before measuring its cover contents.
+      await page.waitForFunction(() => !state.hostWorkspaceTransition);
+      await page.evaluate(() => renderHostWorkspaceSelection());
+      if (await rail.getAttribute('aria-expanded') === 'false') await rail.click();
       const covers = [];
       for (const [title, artwork] of [['短标题', false], ['Long title 中文'.repeat(25), true]]) {
         await page.evaluate(({ title, artwork }) => {
           state.gatchaCandidate = { bvid: 'BV1xx411c7mD', title, owner_name: 'Artist', cover_url: artwork ? location.origin + '/fixture-cover' : '' };
           state.gatchaView = 'candidate'; renderGatchaWorkspace();
         }, { title, artwork });
+        await page.locator('#gatcha-candidate-card').waitFor({ state: 'visible' });
         if (artwork) await page.locator('#gatcha-candidate-card img').evaluate(image => image.decode());
         await page.evaluate(() => Promise.allSettled(document.getAnimations()
           .filter(animation => animation.effect?.getTiming().iterations !== Infinity).map(animation => animation.finished)));
@@ -978,11 +997,19 @@ for (const [name, engine] of [['Chromium', chromium], ['WebKit', webkit]]) {
       await route.fulfill({ json: { ok: true, data: {} } });
     });
     const range = page.locator('#playback-sheet-seek');
+    // The morph keeps content inert while its translated surface is moving.
+    // Measure and interact only after its owner restores the settled layout.
+    await page.locator('.playback-sheet-body:not([inert])').waitFor({ state: 'visible' });
     await range.waitFor({ state: 'visible' });
     await range.evaluate(node => node.blur());
     assert.equal(await range.evaluate(node => node.matches(':focus')), false);
     const rect = await range.boundingBox();
     assert.equal(rect.height, 44);
+    const initialPosition = Number(await range.inputValue());
+    await range.click({ position: { x: rect.width / 2, y: rect.height / 2 } });
+    assert.equal(await range.evaluate(node => node.classList.contains('is-engaged')), true);
+    assert.equal(Number(await range.inputValue()), initialPosition, 'First click only reveals the thumb');
+    assert.equal(requests.length, 0, 'Revealing the thumb cannot send a seek');
     let response = page.waitForResponse(value => value.url().endsWith('/api/player/control'));
     await range.click({ position: { x: rect.width / 2, y: rect.height / 2 } });
     await response;
@@ -1282,7 +1309,7 @@ for (const [name, engine] of [['Chromium', chromium], ['WebKit', webkit]]) {
     }
   });
 
-  test(`${name} ordinary user guidance stays neutral and drag deletion retains a stable target through snapshots`, {
+  test(`${name} empty-session prerequisite stays accented, guidance stays muted and drag deletion retains a stable target through snapshots`, {
     skip: nativeLimit, timeout: 60000,
   }, async t => {
     const { page, host } = await open(t, engine);
@@ -1291,12 +1318,17 @@ for (const [name, engine] of [['Chromium', chromium], ['WebKit', webkit]]) {
     for (const theme of ['light', 'dark', 'blue']) {
       const colors = await page.evaluate(theme => {
         applyTheme(theme); state.sessionUserEditor.render({ ...state.data, session_user_entries: [] });
-        const guidance = getComputedStyle(document.querySelector('.session-user-empty'));
-        const queue = getComputedStyle(document.querySelector('.queue-empty'));
-        return { guidance: guidance.color, queue: queue.color, weight: guidance.fontWeight };
+        const guidance = getComputedStyle(document.querySelector('.session-user-guidance'));
+        const prerequisite = getComputedStyle(document.querySelector('.session-user-prerequisite'));
+        const request = getComputedStyle(document.getElementById('gatcha-session-user-notice'));
+        const probe = document.createElement('span'); probe.style.color = 'var(--muted)'; document.body.append(probe);
+        const muted = getComputedStyle(probe).color; probe.remove();
+        return { guidance: guidance.color, muted, weight: guidance.fontWeight,
+          prerequisite: [prerequisite.color, prerequisite.fontWeight], request: [request.color, request.fontWeight] };
       }, theme);
-      assert.equal(colors.guidance, colors.queue, theme);
+      assert.equal(colors.guidance, colors.muted, theme);
       assert.equal(colors.weight, '400');
+      assert.deepEqual(colors.prerequisite, colors.request, theme);
     }
     await page.evaluate(() => state.sessionUserEditor.render(state.data));
     const drag = await page.evaluate(() => {

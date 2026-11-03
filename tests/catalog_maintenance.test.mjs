@@ -110,7 +110,7 @@ test('CLI entry preserves arguments, missing local/union inputs, bounded export 
 test('real entry and CI run the Rust maintenance artifact, and obsolete Python policy cannot return',()=>{
   const pkg=JSON.parse(readFileSync(path.join(root,'package.json')));
   assert.match(pkg.scripts['catalog:refresh'],/cargo run .*--manifest-path rust-runtime\/Cargo.toml --locked --target host-tuple --bin bilikara-catalog-refresh --$/);
-  const workflow=readFileSync(path.join(root,'.github/workflows/ci-bundle.yml'),'utf8');assert.ok(workflow.includes('npm run test:catalog-maintenance'));
+  const workflow=readFileSync(path.join(root,'.github/workflows/desktop.yml'),'utf8');assert.ok(workflow.includes('npm run test:catalog-maintenance'));
   const server=readFileSync(path.join(root,'bilikara/server.py'),'utf8');assert.ok(server.includes('from .rust_runtime import start_monthly_refresh_in_background'));assert.ok(!server.includes('from monthly_gatcha'));
   for(const retired of ['monthly_gatcha_d1_refresh.py','tests/test_monthly_gatcha_d1_refresh.py']) assert.equal(existsSync(path.join(root,retired)),false,'retired duplicate is absent: '+retired);
 });

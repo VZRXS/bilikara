@@ -1,4 +1,6 @@
 const audioVariantSwitchDebounceMs = 350;
+let playbackRestartMenu = null;
+let playbackSheetGesture = null;
 // Modal autofocus can inherit :focus-visible from an input or keyboard action.
 // Track explicit pointer use without blurring controls or disrupting focus traps.
 document.addEventListener("pointerdown", () => {
@@ -1550,7 +1552,7 @@ window.visualViewport?.addEventListener("scroll", syncRemoteMenuBounds);
 window.addEventListener("remote-invitation-changed", () => renderRemoteAccess(state.data?.remote_access));
 
 function renderRemoteAccess(remoteAccess) {
-  remoteAccess ||= nativeRemoteAccess;
+  if (!remoteAccess) remoteAccess = nativeRemoteAccess;
   const internet = window.BilikaraRemoteTransport?.mode === "internet";
   if (!internet && document.documentElement.dataset.nativeHost === "true" && !remoteAccess) return;
   const invitation = internet ? window.BilikaraRemoteTransport.invitation?.() : null;
@@ -3349,7 +3351,7 @@ function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
   const epochTransition = stateEpochTransition(snapshot);
   if (epochTransition === "stale") return false;
   if (epochTransition === "restart") {
-    state.retiredStateEpochs ||= new Set();
+    if (!state.retiredStateEpochs) state.retiredStateEpochs = new Set();
     if (state.data?.state_epoch) state.retiredStateEpochs.add(state.data.state_epoch);
     forceRender = true;
   }
@@ -3842,8 +3844,12 @@ function syncGatchaTaskTerminalMessage() {
         : status === "partial"
           ? t("gatcha.refreshPartial")
           : t("gatcha.refreshFailed");
-    const message = task.last_result?.operation === "remove_source"
-      ? t("sources.removedLocal") : localizedGatchaTaskMessage(task.last_message, status) || fallback;
+    const operation = task.last_result?.operation;
+    const message = operation === "source_order" ? t("sources.orderSaved")
+      : operation === "source_cleanup" ? t(status === "partial" ? "sources.removedCleanupPending" : "sources.cleanupDone")
+      : ["remove_source", "remove_sources"].includes(operation)
+        ? t(status === "partial" ? "sources.removedCleanupPending" : "sources.removedLocal")
+        : localizedGatchaTaskMessage(task.last_message, status) || fallback;
     const detail = task.last_error ? `${message} ${task.last_error}` : message;
     setGatchaUidMessage(detail, status !== "success");
   }
@@ -4251,26 +4257,6 @@ function renderRemoteGridPages(container, items, key, renderPage, {loading = fal
     loading, emptyText, language:state.language});
 }
 
-const sourceRemovalEditors = new Map();
-function sourceRemovalEditor(source) {
-  if (!sourceRemovalEditors.has(source)) {
-    sourceRemovalEditors.set(source, window.BilikaraSourceRemoval?.create(
-      source === "uid" ? elements.sourcesFollowGrid : elements.favlistGrid, {
-        source, translate: t, reportError: message => setAppMessage(message, true),
-        remove: async target => {
-          await apiPost("/api/gatcha/source/remove", target);
-          state.gatchaCandidate = null;
-          renderGatchaView();
-          if (source === "uid") await loadFollowBrowse({ uid: "", query: "" });
-          else await loadFavlistBrowse({ folderId: "", query: "" });
-          setAppMessage(t("sources.removedLocal"));
-        },
-      },
-    ));
-  }
-  return sourceRemovalEditors.get(source);
-}
-
 function renderSourceCardPage(container, entries, emptyText, favorites = false) {
   container.replaceChildren();
   if (!entries.length) {
@@ -4310,8 +4296,7 @@ function renderSourceCardPage(container, entries, emptyText, favorites = false) 
       button.append(avatar);
     }
     window.BilikaraSourceStatus?.syncCard(button, state.data?.gatcha, t);
-    container.append(sourceRemovalEditor(favorites ? "favlist" : "uid")?.card(button,
-      { id, title, placeholder: entry.placeholder }) || button);
+    container.append(button);
   }
 }
 
@@ -4472,7 +4457,7 @@ async function executeCanonicalBilikaraSearch(queryStr) {
 
 function d1BrowseModeState(kind = state.remoteDiscoverMode) {
   const normalizedKind = kind === "artist" ? "artist" : "name";
-  state.d1BrowseModes[normalizedKind] ||= {
+  if (!state.d1BrowseModes[normalizedKind]) state.d1BrowseModes[normalizedKind] = {
     letter: "",
     tag: "",
     locale: "",
@@ -4963,14 +4948,13 @@ function paginatedBrowseStatus(items, { loading, loadingText, emptyText = "" }) 
 
 function selectedFavlistFolder() {
   const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
-  return folders.find((folder) => String(folder.id || "") === state.favlistBrowseSelectedFolderId) || null;
+  return window.BilikaraSourceStatus.selectedFolder(state.data?.gatcha, folders, state.favlistBrowseSelectedFolderId);
 }
 
 function renderFavlistBrowse() {
   if (!elements.favlistGrid || !elements.favlistSongResults) {
     return;
   }
-  sourceRemovalEditor("favlist")?.sync();
   const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
   const items = Array.isArray(state.favlistBrowseData?.items) ? state.favlistBrowseData.items : [];
   const hasMore = Boolean(state.favlistBrowseData?.has_more);
@@ -5096,9 +5080,8 @@ async function loadFavlistBrowse({
       ...nextData,
       items: mergeBrowseItems(previousItems, nextData.items),
     };
-    state.favlistBrowseSelectedFolderId = String(
-      nextData.selected_folder_id ?? state.favlistBrowseSelectedFolderId ?? "",
-    );
+    state.favlistBrowseSelectedFolderId = window.BilikaraSourceStatus.selectedFolderId(
+      state.data?.gatcha, nextData.selected_folder_id, state.favlistBrowseSelectedFolderId);
     if (!keepQuery && elements.favlistSearchQuery) {
       elements.favlistSearchQuery.value = String(nextData.query || "");
     }
@@ -5352,7 +5335,6 @@ function renderSourcesFollowBrowse() {
   if (!elements.sourcesFollowGrid || !elements.sourcesFollowResults) {
     return;
   }
-  sourceRemovalEditor("uid")?.sync();
 
   const owners = Array.isArray(state.followBrowseData?.owners) ? state.followBrowseData.owners : [];
   const items = Array.isArray(state.followBrowseData?.items) ? state.followBrowseData.items : [];
@@ -6084,7 +6066,8 @@ function playbackSheetUsesTwoColumns() {
 function playbackSheetInputManipulationActive() {
   const active = document.activeElement;
   return Boolean(
-    state.playbackSheetSeekScrubbing
+    playbackSheetGesture?.active
+    || state.playbackSheetSeekScrubbing
     || (
       active
       && elements.playbackSheetBody?.contains(active)
@@ -6294,7 +6277,7 @@ function applyPlaybackSheetAdaptiveLayout({ preserveTransportMode = false } = {}
   let spaciousGroupHeight = playbackGroupCompactHeight;
   let spaciousProgressWidth = compactProgressWidth;
   let spaciousExtraHeight = 0;
-  let spareHeight = secondaryNaturalHeight - compactPrimaryNaturalHeight;
+  const spareHeight = availablePrimaryHeight - compactPrimaryNaturalHeight;
   let spacious = originalSpacious;
 
   if (!preserveTransportMode) {
@@ -6303,22 +6286,26 @@ function applyPlaybackSheetAdaptiveLayout({ preserveTransportMode = false } = {}
     spaciousProgressWidth = progressUnit.getBoundingClientRect().width;
     panel.classList.remove("is-spacious-transport");
     spaciousExtraHeight = Math.max(0, spaciousGroupHeight - playbackGroupCompactHeight);
-    spareHeight = secondaryNaturalHeight - compactPrimaryNaturalHeight;
     const clearance = 10;
     const rangeGain = spaciousProgressWidth - compactProgressWidth;
     spacious = Boolean(
       twoColumns
-      && secondaryNaturalHeight <= maximumBodyContentHeight + 0.5
       && compactPrimaryNaturalHeight + spaciousExtraHeight + clearance
-        <= secondaryNaturalHeight + 0.5
-      && compactPrimaryNaturalHeight + spaciousExtraHeight
-        <= maximumBodyContentHeight + 0.5
+        <= availablePrimaryHeight + 0.5
       && rangeGain >= 96
     );
     panel.classList.toggle("is-spacious-transport", spacious);
   }
 
   panel.dataset.transportLayout = spacious ? "spacious" : "compact";
+  for (const column of [primary, secondary]) {
+    const scrollable = twoColumns && column.scrollHeight > column.clientHeight + 1;
+    column.classList.toggle("is-scrollable", scrollable);
+    if (!scrollable) column.scrollTop = 0;
+  }
+  if (twoColumns) body.scrollTop = 0;
+  panel.classList.toggle("has-scrollable-body", (twoColumns ? [primary, secondary] : [body])
+    .some(node => node.scrollHeight > node.clientHeight + 1));
   panel.dataset.metadataTruncated = truncatedFields.join(",");
   state.playbackMetadataLayoutRunCount += 1;
   const primaryRect = primary.getBoundingClientRect();
@@ -6330,6 +6317,9 @@ function applyPlaybackSheetAdaptiveLayout({ preserveTransportMode = false } = {}
     runCount: state.playbackMetadataLayoutRunCount,
     maximumPanelHeight,
     maximumBodyContentHeight,
+    availablePrimaryHeight,
+    compactPrimaryNaturalHeight,
+    secondaryNaturalHeight,
     availableSummaryHeight,
     metadataHeightBudget,
     naturalLines: Object.fromEntries(
@@ -6343,6 +6333,8 @@ function applyPlaybackSheetAdaptiveLayout({ preserveTransportMode = false } = {}
     ),
     truncatedFields,
     twoColumns,
+    primaryScrollable: primary.classList.contains("is-scrollable"),
+    secondaryScrollable: secondary.classList.contains("is-scrollable"),
     headerActionsStacked,
     transportLayout: panel.dataset.transportLayout,
     compactProgressWidth,
@@ -6388,8 +6380,8 @@ function schedulePlaybackSheetAdaptiveLayout({
     closePlaybackMetadataPopover();
   }
   state.playbackMetadataLayoutPendingSignature = signature;
-  state.playbackMetadataLayoutViewportChange ||= viewportChange;
-  state.playbackMetadataLayoutInteractionEnded ||= interactionEnded;
+  if (!state.playbackMetadataLayoutViewportChange) state.playbackMetadataLayoutViewportChange = viewportChange;
+  if (!state.playbackMetadataLayoutInteractionEnded) state.playbackMetadataLayoutInteractionEnded = interactionEnded;
   if (state.playbackMetadataLayoutFrame !== null) {
     return true;
   }
@@ -6418,6 +6410,7 @@ function schedulePlaybackSheetAdaptiveLayout({
     });
     state.playbackMetadataLayoutSignature = nextSignature;
     state.playbackMetadataLayoutDeferred = false;
+    playbackRestartMenu?.refresh();
   });
   return true;
 }
@@ -7927,6 +7920,8 @@ function beginPlayerControlStatusSync(currentItem) {
 }
 
 function renderPlayerControls(currentItem, playbackMode) {
+  playbackSheetGesture?.refresh();
+  playbackRestartMenu?.refresh();
   if (!currentItem) {
     state.playerControlsRenderSignature = "__empty__";
     elements.playerControlPanel.classList.add("hidden");
@@ -8013,6 +8008,7 @@ function renderPlayerControls(currentItem, playbackMode) {
   };
 
   updateToggleState(toggleButton);
+  playbackRestartMenu?.refresh();
 
   if (playbackMode !== "local") {
     if (typeof clearRemoteIssueByPrefix === "function") {
@@ -9492,7 +9488,7 @@ function remoteContextualTooltipForWrap(wrap) {
   if (button && !tooltipId) {
     const tooltip = wrap.querySelector(".remote-tooltip-bubble");
     if (tooltip) {
-      tooltip.id ||= `remote-contextual-info-${++remoteContextualInfoNextId}`;
+      if (!tooltip.id) tooltip.id = `remote-contextual-info-${++remoteContextualInfoNextId}`;
       tooltipId = tooltip.id;
       button.setAttribute("aria-describedby", tooltipId);
     }
@@ -9767,14 +9763,16 @@ window.addEventListener("resize", handlePlaybackSheetViewportChange);
 window.addEventListener("resize", schedulePlaybackDockMarquee);
 window.visualViewport?.addEventListener("resize", handlePlaybackSheetViewportChange);
 window.addEventListener("scroll", scheduleRemoteContextualTooltipPositionSync, true);
-elements.playbackSheetBody?.addEventListener("scroll", () => {
-  if (state.audioVariantBarExpanded) {
-    setAudioVariantPopoverOpen(false);
-  }
-  if (state.playbackMetadataPopoverField) {
-    positionPlaybackMetadataPopover();
-  }
-}, { passive: true });
+for (const scroller of [elements.playbackSheetBody, elements.playbackSheetPrimary, elements.playbackSheetSecondary]) {
+  scroller?.addEventListener("scroll", () => {
+    if (state.audioVariantBarExpanded && scroller.contains(elements.audioVariantBar)) {
+      setAudioVariantPopoverOpen(false);
+    }
+    if (state.playbackMetadataPopoverField) {
+      positionPlaybackMetadataPopover();
+    }
+  }, { passive: true });
+}
 elements.playbackSheetBody?.addEventListener("change", (event) => {
   if (event.target.matches?.('input[type="range"], input[type="number"]')) {
     schedulePlaybackSheetAdaptiveLayout({ force: true, interactionEnded: true });
@@ -10073,6 +10071,35 @@ elements.bindingAudioToggle?.addEventListener("click", () => {
   renderBindingAccordion();
 });
 
+function remoteRestartContext() {
+  const item = state.data?.current_item, generation = state.data?.playback_generation;
+  const status = currentPlayerStatus(item);
+  return { key: `${item?.id}:${item?.item_incarnation_id}:${generation}`,
+    itemId: item?.id, generation, title: item?.display_title || item?.title,
+    enabled: canRemoteControlPlayer(item, frontendPlaybackMode(state.data?.playback_mode))
+      && ["playing", "paused", "ready-paused", "ended"].includes(status?.observed_phase) };
+}
+let restartControlSync = null;
+playbackRestartMenu = globalThis.BilikaraPlaybackRestart?.create({
+  firstUse: globalThis.BilikaraPlaybackRestart.firstUseStore?.("remote") || null,
+  canShowHint: () => playbackSheetIsOpen() && !anotherRemoteModalIsOpen() && !playbackSheetGesture?.active,
+  anchor: elements.playerControlPanel.querySelector('[data-control-action="next-track"]'),
+  iconSource: elements.playerControlPanel.querySelector('[data-control-action="seek-relative"][data-delta="-15"]'),
+  getContext: remoteRestartContext, label: t,
+  onBusy: busy => {
+    state.playerControlPendingAction = busy ? "restart" : "";
+    if (busy) restartControlSync = beginPlayerControlStatusSync(state.data?.current_item);
+    renderPlayerControls(state.data?.current_item, frontendPlaybackMode(state.data?.playback_mode));
+  },
+  onRestart: async context => {
+    await globalThis.BilikaraPlaybackRestart.restart({ context,
+      isCurrent: () => remoteRestartContext().key === context.key,
+      post: apiPostExactStateCommand });
+    setFormMessage(t("player.restartSent"));
+  },
+  onError: () => { clearPlayerControlStatusSync(restartControlSync); setFormMessage(t("player.restartFailed"), true); },
+});
+
 elements.audioVariantBar.addEventListener("click", (event) => {
   const toggleButton = event.target.closest('button[data-action="toggle-audio-variants"]');
   if (toggleButton) {
@@ -10177,25 +10204,48 @@ elements.playerControlPanel.addEventListener("click", async (event) => {
   await sendPlayerControl(action, deltaSeconds);
 });
 
+let playbackSeekRevealOnly = false;
 elements.playerControlPanel.addEventListener("input", (event) => {
   const seek = event.target.closest('input[data-control-action="seek-absolute"]');
   if (!seek || seek.disabled) {
+    return;
+  }
+  if (playbackSeekRevealOnly) {
+    state.playbackSheetSeekScrubbing = false;
+    paintPlaybackClockSurfaces();
     return;
   }
   state.playbackSheetSeekScrubbing = true;
   paintPlaybackSheetSeekPreview(Number(seek.value || 0));
 });
 
-elements.playbackSheetSeek?.addEventListener("pointerdown", () => {
-  elements.playbackSheetSeek.classList.add("is-engaged");
+elements.playbackSheetSeek?.addEventListener("pointerdown", event => {
+  if (elements.playbackSheetSeek.disabled || !event.isPrimary || event.button !== 0) return;
+  playbackSeekRevealOnly = !elements.playbackSheetSeek.classList.contains("is-engaged");
+  if (playbackSeekRevealOnly) {
+    // Reveal only. Prevent the range's native track-jump and retain the real
+    // current value; a subsequent pointer gesture or keyboard action can seek.
+    event.preventDefault();
+    elements.playbackSheetSeek.classList.add("is-engaged");
+    elements.playbackSheetSeek.focus({ preventScroll: true });
+  }
 });
+// Chromium's touch range default can run even when pointerdown was canceled.
+// Keep the entire first gesture reveal-only, including delayed input/change.
+elements.playbackSheetSeek?.addEventListener("touchstart", event => {
+  if (playbackSeekRevealOnly) event.preventDefault();
+}, { passive: false });
 elements.playbackSheetSeek?.addEventListener("keydown", event => {
   if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) {
+    playbackSeekRevealOnly = false;
     elements.playbackSheetSeek.classList.add("is-engaged");
   }
 });
 elements.playbackSheet?.addEventListener("pointerdown", event => {
-  if (event.target !== elements.playbackSheetSeek) elements.playbackSheetSeek?.classList.remove("is-engaged");
+  if (event.target !== elements.playbackSheetSeek) {
+    playbackSeekRevealOnly = false;
+    elements.playbackSheetSeek?.classList.remove("is-engaged");
+  }
 });
 for (const name of ["pointercancel", "blur"]) {
   elements.playbackSheetSeek?.addEventListener(name, () => {
@@ -10212,6 +10262,11 @@ for (const name of ["pointercancel", "blur"]) {
 elements.playerControlPanel.addEventListener("change", async (event) => {
   const seek = event.target.closest('input[data-control-action="seek-absolute"]');
   if (!seek || seek.disabled || state.playerControlPendingAction) {
+    return;
+  }
+  if (playbackSeekRevealOnly) {
+    state.playbackSheetSeekScrubbing = false;
+    paintPlaybackClockSurfaces();
     return;
   }
   const targetSeconds = Number(seek.value || 0);
@@ -10537,10 +10592,12 @@ function trapFocusWithin(root, event, preferredElement = null) {
   return false;
 }
 
-function openPlaybackSheet() {
+function openPlaybackSheet({ animate = true } = {}) {
   if (!state.data?.current_item || !elements.playbackSheet || anotherRemoteModalIsOpen()) {
     return false;
   }
+  if (animate && playbackSheetGesture?.animateTo) return playbackSheetGesture.animateTo(true);
+  if (playbackSheetGesture?.active) playbackSheetGesture.cancel({ restore: false });
   setRemoteMenuOpen(false);
   closeRemoteContextualInfo();
   state.playbackSheetTransitionSequence += 1;
@@ -10563,13 +10620,22 @@ function openPlaybackSheet() {
   void elements.playbackSheetPanel?.offsetHeight;
   elements.playbackSheet.classList.add("is-open");
   schedulePlaybackSheetAdaptiveLayout({ force: true });
+  playbackRestartMenu?.refresh();
   if (document.documentElement.dataset.remoteInputModality === "keyboard") {
     elements.playbackSheetCollapse?.focus?.({ preventScroll: true });
   }
   return true;
 }
 
-function closePlaybackSheet({ immediate = false, restoreFocus = true } = {}) {
+function closePlaybackSheet({ immediate = false, restoreFocus = true, animate = true } = {}) {
+  if (!immediate && animate && state.playbackSheetOpen && playbackSheetGesture?.animateTo) {
+    playbackRestartMenu?.close({ immediate: true });
+    setAudioVariantPopoverOpen(false);
+    closePlaybackMetadataPopover();
+    if (playbackSheetGesture.animateTo(false, { restoreFocus })) return;
+  }
+  playbackSheetGesture?.cancel({ restore: false });
+  playbackRestartMenu?.close({ immediate: true });
   elements.playbackSheetSeek?.classList.remove("is-engaged");
   if (!elements.playbackSheet) {
     return;
@@ -10648,6 +10714,21 @@ function retireTransientPlaybackModalForModal() {
 }
 
 function initPlaybackSheet() {
+  playbackSheetGesture = globalThis.BilikaraPlaybackSheetGestures?.create({
+    dock: elements.playbackDock, sheet: elements.playbackSheet, panel: elements.playbackSheetPanel,
+    header: elements.playbackSheetPanel?.querySelector(".playback-sheet-status-header"),
+    body: elements.playbackSheetBody, collapse: elements.playbackSheetCollapse,
+    isOpen: () => state.playbackSheetOpen,
+    canUse: () => Boolean(state.data?.current_item && !anotherRemoteModalIsOpen()),
+    getKey: () => remoteRestartContext().key,
+    open: () => openPlaybackSheet({ animate: false }),
+    close: options => closePlaybackSheet({ ...options, animate: false }),
+    layout: () => applyPlaybackSheetAdaptiveLayout(),
+    onFinish: () => {
+      schedulePlaybackSheetAdaptiveLayout({ force: true, interactionEnded: true });
+      playbackRestartMenu?.refresh();
+    },
+  });
   elements.playbackDock?.addEventListener("click", openPlaybackSheet);
   document.fonts?.ready?.then(() => {
     schedulePlaybackSheetAdaptiveLayout({ force: true });

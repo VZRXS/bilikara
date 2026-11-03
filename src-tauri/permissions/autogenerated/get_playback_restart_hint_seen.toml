@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-playback-restart-hint-seen"
+description = "Enables the get_playback_restart_hint_seen command without any pre-configured scope."
+commands.allow = ["get_playback_restart_hint_seen"]
+
+[[permission]]
+identifier = "deny-get-playback-restart-hint-seen"
+description = "Denies the get_playback_restart_hint_seen command without any pre-configured scope."
+commands.deny = ["get_playback_restart_hint_seen"]

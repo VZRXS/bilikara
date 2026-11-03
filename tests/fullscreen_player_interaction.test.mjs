@@ -26,7 +26,7 @@ function fixture(mode = 'native') {
   window.setTimeout = (callback, ms) => { const id = ++next; timers.set(id, { callback, time: now + ms }); return id; };
   window.clearTimeout = id => timers.delete(id);
   const state = { localPlaybackStartState: 'established', localPlayerControlsHideTimer: null, playerFullscreenTransitioning: false };
-  let dual = false;
+  let dual = false; const renderedFullscreen=[];
   const sandbox = vm.createContext({ document, window, state, elements: { playerPanel: panel }, playerControlsAutoHideMs: 5000,
     fullscreenElement: () => document.fullscreenElement,
     presentationCompositionActive: () => dual, isAndroidNativePlaybackRuntime: () => false,
@@ -34,6 +34,7 @@ function fixture(mode = 'native') {
     isCurrentHostPlaybackSession: () => true, addMountedPlayerListener: (target, type, callback) => target.addEventListener(type, callback),
     fullscreenControlHover: { reset() {} }, setPlayerFullscreenRemotePinned() {}, hideFullscreenRequestToast() {},
     hasLocalAdvanceDelayOverlay: () => false, hidePlayerDelayOverlay() {}, renderPlayerFullscreenButton() {},
+    renderCurrentPresentationScene() { renderedFullscreen.push(panel.classList.contains('is-tauri-fullscreen') || document.fullscreenElement === panel); },
   });
   vm.runInContext(helper, sandbox);
   vm.runInContext(section('function isPlayerPanelFullscreen()', 'function isAudiencePlayerSurface()'), sandbox);
@@ -70,8 +71,13 @@ function fixture(mode = 'native') {
     }
     now = until;
   }
-  return { document, window, panel, video, state, sandbox, timers, fire, enter, exit, tick, dual: value => { dual = value; } };
+  return { document, window, panel, video, state, sandbox, timers, fire, enter, exit, tick, renderedFullscreen, dual: value => { dual = value; } };
 }
+
+for (const mode of ['native','browser']) test(`${mode} fullscreen refreshes cache presentation on both entry and exit`, () => {
+  const f=fixture(mode);f.enter();f.exit();
+  assert.deepEqual(f.renderedFullscreen,[true,false]);
+});
 
 for (const mode of ['native', 'browser']) test(`${mode} fullscreen starts quiet but real input restores controls`, () => {
   const f = fixture(mode);

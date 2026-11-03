@@ -12,36 +12,39 @@
   }
 
   const byId = (id) => document.getElementById(id);
-  // Only the phone layout embeds this selector in Settings. The desktop layout
-  // restores the original node, not a second copy with duplicate handlers.
-  const displaySettings = byId("presentation-settings");
-  const displayAnchor = document.createComment("desktop display settings position");
-  displaySettings?.before(displayAnchor);
-  const settingsBody = document.querySelector("#host-workspace-settings .settings-workspace-body");
-  let displaySection = null;
-  if (displaySettings && settingsBody) {
-    const section = document.createElement("section");
-    section.className = "settings-section android-display-settings";
-    section.hidden = true;
-    const hint = document.createElement("p");
-    hint.className = "android-display-hint";
-    hint.hidden = root.dataset.hostPlatform !== "android";
-    hint.dataset.i18n = "mobile.externalDisplayHint";
-    hint.textContent = t("mobile.externalDisplayHint");
-    section.append(hint);
-    settingsBody.prepend(section);
-    displaySection = section;
-  }
-
   const dock = byId("android-host-dock");
   const tools = byId("android-page-tools");
+  const pageHeading = byId("android-page-heading");
+  // Reuse the live desktop headings (including queue counts and translations).
+  // Only their position changes; restore them before returning to desktop.
+  const headingPositions = ["workspace-queue-heading", "workspace-history-heading", "workspace-request-heading", "workspace-users-heading", "android-my-title"]
+    .map(id => {
+      const heading = byId(id).parentElement;
+      const anchor = document.createComment("desktop workspace heading position");
+      heading.before(anchor);
+      return {id, heading, anchor};
+    });
+  const headingActions = Array.from(document.querySelectorAll(".queue-card-head > .queue-toolbar"), toolbar => {
+    const anchor = document.createComment("desktop queue actions position");
+    toolbar.before(anchor);
+    return {toolbar, anchor, workspace: toolbar.closest("[data-host-workspace-panel]").dataset.hostWorkspacePanel};
+  });
   const myPage = byId("android-my-page");
+  const myScroll = byId("android-my-scroll");
+  let myScrollTop = 0;
   const settingsBack = byId("android-settings-back");
+  const settingsBackAnchor = document.createComment("settings back position");
+  settingsBack.before(settingsBackAnchor);
   const queueTabs = byId("android-queue-tabs");
   const requestTabs = byId("android-request-tabs");
   const sharedRequestTabs = document.querySelector(".request-subview-tabs");
   const requestTabsAnchor = document.createComment("desktop request tabs position");
   sharedRequestTabs.before(requestTabsAnchor);
+  const contextualHeads = Array.from(document.querySelectorAll(".request-subview > .request-mode-head"), head => {
+    const anchor = document.createComment("desktop contextual tabs position");
+    head.before(anchor);
+    return {head, anchor, view: head.parentElement.dataset.requestPanel};
+  });
   const cacheSettings = byId("cache-settings");
   const cacheAnchor = document.createComment("desktop cache settings position");
   cacheSettings.before(cacheAnchor);
@@ -92,6 +95,7 @@
   let settings = false;
   let queueView = "queue";
   let requestView = "request";
+  let finishSettingsTransition = null;
   let blockedImages = 0;
   const qrIds = ["remote-qr-image", "remote-popover-qr-image", "remote-mini-qr-image", "player-fullscreen-remote-qr-image"];
 
@@ -145,8 +149,15 @@
     const random = state.activeHostWorkspace === "random";
     // The contextual row occupies the primary row's place on phones. All
     // secondary tabs and content stay in their original shared DOM nodes.
-    requestTabs.hidden = page !== "request" || (!random && state.requestSubview !== "quick");
-    tools.hidden = queueTabs.hidden && requestTabs.hidden && settingsBack.hidden;
+    const contextual = !random && state.requestSubview !== "quick";
+    requestTabs.hidden = page !== "request";
+    sharedRequestTabs.hidden = contextual;
+    for (const entry of contextualHeads) {
+      if (contextual && entry.view === state.requestSubview) {
+        if (entry.head.parentElement !== requestTabs) requestTabs.append(entry.head);
+      } else if (entry.anchor.nextSibling !== entry.head) entry.anchor.after(entry.head);
+    }
+    tools.hidden = pageHeading.hidden && queueTabs.hidden && requestTabs.hidden;
     const randomButton = byId("android-request-random");
     randomButton.setAttribute("aria-selected", String(random));
     randomButton.tabIndex = random ? 0 : -1;
@@ -171,12 +182,33 @@
     elements.hostWorkspaceRegion.hidden = playingPage || myHome;
     elements.hostWorkspaceRegion.inert = playingPage || myHome;
     elements.hostWorkspaceRegion.setAttribute("aria-hidden", String(playingPage || myHome));
+    const returningToMy = myHome && myPage.hidden;
     myPage.hidden = !myHome;
+    if (returningToMy) myScroll.scrollTop = myScrollTop;
     myPage.inert = !myHome;
     queueTabs.hidden = page !== "queue";
     requestTabs.hidden = page !== "request";
     settingsBack.hidden = !(page === "my" && settings);
-    tools.hidden = queueTabs.hidden && requestTabs.hidden && settingsBack.hidden;
+    const headingId = page === "queue" ? `workspace-${state.activeHostWorkspace}-heading`
+      : page === "request" ? "workspace-request-heading"
+      : page === "users" ? "workspace-users-heading"
+      : myHome ? "android-my-title" : "";
+    for (const entry of headingPositions) {
+      if (entry.id === headingId) {
+        if (entry.heading.parentElement !== pageHeading) pageHeading.append(entry.heading);
+      } else if (entry.anchor.nextSibling !== entry.heading) entry.anchor.after(entry.heading);
+    }
+    for (const entry of headingActions) {
+      if (page === "queue" && entry.workspace === state.activeHostWorkspace) {
+        if (entry.toolbar.parentElement !== pageHeading) pageHeading.append(entry.toolbar);
+      } else if (entry.anchor.nextSibling !== entry.toolbar) entry.anchor.after(entry.toolbar);
+    }
+    const settingsPage = page === "my" && settings;
+    if (settingsPage) {
+      if (settingsBack.parentElement !== pageHeading) pageHeading.prepend(settingsBack);
+    } else if (settingsBackAnchor.nextSibling !== settingsBack) settingsBackAnchor.after(settingsBack);
+    pageHeading.hidden = !headingId && !settingsPage;
+    tools.hidden = pageHeading.hidden && queueTabs.hidden && requestTabs.hidden;
     for (const button of dock.querySelectorAll("[data-android-page]")) {
       if (button.dataset.androidPage === page) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
@@ -204,7 +236,15 @@
 
   function navigate(next, {openSettings = false, remember = true} = {}) {
     if (!portrait || !pages.has(next)) return;
+    finishSettingsTransition?.();
+    if (!myPage.hidden) myScrollTop = Number(myScroll.scrollTop) || 0;
+    const slide = page === "my" && next === "my" && settings !== openSettings
+      && !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const forward = openSettings;
+    const previousCard = settings ? elements.hostWorkspaceRegion : myPage;
+    const outgoingBounds = slide ? previousCard.getBoundingClientRect() : null;
     const changed = next !== page || settings !== openSettings;
+    if (changed) leaveSourceEditors();
     page = next;
     settings = page === "my" && openSettings;
     state.cacheSettingsOpen = settingsEmbedded();
@@ -214,6 +254,45 @@
     syncVisibility();
     schedulePersistentStageMeasurement();
     if (remember && changed) saveRoute();
+    if (slide) {
+      const incoming = openSettings ? elements.hostWorkspaceRegion : myPage;
+      const outgoing = openSettings ? myPage : elements.hostWorkspaceRegion;
+      const nodes = [outgoing, incoming];
+      const bounds = [outgoingBounds, incoming.getBoundingClientRect()];
+      const saved = nodes.map(node => ["position", "top", "left", "width", "height", "z-index"].map(key =>
+        [key, node.style.getPropertyValue(key)]));
+      nodes.forEach((node, index) => {
+        node.hidden = false;
+        node.inert = index === 0;
+        node.style.position = "absolute";
+        const parent = node.offsetParent;
+        const frame = parent.getBoundingClientRect();
+        Object.assign(node.style, {
+          top: `${bounds[index].top - frame.top - parent.clientTop + parent.scrollTop}px`,
+          left: `${bounds[index].left - frame.left - parent.clientLeft + parent.scrollLeft}px`,
+          width: `${bounds[index].width}px`, height: `${bounds[index].height}px`, zIndex: String(index + 1),
+        });
+      });
+      // Absolute card bounds restore the scroller's real viewport. Restore its
+      // offset now, before the first animation frame, rather than only on exit.
+      if (!forward) myScroll.scrollTop = myScrollTop;
+      const sign = forward ? 1 : -1;
+      const animations = [
+        outgoing.animate([{transform: "translateX(0)"}, {transform: `translateX(${-sign * 20}%)`}], {duration: 200, easing: "ease-out"}),
+        incoming.animate([{transform: `translateX(${sign * 100}%)`}, {transform: "translateX(0)"}], {duration: 200, easing: "ease-out"}),
+      ];
+      const finish = () => {
+        if (finishSettingsTransition !== finish) return;
+        finishSettingsTransition = null;
+        animations.forEach(animation => animation.cancel());
+        nodes.forEach((node, index) => saved[index].forEach(([key, value]) =>
+          value ? node.style.setProperty(key, value) : node.style.removeProperty(key)));
+        syncVisibility();
+        if (page === "my" && !settings) myScroll.scrollTop = myScrollTop;
+      };
+      finishSettingsTransition = finish;
+      Promise.allSettled(animations.map(animation => animation.finished)).then(finish);
+    }
   }
 
   function workspaceActivated(workspace, inputOrigin) {
@@ -239,13 +318,14 @@
     // changes as rotation. The shared desktop shell adapts to remaining height.
     const width = document.documentElement.clientWidth || window.innerWidth;
     const next = window.BilikaraLayoutPolicy.resolveLayout(preferences.layout, width) === "phone";
+    if (next !== portrait) finishSettingsTransition?.();
     root.dataset.hostLayoutMode = preferences.layout;
     if (root.dataset.hostLayout && next === portrait) return;
     if (state.requestWorkspaceExpansion) closeExpandedRequestWorkspace({ restoreFocus: false });
     const focused = document.activeElement;
     const selection = focused && typeof focused.selectionStart === "number"
       ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
-    const scrolls = Array.from(document.querySelectorAll(".host-workspace-panel, .settings-workspace-body, #cache-panel, #android-my-page"))
+    const scrolls = Array.from(document.querySelectorAll(".host-workspace-panel, .settings-workspace-body, #cache-panel, .android-my-scroll"))
       .map(node => ({node, top: node.scrollTop, left: node.scrollLeft}));
     portrait = next;
     root.dataset.hostLayout = portrait ? "portrait" : "landscape";
@@ -254,10 +334,7 @@
     if (state.hostWorkspaceTransitionTimer) clearTimeout(state.hostWorkspaceTransitionTimer);
     state.hostWorkspaceTransitionTimer = null;
     if (portrait) {
-      if (displaySection) {
-        displaySection.hidden = false;
-        displaySection.prepend(displaySettings);
-      }
+      byId("remote-mini-control").before(byId("presentation-settings"));
       requestTabs.append(sharedRequestTabs);
       // Desktop anchoring writes inline coordinates. Release them before the
       // same panel returns to normal flow inside the phone's My page.
@@ -266,13 +343,15 @@
       }
       byId("android-settings-slot").append(cacheSettings);
       byId("android-account-slot").append(account);
-      account.prepend(accountStatus);
+      byId("android-account-heading").append(accountStatus);
       navigate(page, {openSettings: settings, remember: false});
     } else {
-      if (displaySection) {
-        displayAnchor.after(displaySettings);
-        displaySection.hidden = true;
-      }
+      byId("presentation-settings").before(byId("remote-mini-control"));
+      for (const entry of headingPositions) entry.anchor.after(entry.heading);
+      settingsBackAnchor.after(settingsBack);
+      for (const entry of headingActions) entry.anchor.after(entry.toolbar);
+      for (const entry of contextualHeads) entry.anchor.after(entry.head);
+      sharedRequestTabs.hidden = false;
       requestTabsAnchor.after(sharedRequestTabs);
       cacheAnchor.after(cacheSettings);
       accountAnchor.after(account);
@@ -375,15 +454,24 @@
     queueView = route.queueView === "history" ? "history" : "queue";
     requestView = route.requestView === "random" ? "random" : "request";
     // Back while landscape is visible only updates the remembered mobile route.
-    page = route.page;
-    settings = Boolean(route.settings);
-    navigate(page, {openSettings: settings, remember: false});
+    if (portrait) navigate(route.page, {openSettings: Boolean(route.settings), remember: false});
+    else { page = route.page; settings = Boolean(route.settings); }
   });
   window.screen?.orientation?.addEventListener("change", updateOrientation);
   for (const id of ["av-offset-input", "key-shift-input"]) {
     byId(id).addEventListener("input", syncPlayerFieldWidths);
   }
   window.addEventListener("resize", updateOrientation);
+  window.addEventListener("pagehide", () => finishSettingsTransition?.());
+  window.addEventListener("bilikara:ime", event => {
+    const pixels = Math.max(0, Number(event.detail?.bottom) || 0);
+    const height = Math.min(window.innerHeight, pixels / (window.devicePixelRatio || 1));
+    root.style.setProperty("--android-ime-height", `${height}px`);
+    if (height > 0) window.requestAnimationFrame(() => {
+      const focused = document.activeElement;
+      if (focused?.matches("input, textarea, [contenteditable='true']")) focused.scrollIntoView({block: "nearest"});
+    });
+  });
   updateOrientation();
   saveRoute(true);
 })();
