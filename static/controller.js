@@ -461,6 +461,8 @@
     if (state.geometryFrame !== null) window.cancelAnimationFrame(state.geometryFrame);
     state.geometryFrame = null;
     state.geometryKey = "";
+    elements.frame.classList.remove("has-video-aspect");
+    elements.frame.style.removeProperty("--presentation-video-aspect");
     if (!state.video) return;
     state.video.pause();
     state.video.removeAttribute("src");
@@ -587,6 +589,18 @@
     schedule();
   }
 
+  // Size the element to the contained picture once its dimensions are known,
+  // so letterbox bars are page background rather than part of the video
+  // surface that WebView2 may composite above the exit/QR control.
+  function syncVideoAspect(video) {
+    if (state.video !== video) return;
+    const ratio = video.videoWidth / video.videoHeight;
+    const known = Number.isFinite(ratio) && ratio > 0;
+    elements.frame.classList.toggle("has-video-aspect", known);
+    if (known) elements.frame.style.setProperty("--presentation-video-aspect", String(ratio));
+    else elements.frame.style.removeProperty("--presentation-video-aspect");
+  }
+
   function mountScene(scene) {
     retireVideo();
     document.documentElement.dataset.theme = scene.theme;
@@ -606,6 +620,8 @@
     video.defaultMuted = true;
     video.setAttribute("muted", "");
     video.src = scene.videoUrl;
+    video.addEventListener("loadedmetadata", () => syncVideoAspect(video));
+    video.addEventListener("resize", () => syncVideoAspect(video));
     video.addEventListener("loadedmetadata", applyClock);
     video.addEventListener("canplay", applyClock);
     video.addEventListener("error", () => setError(t("controller.outputVideoFailed"), "controller.outputVideoFailed"));
