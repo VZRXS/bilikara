@@ -87,6 +87,123 @@ fn fact(lufs: f64) -> LoudnessMeasurement {
         codec: "aac".into(),
     }
 }
+
+#[test]
+fn scanner_qualification_requires_real_current_audio_and_preserves_manual_intent() {
+    let (mut app, host) = app();
+    let root = unique_directory("qualification");
+    app.execute(AppStateRequest::RemoveItem {
+        schema_version: 1,
+        item_id: "first".into(),
+        now: 9.0,
+    });
+    let owner = app.open_artifact_lifetime(&root).unwrap();
+    add_owned(&mut app, "qualified", Some(&root));
+    app.set_scanner_available(false);
+    app.set_scanner_probe_available(true);
+    manual(&mut app, 61);
+    let (sender, _receiver) = std::sync::mpsc::sync_channel(1);
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    app.install_analysis(AnalysisSignal {
+        wake: sender,
+        cancelled: cancelled.clone(),
+    });
+    let body = json!({"action":"enable","enabled":true});
+    let mut remote = host.clone();
+    remote.loopback = false;
+    assert!(app.begin_automatic_volume(&remote, &body).is_err());
+    assert!(
+        app.begin_automatic_volume(
+            &host,
+            &json!({"action":"enable","enabled":true,"unexpected":1})
+        )
+        .is_err()
+    );
+    let AutomaticVolumeCommand::Verify(job, flag) =
+        app.begin_automatic_volume(&host, &body).unwrap()
+    else {
+        panic!("must verify first")
+    };
+    assert_eq!(app.artifact_reader_count(), 1);
+    let snapshot = app.data.as_ref().unwrap().automatic_snapshot();
+    assert!(!snapshot.enabled && !snapshot.scanner_available && snapshot.scanner_verifying);
+    assert_eq!(
+        app.begin_automatic_volume(&host, &body).err().unwrap().code,
+        "scanner_busy"
+    );
+    let cancel = json!({"action":"cancel","context":snapshot.context,"analysis_epoch":snapshot.analysis_epoch});
+    let preference = app.data.as_ref().unwrap().automatic_volume.clone();
+    app.begin_automatic_volume(&host, &cancel).unwrap();
+    assert!(flag.load(std::sync::atomic::Ordering::Acquire));
+    assert_eq!(app.data.as_ref().unwrap().automatic_volume, preference);
+    assert!(
+        app.finish_scanner_verification(&job, Some(fact(-12.0)), false)
+            .is_err()
+    );
+    assert_eq!(app.artifact_reader_count(), 0);
+    let AutomaticVolumeCommand::Verify(job, flag) =
+        app.begin_automatic_volume(&host, &body).unwrap()
+    else {
+        panic!()
+    };
+    // A later manual intent cancels the enabling transaction, even if the
+    // decoder returns a numerically valid reusable measurement.
+    manual(&mut app, 62);
+    assert!(
+        flag.load(std::sync::atomic::Ordering::Acquire),
+        "manual intent cooperatively cancels qualification"
+    );
+    assert!(
+        app.finish_scanner_verification(&job, Some(fact(-12.0)), false)
+            .is_err()
+    );
+    assert_eq!(app.artifact_reader_count(), 0);
+    assert!(!app.data.as_ref().unwrap().automatic_snapshot().enabled);
+    let AutomaticVolumeCommand::Verify(job, _) = app.begin_automatic_volume(&host, &body).unwrap()
+    else {
+        panic!()
+    };
+    assert!(app.finish_scanner_verification(&job, None, false).is_err());
+    assert!(
+        !app.data
+            .as_ref()
+            .unwrap()
+            .automatic_snapshot()
+            .scanner_available
+    );
+    assert_eq!(
+        app.data.as_ref().unwrap().player_settings.volume_percent,
+        62
+    );
+    let AutomaticVolumeCommand::Verify(job, _) = app.begin_automatic_volume(&host, &body).unwrap()
+    else {
+        panic!()
+    };
+    app.finish_scanner_verification(&job, Some(fact(-12.0)), false)
+        .unwrap();
+    let snapshot = app.data.as_ref().unwrap().automatic_snapshot();
+    assert!(snapshot.enabled && snapshot.scanner_available && !snapshot.scanner_verifying);
+    assert!(!snapshot.calibrated);
+    assert_eq!(
+        app.data.as_ref().unwrap().player_settings.volume_percent,
+        62
+    );
+    assert!(
+        app.take_analysis_job().is_none(),
+        "the verified current fact is reused"
+    );
+    assert_eq!(app.artifact_reader_count(), 0);
+    let seed = app.data.as_ref().unwrap().native_checkpoint();
+    let mut reopened = AppState::default();
+    assert!(reopened.initialize_once(seed).error().is_none());
+    reopened.set_scanner_probe_available(true);
+    assert!(
+        !reopened.data.as_ref().unwrap().automatic_snapshot().enabled,
+        "saved enable preference is not evidence of this process's scanner"
+    );
+    assert!(app.close_artifact_lifetime(&owner));
+    std::fs::remove_dir_all(root).unwrap();
+}
 fn manual(app: &mut AppState, percent: i32) {
     let response = app.execute(AppStateRequest::SetVolume {
         schema_version: 1,
@@ -647,4 +764,60 @@ fn analysis_leases_release_after_disable_eviction_and_shutdown() {
     }
     assert!(app.close_artifact_lifetime(&owner));
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn explicit_cancel_preserves_preference_and_rejects_stale_epochs() {
+    let (mut app, host) = app();
+    manual(&mut app, 61);
+    enable(&mut app, &host, true);
+    let saved = app.data.as_ref().unwrap().automatic_volume.clone();
+    let context = app.data.as_ref().unwrap().automatic_context();
+    let epoch = app.data.as_ref().unwrap().automatic_playback.analysis_epoch;
+    let (sender, _) = std::sync::mpsc::sync_channel(1);
+    let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    app.install_analysis(AnalysisSignal {
+        wake: sender,
+        cancelled: flag.clone(),
+    });
+    let data = app.data.as_mut().unwrap();
+    let key = rendition(data.current_item.as_ref().unwrap()).unwrap().0;
+    data.automatic_playback
+        .measurements
+        .insert(key.clone(), MeasurementState::Analyzing);
+    let job = AnalysisJob {
+        key,
+        relative: String::new(),
+        lease: String::new(),
+        epoch,
+        expected: context.clone(),
+    };
+    let cancel = json!({"action":"cancel","context":context,"analysis_epoch":epoch});
+    let mut remote = host.clone();
+    remote.loopback = false;
+    assert!(app.native_automatic_volume(&remote, &cancel).is_err());
+    app.native_automatic_volume(&host, &cancel).unwrap();
+    assert!(flag.load(std::sync::atomic::Ordering::Acquire));
+    assert_eq!(app.data.as_ref().unwrap().automatic_volume, saved);
+    assert_eq!(percent(&app), 61);
+    app.finish_analysis(&job, Some(fact(-8.0)), false).unwrap();
+    assert!(app.data.as_ref().unwrap().current_measurement().is_none());
+    assert_eq!(
+        app.native_automatic_volume(&host, &cancel)
+            .unwrap_err()
+            .code,
+        "stale_automatic_context"
+    );
+    enable(&mut app, &host, true);
+    assert!(app.data.as_ref().unwrap().automatic_playback.analysis_epoch > epoch);
+    assert!(
+        app.data
+            .as_ref()
+            .unwrap()
+            .automatic_playback
+            .measurements
+            .is_empty(),
+        "explicit re-enable admits a new analysis"
+    );
+    assert_eq!(app.data.as_ref().unwrap().automatic_volume, saved);
 }

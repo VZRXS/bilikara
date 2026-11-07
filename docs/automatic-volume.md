@@ -27,6 +27,8 @@ Host 始终显示当前状态，包括关闭、待设基准和本曲手动；活
 
 Host 或 Remote 的手动音量操作，包括手动重置到 100%、0% 和放大，只覆盖**本次播放**。暂停、继续、跳转、刷新页面或同一次播放中切换原声/伴奏都不会取消覆盖；真正换到下一首歌曲后重新自动调整。原声和伴奏分别分析。静音独立保留，自动音量不会取消静音。
 
+Host 保留正在提交的本地音量意图，直到请求完成；不会因固定等待窗口到期而被旧 SSE 状态覆盖。音量、静音、音调及延迟命令依序提交，连续滑块变更合并为最后一个待提交值；切曲时不再发送旧曲排队命令。原生 Host 在同一状态锁内验证歌曲 incarnation，拒绝延迟到达的旧曲命令。音画延迟回包携带版本化状态，按与 SSE 相同的规则接受。iOS 的元素音量读数可能固定为 100%，该读数不替代 Web Audio gain 保存的用户意图；桌面可写的原生音量控制继续有效。
+
 Host 有两个不同的操作：
 
 - **更新基准**：把当前歌曲和已确认的当前音量作为新的全局基准，影响后续歌曲，不改变当前听到的音量。
@@ -46,6 +48,26 @@ Host 有两个不同的操作：
 
 开关和有效基准保存在 Host 的原生数据中，与单曲输出独立。修改队列、删除参考歌曲缓存、重连、重启和关闭再开启都不会重新推导基准。重启恢复的当前歌曲保留原有音量，需恢复自动或换下一首。只有 Host 明确设定/更新基准才会改变它。
 
-当前扫描器使用原有进程内 libav 与 ebur128，适用于配有当前 PCM companion 的原生桌面 Host（Linux、Windows、macOS）。允许 MOV/MP4/M4A 或 FLAC 中的一条单声道/标准双声道音频，8～192 kHz、至少约 0.4 秒且不超过 6 小时；具体解码器是否存在由 Host 的库决定。AAC、FLAC 和 MP4 中的 Opus 可使用该边界。时间戳允许约 1 毫秒的量化误差（按采样精度取整），分析按实际解码的采样数连续推进，不插入静音或重复采样；仍需完整解码并通过尾部采样数检查。多声道、超出该边界的时间线缺口/重叠、静音、损坏/截断文件及旧 companion 会报告不可用。Android 和保留的 Python Source Host 当前没有此扫描能力，仍可正常手动播放；该功能不引入另一套解码器或外部 FFmpeg/ffprobe 程序。
+当前扫描器使用原有进程内 libav 与 ebur128，适用于配有当前 PCM companion 的原生桌面 Host（Linux、Windows、macOS）。允许 MOV/MP4/M4A 或 FLAC 中的一条单声道/标准双声道音频，8～192 kHz、至少约 0.4 秒且不超过 6 小时；具体解码器是否存在由 Host 的库决定。AAC、FLAC 和 MP4 中的 Opus 可使用该边界。时间戳允许约 1 毫秒的量化误差（按采样精度取整），分析按实际解码的采样数连续推进，不插入静音或重复采样；仍需完整解码并通过尾部采样数检查。多声道、超出该边界的时间线缺口/重叠、静音、损坏/截断文件及旧 companion 会报告不可用。Android 和保留的 Python Source Host 当前没有此扫描能力，仍可正常手动播放；分析不调用外部 FFmpeg/ffprobe 程序。
+
+iOS 使用静态链接的 Rust `portable-loudness` 分析后端（Symphonia 0.6.1 + 同一 EBU R128 算法），支持缓存 AAC-LC（MP4/M4A）和 FLAC 的单声道/双声道音轨。它仅解码分析文件，不替换 WebKit 播放器。首次开启必须先完整分析当前缓存音轨；此前只表示可以尝试验证，不报告扫描器可用。分析期间切歌、切轨或修改手动音量会取消开启，失败也保留手动音量。旧分析缓存和保存的开启偏好不能代替新进程的验证。单次扫描上限 120 秒；具体真机耗电、发热、后台和长时间播放仍需设备验收。尚无缓存歌曲时，先完成缓存再尝试开启。
+
+对 MP4 声明缩短的最后一个 AAC 包，扫描器仅量测其有效采样，排除解码块尾部填充；内部包时长差异、时间轴间隙/重叠和总时长检查仍保留，不能以容错为由忽略坏流。诊断中的 `automatic-volume-analysis-failed` 记录失败阶段：`missing_artifact`、`unsupported_container`、`unsupported_codec_profile`、`packet_timeline`、`duration_mismatch`、`decoder_failure`、`analysis_timeout` 或 `cancelled`；扫描器未装载另记 `scanner_unavailable`。日志不包含媒体路径、解析器原始错误或媒体内容，用户仍看到简短提示并可继续手动播放。
 
 只在开启时分析当前音频和最多两首临近已缓存歌曲，由一个后台工作线程逐块处理，结果随缓存文件复用和淘汰，不扫描整个曲库。完整解码有实际 CPU 和时间成本，不能保证瞬间完成，也不阻塞歌曲播放或将分析失败的歌曲标成缓存失败。关闭时不运行音频解码或定时扫描。这里校准的是数字音轨整体响度，不能代替房间声压测量或现场听音；浏览器界面验证也不代表所有原生设备上的音质验收。
+
+### Scanner failure diagnostics (V7)
+
+A first-enable failure includes bounded `analysis_phase` and `analysis_reason`
+fields. The Host volume dialog translates supported reasons; cancellation keeps
+its separate stale-context result. Native diagnostics retain numeric packet,
+codec/profile, track-count and declared/decoded-duration observations, never
+artifact paths, provider URLs or parser messages. Silent signal is distinct from
+corrupt decoding. Verification still decodes current bytes and holds the existing
+AppState artifact lease; a matching sidecar cannot qualify first enable.
+
+To compare an explicitly supplied compressed artifact with an independent LUFS
+reference, run the ignored `portable_external_artifact_reference` Rust test with
+`BILIKARA_TEST_LOUDNESS_ARTIFACT` and `BILIKARA_TEST_LOUDNESS_REFERENCE`. Keep the
+sample and run-specific evidence outside Git. A passing software reference does
+not establish iPhone route, speaker or energy behavior.

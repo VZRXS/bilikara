@@ -129,7 +129,7 @@ pub(super) fn dispatch(
         return admin::route(context, identity, path, &body);
     }
     if path == "/api/player/automatic-volume" {
-        return with_app(|app| app.native_automatic_volume(identity, &body));
+        return automatic_volume::command(context, identity, &body);
     }
     if path == "/api/session/startup-choice" {
         return with_app(|app| {
@@ -327,6 +327,58 @@ pub(super) fn dispatch(
         })?;
         catalog_append::enqueue(&accepted_item);
         return Ok(snapshot);
+    }
+    if path == "/api/cache/audio" {
+        let page = u32::try_from(positive(&body, "page")?)
+            .map_err(|_| ApiError::invalid("Invalid audio page"))?;
+        let (item, cookie) = with_app(|app| {
+            app.native_authorize(identity, false)?;
+            let id = text(&body, "item_id")?;
+            let incarnation = text(&body, "expected_item_incarnation_id")?;
+            let snapshot = app.native_core_snapshot()?;
+            let item = snapshot
+                .current_item
+                .as_ref()
+                .filter(|i| i.id == id && i.item_incarnation_id == incarnation)
+                .ok_or_else(|| ApiError::new(409, "stale_item", "此歌曲已更换"))?;
+            if let Some(s) = snapshot.audio_supplements.get(&id)
+                && ["queued", "downloading"].contains(&s.status.as_str())
+            {
+                if s.page == page {
+                    return Ok((None, String::new()));
+                }
+                return Err(ApiError::new(
+                    409,
+                    "audio_supplement_busy",
+                    "已有音轨正在补缓存",
+                ));
+            }
+            let mut base = snapshot
+                .audio_supplements
+                .get(&id)
+                .map_or_else(|| item.clone(), |s| s.candidate(item));
+            if base
+                .audio_variants
+                .iter()
+                .any(|v| v["page"].as_u64() == Some(u64::from(page)))
+            {
+                return Ok((None, String::new()));
+            }
+            if item.cache_status != "ready"
+                || !item.media_source.is_bilibili()
+                || !item.available_pages.contains(&i64::from(page))
+            {
+                return Err(ApiError::invalid("此分 P 暂不可补缓存"));
+            }
+            base.selected_pages.push(i64::from(page));
+            base.selected_pages.sort_unstable();
+            base.selected_pages.dedup();
+            Ok((Some(base), app.native().cookie.clone()))
+        })?;
+        if let Some(item) = item {
+            cache::supplement(context, &item, &cookie, page)?;
+        }
+        return with_app(|app| app.native_snapshot(host));
     }
     if path == "/api/cache/retry" {
         let (item, cookie) = with_app(|app| {

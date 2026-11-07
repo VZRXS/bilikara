@@ -401,7 +401,13 @@ impl AppState {
             .iter()
             .flat_map(|data| data.current_item.iter().chain(&data.playlist))
             .any(|item| {
-                item.item_incarnation_id == key.incarnation && item.artifact_set_id == key.artifact
+                item.item_incarnation_id == key.incarnation
+                    && (item.artifact_set_id == key.artifact
+                        || self
+                            .data
+                            .as_ref()
+                            .and_then(|d| d.audio_supplements.get(&item.id))
+                            .is_some_and(|s| s.retains(&key.artifact)))
             })
             || self.artifact_lifetime.attempts.values().any(|r| {
                 r.item_incarnation_id == key.incarnation && r.artifact_set_id == key.artifact

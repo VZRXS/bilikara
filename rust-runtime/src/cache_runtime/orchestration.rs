@@ -224,6 +224,7 @@ pub(crate) fn build_job(
         _ => item.video_page,
     };
     let job = CacheJobSpec {
+        supplement_page: None,
         media_source: item.media_source.clone(),
         youtube_streams: Default::default(),
         schema_version: 1,

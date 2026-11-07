@@ -241,12 +241,23 @@ fn effect(
                 identity,
                 true,
                 &Method::POST,
-                "/api/cache/retry",
+                if effect["audio_page"].is_u64() {
+                    "/api/cache/audio"
+                } else {
+                    "/api/cache/retry"
+                },
                 "",
-                json!({
+                json!({"page":effect["audio_page"],
                     "item_id":effect["item_id"], "expected_item_incarnation_id":effect["item_incarnation_id"], "force":effect["force"]
                 }),
             )?;
+            if effect["audio_page"].is_u64() {
+                reply["data"] = with_app(|app| {
+                    Ok(json!(crate::internet_remote::project_remote_state(
+                        &app.native_core_snapshot()?
+                    )))
+                })?;
+            }
             return Ok(reply);
         }
         "catalog_search" => catalog::read(

@@ -47,6 +47,8 @@ pub(super) enum MeasurementState {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(super) struct AutomaticPlayback {
     pub scanner_available: bool,
+    pub scanner_probe_available: bool,
+    pub scanner_verifying: bool,
     pub manual_override: bool,
     pub intent_revision: u64,
     pub analysis_epoch: u64,
@@ -68,7 +70,10 @@ pub struct AutomaticVolumeSnapshot {
     pub enabled: bool,
     pub calibrated: bool,
     pub scanner_available: bool,
+    pub scanner_probe_available: bool,
+    pub scanner_verifying: bool,
     pub status: &'static str,
+    pub analysis_epoch: u64,
     pub manual_override: bool,
     pub reference_reason: &'static str,
     pub can_reference: bool,
@@ -146,7 +151,9 @@ impl AppStateData {
         } else {
             ""
         };
-        let status = if !pref.enabled {
+        let status = if playback.scanner_verifying {
+            "analyzing"
+        } else if !pref.enabled {
             "off"
         } else if !playback.scanner_available
             || matches!(state, Some(MeasurementState::Unavailable))
@@ -165,9 +172,13 @@ impl AppStateData {
             "automatic"
         };
         AutomaticVolumeSnapshot {
-            enabled: pref.enabled,
+            enabled: pref.enabled
+                && (!playback.scanner_probe_available || playback.scanner_available),
             calibrated: pref.target_lufs.is_some(),
             scanner_available: playback.scanner_available,
+            scanner_probe_available: playback.scanner_probe_available,
+            scanner_verifying: playback.scanner_verifying,
+            analysis_epoch: playback.analysis_epoch,
             status,
             manual_override: playback.manual_override,
             reference_reason: reason,
@@ -189,6 +200,7 @@ impl AppStateData {
 
     pub(super) fn apply_automatic_volume(&mut self) {
         if !self.automatic_volume.enabled
+            || !self.automatic_playback.scanner_available
             || self.automatic_playback.manual_override
             || self.player_settings.is_muted
         {
@@ -242,7 +254,148 @@ pub(crate) struct AnalysisJob {
 }
 
 #[cfg(feature = "native-host")]
+pub(crate) enum AutomaticVolumeCommand {
+    Complete(Value),
+    Verify(AnalysisJob, std::sync::Arc<std::sync::atomic::AtomicBool>),
+}
+
+#[cfg(feature = "native-host")]
 impl AppState {
+    pub(crate) fn begin_automatic_volume(
+        &mut self,
+        identity: &native_session::Identity,
+        body: &Value,
+    ) -> Result<AutomaticVolumeCommand, crate::native_host::ApiError> {
+        use crate::native_host::ApiError;
+        self.native_authorize(identity, true)?;
+        let intent: Intent = serde_json::from_value(body.clone())
+            .map_err(|_| ApiError::invalid("自动音量请求无效"))?;
+        let data = self
+            .data
+            .as_ref()
+            .ok_or_else(|| ApiError::new(503, "state_unavailable", "Host 尚未初始化"))?;
+        if !matches!(intent, Intent::Enable { enabled: true })
+            || data.automatic_playback.scanner_available
+            || !data.automatic_playback.scanner_probe_available
+        {
+            return self
+                .native_automatic_volume(identity, body)
+                .map(AutomaticVolumeCommand::Complete);
+        }
+        if data.automatic_playback.scanner_verifying {
+            return Err(ApiError::new(409, "scanner_busy", "音轨分析正在进行"));
+        }
+        let (key, relative) = data
+            .current_item
+            .as_ref()
+            .and_then(rendition)
+            .ok_or_else(|| ApiError::new(409, "no_audio", "请先缓存一首可播放的歌曲"))?;
+        let expected = data.automatic_context();
+        self.analysis_signal
+            .as_ref()
+            .ok_or_else(|| ApiError::new(503, "scanner_unavailable", "音轨分析服务尚未就绪"))?;
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let lease = self
+            .acquire_artifact_reader(&relative)
+            .map_err(|_| ApiError::new(503, "artifact_unavailable", "当前音轨不可用"))?
+            .ok_or_else(|| ApiError::new(409, "artifact_unavailable", "当前音轨不可用"))?;
+        let data = self.data.as_mut().unwrap();
+        data.automatic_playback.scanner_verifying = true;
+        data.automatic_playback.analysis_epoch =
+            data.automatic_playback.analysis_epoch.saturating_add(1);
+        let epoch = data.automatic_playback.analysis_epoch;
+        self.analysis_verification = Some(VerificationSignal {
+            epoch,
+            cancelled: cancelled.clone(),
+        });
+        data.revision += 1;
+        self.native_session.revision += 1;
+        cancelled.store(false, std::sync::atomic::Ordering::Release);
+        Ok(AutomaticVolumeCommand::Verify(
+            AnalysisJob {
+                key,
+                relative,
+                lease,
+                epoch,
+                expected,
+            },
+            cancelled,
+        ))
+    }
+
+    pub(crate) fn finish_scanner_verification(
+        &mut self,
+        job: &AnalysisJob,
+        fact: Option<LoudnessMeasurement>,
+        cancelled: bool,
+    ) -> Result<Value, crate::native_host::ApiError> {
+        use crate::native_host::ApiError;
+        self.release_artifact_reader(&job.lease);
+        if self
+            .analysis_verification
+            .as_ref()
+            .is_some_and(|signal| signal.epoch == job.epoch)
+        {
+            self.analysis_verification = None;
+        }
+        let data = self
+            .data
+            .as_mut()
+            .ok_or_else(|| ApiError::new(503, "state_unavailable", "Host 尚未初始化"))?;
+        if !data.automatic_playback.scanner_verifying
+            || data.automatic_playback.analysis_epoch != job.epoch
+        {
+            return Err(ApiError::new(
+                409,
+                "stale_automatic_context",
+                "音轨分析已取消，请按当前歌曲重试",
+            ));
+        }
+        data.automatic_playback.scanner_verifying = false;
+        data.revision += 1;
+        self.native_session.revision += 1;
+        if cancelled || job.expected.is_none() || data.automatic_context() != job.expected {
+            return Err(ApiError::new(
+                409,
+                "stale_automatic_context",
+                "歌曲、音轨或音量已变化，请按当前状态重试",
+            ));
+        }
+        let fact = fact.filter(LoudnessMeasurement::valid).ok_or_else(|| {
+            ApiError::new(
+                503,
+                "scanner_unavailable",
+                "当前音轨无法完成响度分析，请继续手动调节",
+            )
+        })?;
+        let mut next = data.clone();
+        next.automatic_playback.scanner_available = true;
+        next.automatic_playback
+            .measurements
+            .insert(job.key.clone(), MeasurementState::Complete(fact));
+        next.automatic_volume.enabled = true;
+        // A successful first scan enables analysis, never calibration or an
+        // audible change to the song used for qualification.
+        next.mark_manual_volume();
+        next.revision += 1;
+        self.persist_native(&next)
+            .map_err(|e| ApiError::new(503, e.kind, e.message))?;
+        self.data = Some(next);
+        self.native_session.revision += 1;
+        self.notify_analysis(true);
+        self.native_snapshot(true)
+    }
+
+    pub(crate) fn set_scanner_probe_available(&mut self, available: bool) {
+        if let Some(data) = self.data.as_mut()
+            && data.automatic_playback.scanner_probe_available != available
+        {
+            data.automatic_playback.scanner_probe_available = available;
+            data.revision += 1;
+            self.native_session.revision += 1;
+        }
+    }
+
     pub(crate) fn install_analysis(&mut self, signal: AnalysisSignal) {
         self.analysis_signal = Some(signal);
         self.notify_analysis(false);
@@ -363,8 +516,39 @@ pub(crate) struct AnalysisSignal {
 }
 
 #[cfg(feature = "native-host")]
+#[derive(Debug, Clone)]
+pub(crate) struct VerificationSignal {
+    pub epoch: u64,
+    pub cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(feature = "native-host")]
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+enum Intent {
+    Enable {
+        enabled: bool,
+    },
+    Cancel {
+        context: AutomaticVolumeContext,
+        analysis_epoch: u64,
+    },
+    Reference {
+        context: AutomaticVolumeContext,
+    },
+    Resume {
+        context: AutomaticVolumeContext,
+    },
+}
+
+#[cfg(feature = "native-host")]
 impl AppState {
     pub(crate) fn notify_analysis(&self, cancel: bool) {
+        if cancel && let Some(signal) = &self.analysis_verification {
+            signal
+                .cancelled
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
         if let Some(signal) = &self.analysis_signal {
             if cancel {
                 signal
@@ -389,13 +573,6 @@ impl AppState {
     ) -> Result<Value, crate::native_host::ApiError> {
         use crate::native_host::ApiError;
         self.native_authorize(identity, true)?;
-        #[derive(Deserialize)]
-        #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
-        enum Intent {
-            Enable { enabled: bool },
-            Reference { context: AutomaticVolumeContext },
-            Resume { context: AutomaticVolumeContext },
-        }
         let intent: Intent = serde_json::from_value(body.clone())
             .map_err(|_| ApiError::invalid("自动音量请求无效"))?;
         let current = self
@@ -404,6 +581,35 @@ impl AppState {
             .ok_or_else(|| ApiError::new(503, "state_unavailable", "Host 尚未初始化"))?;
         let mut next = current.clone();
         match intent {
+            Intent::Cancel {
+                context,
+                analysis_epoch,
+            } => {
+                if current.automatic_context().as_ref() != Some(&context)
+                    || current.automatic_playback.analysis_epoch != analysis_epoch
+                {
+                    return Err(ApiError::new(
+                        409,
+                        "stale_automatic_context",
+                        "音轨分析已变化，请按当前状态重试",
+                    ));
+                }
+                next.automatic_playback.scanner_verifying = false;
+                next.automatic_playback.analysis_epoch = analysis_epoch.saturating_add(1);
+                for measurement in next.automatic_playback.measurements.values_mut() {
+                    if matches!(measurement, MeasurementState::Analyzing) {
+                        *measurement = MeasurementState::Unavailable;
+                    }
+                }
+                // Cancel is a job operation, not a saved preference mutation.
+                // Mark the verifying rendition to prevent immediate readmission.
+                if let Some((key, _)) = next.current_item.as_ref().and_then(rendition) {
+                    next.automatic_playback
+                        .measurements
+                        .entry(key)
+                        .or_insert(MeasurementState::Unavailable);
+                }
+            }
             Intent::Enable { enabled } => {
                 if enabled && !next.automatic_playback.scanner_available {
                     return Err(ApiError::new(
@@ -412,15 +618,27 @@ impl AppState {
                         "此 Host 没有可用的原生音频分析器，请继续手动调节",
                     ));
                 }
-                if next.automatic_volume.enabled == enabled {
+                if next.automatic_volume.enabled == enabled
+                    && !next.automatic_playback.scanner_verifying
+                    && !(enabled
+                        && next
+                            .automatic_playback
+                            .measurements
+                            .values()
+                            .any(|value| matches!(value, MeasurementState::Unavailable)))
+                {
                     return self.native_snapshot(true);
                 }
+                next.automatic_playback.scanner_verifying = false;
                 next.automatic_volume.enabled = enabled;
                 next.automatic_playback.analysis_epoch =
                     next.automatic_playback.analysis_epoch.saturating_add(1);
                 // Enabling NEVER calibrates or changes current audible intent.
                 // Re-enabling with a saved target protects this playback too.
                 if enabled {
+                    next.automatic_playback
+                        .measurements
+                        .retain(|_, value| !matches!(value, MeasurementState::Unavailable));
                     next.mark_manual_volume();
                 }
             }

@@ -12,6 +12,10 @@ name = "native_host_alpha"
 required-features = ["native-host"]
 
 [[example]]
+name = "portable_loudness_alpha"
+required-features = ["native-host", "portable-loudness"]
+
+[[example]]
 name = "validate_announcements"
 required-features = ["native-host"]
 
@@ -24,9 +28,11 @@ name = "bilikara-updater"
 
 [features]
 native-host = ["dep:axum", "dep:tokio-util", "qrcode/svg", "dep:time", "dep:roxmltree", "dep:rxing", "dep:socket2"]
+portable-loudness = ["dep:symphonia"]
 
 [dependencies]
 base64 = "0.22"
+claxon = "0.4"
 axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "json", "tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "fs", "io-util"] }
 tokio-util = { version = "0.7", optional = true, features = ["io"] }
@@ -54,6 +60,7 @@ rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
 reqwest = { version = "0.13", features = ["blocking", "json", "cookies"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+symphonia = { version = "=0.6.1", optional = true, default-features = false, features = ["aac", "flac", "isomp4"] }
 url = "2"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 
@@ -65,5 +72,4 @@ rquickjs = { version = "=0.14.0", default-features = false, features = ["std", "
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_Storage_FileSystem", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_JobObjects", "Win32_Security", "Win32_System_WindowsProgramming"] }
 
 [dev-dependencies]
-claxon = "0.4"
 quircs = "=0.10.3"

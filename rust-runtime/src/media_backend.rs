@@ -8,6 +8,9 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod cached;
+pub(crate) use cached::probe_cached_media;
+
 const MEDIA_SCHEMA_VERSION: u32 = 1;
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -1471,6 +1474,13 @@ fn relocate_moov_to_front(
         .seek(SeekFrom::Start(moov.start))
         .and_then(|_| input.read_exact(&mut moov_bytes))
         .map_err(|_| MediaError::io("failed to read MP4 moov box"))?;
+    if matches!(origin, LayoutOrigin::BackendOutput) {
+        for offset in
+            aac_sl_config_fixes(&moov_bytes, moov.header_size as usize, moov.size as usize)?
+        {
+            moov_bytes[offset..offset + 3].copy_from_slice(&[6, 1, 2]);
+        }
+    }
     patch_chunk_offsets(
         &mut moov_bytes,
         moov.header_size as usize,
@@ -1496,6 +1506,75 @@ fn relocate_moov_to_front(
     output
         .sync_all()
         .map_err(|_| MediaError::io("failed to flush fast-start MP4"))
+}
+
+// mp4 0.14 writes SLConfigDescriptor as `06 00 00`: a zero length
+// followed by an undeclared byte. ISO MP4 uses predefined=2 (one byte).
+// Correct only that exact writer shape, with validated box/descriptor bounds.
+fn aac_sl_config_fixes(bytes: &[u8], start: usize, end: usize) -> Result<Vec<usize>, MediaError> {
+    let mut fixes = Vec::new();
+    for entry in child_boxes(bytes, start, end)? {
+        let payload = (entry.start + entry.header_size) as usize;
+        let end = (entry.start + entry.size) as usize;
+        let nested = match &entry.kind {
+            b"moov" | b"trak" | b"mdia" | b"minf" | b"stbl" => Some(payload),
+            b"stsd" => Some(payload + 8),
+            b"mp4a" => Some(payload + 28),
+            _ => None,
+        };
+        if let Some(start) = nested {
+            if start > end {
+                return Err(MediaError::invalid_media("truncated AAC sample entry"));
+            }
+            fixes.extend(aac_sl_config_fixes(bytes, start, end)?);
+        } else if entry.kind == *b"esds" && bytes.get(payload..payload + 4) == Some(&[0, 0, 0, 0]) {
+            let mut cursor = payload + 4;
+            let es = read_mpeg_descriptor(bytes, &mut cursor, end)?;
+            if es.tag != 3
+                || es.payload_end != end
+                || es.payload_end - es.payload_start < 3
+                || bytes[es.payload_start + 2] != 0
+            {
+                continue;
+            }
+            let mut cursor = es.payload_start + 3;
+            let config = read_mpeg_descriptor(bytes, &mut cursor, es.payload_end)?;
+            if config.tag == 4 && bytes.get(cursor..end) == Some(&[6, 0, 0]) {
+                fixes.push(cursor);
+            }
+        }
+    }
+    Ok(fixes)
+}
+
+/// Read overlays for artifacts published by the old writer. Never rewrite or
+/// invalidate a user's cache. The decoder sees the same correction as new output.
+#[cfg(feature = "portable-loudness")]
+pub(crate) fn legacy_aac_sl_config_fixes(path: &Path) -> Result<Vec<u64>, MediaError> {
+    let mut file = File::open(path).map_err(|_| MediaError::io("failed to open audio"))?;
+    let mut header = [0; 8];
+    if file.read_exact(&mut header).is_err() || &header[4..] != b"ftyp" {
+        return Ok(Vec::new());
+    }
+    let Some(moov) = top_level_boxes(path)?
+        .into_iter()
+        .find(|entry| entry.kind == *b"moov")
+    else {
+        return Ok(Vec::new());
+    };
+    if moov.size > 64 * 1024 * 1024 {
+        return Err(MediaError::invalid_media("MP4 header exceeds scan bound"));
+    }
+    let mut bytes = vec![0; moov.size as usize];
+    file.seek(SeekFrom::Start(moov.start))
+        .and_then(|_| file.read_exact(&mut bytes))
+        .map_err(|_| MediaError::io("failed to read audio header"))?;
+    Ok(
+        aac_sl_config_fixes(&bytes, moov.header_size as usize, bytes.len())?
+            .into_iter()
+            .map(|offset| moov.start + offset as u64)
+            .collect(),
+    )
 }
 
 fn patch_chunk_offsets(

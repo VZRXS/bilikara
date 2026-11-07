@@ -1577,7 +1577,28 @@ pub struct RemoteSessionUserV1 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RemoteAudioSupplementReadyV1 {
+    pub audio_variants: Vec<RemoteAudioVariantV1>,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteAudioSupplementV1 {
+    pub item_incarnation_id: String,
+    pub page: u32,
+    #[serde(default)]
+    pub cache_attempt_token: u64,
+    #[serde(default)]
+    pub message: String,
+    pub status: String,
+    pub progress: Option<f64>,
+    pub ready: Option<RemoteAudioSupplementReadyV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RemoteStateV1 {
+    #[serde(default)]
+    pub audio_supplements: std::collections::BTreeMap<String, RemoteAudioSupplementV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automatic_volume: Option<RemoteAutomaticVolumeV1>,
     pub v: u16,
@@ -2432,6 +2453,7 @@ mod tests {
     #[test]
     fn remote_state_shape_has_no_local_paths_urls_or_maintenance_state() {
         let state = RemoteStateV1 {
+            audio_supplements: Default::default(),
             automatic_volume: None,
             queue_version: "version".to_owned(),
             v: INTERNET_REMOTE_PROTOCOL_VERSION,

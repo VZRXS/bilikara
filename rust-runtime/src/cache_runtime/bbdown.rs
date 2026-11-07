@@ -513,6 +513,38 @@ pub(super) fn validate_default_track(
     source: &Path,
     cancel: &AtomicBool,
 ) -> Result<crate::media_routing::Metadata, CacheRuntimeError> {
+    validate_passthrough_track(job, track, source, cancel, |codec| {
+        default_passthrough(job, track.kind, codec)
+    })
+}
+
+// Reused bytes belong to an already published group. Their accepted format is
+// independent of the downloader selected for the new, missing audio track.
+pub(super) fn validate_reused_track(
+    job: &CacheJobSpec,
+    track: &TrackSpec,
+    source: &Path,
+    cancel: &AtomicBool,
+) -> Result<crate::media_routing::Metadata, CacheRuntimeError> {
+    validate_passthrough_track(job, track, source, cancel, |codec| {
+        reused_passthrough(track.kind, codec)
+    })
+}
+
+fn reused_passthrough(kind: ExpectedMediaKind, codec: Option<&str>) -> bool {
+    match kind {
+        ExpectedMediaKind::Video => matches!(codec, Some("hevc" | "av1")),
+        ExpectedMediaKind::Audio => codec == Some("eac3"),
+    }
+}
+
+fn validate_passthrough_track(
+    job: &CacheJobSpec,
+    track: &TrackSpec,
+    source: &Path,
+    cancel: &AtomicBool,
+    accepts_codec: impl FnOnce(Option<&str>) -> bool,
+) -> Result<crate::media_routing::Metadata, CacheRuntimeError> {
     use crate::media_routing::{InspectRequest, Inspection, Operation};
     let inspection = crate::media_routing::inspect(
         &InspectRequest {
@@ -548,7 +580,7 @@ pub(super) fn validate_default_track(
     if metadata.inspection_level != "packet_scan"
         || metadata.container != "mov,mp4,m4a,3gp,3g2,mj2"
         || metadata.size == 0
-        || !default_passthrough(job, track.kind, stream.and_then(|s| s.codec.as_deref()))
+        || !accepts_codec(stream.and_then(|s| s.codec.as_deref()))
         || !duration.is_some_and(|d| d.is_finite() && d >= 1.0)
     {
         return Err(CacheRuntimeError::new(
@@ -566,6 +598,25 @@ mod tests {
         serde_json::from_value(json!({"item_id":"a", "item_incarnation_id":"incarnation", "bvid":"BV1xx411c7mD", "video_page":2,
             "pages":[{"page":2,"cid":22},{"page":1,"cid":11}], "cache_root":"/tmp/cache", "log_file":"/tmp/log",
             "cookie":"SESSDATA=synthetic secret; bili_jct=synthetic", "video_quality":"1080P 高清", "avc_quality_cap":"480P 清晰"})).unwrap()
+    }
+    #[test]
+    fn audio_supplement_reuse_keeps_accepted_codecs_after_downloader_changes() {
+        let native = job();
+        for (kind, codec) in [
+            (ExpectedMediaKind::Video, "hevc"),
+            (ExpectedMediaKind::Video, "av1"),
+            (ExpectedMediaKind::Audio, "eac3"),
+        ] {
+            assert!(!default_passthrough(&native, kind, Some(codec)));
+            assert!(reused_passthrough(kind, Some(codec)));
+        }
+        assert!(!reused_passthrough(ExpectedMediaKind::Audio, Some("hevc")));
+        assert!(!reused_passthrough(ExpectedMediaKind::Video, Some("eac3")));
+        assert!(!reused_passthrough(ExpectedMediaKind::Audio, None));
+        assert!(!reused_passthrough(
+            ExpectedMediaKind::Video,
+            Some("unknown")
+        ));
     }
     #[test]
     fn typed_arguments_capture_pages_quality_cookie_and_skip_mux_without_cli() {

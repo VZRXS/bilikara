@@ -20,6 +20,7 @@ mod http_downloader;
 mod internet_remote;
 mod json_http;
 mod login_service;
+mod loudness;
 mod media_backend;
 mod media_routing;
 #[cfg(feature = "native-host")]
@@ -28,6 +29,8 @@ mod native_host_storage;
 mod native_video;
 mod networking;
 pub mod playlist_export;
+#[cfg(feature = "portable-loudness")]
+pub mod portable_loudness;
 mod qr_image;
 pub mod shared_catalog;
 mod status_service;

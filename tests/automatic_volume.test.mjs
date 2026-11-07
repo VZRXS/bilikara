@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { webkit } from 'playwright';
+import { chromium, webkit } from 'playwright';
 import { root, runNative } from './desktop_construction_support.mjs';
 import { buildNativeHost } from './native_runtime_artifacts.mjs';
 import { HttpClient, RunningHost, isolatedEnvironment, waitFor } from './native_host_support.mjs';
@@ -341,13 +341,30 @@ test('actual desktop Host calibration, local/public authorization and rendered s
   assert.equal(await remote.title(), 'bilikara remote');
   await remote.locator('#playback-dock').click();
   await settle(remote.locator('.playback-sheet-panel'));
-  await remote.locator('#remote-volume-value').click();
+  // Real SSE can arrive between press and release. WebKit cancels activation
+  // when rendering replaces the text node hit by that press, even if unchanged.
+  const volumeTrigger=remote.locator('#remote-volume-value');
+  await volumeTrigger.scrollIntoViewIfNeeded();
+  const triggerBounds=await volumeTrigger.boundingBox();
+  await remote.mouse.move(triggerBounds.x+triggerBounds.width/2,triggerBounds.y+triggerBounds.height/2);
+  await remote.mouse.down();
+  await host.api('/api/session-users/add',{name:'音量点击期间的访客'});
+  await remote.waitForFunction(()=>state.data.session_users.includes('音量点击期间的访客')&&!state.renderDebounceTimer);
+  await remote.mouse.up();
   const remoteDialog=remote.locator('.volume-adjust-popover');
   await settle(remoteDialog);
   assert.equal(await remoteDialog.evaluate(node=>node.open),true);
   assert.equal(await remoteDialog.locator('[data-auto-switch]').isVisible(),false);
   assert.equal(await remoteDialog.locator('[data-auto-reference]').isVisible(),false);
   assert.equal(await remoteDialog.locator('[data-auto-resume]').isVisible(),false);
+  const openedVolume=Number(await remoteDialog.locator('input[type=number]').inputValue());
+  const openedBounds=await remoteDialog.boundingBox();
+  for(const [step,expected] of [[10,openedVolume+10],[-10,openedVolume]]) {
+    await remoteDialog.locator(`[data-volume-step="${step}"]`).click();
+    await remote.waitForFunction(expected=>state.data.player_settings.volume_percent===expected&&!document.querySelector('.volume-adjust-popover [aria-busy="true"]'),expected);
+    const bounds=await remoteDialog.boundingBox();
+    assert.ok(Math.abs(bounds.x-openedBounds.x)<1&&Math.abs(bounds.y-openedBounds.y)<1,'volume steps preserve the open editor anchor');
+  }
   await remoteDialog.locator('[data-auto-info]').click();
   await remote.waitForFunction(()=>document.querySelector('#remote-automatic-volume-help').matches(':popover-open'));
   await settle(remoteDialog); await settle(remote.locator('#remote-automatic-volume-help'));
@@ -454,8 +471,12 @@ test('actual desktop Host calibration, local/public authorization and rendered s
   // A real native HTML media-control change follows the same manual command.
   // SSE's automatic application has already left the song automatic, so its
   // volumechange echo did not manufacture a manual override.
+  // Native intent is accepted only while its actual controls are revealed.
+  // Merely assigning volume on a hidden native UI is an observation/echo.
+  await page.evaluate(()=>state.hostPlaybackSession.video.focus());
+  await page.waitForFunction(()=>state.hostPlaybackSession.video.controls);
   await page.evaluate(()=>{state.hostPlaybackSession.video.volume=0.42;});
-  await waitFor(async()=>{const snapshot=await host.api('/api/state');return snapshot.automatic_volume.status==='manual' && snapshot.player_settings.volume_percent===42;},'native volume event reaches AppState');
+  await waitFor(async()=>{const snapshot=await host.api('/api/state');return snapshot.automatic_volume.status==='manual' && snapshot.player_settings.volume_percent===42;},'native volume event reaches AppState').catch(async error=>{ throw new Error(`${error.message}: ${JSON.stringify({host:(await host.api('/api/state')).player_settings,browser:await page.evaluate(()=>({volume:state.hostPlaybackSession.video.volume,localVolume:state.localPlayerVolume,phase:state.hostPlaybackSession.phase,platform:document.documentElement.dataset.hostPlatform,applying:state.hostPlaybackSession.applyingVolume}))})}`); });
   await host.api('/api/player/automatic-volume',{action:'resume',context:(await host.api('/api/state')).automatic_volume.context});
   await page.waitForFunction(()=>state.data.automatic_volume.status==='automatic' && Math.abs(state.hostPlaybackSession.video.volume-0.32)<1e-6);
   await page.evaluate(()=>{state.hostPlaybackSession.video.muted=true;});
@@ -497,6 +518,50 @@ test('actual desktop Host calibration, local/public authorization and rendered s
   assert.deepEqual(consoleErrors.filter(entry=>!expectedConsole(entry)),[]);
   const diagnostics=await host.api('/api/diagnostics/native');
   writeFileSync(path.join(evidence,'browser-summary.json'),JSON.stringify({desktopViewport,remoteViewport,engine:'WebKit browser simulation',nativeDesktopHost:true,referenceVolume:50,remoteManualVolume:65,nextAutomaticVolume:next.player_settings.volume_percent,media,disabledResponsiveness,responsiveness,waitingGeometry,geometry,analysis:diagnostics.events.filter(event=>event.event==='automatic-volume-analysis'),errors,consoleErrors},null,2));
+});
+
+// Android presentation against the actual native Host/PCM service. The platform
+// marker is adapted in HTML; this does not qualify an Android WebView or IME.
+for(const engine of [chromium,webkit])test(`${engine.name()} Android phone enables automatic volume without autofocus on its numeric input`,{timeout:120000},async t=>{
+  const {host}=await startFixture(await fixtures(),t);
+  const browser=await engine.launch({headless:true,args:engine===chromium?['--autoplay-policy=no-user-gesture-required']:[]});t.after(()=>browser.close());
+  const context=await browser.newContext({viewport:{width:393,height:852},hasTouch:true});
+  await context.addCookies([...host.cookies].map(([name,value])=>({name,value,url:host.base})));
+  await context.addInitScript(()=>{
+    localStorage.setItem('bilikara.update.automatic','false');
+    window.BilikaraHostWindow={postMessage(raw){if(['enter','exit'].includes(raw))return;const{id}=JSON.parse(raw);queueMicrotask(()=>this.onmessage({data:JSON.stringify({id,ok:true,data:{layout:'auto',orientation:'system'}})}));}};
+  });
+  await context.route('**/*',async route=>{
+    const url=new URL(route.request().url());if(url.origin!==host.base)return route.abort();
+    if(url.pathname==='/'){
+      const response=await route.fetch();return route.fulfill({response,body:(await response.text()).replace('data-host-platform="desktop"','data-host-platform="android"')});
+    }return route.continue();
+  });
+  const page=await context.newPage();await page.goto(host.base);
+  await page.waitForFunction(()=>typeof state!=='undefined'&&state.hasValidStateResponse&&window.BilikaraHostLayout);
+  await page.locator('#volume-value').scrollIntoViewIfNeeded();await page.locator('#volume-value').tap();
+  const dialog=page.locator('.volume-adjust-popover');await dialog.waitFor({state:'visible'});
+  await dialog.evaluate(n=>Promise.allSettled(n.getAnimations().map(a=>a.finished)));
+  assert.equal(await dialog.locator('[data-volume-close]').evaluate(n=>document.activeElement===n&&n.autofocus),true);
+  assert.equal(await dialog.locator('[data-auto-switch]').isDisabled(),false);
+  await dialog.locator('.automatic-volume-toggle').tap();
+  await page.waitForFunction(()=>state.data.automatic_volume.enabled&&!document.querySelector('[data-auto-switch]').disabled);
+  assert.equal(await dialog.locator('[data-auto-switch]').isChecked(),true);
+  const events=await page.evaluate(()=>BilikaraVolumeControl.getDiagnostics());
+  assert.deepEqual(events.slice(-4).map(entry=>entry.event),['pointerdown','change','request','success']);
+  assert.equal(events.at(-4).disabled,false);assert.equal(events.at(-4).scanner_available,true);
+  assert.equal(events.at(-1).enabled,true);
+  assert.equal(await page.evaluate(()=>{const copy=BilikaraVolumeControl.getDiagnostics();copy[0].event='changed';return BilikaraVolumeControl.getDiagnostics()[0].event;}),'pointerdown');
+  await dialog.locator('.automatic-volume-toggle').evaluate(node=>{
+    for(let i=0;i<40;i++)node.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));
+  });
+  assert.equal(await page.evaluate(()=>BilikaraVolumeControl.getDiagnostics().length),24);
+  await dialog.evaluate(n=>Promise.allSettled(n.getAnimations({subtree:true}).map(a=>a.finished)));
+  assert.equal(await dialog.locator('.cache-hires-switch').evaluate(n=>{
+    const track=n.getBoundingClientRect(),thumb=n.firstElementChild.getBoundingClientRect();
+    return thumb.x+thumb.width/2>track.x+track.width/2;
+  }),true,'the rendered switch indicates its enabled state');
+  await page.screenshot({path:path.join(evidence,`${engine.name()}-android-automatic-enabled.png`)});
 });
 
 test('missing or older PCM capability leaves native manual controls usable', {timeout:120000}, async t=>{

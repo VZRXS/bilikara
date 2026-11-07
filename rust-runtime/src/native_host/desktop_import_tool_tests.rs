@@ -342,6 +342,31 @@ fn native_host_and_import_tool_locks_exclude_concurrent_operations() {
     assert!(NativeHostStorage::open(&target).is_ok());
 }
 
+#[cfg(unix)]
+#[test]
+fn completed_import_releases_its_lock_with_an_inherited_descriptor_still_open() {
+    let f = Fixture::new();
+    let source = f.source();
+    f.populate(&source);
+    let target = f.target();
+    install(Some(&source), &target).unwrap();
+    let guard = lock(&target).unwrap();
+    // dup and fork retain the same open file description and its flock. A
+    // concurrent child can inherit it before close-on-exec takes effect.
+    let inherited = guard.0.try_clone().unwrap();
+    assert!(NativeHostStorage::open(&target).is_err());
+    drop(guard);
+    let (storage, _) = NativeHostStorage::open(&target).unwrap();
+    drop(inherited);
+    assert!(
+        install(Some(&source), &target)
+            .unwrap_err()
+            .contains("owns")
+    );
+    drop(storage);
+    assert!(NativeHostStorage::open(&target).is_ok());
+}
+
 #[test]
 fn first_start_only_discovers_legacy_when_destination_has_no_native_checkpoint() {
     let f = Fixture::new();

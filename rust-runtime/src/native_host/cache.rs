@@ -501,6 +501,34 @@ fn job(
     .map_err(cache_error)
 }
 
+pub(super) fn supplement(
+    context: &HostContext,
+    item: &PlaylistItem,
+    cookie: &str,
+    page: u32,
+) -> Result<(), ApiError> {
+    let (policy, player) = with_app(|app| {
+        Ok((
+            app.native().cache_policy.clone(),
+            app.native().player_media.clone(),
+        ))
+    })?;
+    if let Some(message) =
+        crate::desktop_login::download_login_error(&policy.download_source, cookie)
+    {
+        return Err(ApiError::new(403, "download_login_required", message));
+    }
+    let effective = MediaSelection::new(&policy, &player, context.desktop);
+    let mut spec = job(context, item, cookie, &policy, &effective)?;
+    spec.supplement_page = Some(page);
+    execute_cache_runtime(CacheRuntimeCommand::Retry {
+        job: spec,
+        urgent: true,
+    })
+    .map_err(cache_error)?;
+    Ok(())
+}
+
 pub(super) fn retry(
     context: &HostContext,
     item: &PlaylistItem,

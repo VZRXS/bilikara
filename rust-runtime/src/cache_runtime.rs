@@ -18,8 +18,8 @@ use bilikara_rust::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -97,6 +97,8 @@ pub struct ExistingAudioVariant {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CacheJobSpec {
+    #[serde(skip)]
+    pub(crate) supplement_page: Option<u32>,
     #[serde(default)]
     pub media_source: bilikara_rust::media_source::MediaSource,
     #[serde(skip)]
@@ -150,6 +152,7 @@ pub enum CacheJobPriority {
     Normal,
     Front,
     Urgent,
+    Supplement,
 }
 
 #[derive(Debug, Deserialize)]
@@ -276,6 +279,7 @@ struct RuntimeState {
     jobs: HashMap<String, QueuedJob>,
     normal_queue: VecDeque<String>,
     urgent_queue: VecDeque<String>,
+    supplement_queue: VecDeque<String>,
     queued_priorities: HashMap<String, CacheJobPriority>,
     active: HashMap<String, ActiveJob>,
     primary_active_item_id: Option<String>,
@@ -321,6 +325,7 @@ struct CacheAttemptIdentity {
 enum WorkerKind {
     Primary,
     Urgent,
+    Supplement,
 }
 
 #[derive(Clone)]
@@ -473,9 +478,12 @@ pub fn execute_cache_runtime(command: CacheRuntimeCommand) -> Result<Value, Cach
         }
         CacheRuntimeCommand::Retry { job, urgent } => {
             validate_job(&job)?;
+            let supplement = job.supplement_page.is_some();
             let attempt = active_runtime()?.submit(
                 job,
-                if urgent {
+                if supplement {
+                    CacheJobPriority::Supplement
+                } else if urgent {
                     CacheJobPriority::Urgent
                 } else {
                     CacheJobPriority::Front
@@ -612,9 +620,26 @@ impl CacheRuntime {
                 return Err(CacheRuntimeError::new("thread", error.to_string()));
             }
         };
+        let supplement_shared = Arc::clone(&shared);
+        let supplement = match thread::Builder::new()
+            .name("bilikara-cache-supplement".into())
+            .spawn(move || worker_loop(supplement_shared, WorkerKind::Supplement))
+        {
+            Ok(handle) => handle,
+            Err(error) => {
+                {
+                    let mut state = lock_state(&shared);
+                    state.stopping = true;
+                    shared.wake.notify_all();
+                }
+                let _ = primary.join();
+                let _ = urgent.join();
+                return Err(CacheRuntimeError::new("thread", error.to_string()));
+            }
+        };
         Ok(Self {
             shared,
-            workers: Mutex::new(vec![primary, urgent]),
+            workers: Mutex::new(vec![primary, urgent, supplement]),
             reserve_cache_attempt,
             application: Mutex::new(Default::default()),
             orchestration: Mutex::new(Default::default()),
@@ -643,9 +668,71 @@ impl CacheRuntime {
         replace: bool,
     ) -> Result<CacheAttemptIdentity, CacheRuntimeError> {
         validate_job(&job)?;
+        let supplement_page = job.supplement_page;
         let mut state = lock_state(&self.shared);
+        if let Some(page) = supplement_page
+            && let Some(existing) = state.jobs.get(&job.item_id)
+        {
+            if existing.reservation.item_incarnation_id != job.item_incarnation_id {
+                return Err(CacheRuntimeError::new(
+                    "item_incarnation_mismatch",
+                    "The live item changed",
+                ));
+            }
+            if existing.spec.supplement_page.is_none() {
+                return Err(CacheRuntimeError::new(
+                    "audio_supplement_busy",
+                    "This item is already being refreshed",
+                ));
+            }
+            if existing.spec.supplement_page != Some(page) {
+                return Err(CacheRuntimeError::new(
+                    "audio_supplement_busy",
+                    "Another audio supplement is running",
+                ));
+            }
+            return Ok(CacheAttemptIdentity {
+                generation: existing.generation,
+                cache_attempt_token: existing.cache_attempt_token,
+                item_incarnation_id: existing.reservation.item_incarnation_id.clone(),
+                artifact_set_id: existing.reservation.artifact_set_id.clone(),
+                artifact_relative_directory: existing
+                    .reservation
+                    .artifact_relative_directory
+                    .clone(),
+                refresh: true,
+            });
+        }
+        if let Some(page) = supplement_page
+            && let Some(done) = state.completed.get(&job.item_id)
+            && done.reservation.item_incarnation_id == job.item_incarnation_id
+            && done.result.audio_variants.iter().any(|v| v.page == page)
+            && completed_artifacts_ready(&job.cache_root, &done.result)
+        {
+            return Ok(CacheAttemptIdentity {
+                generation: done.generation,
+                cache_attempt_token: done.cache_attempt_token,
+                item_incarnation_id: done.reservation.item_incarnation_id.clone(),
+                artifact_set_id: done.reservation.artifact_set_id.clone(),
+                artifact_relative_directory: done.reservation.artifact_relative_directory.clone(),
+                refresh: done.reservation.refresh,
+            });
+        }
         let result = Self::submit_locked(&mut state, job, priority, replace, |id, incarnation| {
-            self.reserve_attempt(id, incarnation)
+            let reservation = self.reserve_attempt(id, incarnation)?;
+            if let Some(page) = supplement_page {
+                let marked = crate::app_state::with_cache_application(|app| {
+                    app.mark_audio_supplement(id, reservation.cache_attempt_token, page)
+                })
+                .map_err(|e| CacheRuntimeError::new(&e.kind, e.message))?;
+                if let Err(error) = marked {
+                    let _ = crate::app_state::with_cache_application(|app| {
+                        app.settle_artifact_reservation(&reservation)
+                    });
+                    return Err(CacheRuntimeError::new(&error.kind, error.message));
+                }
+            }
+            Ok(reservation)
         });
         self.shared.wake.notify_all();
         result
@@ -1110,6 +1197,7 @@ impl CacheRuntime {
         state.jobs.clear();
         state.normal_queue.clear();
         state.urgent_queue.clear();
+        state.supplement_queue.clear();
         state.queued_priorities.clear();
         state.manual_front = None;
         state.completed.clear();
@@ -1267,6 +1355,7 @@ impl CacheRuntime {
             }
             state.normal_queue.clear();
             state.urgent_queue.clear();
+            state.supplement_queue.clear();
             state.queued_priorities.clear();
             state.jobs.clear();
             state.completed.clear();
@@ -1325,6 +1414,7 @@ fn worker_loop(shared: Arc<SharedRuntime>, kind: WorkerKind) {
                 let item_id = match kind {
                     WorkerKind::Primary => state.normal_queue.pop_front(),
                     WorkerKind::Urgent => state.urgent_queue.pop_front(),
+                    WorkerKind::Supplement => state.supplement_queue.pop_front(),
                 };
                 let Some(item_id) = item_id else {
                     state = shared
@@ -1337,6 +1427,7 @@ fn worker_loop(shared: Arc<SharedRuntime>, kind: WorkerKind) {
                     match kind {
                         WorkerKind::Primary => state.normal_queue.push_back(item_id),
                         WorkerKind::Urgent => state.urgent_queue.push_back(item_id),
+                        WorkerKind::Supplement => state.supplement_queue.push_back(item_id),
                     }
                     let (next, _) = shared
                         .wake
@@ -1358,7 +1449,7 @@ fn worker_loop(shared: Arc<SharedRuntime>, kind: WorkerKind) {
                         cache_attempt_token: job.cache_attempt_token,
                         reservation: job.reservation.clone(),
                         cancel: Arc::clone(&cancel),
-                        urgent: matches!(kind, WorkerKind::Urgent),
+                        urgent: !matches!(kind, WorkerKind::Primary),
                     },
                 );
                 if matches!(kind, WorkerKind::Primary) {
@@ -1571,12 +1662,151 @@ fn run_job(shared: &Arc<SharedRuntime>, job: &QueuedJob, cancel: &Arc<AtomicBool
     }
 }
 
+fn reuse_track(
+    shared: &Arc<SharedRuntime>,
+    job: &QueuedJob,
+    track: &TrackSpec,
+    relative: &str,
+    cancel: &Arc<AtomicBool>,
+) -> Result<TrackResult, CacheRuntimeError> {
+    if cancel.load(Ordering::Acquire) {
+        return Err(CacheRuntimeError::new("cancelled", "cache cancelled"));
+    }
+    let source = safe_relative_cache_path(&job.spec.cache_root, relative)
+        .ok_or_else(|| CacheRuntimeError::new("invalid_cache_path", "Invalid reuse path"))?;
+    let canonical_root = job
+        .spec
+        .cache_root
+        .canonicalize()
+        .map_err(|_| CacheRuntimeError::new("invalid_cache_path", "Invalid cache root"))?;
+    if !fs::symlink_metadata(&source).is_ok_and(|m| m.file_type().is_file())
+        || !source
+            .canonicalize()
+            .is_ok_and(|p| p.starts_with(&canonical_root))
+    {
+        return Err(CacheRuntimeError::new(
+            "invalid_cache_path",
+            "Invalid reuse source",
+        ));
+    }
+    let final_name = source
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| CacheRuntimeError::new("invalid_cache_path", "Invalid reuse filename"))?
+        .to_owned();
+    let directory = job
+        .spec
+        .cache_root
+        .join(".staging")
+        .join(&job.reservation.item_incarnation_id)
+        .join(&job.reservation.artifact_set_id)
+        .join(format!("reuse-{}", track.key));
+    fs::create_dir(&directory).map_err(|e| CacheRuntimeError::new("storage", e.to_string()))?;
+    let destination = directory.join(&final_name);
+    if fs::hard_link(&source, &destination).is_err() {
+        fs::copy(&source, &destination)
+            .map_err(|e| CacheRuntimeError::new("storage", e.to_string()))?;
+    }
+    let request = crate::media_backend::MediaPathRequest {
+        schema_version: 1,
+        source: destination.clone(),
+        expected_kind: track.kind,
+    };
+    let container = {
+        let mut bytes = [0u8; 8];
+        match File::open(&destination).and_then(|mut f| f.read_exact(&mut bytes)) {
+            Ok(_) if &bytes[..4] == b"fLaC" => "flac",
+            Ok(_) if &bytes[4..8] == b"ftyp" => "mp4",
+            _ => "unknown",
+        }
+    };
+    let probe = match crate::media_backend::probe_cached_media(&request, cancel) {
+        Ok(p) => TrackValidation::Normalized(p),
+        Err(error) => {
+            append_log(
+                &job.spec.log_file,
+                &format!(
+                    "cache_validation: {}",
+                    json!({
+                "stage":"reused_track_portable_probe","container":container,"codec":if container == "flac" {"flac"} else {"unknown"},
+                "expected_kind":track.kind,"category":error.kind.as_str()})
+                ),
+            );
+            if cancel.load(Ordering::Acquire) {
+                return Err(CacheRuntimeError::new(
+                    "cancelled",
+                    "cache validation cancelled",
+                ));
+            }
+            if !error.kind.allows_backend_fallback() {
+                return Err(CacheRuntimeError::new(
+                    error.kind.as_str(),
+                    format!(
+                        "Cached track validation failed at portable_probe ({container}, {}): {}",
+                        error.kind.as_str(),
+                        error.message
+                    ),
+                ));
+            }
+            let inspected = bbdown::validate_reused_track(&job.spec, track, &destination, cancel)
+                .map_err(|fallback| {
+                    if fallback.kind == "unavailable" {
+                        CacheRuntimeError::new(error.kind.as_str(), format!(
+                            "Cached track requires an unavailable codec validator (portable_probe: {container}, {})",
+                            error.kind.as_str()))
+                    } else { fallback }
+                })?;
+            TrackValidation::Inspected(inspected)
+        }
+    };
+    let codec = match &probe {
+        TrackValidation::Normalized(p) => p.codec.as_str(),
+        TrackValidation::Inspected(metadata) => metadata
+            .streams
+            .first()
+            .and_then(|stream| stream.codec.as_deref())
+            .unwrap_or("unknown"),
+    };
+    append_log(
+        &job.spec.log_file,
+        &format!(
+            "cache_validation: {}",
+            json!({
+                "stage":"reused_track_validated", "container":container, "codec":codec,
+                "expected_kind":track.kind,"category":"ok"
+            })
+        ),
+    );
+    let size = probe.file_bytes();
+    emit_track_progress(shared, job, track, "ready", 1, (size, size));
+    Ok(TrackResult {
+        spec: track.clone(),
+        temporary_path: destination,
+        final_name,
+        probe,
+    })
+}
+
 fn run_track(
     shared: &Arc<SharedRuntime>,
     job: &QueuedJob,
     track: &TrackSpec,
     cancel: &Arc<AtomicBool>,
 ) -> Result<TrackResult, CacheRuntimeError> {
+    if job.spec.supplement_page.is_some() {
+        let existing = if track.kind == ExpectedMediaKind::Video {
+            Some(job.spec.existing_video_relative_path.as_str())
+        } else {
+            job.spec
+                .existing_audio_variants
+                .iter()
+                .find(|v| v.page == track.page.page)
+                .map(|v| v.relative_path.as_str())
+        };
+        if let Some(relative) = existing {
+            return reuse_track(shared, job, track, relative, cancel);
+        }
+    }
     if let Executor::Bbdown { executable, .. } = &job.spec.executor {
         // BBDown owns its internal transfer retry budget. Do not wrap it in
         // Native's ten-attempt resolver/download loop.
@@ -2239,9 +2469,20 @@ where
         .filter(|track| track.spec.kind == ExpectedMediaKind::Audio)
         .enumerate()
     {
+        let reused = job.supplement_page.and_then(|_| {
+            job.existing_audio_variants
+                .iter()
+                .find(|variant| variant.page == track.spec.page.page)
+        });
         audio_variants.push(ReadyAudioVariant {
-            id: variant_id(track.spec.page.page, &track.spec.page.label, index),
-            label: track.spec.page.label.clone(),
+            id: reused.map_or_else(
+                || variant_id(track.spec.page.page, &track.spec.page.label, index),
+                |variant| variant.id.clone(),
+            ),
+            label: reused.map_or_else(
+                || track.spec.page.label.clone(),
+                |variant| variant.label.clone(),
+            ),
             page: track.spec.page.page,
             audio_url: media_url(&format!(
                 "{}/{}",
@@ -2396,6 +2637,7 @@ fn queue_locked(state: &mut RuntimeState, item_id: &str, priority: CacheJobPrior
         CacheJobPriority::Normal => state.normal_queue.push_back(item_id.to_owned()),
         CacheJobPriority::Front => state.normal_queue.push_front(item_id.to_owned()),
         CacheJobPriority::Urgent => state.urgent_queue.push_back(item_id.to_owned()),
+        CacheJobPriority::Supplement => state.supplement_queue.push_back(item_id.to_owned()),
     }
     state.queued_priorities.insert(item_id.to_owned(), priority);
 }
@@ -2403,6 +2645,7 @@ fn queue_locked(state: &mut RuntimeState, item_id: &str, priority: CacheJobPrior
 fn remove_queued_locked(state: &mut RuntimeState, item_id: &str) {
     state.normal_queue.retain(|value| value != item_id);
     state.urgent_queue.retain(|value| value != item_id);
+    state.supplement_queue.retain(|value| value != item_id);
     state.queued_priorities.remove(item_id);
 }
 
@@ -2411,6 +2654,7 @@ fn priority_name(priority: CacheJobPriority) -> &'static str {
         CacheJobPriority::Normal => "normal",
         CacheJobPriority::Front => "front",
         CacheJobPriority::Urgent => "urgent",
+        CacheJobPriority::Supplement => "supplement",
     }
 }
 
@@ -2497,7 +2741,7 @@ fn snapshot_locked(state: &RuntimeState) -> Value {
         "primary_active_item_id": state.primary_active_item_id,
         "active_item_ids": active_ids,
         "urgent_item_ids": urgent_ids,
-        "pending_ids": state.normal_queue.iter().chain(state.urgent_queue.iter()).cloned().collect::<Vec<_>>(),
+        "pending_ids": state.normal_queue.iter().chain(state.urgent_queue.iter()).chain(state.supplement_queue.iter()).cloned().collect::<Vec<_>>(),
         "terminal_events": terminal_events,
         "event_count": state.events.len(),
         "last_event_sequence": state.next_event_sequence,
@@ -3106,6 +3350,7 @@ pathlib.Path(name).write_bytes(b'truncated' if n == 1 else (root/'valid.mp4').re
             audio_hires: false,
             selected_audio_variant_id: String::new(),
             reported_ready: false,
+            supplement_page: None,
             existing_video_relative_path: String::new(),
             existing_audio_variants: Vec::new(),
         }
@@ -3240,6 +3485,356 @@ pathlib.Path(name).write_bytes(b'truncated' if n == 1 else (root/'valid.mp4').re
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn audio_supplement_admission_deduplicates_and_rejects_stale_incarnations() {
+        let root = publication_root("supplement-admission");
+        let runtime = CacheRuntime::new_without_workers(Arc::new(|_, _| {
+            panic!("must not reserve a duplicate")
+        }));
+        let mut spec = job(&root);
+        spec.supplement_page = Some(2);
+        let r = reservation(1);
+        CacheRuntime::submit_locked(
+            &mut lock_state(&runtime.shared),
+            spec.clone(),
+            CacheJobPriority::Supplement,
+            true,
+            |_, _| Ok(r.clone()),
+        )
+        .unwrap();
+        assert_eq!(
+            runtime
+                .submit(spec.clone(), CacheJobPriority::Supplement, true)
+                .unwrap()
+                .cache_attempt_token,
+            r.cache_attempt_token
+        );
+        let mut stale = spec.clone();
+        stale.item_incarnation_id = "stale".into();
+        assert_eq!(
+            runtime
+                .submit(stale, CacheJobPriority::Supplement, true)
+                .unwrap_err()
+                .kind,
+            "item_incarnation_mismatch"
+        );
+        let mut other = spec.clone();
+        other.supplement_page = Some(3);
+        assert_eq!(
+            runtime
+                .submit(other, CacheJobPriority::Supplement, true)
+                .unwrap_err()
+                .kind,
+            "audio_supplement_busy"
+        );
+        let mut result = completed_result(&r);
+        result.audio_variants[0].page = 2;
+        fs::create_dir_all(root.join(&r.artifact_relative_directory)).unwrap();
+        fs::write(root.join(&result.video_relative_path), b"video").unwrap();
+        fs::write(
+            root.join(
+                result.audio_variants[0]
+                    .audio_url
+                    .strip_prefix("/media/")
+                    .unwrap(),
+            ),
+            b"audio",
+        )
+        .unwrap();
+        {
+            let mut state = lock_state(&runtime.shared);
+            state.jobs.clear();
+            remove_queued_locked(&mut state, &spec.item_id);
+            state.completed.insert(
+                spec.item_id.clone(),
+                CompletedJob {
+                    generation: 1,
+                    cache_attempt_token: r.cache_attempt_token,
+                    reservation: r.clone(),
+                    result,
+                },
+            );
+        }
+        assert_eq!(
+            runtime
+                .submit(spec, CacheJobPriority::Supplement, true)
+                .unwrap()
+                .cache_attempt_token,
+            r.cache_attempt_token
+        );
+        assert!(lock_state(&runtime.shared).supplement_queue.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn audio_supplement_has_an_independent_bounded_worker() {
+        let runtime =
+            CacheRuntime::new_with_attempt_reserver(Arc::new(|_, _| panic!("no work admitted")))
+                .unwrap();
+        let names: Vec<_> = runtime
+            .workers
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|w| w.thread().name().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "bilikara-cache-primary",
+                "bilikara-cache-urgent",
+                "bilikara-cache-supplement"
+            ]
+        );
+        let mut queues = RuntimeState::default();
+        queue_locked(&mut queues, "ordinary", CacheJobPriority::Normal);
+        queue_locked(&mut queues, "manual", CacheJobPriority::Urgent);
+        queue_locked(&mut queues, "audio", CacheJobPriority::Supplement);
+        assert_eq!(
+            queues.supplement_queue.pop_front().as_deref(),
+            Some("audio")
+        );
+        assert_eq!(queues.normal_queue.pop_front().as_deref(), Some("ordinary"));
+        assert_eq!(queues.urgent_queue.pop_front().as_deref(), Some("manual"));
+        runtime.shutdown();
+    }
+
+    #[test]
+    #[ignore = "requires BILIKARA_TEST_LIBAV_COMPANION; run separately to isolate media configuration"]
+    fn audio_supplement_reuses_validated_passthrough_after_downloader_change() {
+        let companion = std::env::var_os("BILIKARA_TEST_LIBAV_COMPANION")
+            .expect("set the current native companion path");
+        crate::media_routing::configure(crate::media_routing::Configuration {
+            mode: Default::default(),
+            companion: Some(companion.into()),
+        })
+        .unwrap();
+        let root = publication_root("supplement-passthrough");
+        fs::create_dir_all(root.join("existing")).unwrap();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/bbdown");
+        let runtime = CacheRuntime::new_without_workers(Arc::new(|_, _| panic!("reserved")));
+        for (index, filename, kind) in [
+            (0, "video-hevc.mp4", ExpectedMediaKind::Video),
+            (1, "audio-eac3.m4a", ExpectedMediaKind::Audio),
+            (2, "audio-flac.mp4", ExpectedMediaKind::Audio),
+        ] {
+            let relative = format!("existing/{filename}");
+            fs::copy(fixture.join(filename), root.join(&relative)).unwrap();
+            let original = fs::read(root.join(&relative)).unwrap();
+            let mut spec = job(&root);
+            spec.supplement_page = Some(2);
+            assert!(matches!(spec.executor, Executor::Native));
+            let reservation = reservation(950 + index);
+            fs::create_dir_all(
+                root.join(".staging")
+                    .join(&reservation.item_incarnation_id)
+                    .join(&reservation.artifact_set_id),
+            )
+            .unwrap();
+            let queued = QueuedJob {
+                spec,
+                generation: 1,
+                cache_attempt_token: reservation.cache_attempt_token,
+                reservation,
+            };
+            let track = track_specs(&queued.spec)
+                .unwrap()
+                .into_iter()
+                .find(|t| t.kind == kind)
+                .unwrap();
+            let result = reuse_track(
+                &runtime.shared,
+                &queued,
+                &track,
+                &relative,
+                &Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap();
+            assert_eq!(fs::read(result.temporary_path).unwrap(), original);
+            assert_eq!(fs::read(root.join(&relative)).unwrap(), original);
+            if filename != "audio-flac.mp4" {
+                assert!(matches!(result.probe, TrackValidation::Inspected(_)));
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn supplementary_cache_revalidates_native_published_flac_without_a_desktop_companion() {
+        let root = publication_root("supplement-native-flac");
+        fs::create_dir_all(root.join("existing")).unwrap();
+        let source =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/bbdown/audio-flac.mp4");
+        let published = root.join("existing/audio-p1.flac");
+        crate::media_backend::normalize_media(&crate::media_backend::MediaNormalizeRequest {
+            schema_version: 1,
+            source,
+            destination: published.clone(),
+            expected_kind: ExpectedMediaKind::Audio,
+        })
+        .unwrap();
+        let original = fs::read(&published).unwrap();
+        assert_eq!(&original[..4], b"fLaC");
+        let runtime = CacheRuntime::new_without_workers(Arc::new(|_, _| panic!("no admission")));
+        let mut spec = job(&root);
+        spec.supplement_page = Some(2);
+        let reservation = reservation(990);
+        fs::create_dir_all(
+            root.join(".staging")
+                .join(&reservation.item_incarnation_id)
+                .join(&reservation.artifact_set_id),
+        )
+        .unwrap();
+        let queued = QueuedJob {
+            spec,
+            generation: 1,
+            cache_attempt_token: reservation.cache_attempt_token,
+            reservation,
+        };
+        let track = track_specs(&queued.spec)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.kind == ExpectedMediaKind::Audio)
+            .unwrap();
+        let result = reuse_track(
+            &runtime.shared,
+            &queued,
+            &track,
+            "existing/audio-p1.flac",
+            &Arc::new(AtomicBool::new(false)),
+        );
+        assert!(
+            result.is_ok(),
+            "a real native publication must be reusable without libav: {:?}",
+            result.as_ref().err()
+        );
+        assert_eq!(fs::read(result.unwrap().temporary_path).unwrap(), original);
+        assert_eq!(fs::read(published).unwrap(), original);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn audio_supplement_reuses_original_bytes_and_downloads_only_the_missing_track() {
+        use std::io::Read;
+        use std::net::TcpListener;
+        let root = publication_root("audio-supplement");
+        fs::create_dir_all(root.join("existing")).unwrap();
+        crate::media_backend::tests::write_h264_fixture(&root.join("existing/video-p1.mp4"));
+        let audio_fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/bbdown/audio.m4a");
+        fs::copy(&audio_fixture, root.join("existing/audio-p1.m4a")).unwrap();
+        fs::copy(&audio_fixture, root.join("fixture-audio.m4a")).unwrap();
+        let video = fs::read(root.join("existing/video-p1.mp4")).unwrap();
+        let audio = fs::read(root.join("existing/audio-p1.m4a")).unwrap();
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/missing-audio", server.local_addr().unwrap());
+        let bytes = fs::read(root.join("fixture-audio.m4a")).unwrap();
+        let transfer = thread::spawn(move || {
+            let (mut socket, _) = server.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut request = [0; 4096];
+            assert!(socket.read(&mut request).unwrap() > 0);
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                bytes.len()
+            )
+            .unwrap();
+            socket.write_all(&bytes).unwrap();
+        });
+        let mut spec = job(&root);
+        spec.supplement_page = Some(2);
+        spec.pages[0].label = "原声".into();
+        spec.pages.push(CachePageSpec {
+            page: 2,
+            cid: 3,
+            label: "伴奏".into(),
+            duration_seconds: None,
+        });
+        // Reordered non-ASCII labels must not regenerate a cached variant ID.
+        spec.pages.reverse();
+        spec.selected_audio_variant_id = "legacy-original-voice".into();
+        spec.existing_video_relative_path = "existing/video-p1.mp4".into();
+        spec.existing_audio_variants = vec![ExistingAudioVariant {
+            id: "legacy-original-voice".into(),
+            label: "原声（已缓存）".into(),
+            page: 1,
+            relative_path: "existing/audio-p1.m4a".into(),
+        }];
+        let reservation = reservation(901);
+        let stage = root
+            .join(".staging")
+            .join(&reservation.item_incarnation_id)
+            .join(&reservation.artifact_set_id);
+        fs::create_dir_all(&stage).unwrap();
+        let queued = QueuedJob {
+            spec,
+            generation: 1,
+            cache_attempt_token: reservation.cache_attempt_token,
+            reservation,
+        };
+        let runtime = CacheRuntime::new_without_workers(Arc::new(|_, _| panic!("reserved")));
+        ACQUIRED_STREAM.with(|s| {
+            *s.borrow_mut() = Some(BilibiliStream {
+                url,
+                backup_urls: vec![],
+                codec_id: None,
+                codec_name: Some("aac".into()),
+                codecs: None,
+                mime_type: None,
+                width: None,
+                height: None,
+                quality_id: None,
+                bandwidth: None,
+                order: None,
+            })
+        });
+        let tracks = track_specs(&queued.spec)
+            .unwrap()
+            .iter()
+            .map(|t| {
+                run_track(
+                    &runtime.shared,
+                    &queued,
+                    t,
+                    &Arc::new(AtomicBool::new(false)),
+                )
+                .unwrap()
+            })
+            .collect();
+        ACQUIRED_STREAM.with(|s| *s.borrow_mut() = None);
+        transfer.join().unwrap();
+        let result = publish_tracks_with_authorizer(
+            &queued.spec,
+            &queued.reservation,
+            tracks,
+            |_, _| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(result.audio_variants.len(), 2);
+        let reused = result.audio_variants.iter().find(|v| v.page == 1).unwrap();
+        assert_eq!(reused.id, "legacy-original-voice");
+        assert_eq!(reused.label, "原声（已缓存）");
+        assert_eq!(result.selected_audio_variant_id, "legacy-original-voice");
+        assert_eq!(
+            fs::read(root.join(&result.video_relative_path)).unwrap(),
+            video
+        );
+        assert_eq!(
+            fs::read(
+                root.join(&queued.reservation.artifact_relative_directory)
+                    .join("audio-p1.m4a")
+            )
+            .unwrap(),
+            audio
+        );
+        assert_eq!(fs::read(root.join("existing/video-p1.mp4")).unwrap(), video);
+        assert_eq!(fs::read(root.join("existing/audio-p1.m4a")).unwrap(), audio);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

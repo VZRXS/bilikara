@@ -38,7 +38,13 @@ pub(crate) fn publish_no_replace(source: &Path, destination: &Path) -> io::Resul
             Err(io::Error::last_os_error())
         }
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(target_os = "ios")]
+    {
+        // Use the same Darwin primitive for files and directories. In
+        // particular, iOS publication must not depend on sandbox hard links.
+        publish_darwin_no_replace(source, destination)
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         std::fs::hard_link(source, destination)
     }
@@ -70,20 +76,9 @@ pub(crate) fn publish_directory_no_replace(source: &Path, destination: &Path) ->
             Err(io::Error::last_os_error())
         }
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
-        use std::ffi::CString;
-        use std::os::unix::ffi::OsStrExt;
-        let source = CString::new(source.as_os_str().as_bytes())?;
-        let destination = CString::new(destination.as_os_str().as_bytes())?;
-        // SAFETY: both paths remain live; RENAME_EXCL refuses any destination.
-        let result =
-            unsafe { libc::renamex_np(source.as_ptr(), destination.as_ptr(), libc::RENAME_EXCL) };
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
+        publish_darwin_no_replace(source, destination)
     }
     #[cfg(windows)]
     {
@@ -111,6 +106,7 @@ pub(crate) fn publish_directory_no_replace(source: &Path, destination: &Path) ->
         target_os = "linux",
         target_os = "android",
         target_os = "macos",
+        target_os = "ios",
         windows
     )))]
     {
@@ -119,6 +115,24 @@ pub(crate) fn publish_directory_no_replace(source: &Path, destination: &Path) ->
             io::ErrorKind::Unsupported,
             "exclusive directory publication unavailable",
         ))
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn publish_darwin_no_replace(source: &Path, destination: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let source = CString::new(source.as_os_str().as_bytes())?;
+    let destination = CString::new(destination.as_os_str().as_bytes())?;
+    // SAFETY: both paths remain live; RENAME_EXCL refuses any destination,
+    // including empty directories and dangling links. Unsupported volumes
+    // fail closed; checking existence before a plain rename is never safe.
+    let result =
+        unsafe { libc::renamex_np(source.as_ptr(), destination.as_ptr(), libc::RENAME_EXCL) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
     }
 }
 
@@ -163,6 +177,65 @@ mod tests {
         let final_path = root.join("ready");
         publish_directory_no_replace(&source, &final_path).unwrap();
         assert_eq!(fs::read(final_path.join("track")).unwrap(), b"owned");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_directory_publishers_keep_the_winner_and_the_losing_scratch() {
+        let root = directory();
+        let destination = root.join("complete");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles = [b"first".as_slice(), b"second".as_slice()]
+            .into_iter()
+            .enumerate()
+            .map(|(index, bytes)| {
+                let source = root.join(format!("{index}.part"));
+                fs::create_dir(&source).unwrap();
+                fs::write(source.join("track"), bytes).unwrap();
+                let destination = destination.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let result = publish_directory_no_replace(&source, &destination);
+                    (source, bytes, result)
+                })
+            })
+            .collect::<Vec<_>>();
+        let results = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|(_, _, r)| r.is_ok()).count(), 1);
+        for (source, bytes, result) in results {
+            match result {
+                Ok(()) => {
+                    assert!(!source.exists());
+                    assert_eq!(fs::read(destination.join("track")).unwrap(), bytes);
+                }
+                Err(error) => {
+                    assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+                    assert_eq!(fs::read(source.join("track")).unwrap(), bytes);
+                }
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn directory_publication_refuses_links_without_following_them() {
+        let root = directory();
+        let source = root.join("owned");
+        let destination = root.join("complete");
+        let missing = root.join("missing");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("track"), b"keep scratch").unwrap();
+        std::os::unix::fs::symlink(&missing, &destination).unwrap();
+        let error = publish_directory_no_replace(&source, &destination).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(source.join("track")).unwrap(), b"keep scratch");
+        assert_eq!(fs::read_link(&destination).unwrap(), missing);
+        assert!(!missing.exists());
         fs::remove_dir_all(root).unwrap();
     }
 

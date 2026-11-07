@@ -242,11 +242,13 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
             .header("cookie", cookie)
             .header("x-bilikara-client", "test-host")
             .json(&body)
-            // Diagnostic probes have their own five-second deadline. Allow
-            // the renderer to return the bounded offline result afterwards.
+            // Each diagnostic probe has a five-second deadline; unreachable
+            // targets can use several probes before rendering the result.
+            // Keep ordinary HTTP checks short, with a separate diagnostic
+            // budget for offline/low-priority test execution.
             .timeout(Duration::from_secs(
                 if path.starts_with("/api/diagnostics/") {
-                    10
+                    30
                 } else {
                     5
                 },
@@ -737,6 +739,18 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
         &remote_cookie,
     );
     assert_eq!(stale_volume.status(), 409);
+    for (path, body) in [
+        ("/api/player/volume", json!({"is_muted":true})),
+        ("/api/player/key-shift", json!({"key_shift":3})),
+        (
+            "/api/player/av-delay-action",
+            json!({"type":"adjust","delta_ms":200}),
+        ),
+    ] {
+        let mut body = body;
+        body["expected_item_incarnation_id"] = json!("obsolete-song");
+        assert_eq!(post(path, body, &remote_cookie).status(), 409, "{path}");
+    }
     let after_stale: Value = client
         .get(format!("{base}/api/state"))
         .header("Cookie", &cookie)
@@ -767,6 +781,10 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
     .json()
     .unwrap();
     assert_eq!(delay["data"]["effective_delay_ms"], 100);
+    assert_eq!(
+        delay["data"]["state"]["player_settings"]["av_offset_ms"],
+        100
+    );
     assert_eq!(
         post("/api/diagnostics/markdown", json!({}), &remote_cookie).status(),
         403
@@ -1057,6 +1075,37 @@ fn standalone_host_http_preserves_auth_identity_queue_and_media_boundaries() {
             .clone()
     };
     let before_defer = read_queue();
+    let audio_request = json!({"item_id":before_defer["current_item"]["id"],"expected_item_incarnation_id":before_defer["current_item"]["item_incarnation_id"],"page":999});
+    assert_eq!(
+        post("/api/cache/audio", audio_request.clone(), "").status(),
+        403
+    );
+    for authorized in [&cookie, &remote_cookie] {
+        for page in [json!(0), json!(-1), json!(1.5), json!("2"), json!(999)] {
+            let mut body = audio_request.clone();
+            body["page"] = page;
+            assert_eq!(post("/api/cache/audio", body, authorized).status(), 400);
+        }
+        let mut stale = audio_request.clone();
+        stale["expected_item_incarnation_id"] = json!("stale");
+        assert_eq!(post("/api/cache/audio", stale, authorized).status(), 409);
+    }
+    let after_audio = read_queue();
+    assert_eq!(after_audio["audio_supplements"], json!({}));
+    assert_eq!(
+        after_audio["playlist"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| &v["id"])
+            .collect::<Vec<_>>(),
+        before_defer["playlist"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| &v["id"])
+            .collect::<Vec<_>>()
+    );
     let defer = json!({
         "item_id": before_defer["current_item"]["id"],
         "expected_item_incarnation_id": before_defer["current_item"]["item_incarnation_id"],

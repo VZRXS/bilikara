@@ -437,6 +437,37 @@ fn expected_revision(request: &RemoteRequestV1) -> Option<u64> {
 
 pub(crate) fn project_remote_state(snapshot: &AppSnapshot) -> RemoteStateV1 {
     RemoteStateV1 {
+        audio_supplements: snapshot
+            .audio_supplements
+            .iter()
+            .map(|(id, s)| {
+                (
+                    id.clone(),
+                    bilikara_rust::RemoteAudioSupplementV1 {
+                        item_incarnation_id: s.item_incarnation_id.clone(),
+                        page: s.page,
+                        cache_attempt_token: s.cache_attempt_token,
+                        message: s.message.clone(),
+                        status: s.status.clone(),
+                        progress: s.progress,
+                        ready: s.ready.as_ref().and_then(|event| {
+                            if let crate::app_state::CacheEvent::Ready { audio_variants, .. } =
+                                event
+                            {
+                                Some(bilikara_rust::RemoteAudioSupplementReadyV1 {
+                                    audio_variants: audio_variants
+                                        .iter()
+                                        .filter_map(project_audio_variant)
+                                        .collect(),
+                                })
+                            } else {
+                                None
+                            }
+                        }),
+                    },
+                )
+            })
+            .collect(),
         automatic_volume: Some(bilikara_rust::RemoteAutomaticVolumeV1 {
             enabled: snapshot.automatic_volume.enabled,
             calibrated: snapshot.automatic_volume.calibrated,

@@ -1,3 +1,4 @@
+pub mod audio_supplement;
 use crate::internet_remote::{
     InternetRemoteError, InternetRemotePeers, InternetRemoteValidation,
     PlaylistAddBindingSelection, project_remote_state,
@@ -944,6 +945,7 @@ pub struct PlaybackProgram {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct AppSnapshot {
+    pub audio_supplements: HashMap<String, audio_supplement::AudioSupplement>,
     pub automatic_volume: AutomaticVolumeSnapshot,
     pub schema_version: u32,
     pub revision: u64,
@@ -1054,6 +1056,7 @@ impl AppStateResponse {
 
 #[derive(Debug, Clone, PartialEq)]
 struct AppStateData {
+    audio_supplements: HashMap<String, audio_supplement::AudioSupplement>,
     automatic_volume: AutomaticVolumePreference,
     automatic_playback: automatic_volume::AutomaticPlayback,
     revision: u64,
@@ -1087,6 +1090,8 @@ struct AppStateData {
 pub struct AppState {
     #[cfg(feature = "native-host")]
     analysis_signal: Option<automatic_volume::AnalysisSignal>,
+    #[cfg(feature = "native-host")]
+    analysis_verification: Option<automatic_volume::VerificationSignal>,
     data: Option<AppStateData>,
     native_storage: Option<NativeHostStorage>,
     next_cache_attempt_token: u64,
@@ -1104,6 +1109,7 @@ pub struct AppState {
 
 #[derive(Debug, Clone, PartialEq)]
 struct ActiveCacheAttempt {
+    supplement_page: Option<u32>,
     token: u64,
     reservation: CacheAttemptReservation,
     refresh: bool,
@@ -1139,6 +1145,8 @@ impl Default for AppState {
             data: None,
             #[cfg(feature = "native-host")]
             analysis_signal: None,
+            #[cfg(feature = "native-host")]
+            analysis_verification: None,
             native_storage: None,
             next_cache_attempt_token: 0,
             next_item_incarnation_id: 0,
@@ -1977,6 +1985,7 @@ impl AppStateData {
                 .backup
                 .filter(|entry| entry.current_item.is_some() || !entry.playlist.is_empty()),
             updated_at: seed.updated_at,
+            audio_supplements: HashMap::new(),
             active_cache_attempts: HashMap::new(),
         };
         data.sync_user_ids(namespace);
@@ -2078,6 +2087,7 @@ impl AppStateData {
     ) -> AppSnapshot {
         let av_delay = self.av_snapshot();
         AppSnapshot {
+            audio_supplements: self.audio_supplements.clone(),
             automatic_volume: self.automatic_snapshot(),
             schema_version: SCHEMA_VERSION,
             revision: self.revision,
@@ -2832,6 +2842,17 @@ fn apply_cache_event(
         }
         _ => None,
     };
+    if let Some(page) = active.supplement_page
+        && !matches!(event, CacheEvent::Reset { .. } | CacheEvent::Evicted { .. })
+    {
+        return audio_supplement::apply_event(data, item_id, page, event);
+    }
+    if matches!(
+        event,
+        CacheEvent::Ready { .. } | CacheEvent::Reset { .. } | CacheEvent::Evicted { .. }
+    ) {
+        data.audio_supplements.remove(item_id);
+    }
     let item = data
         .find_item_mut(item_id)
         .ok_or_else(|| rejected("item_not_found", "playlist item does not exist"))?;
@@ -3450,6 +3471,12 @@ fn apply_mutation(
                     "audio variant selection requires a valid item incarnation",
                 ));
             }
+            audio_supplement::select_ready(
+                data,
+                &item_id,
+                &expected_item_incarnation_id,
+                variant_id.trim(),
+            )?;
             let item = data
                 .find_item_mut(&item_id)
                 .ok_or_else(|| rejected("item_not_found", "playlist item does not exist"))?;
@@ -4775,21 +4802,21 @@ impl AppState {
                 );
             }
             RemoteRequestV1::CacheRetry {
+                audio_page,
                 force,
                 item_id,
                 expected_item_incarnation_id,
                 ..
             } => {
+                let mut effect = json!({"kind":"retry_cache","force":force,"item_id":item_id,"item_incarnation_id":expected_item_incarnation_id});
+                if let Some(page) = audio_page {
+                    effect["audio_page"] = json!(page);
+                }
                 return internet_remote_reply(
                     data,
                     &validation,
                     json!(project_remote_state(&snapshot)),
-                    Some(json!({
-                        "kind": "retry_cache",
-                        "force": force,
-                        "item_id": item_id,
-                        "item_incarnation_id": expected_item_incarnation_id,
-                    })),
+                    Some(effect),
                     false,
                 );
             }
@@ -5227,12 +5254,18 @@ impl AppState {
                     .data
                     .as_mut()
                     .expect("initialized AppState disappeared during cache reservation");
+                if let Some(supplement) = data.audio_supplements.get_mut(&item_id) {
+                    supplement.status = "failed".into();
+                    supplement.message = "Audio cache task replaced by a new attempt".into();
+                    supplement.progress = None;
+                }
                 data.active_cache_attempts.insert(
                     item_id,
                     ActiveCacheAttempt {
                         token: cache_attempt_token,
                         reservation: reservation.clone(),
                         refresh: reservation.refresh,
+                        supplement_page: None,
                         terminal_event: None,
                     },
                 );
@@ -5357,6 +5390,14 @@ impl AppState {
                     Err(error) => return execute_error_response(error),
                 };
                 if mutation.changed {
+                    let live: HashMap<_, _> = next
+                        .current_item
+                        .iter()
+                        .chain(&next.playlist)
+                        .map(|i| (i.id.clone(), i.item_incarnation_id.clone()))
+                        .collect();
+                    next.audio_supplements
+                        .retain(|id, s| live.get(id) == Some(&s.item_incarnation_id));
                     next.sync_user_ids(&namespace);
                     if current.session_generation != next.session_generation {
                         next.remote_identities.clear();
@@ -5436,6 +5477,10 @@ impl AppState {
                     let snapshot = next.snapshot_with_playback_program(after_program);
                     let persistence = next.persistence_snapshot();
                     let clears_controls = current.playback_generation != next.playback_generation;
+                    #[cfg(feature = "native-host")]
+                    let cancel_analysis = clears_controls
+                        || (current.automatic_playback.scanner_verifying
+                            && current.automatic_context() != next.automatic_context());
                     let previous_user_ids = current.session_user_ids.clone();
                     let session_changed = current.session_generation != next.session_generation;
                     if let Err(error) = self.persist_native(&next) {
@@ -5468,7 +5513,7 @@ impl AppState {
                     }
                     self.data = Some(next);
                     #[cfg(feature = "native-host")]
-                    self.notify_analysis(clears_controls);
+                    self.notify_analysis(cancel_analysis);
                     self.next_item_incarnation_id = next_item_incarnation_id;
                     #[cfg(feature = "native-host")]
                     native_session::state_changes().notify_waiters();
@@ -10442,5 +10487,136 @@ mod tests {
         assert!(shutdown.committed);
         let after = failure(state.execute(AppStateRequest::Snapshot { schema_version: 1 }));
         assert_eq!(after.status, "uninitialized");
+    }
+    #[test]
+    fn audio_supplement_preserves_program_and_queue_until_explicit_selection() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        let mut song = item("a", "BV1xx411c7mD", "Alice");
+        song.available_pages = vec![1, 2];
+        song.available_cids = vec![2, 3];
+        song.available_parts = vec!["P1".into(), "P2".into()];
+        song.available_durations = vec![120, 120];
+        initial.current_item = Some(song);
+        initialize(&mut state, initial);
+        let (first, _) = begin_cache_attempt(&mut state, "a");
+        let mut ready = ready_event(
+            &state,
+            "a",
+            first,
+            "video.mp4",
+            &[("p1", "audio.m4a")],
+            "p1",
+        );
+        if let CacheEvent::Ready { audio_variants, .. } = &mut ready {
+            audio_variants[0].insert("page".into(), json!(1));
+        }
+        success(apply_cache(&mut state, "a", first, ready, 11.0));
+        let before = state.data.as_ref().unwrap().snapshot().unwrap();
+        let (token, _) = begin_cache_attempt(&mut state, "a");
+        assert!(state.mark_audio_supplement("a", token, 99).is_err());
+        state.mark_audio_supplement("a", token, 2).unwrap();
+        let mut ready = ready_event(
+            &state,
+            "a",
+            token,
+            "video.mp4",
+            &[("p1", "audio1.m4a"), ("p2", "audio2.m4a")],
+            "p1",
+        );
+        if let CacheEvent::Ready { audio_variants, .. } = &mut ready {
+            for (i, v) in audio_variants.iter_mut().enumerate() {
+                v.insert("page".into(), json!(i + 1));
+            }
+        }
+        let mut malformed = ready.clone();
+        if let CacheEvent::Ready {
+            artifact_set_id, ..
+        } = &mut malformed
+        {
+            *artifact_set_id = "forged".into();
+        }
+        assert!(matches!(
+            apply_cache(&mut state, "a", token, malformed, 12.0),
+            AppStateResponse::Failure(_)
+        ));
+        let completed = success(apply_cache(&mut state, "a", token, ready.clone(), 13.0))
+            .snapshot
+            .unwrap();
+        assert_eq!(completed.playback_generation, before.playback_generation);
+        assert_eq!(completed.playback_program, before.playback_program);
+        assert_eq!(completed.current_item, before.current_item);
+        assert!(completed.playlist.is_empty());
+        assert_eq!(completed.audio_supplements["a"].status, "ready");
+        success(apply_cache(&mut state, "a", token, ready, 14.0));
+        let incarnation = before
+            .current_item
+            .as_ref()
+            .unwrap()
+            .item_incarnation_id
+            .clone();
+        let selected = success(state.execute(AppStateRequest::SetAudioVariant {
+            schema_version: 1,
+            item_id: "a".into(),
+            expected_item_incarnation_id: incarnation.clone(),
+            variant_id: "p2".into(),
+            now: 15.0,
+        }))
+        .snapshot
+        .unwrap();
+        assert_eq!(
+            selected.current_item.as_ref().unwrap().audio_variants.len(),
+            2
+        );
+        assert_eq!(
+            selected
+                .current_item
+                .as_ref()
+                .unwrap()
+                .selected_audio_variant_id,
+            "p2"
+        );
+        assert_eq!(selected.playback_generation, before.playback_generation + 1);
+        let (next, _) = begin_cache_attempt(&mut state, "a");
+        state.mark_audio_supplement("a", next, 2).unwrap();
+        assert!(matches!(
+            apply_cache(
+                &mut state,
+                "a",
+                token,
+                CacheEvent::Failed {
+                    message: "stale".into()
+                },
+                16.0
+            ),
+            AppStateResponse::Failure(_)
+        ));
+        success(apply_cache(
+            &mut state,
+            "a",
+            next,
+            CacheEvent::Failed {
+                message: "failure".into(),
+            },
+            17.0,
+        ));
+        assert_eq!(
+            state
+                .data
+                .as_ref()
+                .unwrap()
+                .find_item("a")
+                .unwrap()
+                .cache_status,
+            "ready"
+        );
+        assert_eq!(
+            state.data.as_ref().unwrap().audio_supplements["a"].status,
+            "failed"
+        );
+        let failure =
+            serde_json::to_value(&state.data.as_ref().unwrap().audio_supplements["a"]).unwrap();
+        assert_eq!(failure["message"], "failure");
+        assert_eq!(failure["cache_attempt_token"], next);
     }
 }

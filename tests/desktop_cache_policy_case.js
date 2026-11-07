@@ -96,10 +96,46 @@ module.exports=async ({api,okay,capture,browser,evidence,getPage,restart,inspect
   const remoteContext=await browser.newContext({viewport:{width:375,height:812}});
   try {
     const remote=await remoteContext.newPage();watch(remote);
+    const registration=[],registrationReads=[];
+    remote.on('framenavigated',frame=>{if(frame===remote.mainFrame()&&registration.length<32)registration.push({navigation:new URL(frame.url()).pathname});});
+    remote.on('response',response=>{
+      const pathname=new URL(response.url()).pathname;
+      if(!pathname.startsWith('/api/remote-identity')||registration.length>=32)return;
+      registrationReads.push(response.json().then(body=>registration.push({path:pathname,method:response.request().method(),status:response.status(),code:body.code,
+        registered:body.data?.registered,nameMatchesFixture:body.data?.name==='Cache Remote'})).catch(()=>registration.push({path:pathname,status:response.status(),bodyUnreadable:true})));
+    });
     const invite=(await okay("/api/state")).remote_access.lan_urls[0];assert.ok(invite);
+    const initialRemoteState=remote.waitForResponse(response=>new URL(response.url()).pathname==='/api/state'&&response.request().method()==='GET');
     await remote.goto(invite);await remote.waitForURL(new URL("/remote",invite).href);
-    await remote.locator("#remote-identity-input").fill("Cache Remote");await remote.locator("#remote-identity-submit").click();
-    await remote.waitForFunction(()=>document.querySelector("#remote-identity-modal").classList.contains("hidden"));
+    try {
+      // URL/load does not complete the Remote's asynchronous identity/state
+      // bootstrap. This cache/permission test acts on the admitted UI and
+      // verifies the actual registration reply before checking exit motion.
+      await remote.bringToFront();
+      const initialized=await initialRemoteState;assert.equal(initialized.status(),200);
+      assert.ok((await initialized.json()).data,'The actual Remote bootstrap must succeed before this cache/permission workflow');
+      await remote.locator("#remote-identity-input").fill("Cache Remote");
+      const [registered]=await Promise.all([
+        remote.waitForResponse(response=>new URL(response.url()).pathname==='/api/remote-identity/register'&&response.request().method()==='POST'),
+        remote.locator("#remote-identity-submit").click(),
+      ]);
+      const registrationReply=await registered.json();
+      assert.equal(registered.status(),200,JSON.stringify({code:registrationReply.code}));
+      assert.equal(registrationReply.data?.registered,true);assert.equal(registrationReply.data?.name,'Cache Remote');
+      await remote.waitForFunction(()=>document.querySelector("#remote-identity-modal").classList.contains("hidden"));
+    } catch(error) {
+      await Promise.allSettled(registrationReads);
+      const observation=await remote.evaluate(()=>({modalClasses:document.querySelector('#remote-identity-modal')?.className,
+        inputHasName:document.querySelector('#remote-identity-input')?.value==='Cache Remote',inputDisabled:document.querySelector('#remote-identity-input')?.disabled,
+        submitDisabled:document.querySelector('#remote-identity-submit')?.disabled,submitBusy:document.querySelector('#remote-identity-submit')?.getAttribute('aria-busy'),
+        toast:document.querySelector('#app-toast')?.textContent.replace(/https?:\/\/[^\s)]+/g,'[url]').slice(0,300),
+        animations:document.querySelector('.remote-identity-card')?.getAnimations().slice(0,8).map(a=>({name:a.animationName,state:a.playState,time:a.currentTime})),
+        visibility:document.visibilityState})).catch(()=>null);
+      const destination=process.env.BILIKARA_IOS_PLAYBACK_EVIDENCE||evidence;await fs.mkdir(destination,{recursive:true});
+      await fs.writeFile(path.join(destination,'cache-policy-remote-identity-failure.json'),JSON.stringify({fixture:'isolated Native Host cache-policy Remote',evidenceClass:'BROWSER-TESTED',
+        physicalGate:'DEVICE-UNVERIFIED',engine:'webkit',engineVersion:browser.version(),commit:process.env.GITHUB_SHA||null,registration,observation,error:String(error)},null,2));
+      throw error;
+    }
     const denied=await remote.evaluate(async()=>{
       const result=await fetch("/api/client/media-capabilities",{method:"POST",headers:clientHeaders({"Content-Type":"application/json"}),body:JSON.stringify({hevc_supported:false,avc_supported:false})});return result.status;
     });assert.equal(denied,403);

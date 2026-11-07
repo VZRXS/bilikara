@@ -6598,7 +6598,7 @@ function partOptionsForItem(item) {
   if (!availableParts?.length) {
     return [];
   }
-  const cachedVariants = audioVariantsForItem(item);
+  const cachedVariants = [...audioVariantsForItem(item), ...(window.BilikaraPartSelector?.supplementVariants(state.data, item) || [])];
   const cachedVariantsById = new Map(
     cachedVariants.map((variant) => [String(variant.id || "").trim(), variant]),
   );
@@ -6606,6 +6606,7 @@ function partOptionsForItem(item) {
     const cachedVariant = cachedVariantForPartEntry(entry, cachedVariantsById, cachedVariants);
     return {
       ...entry,
+      bound: entry.bound || Boolean(cachedVariant),
       id: String(cachedVariant?.id || entry.id || "").trim(),
       audio_url: String(cachedVariant?.audio_url || ""),
       // LEGACY: cachedVariant.media_url used to point to a muxed MP4 variant.
@@ -6819,6 +6820,12 @@ function renderAudioVariantBar(currentItem, playbackMode) {
 
   const selectedVariant = selectedAudioVariantForItem(currentItem);
   const buttonsDisabled = audioVariantSwitchLocked();
+  const paintCache = () => window.BilikaraPartSelector?.paintProgress(
+    [elements.audioVariantBar, elements.audioVariantPopover], state.data, currentItem, buttonsDisabled,
+    message => setFormMessage(message, true),
+  );
+  paintCache();
+
   const signature = JSON.stringify({ itemId: currentItem.id, language: state.language,
     selected: selectedVariant?.id || "", buttonsDisabled,
     variants: variants.map(({ id, label, page, bound }) => ({ id, label, page, bound })),
@@ -6873,6 +6880,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
 
   elements.audioVariantPopover?.replaceChildren(list.cloneNode(true));
   elements.audioVariantBar.append(list, toggleButton);
+  paintCache();
   elements.audioVariantBar.classList.remove("hidden");
   syncAudioVariantLayout();
   setAudioVariantPopoverOpen(state.audioVariantBarExpanded);
@@ -10132,40 +10140,16 @@ async function handleAudioVariantSelection(event) {
   setAudioVariantPopoverOpen(false);
 
   if (button.dataset.bound !== "true") {
-    const page = Number(button.dataset.page || 0);
-    const requesterName = selectedRequesterName();
-    if (!page || state.submitting) {
-      return;
-    }
-    if (!requesterName) {
-      setFormMessage(t("session.requireRequester"), true);
-      return;
-    }
-    try {
-      state.submitting = true;
-      const result = await submitAddRequestWithDuplicateConfirm(
-        currentItem.original_url || currentItem.resolved_url,
-        "tail",
-        requesterName,
-        {
-          selectedVideoPage: page,
-          selectedAudioPages: [page],
-        },
-      );
-      if (result.cancelled) {
-        setFormMessage(t("remote.cancelledDuplicate"));
-        return;
-      }
-      applyStateSnapshot(result.data, { forceRender: true });
-      setFormMessage(t("player.partAddedToCache"));
-    } catch (error) {
-      setFormMessage(error.message, true);
-    } finally {
-      state.submitting = false;
-    }
+    await window.BilikaraPartSelector.cacheAudio({
+      item: currentItem, page: Number(button.dataset.page), snapshot: state.data,
+      post: apiPostExactStateCommand,
+      refresh: () => renderAudioVariantBar(state.data?.current_item, frontendPlaybackMode(state.data?.playback_mode)),
+      reportError: message => setFormMessage(message, true),
+    });
     return;
   }
 
+  setAudioVariantPopoverOpen(false);
   if (audioVariantSwitchLocked()) {
     return;
   }

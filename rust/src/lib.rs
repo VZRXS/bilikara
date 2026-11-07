@@ -69,7 +69,8 @@ pub use ffi::{
 };
 pub use internet_remote_protocol::{
     INTERNET_REMOTE_PROTOCOL_VERSION, MAX_BROWSE_RESULTS, MAX_CONTROL_MESSAGE_BYTES,
-    MAX_REMOTE_STATE_ITEMS, MAX_SAFE_JSON_INTEGER, MAX_SEARCH_RESULTS, RemoteAudioVariantV1,
+    MAX_REMOTE_STATE_ITEMS, MAX_SAFE_JSON_INTEGER, MAX_SEARCH_RESULTS,
+    RemoteAudioSupplementReadyV1, RemoteAudioSupplementV1, RemoteAudioVariantV1,
     RemoteAutomaticVolumeV1, RemoteAvDelayActionV1, RemoteCacheDownloadTrackV1,
     RemoteCacheStatusV1, RemoteCapability, RemoteCatalogBrowseKindV1, RemoteHistoryEntryV1,
     RemoteLane, RemoteOperation, RemotePlaybackModeV1, RemotePlaybackStatusV1,

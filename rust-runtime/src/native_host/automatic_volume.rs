@@ -1,10 +1,62 @@
 //! One supervised worker, asleep on a bounded command channel while OFF.
 //! No decoder/file work occurs under AppState's serialized lock.
 use super::*;
-use crate::app_state::automatic_volume::AnalysisSignal;
+use crate::app_state::automatic_volume::{AnalysisSignal, AutomaticVolumeCommand};
 use crate::experimental_libav::{LibavMetadataProbe, LoudnessMeasurement, ProbeError};
 use serde::{Deserialize, Serialize};
 use std::fs;
+
+enum Scanner {
+    Libav(Box<LibavMetadataProbe>),
+    #[cfg(feature = "portable-loudness")]
+    Portable,
+}
+
+impl Scanner {
+    fn load() -> Option<Self> {
+        #[cfg(feature = "portable-loudness")]
+        if cfg!(feature = "portable-loudness") {
+            return Some(Self::Portable);
+        }
+        crate::media_routing::loudness_companion().and_then(|path| {
+            // SAFETY: trusted Host/package configuration, never a client path.
+            unsafe { LibavMetadataProbe::load(path) }
+                .ok()
+                .filter(LibavMetadataProbe::loudness_available)
+                .map(Box::new)
+                .map(Self::Libav)
+        })
+    }
+
+    fn integrated_loudness(
+        &self,
+        path: &Path,
+        cancelled: &AtomicBool,
+        details: &mut Value,
+    ) -> Result<LoudnessMeasurement, ProbeError> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match self {
+            Self::Libav(probe) => {
+                *details = json!({"backend":"libav"});
+                probe.integrated_loudness(path, cancelled)
+            },
+            #[cfg(feature = "portable-loudness")]
+            Self::Portable => {
+                let mut diagnostic = crate::portable_loudness::ScanDiagnostics::default();
+                let result = crate::portable_loudness::analyze_diagnosed(path, cancelled, &mut diagnostic);
+                *details = json!({"codec":diagnostic.codec,"profile":diagnostic.profile,"tracks":diagnostic.tracks,"legacy_aac_sl_config":diagnostic.legacy_aac_sl_config,
+                    "sample_rate":diagnostic.sample_rate,"channels":diagnostic.channels,
+                    "declared_seconds":diagnostic.declared_seconds,"decoded_seconds":diagnostic.decoded_seconds,
+                    "packet_index":diagnostic.packet_index,"packet_seconds":diagnostic.packet_seconds,
+                    "packet_duration":diagnostic.packet_duration,"gap_seconds":diagnostic.gap_seconds});
+                result.map_err(|error| match error {
+                    crate::portable_loudness::Error::Cancelled => ProbeError::Cancelled,
+                    error => ProbeError::BackendFailure(error.diagnostic_code().into()),
+                })
+            }
+        }))
+        .unwrap_or_else(|_| Err(ProbeError::BackendFailure("audio scanner failed".into())))
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -28,18 +80,49 @@ fn identity(path: &Path) -> Option<(u64, u128)> {
     ))
 }
 
+fn failure_stage(error: &ProbeError) -> &'static str {
+    match error {
+        ProbeError::Cancelled => "cancelled",
+        ProbeError::UnsupportedFormat(_) => "unsupported_container",
+        ProbeError::Unavailable(_) => "scanner_unavailable",
+        ProbeError::BackendFailure(code) => match code.as_str() {
+            "missing_artifact" => "missing_artifact",
+            "unsupported_container" => "unsupported_container",
+            "unsupported_codec_profile" => "unsupported_codec_profile",
+            "packet_timeline" => "packet_timeline",
+            "duration_mismatch" => "duration_mismatch",
+            "analysis_timeout" => "analysis_timeout",
+            "silent_signal" => "silent_signal",
+            _ => "decoder_failure",
+        },
+        _ => "decoder_failure",
+    }
+}
+
+#[cfg(test)]
 fn analyze(
-    probe: &LibavMetadataProbe,
+    probe: &Scanner,
     path: &Path,
     cancelled: &AtomicBool,
 ) -> Result<(LoudnessMeasurement, bool), ProbeError> {
+    analyze_with_reuse(probe, path, cancelled, true, &mut Value::Null)
+}
+
+fn analyze_with_reuse(
+    probe: &Scanner,
+    path: &Path,
+    cancelled: &AtomicBool,
+    reuse: bool,
+    details: &mut Value,
+) -> Result<(LoudnessMeasurement, bool), ProbeError> {
     let before =
-        identity(path).ok_or_else(|| ProbeError::BackendFailure("artifact unavailable".into()))?;
+        identity(path).ok_or_else(|| ProbeError::BackendFailure("missing_artifact".into()))?;
     let metadata = path.with_extension(format!(
         "{}.loudness.json",
         path.extension().and_then(|s| s.to_str()).unwrap_or("audio")
     ));
-    if fs::metadata(&metadata).is_ok_and(|m| m.len() <= 4096)
+    if reuse
+        && fs::metadata(&metadata).is_ok_and(|m| m.len() <= 4096)
         && let Ok(bytes) = fs::read(&metadata)
         && let Ok(saved) = serde_json::from_slice::<CachedFact>(&bytes)
         && saved.schema == 1
@@ -49,7 +132,7 @@ fn analyze(
     {
         return Ok((saved.fact, true));
     }
-    let fact = probe.integrated_loudness(path, cancelled)?;
+    let fact = probe.integrated_loudness(path, cancelled, details)?;
     if cancelled.load(Ordering::Acquire) || identity(path) != Some(before) {
         return Err(ProbeError::Cancelled);
     }
@@ -70,6 +153,51 @@ fn analyze(
     Ok((fact, false))
 }
 
+pub(super) fn command(
+    context: &HostContext,
+    identity: &Identity,
+    body: &Value,
+) -> Result<Value, ApiError> {
+    match with_app(|app| app.begin_automatic_volume(identity, body))? {
+        AutomaticVolumeCommand::Complete(snapshot) => Ok(snapshot),
+        AutomaticVolumeCommand::Verify(job, cancelled) => {
+            // This HTTP operation already runs on the bounded blocking pool.
+            // AppState owns admission, context and the cache read lease; no
+            // decoder/file work is performed under its serialized lock.
+            let mut details = Value::Null;
+            let result = Scanner::load()
+                .ok_or_else(|| ProbeError::Unavailable("scanner unavailable".into()))
+                .and_then(|scanner| {
+                    analyze_with_reuse(
+                        &scanner,
+                        &context.cache_root.join(&job.relative),
+                        &cancelled,
+                        false,
+                        &mut details,
+                    )
+                });
+            let stopped = cancelled.load(Ordering::Acquire) || context.stop.load(Ordering::Acquire);
+            with_app(|app| {
+                if let Err(error) = &result {
+                    app.native_diagnostic(&json!({"event":"automatic-volume-analysis-failed","phase":"verification","reason":failure_stage(error),"scan":details,"analysis_epoch":job.epoch}), now());
+                }
+                let reason = result.as_ref().err().map(failure_stage);
+                let finished = app.finish_scanner_verification(
+                    &job,
+                    result.ok().map(|(fact, _)| fact),
+                    stopped,
+                );
+                finished.map_err(|mut error| {
+                    if error.code == "scanner_unavailable" {
+                        error.extra = json!({"analysis_reason":reason.unwrap_or("scanner_unavailable"),"analysis_phase":"verification"});
+                    }
+                    error
+                })
+            })
+        }
+    }
+}
+
 pub(super) fn start(context: Arc<HostContext>) -> Result<(), ApiError> {
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -88,10 +216,7 @@ pub(super) fn start(context: Arc<HostContext>) -> Result<(), ApiError> {
             let enabled = with_app(|app| Ok(app.native_core_snapshot()?.automatic_volume.enabled)).unwrap_or(false);
             if !enabled { continue; }
             if probe.is_none() {
-                probe = crate::media_routing::loudness_companion().and_then(|path| {
-                    // SAFETY: existing trusted Host/package configuration.
-                    unsafe { LibavMetadataProbe::load(path) }.ok().filter(LibavMetadataProbe::loudness_available)
-                });
+                probe = Scanner::load();
                 let _ = with_app(|app| { app.set_scanner_available(probe.is_some()); Ok(()) });
             }
             let Some(probe) = &probe else { continue; };
@@ -102,11 +227,15 @@ pub(super) fn start(context: Arc<HostContext>) -> Result<(), ApiError> {
                 cancelled.store(false, Ordering::Release);
                 let job = with_app(|app| Ok(app.take_analysis_job())).ok().flatten();
                 let Some(job) = job else { break; };
-                let result = analyze(probe, &context.cache_root.join(&job.relative), &cancelled);
+                let mut details = Value::Null;
+                let result = analyze_with_reuse(probe, &context.cache_root.join(&job.relative), &cancelled, true, &mut details);
                 let stopped = cancelled.load(Ordering::Acquire) || context.stop.load(Ordering::Acquire) || matches!(result, Err(ProbeError::Cancelled));
                 let _ = with_app(|app| {
                     if let Ok((fact, reused)) = &result {
                         app.native_diagnostic(&json!({"event":"automatic-volume-analysis","codec":fact.codec,"sample_rate":fact.sample_rate,"channels":fact.channels,"duration_seconds":fact.duration_seconds,"elapsed_seconds":fact.elapsed_seconds,"processing_ratio":fact.elapsed_seconds/fact.duration_seconds,"reused":reused}), now());
+                    }
+                    if let Err(error) = &result {
+                        app.native_diagnostic(&json!({"event":"automatic-volume-analysis-failed","phase":"analysis","reason":failure_stage(error),"scan":details,"analysis_epoch":job.epoch}), now());
                     }
                     app.finish_analysis(&job, result.ok().map(|(fact, _)| fact), stopped)
                 });
@@ -118,9 +247,11 @@ pub(super) fn start(context: Arc<HostContext>) -> Result<(), ApiError> {
 pub(super) fn configure_capability() {
     // Do not load a library at startup. These are trusted backend provisioning
     // facts; symbol/build negotiation still runs on the first explicit enable.
-    let available = crate::media_routing::loudness_companion().is_some();
+    let available = !cfg!(feature = "portable-loudness")
+        && crate::media_routing::loudness_companion().is_some();
     let _ = with_app(|app| {
         app.set_scanner_available(available);
+        app.set_scanner_probe_available(cfg!(feature = "portable-loudness"));
         Ok(())
     });
 }
@@ -129,12 +260,50 @@ pub(super) fn configure_capability() {
 mod tests {
     use super::*;
     #[test]
+    fn scanner_failures_expose_only_bounded_stage_codes() {
+        assert_eq!(failure_stage(&ProbeError::Cancelled), "cancelled");
+        assert_eq!(
+            failure_stage(&ProbeError::BackendFailure("packet_timeline".into())),
+            "packet_timeline"
+        );
+        assert_eq!(
+            failure_stage(&ProbeError::BackendFailure(
+                "/private/media/user-song.m4a: bad packet".into()
+            )),
+            "decoder_failure"
+        );
+    }
+    #[cfg(feature = "portable-loudness")]
+    #[test]
+    #[ignore = "requires generated real compressed audio fixtures"]
+    fn portable_artifact_fact_reuse_and_replacement() {
+        let fixtures = PathBuf::from(std::env::var_os("BILIKARA_TEST_LOUDNESS_FIXTURES").unwrap());
+        let path = fixtures.join("portable-reusable.m4a");
+        fs::copy(fixtures.join("aac-48000.m4a"), &path).unwrap();
+        let probe = Scanner::Portable;
+        let flag = AtomicBool::new(false);
+        let (first, reused) = analyze(&probe, &path, &flag).unwrap();
+        assert!(!reused);
+        let (second, reused) = analyze(&Scanner::Portable, &path, &flag).unwrap();
+        assert!(reused);
+        assert_eq!(first, second);
+        fs::copy(fixtures.join("aac-44100.m4a"), &path).unwrap();
+        assert!(!analyze(&probe, &path, &flag).unwrap().1);
+        flag.store(true, Ordering::Release);
+        assert!(matches!(
+            analyze(&probe, &path, &flag),
+            Err(ProbeError::Cancelled)
+        ));
+    }
+    #[test]
     #[ignore = "requires prepared native companion and generated offline audio fixtures"]
     fn artifact_fact_reuse_and_replacement() {
         let companion = PathBuf::from(std::env::var_os("BILIKARA_TEST_LIBAV_COMPANION").unwrap());
         let fixtures = PathBuf::from(std::env::var_os("BILIKARA_TEST_LOUDNESS_FIXTURES").unwrap());
         // SAFETY: explicit same-build local test artifact.
-        let probe = unsafe { LibavMetadataProbe::load(&companion) }.unwrap();
+        let probe = Scanner::Libav(Box::new(
+            unsafe { LibavMetadataProbe::load(&companion) }.unwrap(),
+        ));
         let path = fixtures.join("reusable.m4a");
         fs::copy(fixtures.join("aac-48000.m4a"), &path).unwrap();
         let flag = AtomicBool::new(false);
@@ -145,7 +314,9 @@ mod tests {
         assert_eq!(first, second);
         drop(probe);
         // A new loader (restart) reuses only validated immutable-file facts.
-        let probe = unsafe { LibavMetadataProbe::load(&companion) }.unwrap();
+        let probe = Scanner::Libav(Box::new(
+            unsafe { LibavMetadataProbe::load(&companion) }.unwrap(),
+        ));
         assert!(analyze(&probe, &path, &flag).unwrap().1);
         fs::copy(fixtures.join("aac-44100.m4a"), &path).unwrap();
         assert!(!analyze(&probe, &path, &flag).unwrap().1);

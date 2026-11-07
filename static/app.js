@@ -12214,7 +12214,7 @@ function partOptionsForItem(item) {
     return [];
   }
 
-  const cachedVariants = audioVariantsForItem(item);
+  const cachedVariants = [...audioVariantsForItem(item), ...(window.BilikaraPartSelector?.supplementVariants(state.data, item) || [])];
   const cachedVariantsById = new Map(
     cachedVariants.map((variant) => [String(variant.id || "").trim(), variant]),
   );
@@ -12223,6 +12223,7 @@ function partOptionsForItem(item) {
     const cachedVariant = cachedVariantForPartEntry(entry, cachedVariantsById, cachedVariants);
     return {
       ...entry,
+      bound: entry.bound || Boolean(cachedVariant),
       id: String(cachedVariant?.id || entry.id || "").trim(),
       audio_url: String(cachedVariant?.audio_url || ""),
       // LEGACY: cachedVariant.media_url used to point to a muxed MP4 variant.
@@ -15432,6 +15433,12 @@ function renderAudioVariantBar(currentItem, playbackMode) {
 
   const selectedVariant = selectedAudioVariantForItem(currentItem);
   const buttonsDisabled = audioVariantSwitchLocked();
+  const paintCache = () => window.BilikaraPartSelector?.paintProgress(
+    [elements.audioVariantBar, elements.audioVariantPopover], state.data, currentItem, buttonsDisabled,
+    message => setAppMessage(message, true),
+  );
+  paintCache();
+
   const signature = JSON.stringify({
     hidden: false,
     itemId: currentItem.id,
@@ -15484,6 +15491,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
 
   elements.audioVariantPopover.append(list.cloneNode(true));
   elements.audioVariantBar.append(list);
+  paintCache();
   elements.audioVariantBar.classList.toggle("is-expanded", state.audioVariantBarExpanded);
   setClassToggle(elements.audioVariantBar, "hidden", false);
   if (elements.audioVariantAnchor) {
@@ -21234,7 +21242,7 @@ elements.applicationRestartButton?.addEventListener("click", (event) => {
 
 async function handleAudioVariantSelection(event) {
   const button = event.target.closest("button[data-variant-id]");
-  if (!button || !state.data?.current_item) {
+  if (!button || button.disabled || !state.data?.current_item) {
     return;
   }
 
@@ -21244,45 +21252,12 @@ async function handleAudioVariantSelection(event) {
   }
 
   if (button.dataset.bound !== "true") {
-    const page = Number(button.dataset.page || 0);
-    if (!page) {
-      return;
-    }
-    const requesterName = validatedRequesterNameForAdd(setAppMessage);
-    if (!requesterName) {
-      return;
-    }
-    try {
-      await submitAddRequest(currentItem.original_url || currentItem.resolved_url, "tail", {
-        requesterName,
-        selectedVideoPage: page,
-        selectedAudioPages: [page],
-      });
-      setAppMessage(t("player.partAddedToCache"));
-      render();
-    } catch (error) {
-      if (error.code === "duplicate_session_request") {
-        const point = anchorPointForEvent(event, button);
-        openConfirm({
-          type: "duplicate-add",
-          url: currentItem.original_url || currentItem.resolved_url,
-          position: "tail",
-          requesterName,
-          preserveInput: false,
-          selectedVideoPage: page,
-          selectedAudioPages: [page],
-          message: duplicateConfirmMessage(
-            error.payload?.duplicate_item,
-            error.payload?.session_entry,
-            error.payload?.active_item,
-          ),
-          x: point.x,
-          y: point.y,
-        });
-        return;
-      }
-      setAppMessage(error.message, true);
-    }
+    await window.BilikaraPartSelector.cacheAudio({
+      item: currentItem, page: Number(button.dataset.page), snapshot: state.data,
+      post: apiPostExactStateCommand,
+      refresh: () => renderAudioVariantBar(state.data?.current_item, frontendPlaybackMode(state.data?.playback_mode)),
+      reportError: message => setAppMessage(message, true),
+    });
     return;
   }
 
@@ -21939,6 +21914,38 @@ document.addEventListener("keydown", (event) => {
   handleNativePlayerFullscreenEscape(event);
 });
 
+function resumeForegroundAudioOutput(video, audio, {renew = false} = {}) {
+  const session = state.hostPlaybackSession;
+  const context = state.audioContext;
+  if (!isActiveSplitPlayer(video, audio) || !audio.bilikaraPitchSource || !context
+    || !["suspended", "interrupted"].includes(context.state)) return false;
+  if (session.foregroundRecovery && !renew) return true;
+  const finish = () => {
+    if (session.foregroundRecovery !== recovery) return;
+    session.foregroundRecovery = null;
+    if (!isCurrentHostPlaybackSession(session, video, audio) || document.visibilityState !== "visible"
+      || !session.logicalPlayIntent || !state.localShouldBePlaying) return;
+    if (context.state === "running") {
+      if (!video.paused && !audio.paused && !video.seeking && !audio.seeking && !session.seekSettling) {
+        setSplitPlaybackStartState("established", video, audio);
+      }
+      updateSplitPlaybackStartOverlay(video, audio);
+      syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+    } else {
+      state.localAudioPlaybackBlocked = true;
+      setSplitPlaybackStartState("needs-user-gesture", video, audio);
+    }
+  };
+  let attempt;
+  try { attempt = context.resume(); } catch { attempt = Promise.resolve(); }
+  const recovery = Promise.resolve(attempt).then(finish, finish);
+  // A user gesture supersedes an indefinitely pending automatic resume. Its
+  // old callback cannot own this newer lease, intent, or mounted media pair.
+  session.foregroundRecovery = recovery;
+  updateSplitPlaybackStartOverlay(video, audio);
+  return true;
+}
+
 document.addEventListener("visibilitychange", () => {
   if (window.BilikaraAndroidPlayback?.visibilityChanged()) return;
   if (
@@ -21950,6 +21957,7 @@ document.addEventListener("visibilitychange", () => {
   const { video, audio } = activeLocalPlayerElements();
   const primaryVideo = video || activePrimaryVideoElement();
   if (video && audio) {
+    if (document.visibilityState === "visible") resumeForegroundAudioOutput(video, audio);
     syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
   } else if (primaryVideo) {
     primaryVideo.play().catch(() => {});

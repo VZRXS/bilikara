@@ -1250,6 +1250,40 @@ impl AppState {
                 safe[key] = value.clone();
             }
         }
+        // Scanner details are a bounded numeric projection, not parser text.
+        if let Some(scan) = body.get("scan").filter(|v| v.is_object()) {
+            let mut value = json!({});
+            for key in [
+                "profile",
+                "tracks",
+                "sample_rate",
+                "channels",
+                "declared_seconds",
+                "decoded_seconds",
+                "packet_index",
+                "packet_seconds",
+                "packet_duration",
+                "gap_seconds",
+            ] {
+                if let Some(number) = scan
+                    .get(key)
+                    .filter(|v| v.as_f64().is_some_and(f64::is_finite))
+                {
+                    value[key] = number.clone();
+                }
+            }
+            if let Some(codec) = scan
+                .get("codec")
+                .and_then(Value::as_str)
+                .filter(|v| matches!(*v, "aac" | "flac"))
+            {
+                value["codec"] = json!(codec);
+            }
+            safe["scan"] = value;
+        }
+        if let Some(epoch) = body.get("analysis_epoch").and_then(Value::as_u64) {
+            safe["analysis_epoch"] = json!(epoch);
+        }
         let log = &mut self.native_session.diagnostics;
         if log.len() >= 100 {
             log.pop_front();

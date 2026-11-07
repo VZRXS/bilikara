@@ -6,7 +6,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { root, runNative, digest } from './desktop_construction_support.mjs';
 import { nativeTarget, suffix } from './desktop_construction_expectations.mjs';
-import { buildNativeHost } from './native_runtime_artifacts.mjs';
+import { buildNativeHost, buildNativeAlpha, buildPortableLoudnessAlpha } from './native_runtime_artifacts.mjs';
 import { isolatedEnvironment, RunningHost, waitFor } from './native_host_support.mjs';
 import { videoFixture } from './video_service_fixture.mjs';
 import { csvRows, zipEntries } from './native_export_support.mjs';
@@ -144,4 +144,67 @@ for (const cooldown of [false, true]) test(cooldown ? 'cookie switch retains lat
       await assert.rejects(host.api('/api/gatcha/refresh', {}), error => error.data.code === 'library_cooldown'); await waitFor(() => entered.c, 'C intent lost during real cooldown', 75000); assert.equal(cache().uids['1'][0].title, 'karaoke account A'); release.c(); await waitFor(async () => (await state()).gatcha.last_status === 'success', 'C did not publish'); assert.deepEqual(new Set(cache().uids['1'].map(item => item.title)), new Set(['karaoke account A', 'karaoke account C'])); assert.equal(cookies.length, 4); for (const [i, account] of [...'aabc'].entries()) assert.ok(cookies[i].includes(`account_${account}`)); await assert.rejects(host.api('/api/gatcha/refresh', {}), error => error.data.code === 'library_cooldown');
     } else { assert.deepEqual(cache().uids['1'] || [], []); release.b(); await waitFor(async () => (await state()).gatcha.last_status === 'success', 'B did not publish'); assert.equal(cache().uids['1'][0].title, 'karaoke account B'); assert.equal(cookies.length, 2); assert.ok(cookies[0].includes('account_a') && cookies[1].includes('account_b')); }
   } finally { for (const resolve of Object.values(release)) resolve(); if (host) await host.close(); await provider.close(); }
+});
+
+
+for (const [platform,format] of [['mobile','aac'],['desktop','aac'],['mobile','flac'],['desktop','flac']]) test(`real ${platform} audio supplement keeps its program across sync, reports worker failures and retries explicitly${format==='flac'?' [IOS-09-01 portable FLAC]':''}`, {skip:linuxOnly,timeout:60000},async t=>{
+  const directory=home(t),calls=[],files={video:readFileSync(path.join(root,'tests/fixtures/bbdown/video.mp4')),audio:readFileSync(path.join(root,'tests/fixtures/bbdown/audio.m4a')),flac:readFileSync(path.join(root,'tests/fixtures/bbdown/audio-flac.mp4'))};
+  let host,release,rejectThird=true;
+  const barrier=new Promise(resolve=>{release=resolve;});
+  const provider=await videoFixture(async(target,headers)=>{
+    const url=new URL(target,'https://api.bilibili.com');
+    if(url.pathname.endsWith('/nav'))return {code:0,data:{wbi_img:{img_url:`https://example.invalid/${'a'.repeat(32)}.png`,sub_url:`https://example.invalid/${'b'.repeat(32)}.png`}}};
+    if(url.pathname==='/x/web-interface/wbi/view')return {code:0,data:{aid:123,bvid:'BV1xx411c7mD',title:'Supplement fixture',owner:{mid:42,name:'Fixture'},pages:[1,2,3].map(page=>({page,cid:456+page,duration:90,part:`P${page}`}))}};
+    if(url.pathname==='/x/player/wbi/playurl')return {code:0,data:{dash:{video:[{id:80,codecid:7,baseUrl:'https://api.bilibili.com/fixture/video.mp4',bandwidth:10}],audio:[{id:30280,baseUrl:`https://api.bilibili.com/fixture/audio-${url.searchParams.get('cid')}.m4a`,bandwidth:10}],...(format==='flac'?{flac:{audio:{id:30251,baseUrl:`https://api.bilibili.com/fixture/audio-${url.searchParams.get('cid')}-flac.mp4`,bandwidth:20}}}:{})}}};
+    if(url.pathname.startsWith('/fixture/')){
+      calls.push(url.pathname);
+      if(url.pathname.includes('audio-458'))await barrier;
+      if(url.pathname.includes('audio-459')&&rejectThird)return {fixtureResponse:{status:403,rawBody:Buffer.from('fixture denied')}};
+      const bytes=files[url.pathname.includes('video')?'video':url.pathname.includes('flac')?'flac':'audio'],match=/^bytes=(\d+)-(\d*)$/u.exec(headers.range||'');
+      const begin=match?Number(match[1]):0,end=match&&match[2]?Number(match[2]):bytes.length-1;
+      return {fixtureResponse:{rawBody:bytes.subarray(begin,end+1),status:match?206:200,headers:{'Content-Type':'video/mp4',...(match?{'Content-Range':`bytes ${begin}-${end}/${bytes.length}`}:{})}}};
+    }
+    return {code:0,data:{}};
+  });
+  try{
+    const environment={...isolatedEnvironment(directory),...provider.environment,BILIKARA_CF_API_URL:'',BILIKARA_CATALOG_SHEETS_URL:''};
+    delete environment.BILIKARA_LIBAV_COMPANION; // Qualify portable reuse, not libav fallback.
+    host=platform==='mobile'?await RunningHost.start(format==='flac'?await buildPortableLoudnessAlpha():await buildNativeAlpha(),directory,[directory,path.join(root,'static')],environment,true):await start(directory,environment);
+    await host.api('/api/session-users/add',{name:'Fixture'});
+    await host.api('/api/cache-policy',{audio_hires:format==='flac'});
+    await host.api('/api/playlist/add',{url:'https://www.bilibili.com/video/BV1xx411c7mD',requester_name:'Fixture',selected_video_page:1,selected_audio_pages:[1]});
+    const initial=await waitFor(async()=>{const s=await host.api('/api/state');assert.notEqual(s.current_item.cache_status,'failed',s.current_item.cache_message);return s.current_item.cache_status==='ready'?s:undefined;},'initial cache was not ready',15000);
+    const originalAudio=await host.request(initial.current_item.audio_variants[0].audio_url);assert.equal(originalAudio.status,200);
+    const originalVideo=await host.request(initial.current_item.video_media_url);assert.equal(originalVideo.status,200);
+    if(format==='flac'){
+      assert.equal(originalAudio.body.subarray(0,4).toString(),'fLaC','reuse an actual native-published elementary FLAC');
+      await host.api('/api/cache-policy',{audio_hires:false});
+    }
+    const item=initial.current_item,request=page=>host.api('/api/cache/audio',{item_id:item.id,expected_item_incarnation_id:item.item_incarnation_id,page});
+    const terminal=async status=>waitFor(async()=>{const s=await host.api('/api/state'),task=s.audio_supplements[item.id];assert.ok(task,'supplement must remain in the native snapshot');if(status==='ready')assert.notEqual(task.status,'failed',JSON.stringify(task));return task.status===status?s:undefined;},`supplement did not reach ${status}`,10000);
+    const retained=s=>{assert.deepEqual(s.playback_program,initial.playback_program);assert.equal(s.playback_generation,initial.playback_generation);assert.equal(s.current_item.video_media_url,item.video_media_url);assert.deepEqual(s.current_item.audio_variants,item.audio_variants);assert.deepEqual(s.current_item.selected_pages,[1]);assert.deepEqual(s.playlist,[]);};
+    const admitted=await request(2);const token=admitted.audio_supplements[item.id].cache_attempt_token;assert.ok(token>0);
+    await waitFor(()=>calls.includes('/fixture/audio-458.m4a'),'missing track transfer did not start',5000);
+    // Cross the real pump's periodic integrity reconciliation with the transfer
+    // held at the HTTP server; no product timer or retry budget is changed.
+    await delay(2300);const held=await host.api('/api/state');assert.equal(held.audio_supplements[item.id].status,'downloading');retained(held);release();
+    const completed=await terminal('ready');retained(completed);
+    assert.equal(completed.audio_supplements[item.id].cache_attempt_token,token);assert.equal(completed.audio_supplements[item.id].message,'');
+    assert.equal(calls.filter(v=>v.includes('video')).length,1);assert.equal(calls.filter(v=>v.includes('audio-457')).length,1,'original audio must be reused');
+    for(const variant of completed.audio_supplements[item.id].ready.audio_variants)assert.equal((await host.request(variant.audio_url)).status,404,'prepared candidates are not served before explicit program selection');
+    await request(3);const failed=await terminal('failed');retained(failed);
+    assert.match(failed.audio_supplements[item.id].message,/HTTP 403/);assert.ok(failed.audio_supplements[item.id].cache_attempt_token>token);
+    const diagnostics=await host.api('/api/diagnostics/markdown',{});assert.match(diagnostics.markdown,/audio_supplements/);assert.match(diagnostics.markdown,/HTTP 403/);
+    assert.equal(calls.filter(v=>v.includes('audio-459')).length,1,'terminal source failure is not retried automatically');
+    // A retained candidate remains usable while a later page fails.
+    assert.deepEqual(failed.audio_supplements[item.id].ready.audio_variants.map(v=>v.page),[1,2]);
+    rejectThird=false;const retry=await request(3);assert.ok(retry.audio_supplements[item.id].cache_attempt_token>failed.audio_supplements[item.id].cache_attempt_token);
+    const recovered=await terminal('ready');retained(recovered);assert.equal(recovered.audio_supplements[item.id].message,'');
+    assert.deepEqual(recovered.audio_supplements[item.id].ready.audio_variants.map(v=>v.page),[1,2,3]);
+    const variant=recovered.audio_supplements[item.id].ready.audio_variants.find(v=>v.page===3);
+    const selected=await host.api('/api/player/audio-variant',{item_id:item.id,expected_item_incarnation_id:item.item_incarnation_id,variant_id:variant.id});
+    assert.equal(selected.current_item.selected_audio_variant_id,variant.id);assert.equal(selected.playback_generation,initial.playback_generation+1);assert.deepEqual(selected.playlist,[]);
+    assert.deepEqual((await host.request(selected.current_item.video_media_url)).body,originalVideo.body);
+    for(const cached of selected.current_item.audio_variants){const response=await host.request(cached.audio_url);assert.equal(response.status,200);assert.ok(response.body.length>0);if(cached.page===1)assert.deepEqual(response.body,originalAudio.body);}
+  }finally{release();if(host)await host.close();await provider.close();}
 });
