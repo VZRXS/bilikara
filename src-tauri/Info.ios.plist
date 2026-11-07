@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDisplayName</key><string>bilikara</string>
+  <key>CFBundleName</key><string>bilikara</string>
+  <key>UIApplicationSceneManifest</key>
+  <dict>
+    <key>UIApplicationSupportsMultipleScenes</key><false/>
+    <key>UISceneConfigurations</key>
+    <dict>
+      <key>UIWindowSceneSessionRoleApplication</key>
+      <array><dict><key>UISceneConfigurationName</key><string>Host</string><key>UISceneDelegateClassName</key><string>TaoSceneDelegate</string></dict></array>
+      <key>UIWindowSceneSessionRoleExternalDisplayNonInteractive</key>
+      <array><dict><key>UISceneConfigurationName</key><string>Audience</string><key>UISceneDelegateClassName</key><string>TaoSceneDelegate</string></dict></array>
+      <key>UIWindowSceneSessionRoleExternalDisplay</key>
+      <array><dict><key>UISceneConfigurationName</key><string>Audience</string><key>UISceneDelegateClassName</key><string>TaoSceneDelegate</string></dict></array>
+    </dict>
+  </dict>
+  <key>UISupportedInterfaceOrientations</key>
+  <array>
+    <string>UIInterfaceOrientationPortrait</string>
+    <string>UIInterfaceOrientationLandscapeLeft</string>
+    <string>UIInterfaceOrientationLandscapeRight</string>
+  </array>
+  <key>UISupportedInterfaceOrientations~ipad</key>
+  <array>
+    <string>UIInterfaceOrientationPortrait</string>
+    <string>UIInterfaceOrientationPortraitUpsideDown</string>
+    <string>UIInterfaceOrientationLandscapeLeft</string>
+    <string>UIInterfaceOrientationLandscapeRight</string>
+  </array>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoads</key><false/>
+    <key>NSAllowsArbitraryLoadsInWebContent</key><false/>
+    <key>NSAllowsArbitraryLoadsForMedia</key><false/>
+    <key>NSExceptionDomains</key>
+    <dict>
+      <key>127.0.0.1</key>
+      <dict>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+        <key>NSIncludesSubdomains</key><false/>
+      </dict>
+    </dict>
+  </dict>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>让同一 Wi-Fi 下的设备连接 bilikara，进行点歌和播放控制。</string>
+  <key>NSCameraUsageDescription</key>
+  <string>仅在你选择扫码时使用相机读取投屏设备二维码；图片不会上传。</string>
+</dict>
+</plist>

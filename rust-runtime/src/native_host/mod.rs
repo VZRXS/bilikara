@@ -6,6 +6,8 @@ mod automatic_volume;
 mod cache;
 mod catalog;
 mod catalog_append;
+mod client;
+pub use client::{NativeJsonClient, NativeJsonReply, NativeJsonRequest};
 pub mod desktop;
 mod desktop_import;
 mod desktop_import_tool;
@@ -14,6 +16,7 @@ pub(crate) mod desktop_process;
 mod diagnostics;
 mod environment;
 mod exports;
+pub use exports::{NativePlaylistExporter, PreparedPlaylistExport, render_rust_export};
 mod files;
 mod internet;
 mod library;
@@ -22,6 +25,7 @@ mod login;
 pub(crate) use login::LoginDiagnostic;
 mod admin;
 mod maintenance;
+pub mod mobile;
 mod monthly;
 mod network;
 pub mod output_platform;
@@ -29,6 +33,9 @@ mod owner_enrichment;
 pub(crate) mod preferences;
 pub(crate) mod purek;
 pub(crate) mod ratings;
+pub mod startup;
+#[cfg(test)]
+mod transport_concurrency_tests;
 pub(crate) mod updates;
 
 use crate::app_state::native_session::{Identity, with_app};
@@ -113,6 +120,8 @@ impl ApiError {
             code: code.into(),
             message: message.into(),
             extra: json!({}),
+            io_facts: None,
+            diagnostic: None,
         }
     }
     pub(crate) fn with_diagnostic(mut self, diagnostic: Value) -> Self {
@@ -124,6 +133,14 @@ impl ApiError {
     }
     pub(crate) fn invalid(message: impl Into<String>) -> Self {
         Self::new(400, "invalid_request", message)
+    }
+    fn io(code: &str, message: &str, error: std::io::Error) -> Self {
+        let mut result = Self::new(503, code, message);
+        result.io_facts = Some(Box::new((
+            format!("{:?}", error.kind()),
+            error.raw_os_error(),
+        )));
+        result
     }
     fn response(self) -> Response {
         let mut value = self.extra;
@@ -166,6 +183,7 @@ pub(crate) struct HostContext {
 /// by the platform shell for the complete foreground Host lifetime.
 pub struct NativeHost {
     bootstrap_url: String,
+    json_client: NativeJsonClient,
     context: Arc<HostContext>,
     server: Option<thread::JoinHandle<()>>,
 }
@@ -178,6 +196,9 @@ impl NativeHost {
     }
     pub fn local_port(&self) -> u16 {
         self.context.port
+    }
+    pub fn json_client(&self) -> NativeJsonClient {
+        self.json_client.clone()
     }
     /// Trusted shell package metadata, never a version supplied by HTTP/Remote.
     pub fn set_app_version(&self, version: &str) -> Result<(), String> {
@@ -332,9 +353,25 @@ fn start(
     desktop: bool,
     shutdown_token: Option<String>,
 ) -> Result<NativeHost, ApiError> {
+    let mut progress = startup::Progress {
+        stage: startup::Stage::StateInitialize,
+        last_completed: None,
+    };
+    start_observed(directory, assets, desktop, shutdown_token, &mut progress)
+}
+
+fn start_observed(
+    directory: &Path,
+    assets: AssetSource,
+    desktop: bool,
+    shutdown_token: Option<String>,
+    progress: &mut startup::Progress,
+) -> Result<NativeHost, ApiError> {
+    use startup::Stage;
+    progress.enter(Stage::CacheRecovery);
     let directory = directory
         .canonicalize()
-        .map_err(|_| ApiError::new(503, "storage", "Host 私有目录不可用"))?;
+        .map_err(|e| ApiError::io("storage", "Host 私有目录不可用", e))?;
     let cache_root = directory.join(if desktop { "cache" } else { "media" });
     let previous_cache = directory.join("media");
     if desktop && !cache_root.exists() && previous_cache.exists() {
@@ -351,27 +388,31 @@ fn start(
             .map_err(|_| ApiError::new(503, "cache_storage", "无法恢复缓存目录名称"))?;
     }
     std::fs::create_dir_all(&cache_root)
-        .map_err(|_| ApiError::new(503, "storage", "无法创建媒体缓存目录"))?;
+        .map_err(|e| ApiError::io("cache_storage", "无法创建媒体缓存目录", e))?;
     std::fs::create_dir_all(directory.join("logs"))
-        .map_err(|_| ApiError::new(503, "storage", "无法创建诊断目录"))?;
+        .map_err(|e| ApiError::io("storage", "无法创建诊断目录", e))?;
     // No cache worker/listener exists yet. Old staging files cannot belong to a
     // live attempt after the validated restart reset.
     maintenance::collect(&cache_root, true)
-        .map_err(|_| ApiError::new(503, "cache_storage", "无法清理旧媒体缓存"))?;
+        .map_err(|e| ApiError::io("cache_storage", "无法清理旧媒体缓存", e))?;
+    progress.enter(Stage::ListenerBind);
     let (listeners, bind_address) = environment::listeners(desktop)?;
     let port = listeners[0]
         .local_addr()
         .map_err(|_| ApiError::invalid("无法确定 Host 端口"))?
         .port();
+    progress.enter(Stage::AccessSetup);
     let host_token = token()?;
     let state_epoch = token()?;
     let remote_access = network::remote_access(port, &network::bound_addresses(bind_address))?;
+    progress.enter(Stage::LoginLoad);
     let saved_cookie = if desktop {
         login::load_desktop(&directory)?
     } else {
         login::load(&directory)?
     };
     let (saved_cookie, cookie_warning) = login::launch_cookie(&directory, saved_cookie);
+    progress.enter(Stage::PreferencesLoad);
     let saved_preferences = preferences::load(&directory, desktop)?;
     let facts = desktop::update_facts();
     let saved_announcements = crate::announcements::State::load(
@@ -384,7 +425,7 @@ fn start(
         if desktop {
             facts.platform
         } else {
-            "android".into()
+            mobile::platform().into()
         },
     );
     let bbdown = if desktop {
@@ -411,6 +452,7 @@ fn start(
         None
     };
     // Seed/migrate configured UP sources before any login-triggered refresh.
+    progress.enter(Stage::LibraryLoad);
     let recovered_library = library::initialize(&directory)?;
     library::migrate_pool(&directory)?;
     library::publish_favorites_timestamp(&directory);
@@ -458,6 +500,7 @@ fn start(
         session.remote_access = remote_access;
         Ok(())
     })?;
+    progress.enter(Stage::ExportCleanup);
     exports::clean_stale(&directory)?;
     let context = Arc::new(HostContext {
         directory,
@@ -482,12 +525,13 @@ fn start(
         aria2_prepare: std::sync::Mutex::new(()),
         workers: std::sync::Mutex::new(Vec::new()),
     });
+    progress.enter(Stage::WorkerStart);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .max_blocking_threads(8)
         .enable_all()
         .build()
-        .map_err(|_| ApiError::new(503, "runtime", "无法启动 Host 网络运行时"))?;
+        .map_err(|e| ApiError::io("runtime", "无法启动 Host 网络运行时", e))?;
     let worker_context = context.clone();
     let server = thread::Builder::new()
         .name("native-host-http".into())
@@ -538,9 +582,10 @@ fn start(
                 }
             })
         })
-        .map_err(|_| ApiError::new(503, "runtime", "无法创建 Host 服务线程"))?;
+        .map_err(|e| ApiError::io("runtime", "无法创建 Host 服务线程", e))?;
     let mut host = NativeHost {
         bootstrap_url: format!("http://127.0.0.1:{port}/bootstrap/{host_token}"),
+        json_client: NativeJsonClient::new(port, host_token, context.stop.clone()),
         context: context.clone(),
         server: Some(server),
     };

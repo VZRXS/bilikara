@@ -35,7 +35,31 @@ mod windows_fullscreen;
 mod android;
 
 #[cfg(target_os = "ios")]
-compile_error!("iOS Host startup is not implemented; use the Android Alpha target");
+mod ios;
+#[cfg(target_os = "ios")]
+mod ios_audio;
+#[cfg(target_os = "ios")]
+mod ios_back_gesture;
+#[cfg(any(target_os = "ios", test))]
+mod ios_bridge_policy;
+#[cfg(target_os = "ios")]
+mod ios_dock;
+#[cfg(target_os = "ios")]
+mod ios_export;
+#[cfg(target_os = "ios")]
+mod ios_fullscreen;
+#[cfg(target_os = "ios")]
+mod ios_http;
+#[cfg(target_os = "ios")]
+mod ios_platform;
+#[cfg(target_os = "ios")]
+mod ios_presentation;
+#[cfg(any(target_os = "ios", test))]
+mod ios_presentation_policy;
+#[cfg(target_os = "ios")]
+mod ios_scene_accessory;
+#[cfg(any(target_os = "ios", test))]
+mod mobile_navigation;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -43,4 +67,6 @@ pub fn run() {
     desktop::run();
     #[cfg(target_os = "android")]
     android::run();
+    #[cfg(target_os = "ios")]
+    ios::run();
 }

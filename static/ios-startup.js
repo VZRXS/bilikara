@@ -1,0 +1,78 @@
+(async () => {
+  "use strict";
+  const status = document.getElementById("bootstrap-status");
+  const errors = {
+    native_storage_invalid: "存档损坏，请保留应用数据后排查。",
+    native_storage_version: "存档版本不兼容，请使用对应的应用版本。",
+    native_storage_in_use: "数据正在使用中，请重新打开应用。",
+    native_storage_full: "存储空间不足，请释放空间后重新打开应用。",
+    native_storage_path: "应用存储目录不可用。",
+    native_storage_io: "无法读写应用数据，请保留数据后排查。",
+    desktop_import_pending: "上次数据导入未完成，请保留原数据。",
+    cache_storage: "媒体缓存恢复失败，请保留应用数据。",
+    listen: "无法启动本机网络服务。",
+    login_storage: "无法读取登录记录，请保留应用数据。",
+    preferences_storage: "无法读取设置，请保留应用数据。",
+    library_storage: "无法读取曲库，请保留应用数据。",
+    runtime: "无法启动本机服务线程。",
+    entropy: "设备无法生成安全访问凭证。",
+    mobile_start_already_attempted: "本机 Host 已尝试启动，请重新打开应用。",
+    audio_session_unavailable: "系统音频会话不可用，请检查系统版本后重试。",
+    audio_session_configuration_failed: "无法配置播放音频会话，请重新打开应用后排查。",
+    host_startup_failed: "本机 Host 启动失败，请保留应用数据后排查。",
+    host_unavailable: "本机 Host 不可用。",
+    app_state_unavailable: "应用状态不可用。",
+    startup_origin_denied: "启动页面身份校验失败。",
+    invalid_startup_response: "启动检查返回了不兼容的数据。",
+    invalid_host_origin: "本机 Host 启动地址校验失败。",
+    native_entry_unavailable: "请在 bilikara iOS 应用中打开此页面。",
+    ios_webview_unsupported: "当前 iOS WebView 缺少共用界面所需的功能，请升级系统后重试。",
+  };
+  try {
+    const invoke = window.__TAURI__?.core?.invoke;
+    if (typeof invoke !== "function") throw new Error("native_entry_unavailable");
+    // Probe the shared UI's actual requirements, without an Android user-agent
+    // identity or Chromium version rule. Keep failures on this diagnostic page.
+    if (typeof Object.hasOwn !== "function" || typeof Array.prototype.at !== "function"
+      || typeof String.prototype.replaceAll !== "function" || typeof Promise.allSettled !== "function"
+      || typeof AbortController !== "function" || typeof ResizeObserver !== "function"
+      || !("inert" in document.createElement("div")) || typeof CSS === "undefined"
+      || !CSS.supports("selector(:has(*))") || !CSS.supports("height: 100dvh")
+      || !CSS.supports("color: color-mix(in srgb, black, white)")) throw new Error("ios_webview_unsupported");
+    const result = await invoke("ios_host_status");
+    if (!result || result.schema_version !== 1 || result.platform !== "ios" || result.backend !== "rust"
+      || !Number.isSafeInteger(result.revision) || result.revision < 0
+      || result.host_api_ready !== true || result.persistence_ready !== true
+      || result.playback !== "unverified" || typeof result.bootstrap_url !== "string") {
+      throw new Error("invalid_startup_response");
+    }
+    let destination;
+    try { destination = new URL(result.bootstrap_url); }
+    catch { throw new Error("invalid_host_origin"); }
+    if (destination.protocol !== "http:" || destination.hostname !== "127.0.0.1"
+      || !destination.port || Number(destination.port) === 0 || destination.username || destination.password
+      || !/^\/bootstrap\/[A-Za-z0-9_-]{43}$/.test(destination.pathname)
+      || destination.search || destination.hash) throw new Error("invalid_host_origin");
+    status.textContent = "本机 Host 已就绪，正在打开…";
+    // Exchange the process credential for the existing HttpOnly Host cookie.
+    // Neither rendering nor readiness claims expose or depend on that secret.
+    window.location.replace(destination.href);
+  } catch (error) {
+    const stages = new Set(["audio_session", "storage_path", "clock", "storage_open", "checkpoint_restore",
+      "state_initialize", "cache_recovery", "listener_bind", "access_setup", "login_load", "preferences_load",
+      "library_load", "export_cleanup", "worker_start", "app_version", "ready"]);
+    const kinds = new Set(["NotFound", "PermissionDenied", "AlreadyExists", "WouldBlock", "InvalidInput", "InvalidData",
+      "TimedOut", "WriteZero", "Interrupted", "Unsupported", "UnexpectedEof", "OutOfMemory", "StorageFull", "Other"]);
+    const code = typeof error === "string" ? error : error?.code ?? error?.message;
+    const known = Object.prototype.hasOwnProperty.call(errors, code);
+    let detail = "";
+    if (known && error?.schema_version === 1 && stages.has(error.stage)
+      && (error.last_completed === null || stages.has(error.last_completed))) {
+      const facts = [`code=${code}`, `stage=${error.stage}`, `last=${error.last_completed ?? "none"}`];
+      if (kinds.has(error.io_kind)) facts.push(`io_kind=${error.io_kind}`);
+      if (Number.isInteger(error.os_error) && Math.abs(error.os_error) <= 2147483647) facts.push(`os_error=${error.os_error}`);
+      detail = ` (${facts.join(", ")})`;
+    }
+    status.textContent = "启动检查失败：" + (known ? errors[code] : errors.host_startup_failed) + detail;
+  }
+})();

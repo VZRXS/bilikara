@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "source": "static/pic/icon.png",
+  "source_sha256": "01b296f2f61592d0e89d3e9598f6b6706850fc9cf7eefb993eaafeaf414e316a",
+  "cli": "2.12.3",
+  "images": {
+    "AppIcon-20x20@1x.png": "f751772241c4d254c99f793df430d127c5dc93bc6e6f9bbdd4ba59c9fe002aed",
+    "AppIcon-20x20@2x-1.png": "d5e3e4882fdd207daea104f56bcd09280bd52d1243387975e45339ea1b0e78b9",
+    "AppIcon-20x20@2x.png": "d5e3e4882fdd207daea104f56bcd09280bd52d1243387975e45339ea1b0e78b9",
+    "AppIcon-20x20@3x.png": "a3fc6fb373a8c11ff0f808c95825ac06386558ea7d0fc542f9f269acd4a01baf",
+    "AppIcon-29x29@1x.png": "0c178c079900a1c4134da53c0e7dac33a390d34ba4b920db8edffcfbfd056ece",
+    "AppIcon-29x29@2x-1.png": "62b63d4fb594c100be2b234acb1c005acfb7fc2ee694f66fe82ce23779a3487e",
+    "AppIcon-29x29@2x.png": "62b63d4fb594c100be2b234acb1c005acfb7fc2ee694f66fe82ce23779a3487e",
+    "AppIcon-29x29@3x.png": "d7995aa346c60802c182b6877eabf070267a207ed34721d764ee78138020cdae",
+    "AppIcon-40x40@1x.png": "d5e3e4882fdd207daea104f56bcd09280bd52d1243387975e45339ea1b0e78b9",
+    "AppIcon-40x40@2x-1.png": "f0aa79ce7f55e807b98eb613ecc45fb44c255fe7fcdcd61feee0595f2eeec102",
+    "AppIcon-40x40@2x.png": "f0aa79ce7f55e807b98eb613ecc45fb44c255fe7fcdcd61feee0595f2eeec102",
+    "AppIcon-40x40@3x.png": "ebce8e0f44c8722f26601f72af2d087ef3a6769ef4060ed1a5d87eece35a9ce1",
+    "AppIcon-512@2x.png": "29cf2d994772d3730be8c5166398d496f0e604ace928468732fc42760c3108dc",
+    "AppIcon-60x60@2x.png": "ebce8e0f44c8722f26601f72af2d087ef3a6769ef4060ed1a5d87eece35a9ce1",
+    "AppIcon-60x60@3x.png": "b0beaf97dce21fc5d5436a4007788ccb266c47669a0b098bfb9ed4af6d7bc8a2",
+    "AppIcon-76x76@1x.png": "df73008ea9c4d21f06ad20874b3bcfc206cf3540bfc90f70c0f12299e4ec50f4",
+    "AppIcon-76x76@2x.png": "a7ea0089640e25909ec9217058aec7ca79fd4dd7810028feeb8e97238fe214c1",
+    "AppIcon-83.5x83.5@2x.png": "6d3c3cca08905cbe69ae16a3b9a5da0e46a899e5abc4b0e666fe331bc3405fea"
+  }
+}

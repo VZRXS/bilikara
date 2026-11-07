@@ -20,6 +20,7 @@ const RECORD_CHUNK_BYTES: usize = 1024 * 1024;
 pub(crate) struct NativeStorageError {
     pub(crate) kind: &'static str,
     pub(crate) message: String,
+    pub(crate) details: serde_json::Value,
 }
 
 impl NativeStorageError {
@@ -27,15 +28,19 @@ impl NativeStorageError {
         Self {
             kind,
             message: message.into(),
+            details: serde_json::json!({}),
         }
     }
 
     fn io(operation: &str, error: io::Error) -> Self {
         // Return actionable error classes, not platform paths or saved contents.
-        Self::new(
+        let mut failure = Self::new(
             "native_storage_io",
             format!("{operation}: {:?}", error.kind()),
-        )
+        );
+        failure.details["io_kind"] = serde_json::json!(format!("{:?}", error.kind()));
+        failure.details["os_error"] = serde_json::json!(error.raw_os_error());
+        failure
     }
 }
 
@@ -157,7 +162,12 @@ impl NativeHostStorage {
     pub(crate) fn open(
         directory: &Path,
     ) -> Result<(Self, Option<AppStateSeed>), NativeStorageError> {
-        Self::open_inner(directory, false)
+        Self::open_inner(directory, false).map_err(|mut error| {
+            if error.details.get("startup_stage").is_none() {
+                error.details["startup_stage"] = serde_json::json!("storage_open");
+            }
+            error
+        })
     }
 
     /// Only the offline installer, already holding the parent exclusive import
@@ -209,10 +219,13 @@ impl NativeHostStorage {
             if error.kind() == io::ErrorKind::WouldBlock
                 || error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
             {
-                NativeStorageError::new(
+                let mut failure = NativeStorageError::new(
                     "native_storage_in_use",
                     "Another Host already owns this storage directory",
-                )
+                );
+                failure.details["io_kind"] = serde_json::json!(format!("{:?}", error.kind()));
+                failure.details["os_error"] = serde_json::json!(error.raw_os_error());
+                failure
             } else {
                 NativeStorageError::io("Lock storage directory", error)
             }
@@ -234,7 +247,10 @@ impl NativeHostStorage {
             _import_lock: import_lock,
             last_state: None,
         };
-        let state = storage.load()?;
+        let state = storage.load().map_err(|mut error| {
+            error.details["startup_stage"] = serde_json::json!("checkpoint_restore");
+            error
+        })?;
         Ok((storage, state))
     }
 

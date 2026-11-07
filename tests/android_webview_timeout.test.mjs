@@ -61,7 +61,7 @@ function fixture(kind) {
     });
   }
   vm.runInContext(kind === 'state'
-    ? slice(app, 'async function fetchState()', 'function renderSignatureForData')
+    ? slice(app, 'async function fetchHostApi(', 'async function apiPost(') + slice(app, 'async function fetchState(', 'function renderSignatureForData')
     : slice(room, 'function diagnosticError(', 'function pageOriginClass')
       + slice(room, 'async function startRoom()', 'function expireRoom'), context);
   return { state, signals, events, timers, context, clearRoom,
@@ -105,8 +105,8 @@ const bootstrap = readFileSync(new URL('../static/android-alpha.js', import.meta
 for (const missing of ['AbortController', 'Object.hasOwn', 'Array.prototype.at', 'String.prototype.replaceAll', 'Promise.allSettled']) {
   test(`Android bootstrap explains missing ${missing} before Host IPC, with automatic diagnostics`, async () => {
     const status = { textContent: '' }; let invoked = false, navigated = false;
-    const context = vm.createContext({ AbortController, document: { getElementById: id => id === "bootstrap-status" ? status : null },
-      window: { __TAURI__: { core: { invoke(name) { if (name === "android_alpha_status") invoked = true; return Promise.resolve(); } } }, location: { replace() { navigated = true; } } } });
+    const context = vm.createContext({ URL, AbortController, navigator: {userAgent: "Chrome/111.0"}, crypto: {getRandomValues() {}}, ResizeObserver: function() {}, document: { getElementById: id => id === "bootstrap-status" ? status : null },
+      window: { isSecureContext: true, __TAURI__: { core: { invoke(name) { if (name === "android_alpha_status") invoked = true; return Promise.resolve(); } } }, location: { replace() { navigated = true; } } } });
     vm.runInContext(`${missing} = undefined`, context);
     await vm.runInContext(bootstrap, context);
     assert.equal(invoked, false); assert.equal(navigated, false);

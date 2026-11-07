@@ -143,47 +143,7 @@ impl NativeHost {
         // Reuse the existing validated export hook and P03 typed renderer.
         // The one coarse platform-hook JSON conversion is not an FFI round trip.
         self.set_export_renderer(Arc::new(|spec, path| {
-            let spec: Value = serde_json::from_str(spec).map_err(|e| e.to_string())?;
-            let rows = spec["data"]["rows"]
-                .as_array()
-                .ok_or("Missing export rows")?;
-            let entries = rows
-                .iter()
-                .map(|row| bilikara_rust::playlist_export::ExportEntry {
-                    title: row["title"].as_str().unwrap_or_default().into(),
-                    display_title: row["csv_title"]
-                        .as_str()
-                        .or_else(|| row["title"].as_str())
-                        .unwrap_or_default()
-                        .into(),
-                    requester_name: row["requester"].as_str().unwrap_or_default().into(),
-                    owner_name: row["owner"].as_str().unwrap_or_default().into(),
-                    owner_mid: row["owner_mid"]
-                        .as_i64()
-                        .filter(|v| *v != 0)
-                        .map(|v| v.to_string())
-                        .unwrap_or_default(),
-                    resolved_url: row["url"].as_str().unwrap_or_default().into(),
-                    original_url: row["original_url"].as_str().unwrap_or_default().into(),
-                    key: row["bvid"].as_str().unwrap_or_default().into(),
-                    part_title: row["part"].as_str().unwrap_or_default().into(),
-                    request_count: row["count"].as_i64(),
-                    timestamp: row["at"].as_f64(),
-                })
-                .collect::<Vec<_>>();
-            let artifact = if spec["format"] == "csv" {
-                crate::playlist_export::export_csv(&entries, "播放时间")
-            } else {
-                crate::playlist_export::export_image(&crate::playlist_export::ImageExportRequest {
-                    entries,
-                    font_path: desktop_font_path()?,
-                    title: "bilikara 歌单导出".into(),
-                    page_size: spec["pageSize"].as_u64().ok_or("Missing page size")? as usize,
-                    app_version: update_facts().version,
-                })
-            }
-            .map_err(|e| e.message)?;
-            std::fs::write(path, artifact.bytes).map_err(|e| e.to_string())
+            super::render_rust_export(spec, path, &desktop_font_path()?, &update_facts().version)
         }))
         .map_err(|e| ApiError::new(503, "export_setup", e))
     }
@@ -505,8 +465,12 @@ mod tests {
             b"synthetic legacy data"
         );
         std::fs::remove_file(root.join("BBDown.data")).unwrap();
-        assert_eq!(preview_root(&root).unwrap(), root);
-        assert_eq!(preview_root(&root).unwrap(), root);
+        // macOS exposes its temporary directory through /var -> /private/var.
+        // Compare against the independently resolved original directory, not
+        // another spelling of that same directory or the returned value.
+        let canonical_root = std::fs::canonicalize(&root).unwrap();
+        assert_eq!(preview_root(&root).unwrap(), canonical_root);
+        assert_eq!(preview_root(&root).unwrap(), canonical_root);
         assert!(preview_root(Path::new("relative")).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }

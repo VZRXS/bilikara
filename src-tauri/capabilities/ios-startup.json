@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "ios-startup",
+  "description": "Read startup facts from the packaged iOS main document only. HTTP Host and Remote have no Tauri IPC permissions.",
+  "platforms": ["iOS"],
+  "local": true,
+  "windows": ["main"],
+  "permissions": ["allow-ios-host-status"]
+}

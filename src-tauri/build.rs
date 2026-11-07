@@ -19,6 +19,7 @@ fn main() {
     }
     let app_manifest = tauri_build::AppManifest::new().commands(&[
         "android_alpha_status",
+        "ios_host_status",
         "android_webview_diagnostics",
         "set_window_fullscreen",
         "set_window_maximize_region",

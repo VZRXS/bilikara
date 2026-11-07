@@ -1,5 +1,5 @@
-//! Read-only export projection from authoritative AppState. Android owns text /
-//! image rendering and the system save dialog, not record selection or ordering.
+//! Read-only export projection from authoritative AppState. Platform shells
+//! supply rendering/save adapters; record selection and ordering stay here.
 use super::*;
 use crate::app_state::{HistoryEntry, SessionPlayedEntry};
 use serde::Serialize;
@@ -271,42 +271,22 @@ pub(super) async fn download(
     identity: Identity,
     query: String,
 ) -> Result<Response, ApiError> {
-    with_app(|app| {
-        app.native_requester(&identity, "")?;
+    let request_identity = identity.clone();
+    state_task(move |app| {
+        app.native_requester(&request_identity, "")?;
         Ok(())
-    })?;
+    })
+    .await?;
     let options = Options::parse(&query)?;
-    let renderer = context
-        .export_renderer
-        .get()
-        .cloned()
-        .ok_or_else(|| ApiError::new(501, "export_unavailable", "此 Host 尚未就绪原生导出"))?;
-    let permit = context
-        .export_slots
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| ApiError::new(429, "export_busy", "另一项导出正在进行，请稍后重试"))?;
-    let (scratch, permit, mime, filename, length) = tokio::task::spawn_blocking(move || {
-        let (revision, rows) = with_app(|app| {
-            app.native_requester(&identity, "")?;
-            selected_rows(app, &options.source)
-        })?;
-        let (mime, extension) = options.file_type(rows.len());
-        let started = std::time::Instant::now();
-        eprintln!("[playlist-export] stage=render status=start rows={} format={}", rows.len(), extension);
-        let data = encode(revision, &options.source, rows)?;
-        let spec = json!({"format":options.format,"source":options.source,"pageSize":options.page_size,"data":data}).to_string();
-        let scratch = Scratch::create(&context.directory)?;
-        renderer(&spec, &scratch.0).map_err(|_| {
-            eprintln!("[playlist-export] stage=render status=failed elapsed_ms={}", started.elapsed().as_millis());
-            export_failed()
-        })?;
-        let metadata = std::fs::symlink_metadata(&scratch.0).map_err(|_| export_failed())?;
-        if !metadata.is_file() || metadata.len() == 0 { return Err(export_failed()); }
-        eprintln!("[playlist-export] stage=render status=complete elapsed_ms={} bytes={}", started.elapsed().as_millis(), metadata.len());
-        let filename = format!("bilikara-{}-{}.{}", options.source.trim_end_matches(".json"), chrono::Local::now().format("%Y%m%d-%H%M%S"), extension);
-        Ok((scratch, permit, mime, filename, metadata.len()))
-    }).await.map_err(|_| export_failed())??;
+    let PreparedPlaylistExport {
+        scratch,
+        _permit: permit,
+        mime_type: mime,
+        filename,
+        length,
+    } = tokio::task::spawn_blocking(move || prepare(context, identity, options))
+        .await
+        .map_err(|_| export_failed())??;
     let reader = tokio::fs::File::open(&scratch.0)
         .await
         .map_err(|_| export_failed())?;
@@ -446,5 +426,180 @@ mod tests {
         let encoded = serde_json::to_value(rows).unwrap();
         assert!(encoded[0].get("key").is_none());
         assert!(encoded[0].get("cookie").is_none());
+    }
+}
+
+/// Trusted shell rendering adapter shared by desktop and iOS. All rows already
+/// come from the immutable, authorized Rust export projection. Paths are supplied
+/// by the shell, never accepted from an HTTP or JavaScript request.
+pub fn render_rust_export(
+    spec: &str,
+    path: &Path,
+    font_path: &Path,
+    app_version: &str,
+) -> Result<(), String> {
+    let spec: Value = serde_json::from_str(spec).map_err(|e| e.to_string())?;
+    let rows = spec["data"]["rows"]
+        .as_array()
+        .ok_or("Missing export rows")?;
+    let entries = rows
+        .iter()
+        .map(|row| bilikara_rust::playlist_export::ExportEntry {
+            title: row["title"].as_str().unwrap_or_default().into(),
+            display_title: row["csv_title"]
+                .as_str()
+                .or_else(|| row["title"].as_str())
+                .unwrap_or_default()
+                .into(),
+            requester_name: row["requester"].as_str().unwrap_or_default().into(),
+            owner_name: row["owner"].as_str().unwrap_or_default().into(),
+            owner_mid: row["owner_mid"]
+                .as_i64()
+                .filter(|v| *v != 0)
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            resolved_url: row["url"].as_str().unwrap_or_default().into(),
+            original_url: row["original_url"].as_str().unwrap_or_default().into(),
+            key: row["bvid"].as_str().unwrap_or_default().into(),
+            part_title: row["part"].as_str().unwrap_or_default().into(),
+            request_count: row["count"].as_i64(),
+            timestamp: row["at"].as_f64(),
+        })
+        .collect::<Vec<_>>();
+    let artifact = if spec["format"] == "csv" {
+        crate::playlist_export::export_csv(&entries, "播放时间")
+    } else {
+        crate::playlist_export::export_image(&crate::playlist_export::ImageExportRequest {
+            entries,
+            font_path: font_path.to_owned(),
+            title: "bilikara 歌单导出".into(),
+            page_size: spec["pageSize"].as_u64().ok_or("Missing page size")? as usize,
+            app_version: app_version.to_owned(),
+        })
+    }
+    .map_err(|e| e.message)?;
+    std::fs::write(path, artifact.bytes).map_err(|e| e.to_string())
+}
+
+/// A temporary, private export. Dropping it closes its render reservation and
+/// removes the source file, including cancellation and save failure paths.
+pub struct PreparedPlaylistExport {
+    scratch: Scratch,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    pub mime_type: &'static str,
+    pub filename: String,
+    pub length: u64,
+}
+impl PreparedPlaylistExport {
+    pub fn path(&self) -> &Path {
+        &self.scratch.0
+    }
+}
+
+fn prepare(
+    context: Arc<HostContext>,
+    identity: Identity,
+    options: Options,
+) -> Result<PreparedPlaylistExport, ApiError> {
+    if context.stop.load(Ordering::Acquire) {
+        return Err(ApiError::new(503, "stopped", "Host 已停止"));
+    }
+    let renderer = context
+        .export_renderer
+        .get()
+        .cloned()
+        .ok_or_else(|| ApiError::new(501, "export_unavailable", "此 Host 尚未就绪原生导出"))?;
+    let permit = context
+        .export_slots
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ApiError::new(429, "export_busy", "另一项导出正在进行，请稍后重试"))?;
+    let (revision, rows) = with_app(|app| {
+        app.native_requester(&identity, "")?;
+        selected_rows(app, &options.source)
+    })?;
+    let (mime, extension) = options.file_type(rows.len());
+    let started = std::time::Instant::now();
+    eprintln!(
+        "[playlist-export] stage=render status=start rows={} format={}",
+        rows.len(),
+        extension
+    );
+    let data = encode(revision, &options.source, rows)?;
+    let spec = json!({"format":options.format,"source":options.source,"pageSize":options.page_size,"data":data}).to_string();
+    let scratch = Scratch::create(&context.directory)?;
+    renderer(&spec, &scratch.0).map_err(|error| {
+        eprintln!(
+            "[playlist-export] stage=render status=failed elapsed_ms={} error={error}",
+            started.elapsed().as_millis()
+        );
+        export_failed()
+    })?;
+    let metadata = std::fs::symlink_metadata(&scratch.0).map_err(|_| export_failed())?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err(export_failed());
+    }
+    eprintln!(
+        "[playlist-export] stage=render status=complete elapsed_ms={} bytes={}",
+        started.elapsed().as_millis(),
+        metadata.len()
+    );
+    let filename = format!(
+        "bilikara-{}-{}.{}",
+        options.source.trim_end_matches(".json"),
+        chrono::Local::now().format("%Y%m%d-%H%M%S"),
+        extension
+    );
+    Ok(PreparedPlaylistExport {
+        scratch,
+        _permit: permit,
+        mime_type: mime,
+        filename,
+        length: metadata.len(),
+    })
+}
+
+/// A process-local save capability. It contains no UIKit objects and may prepare
+/// an immutable file on a worker thread. Shutdown still revokes the capability.
+#[derive(Clone)]
+pub struct NativePlaylistExporter {
+    context: Arc<HostContext>,
+    token: String,
+}
+impl NativeHost {
+    pub fn playlist_exporter(&self) -> NativePlaylistExporter {
+        NativePlaylistExporter {
+            context: self.context.clone(),
+            token: self
+                .bootstrap_url
+                .rsplit('/')
+                .next()
+                .unwrap_or_default()
+                .to_owned(),
+        }
+    }
+}
+impl NativePlaylistExporter {
+    /// Save-only capability for the trusted native Host shell. It uses this
+    /// instance's private bootstrap identity and the same authorization, source
+    /// selection, limits, renderer and scratch lifetime as HTTP export.
+    pub fn prepare(
+        &self,
+        format: &str,
+        source: &str,
+        page_size: usize,
+    ) -> Result<PreparedPlaylistExport, String> {
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("format", format)
+            .append_pair("source", source)
+            .append_pair("page_size", &page_size.to_string())
+            .finish();
+        let options = Options::parse(&query).map_err(|e| e.to_string())?;
+        let identity = Identity {
+            token: self.token.clone(),
+            loopback: true,
+            client: String::new(),
+        };
+        prepare(self.context.clone(), identity, options).map_err(|e| e.to_string())
     }
 }

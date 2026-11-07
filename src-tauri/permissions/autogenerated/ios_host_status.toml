@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-ios-host-status"
+description = "Enables the ios_host_status command without any pre-configured scope."
+commands.allow = ["ios_host_status"]
+
+[[permission]]
+identifier = "deny-ios-host-status"
+description = "Denies the ios_host_status command without any pre-configured scope."
+commands.deny = ["ios_host_status"]

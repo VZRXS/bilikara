@@ -1,4 +1,4 @@
-/* Narrow Android display adapter. No Tauri IPC emulation and no application
+/* Narrow mobile display adapter. No Tauri IPC emulation and no application
    state: the shared Host/controller own playback and rendering as on desktop. */
 (() => {
   "use strict";
@@ -58,6 +58,7 @@
     try { bridge.postMessage(JSON.stringify({command, args})); } catch { /* Teardown. */ }
   }
   const api = {
+    platform: bridge.platform === "ios" ? "ios" : "android",
     invoke,
     listen: async (name, handler) => {
       if (!listeners.has(name)) listeners.set(name, new Set());
@@ -70,7 +71,8 @@
     refreshDiagnostics: async () => { latest = await invoke("diagnostics"); return latest; },
     diagnostics: () => ({...latest, foreground, output: output || latest?.output || null}),
   };
-  window.BilikaraAndroidPresentation = api;
+  window.BilikaraNativePresentation = api;
+  if (api.platform === "android") window.BilikaraAndroidPresentation = api;
   window.addEventListener("pagehide", () => {
     for (const request of pending.values()) {
       clearTimeout(request.timeout);

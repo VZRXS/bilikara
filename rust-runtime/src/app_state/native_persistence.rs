@@ -155,7 +155,7 @@ pub(super) fn storage_error_response(error: NativeStorageError) -> AppStateRespo
         error: AppStateError {
             kind: error.kind.to_owned(),
             message: error.message,
-            details: None,
+            details: Some(error.details),
         },
     })
 }

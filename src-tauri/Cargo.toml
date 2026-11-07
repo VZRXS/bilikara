@@ -4,7 +4,7 @@ version = "0.8.0"
 description = "bilikara Tauri MVP"
 authors = ["VZRXS"]
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.90"
 
 [lib]
 name = "bilikara_app"
@@ -14,9 +14,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api"] }
+tauri = { version = "=2.12.3", features = ["macos-private-api"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+url = "2"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-dialog = "2"
@@ -29,16 +30,30 @@ jni = "0.21"
 jni_platform = { package = "jni", version = "=0.22.4" }
 rustls-platform-verifier = "=0.7.0"
 
+[target.'cfg(target_os = "ios")'.dependencies]
+bilikara_runtime = { path = "../rust-runtime", features = ["native-host", "portable-loudness"] }
+objc2-avf-audio = { version = "=0.3.2", default-features = false, features = ["std", "AVAudioSession", "AVAudioSessionTypes"] }
+objc2 = "=0.6.4"
+block2 = "=0.6.2"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "block2", "NSArray", "NSDate", "NSDictionary", "NSEnumerator", "NSNotification", "NSOperation", "NSSet", "NSString", "NSTimer", "NSURL", "NSURLRequest", "NSUserDefaults"] }
+objc2-ui-kit = { version = "=0.3.2", default-features = false, features = ["std", "block2", "objc2-core-foundation", "UITabBar", "UITabBarItem", "UIBarItem", "UIImage", "UITraitCollection", "UIInterface", "UIViewController", "UIDocumentPickerViewController", "UIApplication", "UIColor", "UIFont", "UILabel", "NSText", "NSParagraphStyle", "UIGeometry", "UIGestureRecognizer", "UIPanGestureRecognizer", "UIScreenEdgePanGestureRecognizer", "UITouch", "UIEvent", "UIResponder", "UIScene", "UISceneDefinitions", "UISceneSession", "UIScreen", "UIView", "UIWindow", "UIWindowScene"] }
+objc2-web-kit = { version = "=0.3.2", default-features = false, features = ["std", "block2", "WKFrameInfo", "WKNavigationAction", "WKNavigationDelegate", "WKPreferences", "WKScriptMessage", "WKSecurityOrigin", "WKScriptMessageHandler", "WKUserContentController", "WKUserScript", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "=0.10.1"
 core-graphics = "=0.25.0"
 objc2 = "=0.6.4"
-objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSGraphics", "NSScreen"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSGraphics", "NSResponder", "NSScreen", "NSWindow"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSString"] }
 objc2-web-kit = { version = "=0.3.2", default-features = false, features = ["std", "WKWebViewConfiguration"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Devices_Display", "Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+# The native fullscreen fixture creates a Tauri window without booting WebView2.
+# WindowBuilder is test-only; release products retain the stable feature set.
+tauri = { version = "2", features = ["unstable"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"

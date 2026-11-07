@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 const messages = [], observations = [];
 const bridge = {postMessage: value => messages.push(JSON.parse(value))};
-const context = vm.createContext({document: {documentElement: {dataset: {nativeHost: "true"}}},
+const context = vm.createContext({document: {documentElement: {dataset: {nativeHost: "true", hostPlatform: "android"}}},
   BilikaraHostExport: bridge, BilikaraExportDownload: {recordExportDiagnostic: entry => observations.push(entry)}});
 vm.runInContext(fs.readFileSync("static/android-export.js", "utf8"), context);
 (async () => {

@@ -1099,6 +1099,7 @@ mod tests {
         String,
         Arc<Mutex<Vec<(u64, u64)>>>,
         Arc<AtomicUsize>,
+        std::sync::mpsc::Sender<()>,
         thread::JoinHandle<()>,
     ) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind range test server");
@@ -1110,24 +1111,36 @@ mod tests {
         let maximum_active = Arc::new(AtomicUsize::new(0));
         let captured_ranges = Arc::clone(&ranges);
         let captured_maximum = Arc::clone(&maximum_active);
+        let (stop, stopping) = std::sync::mpsc::channel();
         let handle = thread::spawn(move || {
             let active = Arc::new(AtomicUsize::new(0));
             let mut handlers = Vec::new();
-            let mut last_request = Instant::now();
             loop {
+                if !matches!(
+                    stopping.try_recv(),
+                    Err(std::sync::mpsc::TryRecvError::Empty)
+                ) {
+                    break;
+                }
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         stream
                             .set_nonblocking(false)
                             .expect("make range stream blocking");
-                        last_request = Instant::now();
                         let ranges = Arc::clone(&captured_ranges);
                         let active = Arc::clone(&active);
                         let maximum = Arc::clone(&captured_maximum);
                         handlers.push(thread::spawn(move || {
-                            let mut request = vec![0_u8; 16 * 1024];
-                            let count = stream.read(&mut request).expect("read range request");
-                            let request = String::from_utf8_lossy(&request[..count]);
+                            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                            let mut request = Vec::new();
+                            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                                let mut chunk = [0_u8; 4096];
+                                let count = stream.read(&mut chunk).expect("read range request");
+                                assert_ne!(count, 0, "range request headers must complete");
+                                request.extend_from_slice(&chunk[..count]);
+                                assert!(request.len() <= 16 * 1024);
+                            }
+                            let request = String::from_utf8(request).unwrap();
                             let range = request.lines().find_map(|line| {
                                 let value = line.strip_prefix("range: bytes=")?;
                                 let (start, end) = value.split_once('-')?;
@@ -1173,9 +1186,6 @@ mod tests {
                         }));
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        if last_request.elapsed() >= Duration::from_secs(1) {
-                            break;
-                        }
                         thread::sleep(Duration::from_millis(10));
                     }
                     Err(error) => panic!("accept range request: {error}"),
@@ -1185,7 +1195,13 @@ mod tests {
                 handler.join().expect("range handler joins");
             }
         });
-        (format!("http://{address}"), ranges, maximum_active, handle)
+        (
+            format!("http://{address}"),
+            ranges,
+            maximum_active,
+            stop,
+            handle,
+        )
     }
 
     #[test]
@@ -1239,7 +1255,7 @@ mod tests {
 
     #[test]
     fn large_range_capable_response_uses_concurrent_segments() {
-        let (base, ranges, maximum_active, server) = serve_range_file();
+        let (base, ranges, maximum_active, stop, server) = serve_range_file();
         let root = test_dir("multipart");
         let destination = root.join("track.m4s");
         let mut progress_updates = Vec::new();
@@ -1253,6 +1269,9 @@ mod tests {
                 true
             },
         );
+        // The fixture belongs to this operation, not to a quiet-period timer:
+        // a loaded runner may spend over a second preparing a range request.
+        stop.send(()).expect("stop range fixture after download");
         server.join().expect("range server joins");
         let result = result.expect("multipart download succeeds");
 

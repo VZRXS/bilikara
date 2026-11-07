@@ -45,7 +45,7 @@ function openExternalUrl(url) {
   }
   if (document.documentElement?.dataset?.nativeHost === "true" && document.documentElement?.dataset?.hostPlatform !== "desktop") {
     // External-link integration is deferred; never navigate the player away.
-    setAppMessage("Android Beta：请在另一台设备打开链接，保持本机播放页面在前台。");
+    setAppMessage(t("mobile.externalLinkUnavailable"));
     return;
   }
   if (window.__TAURI__) {
@@ -55,6 +55,38 @@ function openExternalUrl(url) {
     });
   } else {
     window.open(url, "_blank");
+  }
+}
+
+async function openBilibiliVideo(url, trigger) {
+  if (trigger?.getAttribute('aria-busy') === 'true') return false;
+  if (window.BilikaraSongDetail.canonicalBilibiliUrl({url}) !== url) {
+    setAppMessage(t('mobile.externalLinkUnavailable'), true);
+    return false;
+  }
+  const disabled = trigger?.getAttribute('aria-disabled');
+  trigger?.setAttribute('aria-busy', 'true');
+  trigger?.setAttribute('aria-disabled', 'true');
+  try {
+    const platform = document.documentElement.dataset.hostPlatform;
+    if (document.documentElement.dataset.nativeHost === 'true' && ['ios', 'android'].includes(platform)) {
+      const adapter = platform === 'ios' ? window.BilikaraIosPlatform : window.BilikaraAndroidPlatform;
+      if (typeof adapter?.openBilibiliVideo !== 'function') throw new Error('video_opener_unavailable');
+      const result = await adapter.openBilibiliVideo(url);
+      if (result?.opened !== true) throw new Error('video_opener_failed');
+    } else if (platform === 'desktop') {
+      await window.BilikaraDesktopPlatform.openExternal(url);
+    } else {
+      openExternalUrl(url);
+    }
+    return true;
+  } catch {
+    setAppMessage(t('mobile.externalLinkUnavailable'), true);
+    return false;
+  } finally {
+    trigger?.removeAttribute('aria-busy');
+    if (disabled == null) trigger?.removeAttribute('aria-disabled');
+    else trigger?.setAttribute('aria-disabled', disabled);
   }
 }
 
@@ -1254,7 +1286,7 @@ async function loadTranslations() {
     catch { languageLoadFailed = true; }
   }
   try {
-    const response = await fetch("/i18n.json", { cache: "no-store" });
+    const response = await fetchHostApi("/i18n.json", { cache: "no-store" });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
@@ -1446,7 +1478,7 @@ function canTogglePlayerFullscreen() {
 }
 
 function tauriInvoke(capability = "desktop") {
-  if (capability === "presentation" && window.BilikaraAndroidPresentation) return window.BilikaraAndroidPresentation.invoke;
+  if (capability === "presentation" && (window.BilikaraNativePresentation || window.BilikaraAndroidPresentation)) return (window.BilikaraNativePresentation || window.BilikaraAndroidPresentation).invoke;
   if (typeof document !== "undefined" && document.documentElement?.dataset?.nativeHost === "true" && document.documentElement?.dataset?.hostPlatform !== "desktop") return null;
   return window.__TAURI__?.core?.invoke || null;
 }
@@ -2112,7 +2144,11 @@ function normalizePresentationDisplayInfo(candidate) {
       selectable: Boolean(display.selectable),
       mirrored: Boolean(display.mirrored),
       identityStable: Boolean(display.identityStable),
-      identityQuality: display.identityQuality === "stable" ? "stable" : "unstable",
+      identityQuality: ["stable", "pending"].includes(display.identityQuality) ? display.identityQuality : "unstable",
+      ...(display.requiresConnection === true ? {requiresConnection: true} : {}),
+      ...(display.identifiable === false ? {identifiable: false} : {}),
+      ...(display.identificationRequiresConnection === true ? {identificationRequiresConnection:true} : {}),
+      ...(typeof display.replacesDisplayId === "string" ? {replacesDisplayId: display.replacesDisplayId} : {}),
     }];
   });
   return {
@@ -2120,6 +2156,8 @@ function normalizePresentationDisplayInfo(candidate) {
     displays,
     controllerDisplayId: String(candidate.controllerDisplayId || ""),
     recommendedDisplayId: String(candidate.recommendedDisplayId || ""),
+    ...(candidate.preferRecommendedOnDisconnect === true ? {preferRecommendedOnDisconnect: true} : {}),
+    ...(candidate.discoveryStatus === undefined ? {} : {discoveryStatus: candidate.discoveryStatus}),
   };
 }
 
@@ -2155,10 +2193,10 @@ function applyPresentationDisplayInfo(candidate) {
   state.presentationDisplayInfo = info;
   state.presentationDisplayError = "";
   if (state.presentationSession.phase === "inactive" && !state.presentationSelectionInitialized) {
-    state.presentationSelectionInitialized = true;
     if (info.displays.some(
       (display) => display.id === info.recommendedDisplayId && display.selectable,
     )) {
+      state.presentationSelectionInitialized = true;
       state.presentationSelectedDisplayId = info.recommendedDisplayId;
     }
   }
@@ -2169,7 +2207,9 @@ function applyPresentationDisplayInfo(candidate) {
       (display) => display.id === state.presentationSelectedDisplayId && display.selectable,
     )
   ) {
-    state.presentationSelectedDisplayId = "";
+    state.presentationSelectedDisplayId = info.displays.find(display => display.selectable
+      && display.replacesDisplayId === state.presentationSelectedDisplayId)?.id
+      || (info.preferRecommendedOnDisconnect ? info.recommendedDisplayId : "");
   }
   const selected = info.displays.find(
     (display) => display.id === state.presentationSelectedDisplayId,
@@ -2227,6 +2267,7 @@ async function refreshPresentationDisplays({ announceError = false } = {}) {
 async function showPresentationDisplayIdentifiers({ announceError = false } = {}) {
   const invoke = tauriInvoke("presentation");
   const displayIds = (state.presentationDisplayInfo?.displays || [])
+    .filter(display => display && (display.identifiable !== false || display.identificationRequiresConnection === true))
     .map((display) => display.id)
     .filter(Boolean);
   if (
@@ -2246,6 +2287,7 @@ async function showPresentationDisplayIdentifiers({ announceError = false } = {}
       displayIds,
       theme: normalizeTheme(state.theme),
       language: normalizeLanguage(state.language),
+      ...(globalThis.document?.documentElement?.dataset?.hostPlatform === "ios" ? presentationIdentifierAppearance(displayIds) : {}),
     });
     return true;
   } catch (error) {
@@ -2259,6 +2301,28 @@ async function showPresentationDisplayIdentifiers({ announceError = false } = {}
     state.presentationIdentifiersBusy = false;
     renderPresentationOutputControl();
   }
+}
+
+function presentationIdentifierAppearance(displayIds) {
+  // Resolve the real shared theme tokens once, on explicit Identify. Send only
+  // five bounded sRGB tuples; native code accepts no arbitrary CSS or HTML.
+  const probe=document.createElement("span"),canvas=document.createElement("canvas");
+  canvas.width=canvas.height=1;
+  probe.style.cssText="position:fixed;visibility:hidden;pointer-events:none;width:1px;height:1px";
+  document.body.append(probe);
+  try {
+    const context=canvas.getContext("2d");
+    if(!context)throw new Error("display_unavailable");
+    const read=(property,value)=>{
+      probe.style.setProperty(property,value);
+      const style=getComputedStyle(probe),color=property==="border"?style.borderTopColor:style.getPropertyValue(property);
+      context.clearRect(0,0,1,1);context.fillStyle=color;context.fillRect(0,0,1,1);
+      return Array.from(context.getImageData(0,0,1,1).data);
+    };
+    return {displayNumbers:Object.fromEntries(displayIds.map(id=>[id,presentationDisplayNumber(id)])),
+      colors:{fill:read("background-color","var(--settings-panel-bg)"),ink:read("color","var(--ink)"),muted:read("color","var(--muted)"),accent:read("color","var(--accent)"),outline:read("border","var(--settings-panel-border)")},
+      reduceMotion:Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches)};
+  }finally{probe.remove();}
 }
 
 function dismissPresentationDisplayIdentifiers() {
@@ -2412,7 +2476,9 @@ function createPresentationDisplayOption(
     ? `${display.width} × ${display.height}`
     : t("display.resolutionUnknown");
   const builtInSuffix = display.builtIn ? ` · ${t("display.builtInDisplay")}` : "";
-  detail.textContent = display.mirrored
+  detail.textContent = display.requiresConnection
+    ? t("display.connectForScreenInfo")
+    : display.mirrored
     ? `${resolution} · ${t("display.presentationMirrored")}`
     : display.identityStable && display.identityQuality === "stable"
       ? `${resolution}${builtInSuffix}`
@@ -2459,17 +2525,19 @@ function renderPresentationDisplayList() {
   if (!list) {
     return;
   }
-  const displays = state.presentationDisplayInfo?.displays || [];
+  const displays = Array.isArray(state.presentationDisplayInfo?.displays)
+    ? state.presentationDisplayInfo.displays.filter(display => display && typeof display === "object") : [];
+  const discovery = presentationDiscoveryStatus();
+  list.dataset.discoveryStatus = discovery;
   const fragment = document.createDocumentFragment();
   for (const display of displays) {
     fragment.append(createPresentationDisplayOption(display));
   }
-  if (!displays.some((display) => display.selectable)) {
+  if (discovery !== "available") {
     const empty = document.createElement("p");
     empty.className = "presentation-display-empty";
-    empty.textContent = state.presentationDisplayError
-      ? t("display.presentationUnavailable")
-      : t("display.presentationNoExternalDisplay");
+    empty.setAttribute("role", "status");
+    empty.textContent = t(`display.discovery.${discovery}`);
     fragment.append(empty);
   }
   if (state.presentationDisplayBusy) {
@@ -2637,7 +2705,8 @@ function renderPresentationOutputControl() {
       || state.presentationDisplayBusy
       || state.presentationControlBusy
       || session.phase !== "inactive"
-      || !(state.presentationDisplayInfo?.displays?.length);
+      || !(Array.isArray(state.presentationDisplayInfo?.displays)
+        && state.presentationDisplayInfo.displays.some(display => display && (display.identifiable !== false || display.identificationRequiresConnection === true)));
     if (state.presentationIdentifiersBusy) {
       elements.presentationIdentifyButton.setAttribute("aria-busy", "true");
     } else {
@@ -2667,7 +2736,7 @@ async function handlePresentationSession(candidate) {
     state.presentationSelectedDisplayId = "";
     setAppMessage(t("display.presentationDisconnected"), true);
     await refreshPresentationDisplays();
-  } else if (window.BilikaraAndroidPresentation && session.phase === "inactive"
+  } else if ((window.BilikaraNativePresentation || window.BilikaraAndroidPresentation) && session.phase === "inactive"
     && session.recoveryReason.startsWith("output")) {
     setAppMessage(t("display.presentationTransitionFailed", {message:session.recoveryReason}), true);
   }
@@ -3135,6 +3204,11 @@ function paintPresentationHostProgress(currentSeconds, durationSeconds) {
   );
 }
 
+function usesIosApplicationTransport() {
+  return document.documentElement.dataset.nativeHost === "true"
+    && document.documentElement.dataset.hostPlatform === "ios";
+}
+
 function renderPresentationHostSurface(session = state.hostPlaybackSession) {
   const network = ["purek","native"].includes(state.data?.media_output?.target);
   const output = state.data?.media_output;
@@ -3293,7 +3367,7 @@ function publishPresentationPlaybackState(session = state.hostPlaybackSession) {
 }
 
 function tauriEventListen(capability = "desktop") {
-  if (capability === "presentation" && window.BilikaraAndroidPresentation) return window.BilikaraAndroidPresentation.listen;
+  if (capability === "presentation" && (window.BilikaraNativePresentation || window.BilikaraAndroidPresentation)) return (window.BilikaraNativePresentation || window.BilikaraAndroidPresentation).listen;
   if (typeof document !== "undefined" && document.documentElement?.dataset?.nativeHost === "true" && document.documentElement?.dataset?.hostPlatform !== "desktop") return null;
   return window.__TAURI__?.event?.listen || null;
 }
@@ -3373,7 +3447,7 @@ async function initializeLocalPresentation() {
       unlistenCommand,
       unlistenOutputRequest,
     );
-    if (window.BilikaraAndroidPresentation) {
+    if ((window.BilikaraNativePresentation || window.BilikaraAndroidPresentation)) {
       state.presentationUnlisteners.push(await listen("displays-changed", event => {
         applyPresentationDisplayInfo(event.payload);
       }));
@@ -3712,7 +3786,7 @@ function toggleMountedLocalPlayback() {
 async function handlePresentationHostControl(action, button) {
   const network = networkOutputOwnsPlayback();
   if (
-    !presentationCompositionActive()
+    (!network && !presentationCompositionActive() && !usesIosApplicationTransport())
     || state.presentationHostControlBusy
     || (network && (state.data.media_output.busy || globalThis.BilikaraMediaOutput?.busy?.()))
     || !button
@@ -5899,7 +5973,7 @@ async function apiPost(url, payload = {}, options = {}) {
     ? window.setTimeout(() => controller.abort(), timeoutMs)
     : null;
   try {
-    const response = await fetch(url, {
+    const response = await fetchHostApi(url, {
       method: "POST",
       headers: clientHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(payload),
@@ -5954,7 +6028,7 @@ function submitSongRating(item, score, trigger = null) {
     button.setAttribute("aria-busy", "true");
   }
   renderCurrentRatingButton(state.data?.current_item);
-  fetch("/api/rating/submit", {
+  fetchHostApi("/api/rating/submit", {
     method: "POST",
     headers: clientHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
@@ -6553,15 +6627,17 @@ async function reportMediaCapabilities() {
   state.mediaCapabilitiesSignature = signature;
 }
 
-async function fetchState() {
+async function fetchState({signal = null} = {}) {
   const previousOffsetMs = currentAvOffsetMs();
   const previousData = state.data;
   const sequence = ++state.remoteAccessRequestSequence;
   const controller = new AbortController();
+  const abort=()=>controller.abort();
+  signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
   const timeout = setTimeout(() => controller.abort(), 10_000);
   let response, payload;
   try {
-    response = await fetch("/api/state", {
+    response = await fetchHostApi("/api/state", {
       headers: clientHeaders(), signal: controller.signal,
     });
     payload = await parseApiResponse(response, "/api/state");
@@ -6572,10 +6648,11 @@ async function fetchState() {
     const kind = response && !response.ok ? "http"
       : response ? "invalid"
       : ["TimeoutError", "AbortError"].includes(error.name) ? "timeout" : "network";
-    updateRemoteAccessFailure({ kind, status: response?.status }, sequence);
+    if(!signal?.aborted)updateRemoteAccessFailure({ kind, status: response?.status }, sequence);
     throw error;
   } finally {
     clearTimeout(timeout);
+    signal?.removeEventListener('abort',abort);
   }
   updateRemoteAccessFailure(null, sequence);
   if (!acceptHostStateSnapshot(payload.data)) {
@@ -6642,7 +6719,7 @@ function hasDownloadingItems(data) {
 
 async function searchGatchaCache(query, {offset = 0, limit = 80} = {}) {
   const normalizedQuery = String(query || "").trim();
-  const response = await fetch(`/api/gatcha/search?q=${encodeURIComponent(normalizedQuery)}&offset=${offset}&limit=${limit}`, {
+  const response = await fetchHostApi(`/api/gatcha/search?q=${encodeURIComponent(normalizedQuery)}&offset=${offset}&limit=${limit}`, {
     headers: clientHeaders(),
   });
   const payload = await response.json();
@@ -6658,7 +6735,7 @@ async function searchCatalog(query, {offset = 0, limit = 80} = {}) {
   params.set("q", normalizedQuery);
   params.set("limit", String(limit));
   params.set("offset", String(offset));
-  const response = await fetch(`/api/catalog/search?${params.toString()}`, {
+  const response = await fetchHostApi(`/api/catalog/search?${params.toString()}`, {
     cache: "no-store",
     headers: clientHeaders(),
   });
@@ -6691,7 +6768,7 @@ async function fetchD1Browse({ kind = "name", letter = "", query = "", tag = "",
   if (normalizedLocale) {
     params.set("locale", normalizedLocale);
   }
-  const response = await fetch(`/api/d1/browse?${params.toString()}`, {
+  const response = await fetchHostApi(`/api/d1/browse?${params.toString()}`, {
     cache: "no-store",
     headers: clientHeaders(),
   });
@@ -6759,7 +6836,7 @@ async function fetchD1CategoryBrowse({ tags = [], query = "", offset = 0, limit 
   if (normalizedQuery) {
     params.set("q", normalizedQuery);
   }
-  const response = await fetch(`/api/d1/category-browse?${params.toString()}`, {
+  const response = await fetchHostApi(`/api/d1/category-browse?${params.toString()}`, {
     cache: "no-store",
     headers: clientHeaders(),
   });
@@ -6790,7 +6867,7 @@ async function fetchGatchaBrowse(uid = "", query = "", page = null) {
   }
   if (page) { params.set("offset", String(page.offset)); params.set("limit", String(page.limit)); }
   const queryString = params.toString();
-  const response = await fetch(`/api/gatcha/browse${queryString ? `?${queryString}` : ""}`, {
+  const response = await fetchHostApi(`/api/gatcha/browse${queryString ? `?${queryString}` : ""}`, {
     cache: "no-store",
     headers: clientHeaders(),
   });
@@ -6813,7 +6890,7 @@ async function fetchGatchaFavlistBrowse(folderId = "", query = "", page = null) 
   }
   if (page) { params.set("offset", String(page.offset)); params.set("limit", String(page.limit)); }
   const queryString = params.toString();
-  const response = await fetch(`/api/gatcha/favlist/browse${queryString ? `?${queryString}` : ""}`, {
+  const response = await fetchHostApi(`/api/gatcha/favlist/browse${queryString ? `?${queryString}` : ""}`, {
     cache: "no-store",
     headers: clientHeaders(),
   });
@@ -6825,7 +6902,7 @@ async function fetchGatchaFavlistBrowse(folderId = "", query = "", page = null) 
 }
 
 async function fetchPoolConfig(requester = selectedRequesterName()) {
-  const response = await fetch(`/api/gatcha/pool-config?${new URLSearchParams({ requester_name: requester })}`, {
+  const response = await fetchHostApi(`/api/gatcha/pool-config?${new URLSearchParams({ requester_name: requester })}`, {
     cache: "no-store",
     headers: clientHeaders(),
   });
@@ -7824,11 +7901,11 @@ function createSearchResultItem(item, options = {}) {
   return row;
 }
 
-// Android browse results reuse Remote's page model, gestures, footer and cache.
-// Desktop keeps its existing scrolling/append workflow.
+// Mobile browse results reuse Remote's page model, gestures, footer and cache.
+// Keep the Android-named compatibility hooks; desktop retains its own workflow.
 const androidBrowsePages = new WeakMap();
 function androidBrowseEnabled() {
-  return document.documentElement.dataset.hostPlatform === "android" && Boolean(window.BilikaraResultPager);
+  return ["android", "ios"].includes(document.documentElement.dataset.hostPlatform) && Boolean(window.BilikaraResultPager);
 }
 function androidBrowseFrame(container, renderPage) {
   let record = androidBrowsePages.get(container);
@@ -8284,7 +8361,7 @@ function renderD1BrowseView() {
     queryInput.placeholder = d1BrowseSearchPlaceholder(kind);
   }
   if (alphabet) {
-    const collapsed = globalThis.document?.documentElement?.dataset?.hostPlatform === "android" && level !== "alphabet";
+    const collapsed = ["android", "ios"].includes(globalThis.document?.documentElement?.dataset?.hostPlatform) && level !== "alphabet";
     alphabet.classList.toggle("hidden", collapsed);
     view.classList.toggle("is-browsing-tags", collapsed);
     alphabet.innerHTML = "";
@@ -9793,7 +9870,7 @@ async function handleGatchaDraw(event = null) {
   setGatchaMessage(t("gatcha.drawing"));
   renderGatchaWorkspace();
   try {
-    const response = await fetch(`/api/gatcha/candidate?${new URLSearchParams({ requester_name: selectedRequesterName() })}`, { headers: clientHeaders() });
+    const response = await fetchHostApi(`/api/gatcha/candidate?${new URLSearchParams({ requester_name: selectedRequesterName() })}`, { headers: clientHeaders() });
     const payload = await response.json();
     if (state.gatchaDrawSequence !== drawSequence) {
       return false;
@@ -10145,7 +10222,7 @@ function disconnectClient() {
     navigator.sendBeacon("/api/client/disconnect", blob);
     return;
   }
-  fetch("/api/client/disconnect", {
+  fetchHostApi("/api/client/disconnect", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body,
@@ -10332,7 +10409,7 @@ function setRemoteQrPinned(pinned, { dismissTransient = false } = {}) {
     document.dispatchEvent(new CustomEvent("bilikara:remote-access-menu", {
       detail: { expanded: state.remoteQrPinned },
     }));
-    if (window.BilikaraAndroidPresentation) publishPresentationOutputState();
+    if ((window.BilikaraNativePresentation || window.BilikaraAndroidPresentation)) publishPresentationOutputState();
     // Flush the replacement layout while transitions are disabled. Future
     // hover entries can animate, but this menu close must stay instantaneous.
     if (popup) void popup.offsetWidth;
@@ -11254,7 +11331,7 @@ function renderUpdatePreviewControl() {
       // The action already communicates checking; channel changes are not errors.
       statusText = "";
     } else {
-      statusText = globalThis.document?.documentElement?.dataset?.hostPlatform === "android" && !update?.error
+      statusText = ["android", "ios"].includes(globalThis.document?.documentElement?.dataset?.hostPlatform) && !update?.error
         ? update?.state === "up_to_date" ? t("service.noUpdateAvailable")
           : update?.supported === false ? t("service.featureUnavailable") : String(update?.message || "")
         : String(update?.error || update?.message || "");
@@ -11337,7 +11414,7 @@ function renderBBDownLogin(login, { startIfNeeded = true } = {}) {
 }
 
 function syncAndroidLoginLabel() {
-  if (document.documentElement.dataset.hostPlatform !== "android") return;
+  if (!["android", "ios"].includes(document.documentElement.dataset.hostPlatform)) return;
   const button = elements.bbdownLoginButton;
   const loggedIn = Boolean(state.data?.bbdown?.login?.logged_in || state.data?.bbdown?.logged_in);
   if (!loggedIn) delete button.dataset.logoutArmed;
@@ -11365,9 +11442,9 @@ function maybeStartBBDownLogin(login, options = {}) {
     return;
   }
   const force = Boolean(options.force);
-  // Android's compact account page requires an explicit login action. Window
+  // The mobile compact account page requires an explicit login action. Window
   // width alone must not disable the desktop Settings login workflow.
-  if (!force && document.documentElement.dataset.hostPlatform === "android"
+  if (!force && ["android", "ios"].includes(document.documentElement.dataset.hostPlatform)
     && globalThis.BilikaraHostLayout?.isPortrait?.()) return;
   if (!force && (loginState === "starting" || loginState === "waiting")) {
     return;
@@ -18727,7 +18804,7 @@ function updateConfirmHistoryExportPageSize() {
 async function fetchPlayedSessions() {
   if (!elements.confirmSource) return false;
   try {
-    const response = await fetch("/api/played-sessions", {
+    const response = await fetchHostApi("/api/played-sessions", {
       headers: clientHeaders(),
     });
     if (!response.ok) {
@@ -18897,6 +18974,14 @@ async function downloadHistoryExport(format, source = "played", pageSize = 200) 
     return;
   }
   if (document.documentElement?.dataset?.nativeHost === "true" && document.documentElement?.dataset?.hostPlatform !== "desktop") {
+    if (document.documentElement.dataset.hostPlatform === "ios") {
+      if (!window.BilikaraIosPlatform?.saveHistory) throw new Error(t("history.exportFailed"));
+      try { return await window.BilikaraIosPlatform.saveHistory(normalizedFormat, normalizedSource, normalizedPageSize); }
+      catch (error) {
+        if (/^ios_/.test(error?.message || "")) throw new Error(t("history.exportFailed"));
+        throw error;
+      }
+    }
     if (!window.BilikaraAndroidExport) throw new Error("Android 系统保存功能不可用，请更新系统 WebView 后重试");
     return window.BilikaraAndroidExport.saveHistory(normalizedFormat, normalizedSource, normalizedPageSize);
   }
@@ -19025,7 +19110,7 @@ async function diagnosticResponse(path) {
   const exportDiagnostics = window.BilikaraExportDownload?.getExportDiagnosticsSnapshot
     ? window.BilikaraExportDownload.getExportDiagnosticsSnapshot()
     : [];
-  const response = await fetch(path, {
+  const response = await fetchHostApi(path, {
     method: "POST",
     credentials: "same-origin",
     headers: clientHeaders({ "Content-Type": "application/json" }),
@@ -19050,7 +19135,7 @@ async function diagnosticResponse(path) {
 }
 
 async function generateDiagnosticsMarkdown() {
-  await globalThis.BilikaraAndroidPresentation?.refreshDiagnostics().catch(() => {});
+  await (globalThis.BilikaraNativePresentation || globalThis.BilikaraAndroidPresentation)?.refreshDiagnostics().catch(() => {});
   const response = await diagnosticResponse("/api/diagnostics/markdown");
   const payload = await response.json();
   return typeof payload?.data?.markdown === "string"
@@ -20667,7 +20752,7 @@ async function restartHostPlayback(context) {
 }
 playbackRestartMenu = globalThis.BilikaraPlaybackRestart?.create({
   extraHintControls: [{button: elements.playerFullscreenButton,
-    enabled: () => document.documentElement.dataset.hostPlatform === "android" && !isPlayerPanelFullscreen()}],
+    enabled: () => ["android", "ios"].includes(document.documentElement.dataset.hostPlatform) && !isPlayerPanelFullscreen()}],
   hoverHints: true,
   alwaysInline: true,
   firstUse: globalThis.BilikaraPlaybackRestart.firstUseStore?.("host", tauriInvoke("presentation")) || null,
@@ -20712,7 +20797,7 @@ elements.bbdownLoginButton?.addEventListener("click", async () => {
     await startBBDownLogin({ force: true });
     return;
   }
-  if (document.documentElement.dataset.hostPlatform === "android"
+  if (["android", "ios"].includes(document.documentElement.dataset.hostPlatform)
       && elements.bbdownLoginButton.dataset.logoutArmed !== "true") {
     elements.bbdownLoginButton.dataset.logoutArmed = "true";
     syncAndroidLoginLabel();
@@ -20749,6 +20834,9 @@ elements.bbdownLoginLink?.addEventListener("click", async event => {
     if (document.documentElement.dataset.hostPlatform === "android") {
       if (!window.BilikaraAndroidPlatform?.openLoginLink) throw new Error(t("service.loginLinkUnavailable"));
       await window.BilikaraAndroidPlatform.openLoginLink(url);
+    } else if (document.documentElement.dataset.hostPlatform === "ios") {
+      if (!window.BilikaraIosPlatform?.openLoginLink) throw new Error(t("service.loginLinkUnavailable"));
+      await window.BilikaraIosPlatform.openLoginLink(url);
     } else if (desktop) {
       await window.BilikaraDesktopPlatform.openBilibiliLogin();
     } else window.open(url, "_blank", "noopener,noreferrer");
@@ -20762,6 +20850,26 @@ elements.bbdownLoginLink?.addEventListener("click", async event => {
       catch (error) { setAppMessage(error.message || t("error.stateFailed"), true); }
     }
   }
+});
+
+window.addEventListener("bilikara:ios-login-return", event => {
+  if (document.documentElement.dataset.nativeHost !== "true"
+      || document.documentElement.dataset.hostPlatform !== "ios" || state.desktopClosing) return;
+  // The existing Rust login worker/poller owns completion and credentials.
+  // Returning from Safari only refreshes its latest authoritative snapshot.
+  // The same visibility event also renews WebKit's foreground read lease.
+  // Let that owner refresh once; focus/reply/BFCache returns still refresh here.
+  if (event.detail?.source === "visibilitychange" && state.hasValidStateResponse && isWebKitPlaybackRuntime()) return;
+  void pollHostState({replace:true});
+});
+
+window.addEventListener("bilikara:ios-fullscreen-reset", () => {
+  if (document.documentElement.dataset.nativeHost !== "true"
+      || document.documentElement.dataset.hostPlatform !== "ios") return;
+  state.playerFullscreenRevision += 1;
+  elements.playerPanel?.classList.remove("is-tauri-fullscreen");
+  document.body?.classList.remove("is-tauri-fullscreen-active");
+  handleFullscreenChange();
 });
 
 elements.bbdownLoginRefresh?.addEventListener("click", async () => {
@@ -21947,6 +22055,9 @@ function resumeForegroundAudioOutput(video, audio, {renew = false} = {}) {
 }
 
 document.addEventListener("visibilitychange", () => {
+  if(document.visibilityState==='visible'&&state.hasValidStateResponse&&isWebKitPlaybackRuntime())void pollHostState({replace:true});
+  if (document.visibilityState !== "visible") resetMobileLogoutConfirmation();
+  if(holdLocalPlaybackForNetworkOutput())return;
   if (window.BilikaraAndroidPlayback?.visibilityChanged()) return;
   if (
     !state.localShouldBePlaying
@@ -22440,7 +22551,7 @@ elements.requestWorkspace?.addEventListener("click", (event) => {
   }
   const letterButton = event.target.closest("[data-letter]");
   if (letterButton && elements.requestWorkspace.contains(letterButton)) {
-    if (document.documentElement.dataset.hostPlatform === "android") {
+    if (["android", "ios"].includes(document.documentElement.dataset.hostPlatform)) {
       if (document.activeElement?.matches("input, textarea, [contenteditable='true']")) document.activeElement.blur();
     }
     const kind = state.d1BrowseKind || "name";
@@ -22885,20 +22996,17 @@ async function startPolling() {
   // The native backend/origin and initial page theme are both settled now.
   // Do this once at bootstrap, not on polling or progress snapshots.
   syncNativeWindowTheme();
-  window.setInterval(async () => {
-    if (state.statePollInFlight) return;
-    state.statePollInFlight = true;
-    try {
-      await fetchState();
-      await restartHostPlaybackAfterBootstrap();
-    } catch (error) {
-      if (shouldReportStateFetchError(error)) {
-        setAppMessage(error.message, true);
-      }
-    } finally {
-      state.statePollInFlight = false;
-    }
-  }, pollIntervalMs);
+  window.setInterval(()=>void pollHostState(),pollIntervalMs);
+}
+
+async function pollHostState({replace=false}={}) {
+  if(state.statePollInFlight&&!replace)return;
+  if(replace)state.statePollController?.abort();
+  const controller=new AbortController(),lease=(state.statePollLease||0)+1;
+  state.statePollLease=lease;state.statePollController=controller;state.statePollInFlight=true;
+  try {await fetchState({signal:controller.signal});await restartHostPlaybackAfterBootstrap();}
+  catch(error){if(lease===state.statePollLease&&error.name!=='AbortError'&&shouldReportStateFetchError(error))setAppMessage(error.message,true);}
+  finally{if(lease===state.statePollLease){state.statePollInFlight=false;state.statePollController=null;}}
 }
 
 async function restartHostPlaybackAfterBootstrap() {
@@ -23010,7 +23118,8 @@ window.addEventListener("bilikara-before-close", () => {
   disposeSharedAudioContext();
   disconnectClient();
 });
-window.addEventListener("pageshow", () => {
+window.addEventListener("pageshow", event => {
+  if(event?.persisted&&state.hasValidStateResponse&&isWebKitPlaybackRuntime())void pollHostState({replace:true});
   initializeLocalPresentation().catch(() => {});
   renderVolumeControls(frontendPlaybackMode(state.data?.playback_mode));
   restartHostPlaybackAfterPageRestore().catch(() => {});
