@@ -1,0 +1,12 @@
+Symphonia 0.6.1
+Copyright (c) 2019-2026 The Project Symphonia Developers
+Mozilla Public License 2.0; see LICENSE.txt.
+
+The optional portable-loudness backend statically links the AAC-LC / FLAC
+decoders and MP4 demuxer. The exact crate versions and checksums are in
+rust-runtime/Cargo.lock and src-tauri/Cargo.lock.
+
+Unmodified upstream source and build materials:
+https://github.com/pdeljanov/Symphonia/tree/v0.6.1
+https://crates.io/crates/symphonia/0.6.1
+The bilikara Rust wrapper is separate from the upstream MPL-covered files.

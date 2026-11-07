@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/video-dev/hls.js",
+  "version": "1.6.15",
+  "tag": "v1.6.15",
+  "npm_integrity": "sha512-E3a5VwgXimGHwpRGV+WxRTKeSp2DW5DI5MWv34ulL3t5UNmyJWCQ1KmLEHbYzcfThfXG8amBL+fCYPneGHC4VA==",
+  "files": {
+    "hls.light.min.js": "9467b9a3278bce740773e59423409a02fbcbb8dc668371f17198b18c2a1ab336",
+    "LICENSE": "ca8773cf798c7ed997d4dd7c8e23c348699f8d5b7462636694cc14de6cda12db",
+    "LICENSE-2.0.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+  },
+  "additional_sources": {
+    "LICENSE-2.0.txt": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+  }
+}

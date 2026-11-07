@@ -1,0 +1,159 @@
+{
+  "schema_version": 1,
+  "files": [
+    {
+      "path": "LICENSE.txt",
+      "repository": "Signalsmith-Audio/signalsmith-stretch",
+      "revision": "57b93f4e9206a089a45387eaa39bdc9f310d3308",
+      "git_blob": "889031e63236bb72aa28ff2ec2362db1691723d1",
+      "sha256": "ee2ef82481ffb445ecdd4b3a4c1f82c0cddb2da8fe39d8e8dc384fffb3e7f06f"
+    },
+    {
+      "path": "signalsmith-stretch.h",
+      "repository": "Signalsmith-Audio/signalsmith-stretch",
+      "revision": "57b93f4e9206a089a45387eaa39bdc9f310d3308",
+      "git_blob": "cd13f2e98b8967577c6da9bc848d4e42c5eeab2a",
+      "sha256": "1188667959ac19dd40c0a6abbce694e44705615ec4f0e8db8af0f1cfb4c5dea7"
+    },
+    {
+      "path": "signalsmith-linear/LICENSE.txt",
+      "repository": "Signalsmith-Audio/linear",
+      "revision": "7bb1c8f36794d6980080ce817c91f8da8fe56a66",
+      "git_blob": "c2569820cd018245f891b974048dc4ab128f43b1",
+      "sha256": "072b5e9eb5b22880bdf6256324654cf3ce53dba828edb911921121e1be09d9c3"
+    },
+    {
+      "path": "signalsmith-linear/approx.h",
+      "repository": "Signalsmith-Audio/linear",
+      "revision": "7bb1c8f36794d6980080ce817c91f8da8fe56a66",
+      "git_blob": "2663851e2413b0ac22a9a09126ca266e758a5978",
+      "sha256": "bf6f703193253a241e7a80d44547bb73c383a9a1f1ebe1f7fefdcf3d234515bd"
+    },
+    {
+      "path": "signalsmith-linear/fft.h",
+      "repository": "Signalsmith-Audio/linear",
+      "revision": "7bb1c8f36794d6980080ce817c91f8da8fe56a66",
+      "git_blob": "49986af016d6eea6bae7e09e7c53858beac400be",
+      "sha256": "fb55f69ac14cdbac66b9c76053069ff63bc36d18af20d8c028b9acc0aad6516a"
+    },
+    {
+      "path": "signalsmith-linear/include/signalsmith-linear/approx.h",
+      "repository": "Signalsmith-Audio/linear",
+      "revision": "7bb1c8f36794d6980080ce817c91f8da8fe56a66",
+      "git_blob": "2d535339e38f0341a0b508bab39a3490fd4109fa",
+      "sha256": "55c090c621657ee1fbe23a8c582811e103acf8ba10263c4a6d9b66a62809fa1a"
+    },
+    {
+      "path": "signalsmith-linear/include/signalsmith-linear/fft.h",
+      "repository": "Signalsmith-Audio/linear",
+      "revision": "7bb1c8f36794d6980080ce817c91f8da8fe56a66",
+      "git_blob": "661709d42b37246d478792d595334e6c22bd0da9",
+      "sha256": "98e7e64093b6fc8ccbba31f710370d5548243bad35beb489e8282de4dc25d76d"
+    },
+    {
+      "path": "signalsmith-linear/include/signalsmith-linear/linear.h",
+      "repository": "Signalsmith-Audio/linear",
+      "revision": "7bb1c8f36794d6980080ce817c91f8da8fe56a66",
+      "git_blob": "2b276f5cc92eaec9795389e68a695ec5676d188f",
+      "sha256": "5c5d55810af0b7f8c8fe27ef1a36a87a4529f95cbebbb5e49f39845f6a2a0d5e"
+    },
+    {
+      "path": "signalsmith-linear/include/signalsmith-linear/stft.h",
+      "repository": "Signalsmith-Audio/linear",
+      "revision": "7bb1c8f36794d6980080ce817c91f8da8fe56a66",
+      "git_blob": "9665aee3ab1144ffe90b2c311a4c1604cb5e16a2",
+      "sha256": "a323656e5ed80b271262106ea782d6150ef2f1c8b2f3c5896552b90b2ad6c17e"
+    },
+    {
+      "path": "signalsmith-linear/linear.h",
+      "repository": "Signalsmith-Audio/linear",
+      "revision": "7bb1c8f36794d6980080ce817c91f8da8fe56a66",
+      "git_blob": "72cf5b1ac88dbb3b98a6517c27e35687ef5531e2",
+      "sha256": "bf0d23a37efd4d89e5baf2b2969374748f23690697a5158774feb0d00cf9502b"
+    },
+    {
+      "path": "signalsmith-linear/platform/approx-cmsisdsp.h",
+      "repository": "Signalsmith-Audio/linear",
+      "revision": "7bb1c8f36794d6980080ce817c91f8da8fe56a66",
+      "git_blob": "6355eb8c537ec9de1e11d9723e481e8d76aa6228",
+      "sha256": "ec2e21691147246ad3a1ae95804decdc6adba6197596b38aac4e2cc2de64feb4"
+    },
+    {
+      "path": "signalsmith-linear/platform/basic-fill-warnings.h",
+      "repository": "Signalsmith-Audio/linear",
+      "revision": "7bb1c8f36794d6980080ce817c91f8da8fe56a66",
+      "git_blob": "2c996194e73d550ffb3a5082ad8fe1dda312643a",
+      "sha256": "c2ebbedbbbcf4b13fa236404a249d418a07f6edfc5ef2effd08d8be1e594b02e"
+    },
+    {
+      "path": "signalsmith-linear/platform/fft-accelerate.h",
+      "repository": "Signalsmith-Audio/linear",
+      "revision": "7bb1c8f36794d6980080ce817c91f8da8fe56a66",
+      "git_blob": "b421696a82728ead829eb592aff1371acaf3bf97",
+      "sha256": "969751cc7f800bf83bd5511a9e9293172465d931f6f3a8adec4ddca15c859fa0"
+    },
+    {
+      "path": "signalsmith-linear/platform/fft-cmsisdsp.h",
+      "repository": "Signalsmith-Audio/linear",
+      "revision": "7bb1c8f36794d6980080ce817c91f8da8fe56a66",
+      "git_blob": "7c7b23be8fc06f7a90f567ff4cf641491e3633ed",
+      "sha256": "def81ee9bdf261c39b44bef8d2e2e6873844f5d7b02373fe6b8b845685a02f54"
+    },
+    {
+      "path": "signalsmith-linear/platform/fft-ipp.h",
+      "repository": "Signalsmith-Audio/linear",
+      "revision": "7bb1c8f36794d6980080ce817c91f8da8fe56a66",
+      "git_blob": "fcf762aa52d4bf2091d59f0e56b237083580e0fa",
+      "sha256": "e0c212f625b7990d520b45d22120d409d535989caf4c92e5fb874dc06adcaab7"
+    },
+    {
+      "path": "signalsmith-linear/platform/fft-linear.h",
+      "repository": "Signalsmith-Audio/linear",
+      "revision": "7bb1c8f36794d6980080ce817c91f8da8fe56a66",
+      "git_blob": "170fb021aafdd7bb74a08855d01bfd7131d9a0cd",
+      "sha256": "7c2ed61df7895af7b1a37f1073f833abdc971953277ece58128c9c7b4ca6cef2"
+    },
+    {
+      "path": "signalsmith-linear/platform/fft-pffft-double.h",
+      "repository": "Signalsmith-Audio/linear",
+      "revision": "7bb1c8f36794d6980080ce817c91f8da8fe56a66",
+      "git_blob": "54f0d513160b1612dbdd128fc14631e8181c62ef",
+      "sha256": "359cd0108c2e470b3641aea216747b18bd56a367615fbb185bbbe5d1ab23566b"
+    },
+    {
+      "path": "signalsmith-linear/platform/fft-pffft.h",
+      "repository": "Signalsmith-Audio/linear",
+      "revision": "7bb1c8f36794d6980080ce817c91f8da8fe56a66",
+      "git_blob": "984170a26933f6ef17153b0a5cbd12158cf807c1",
+      "sha256": "28b83cc0d5b680b1f85915a5ea9ddd97308a106e8632a797d360b423e6bc62b2"
+    },
+    {
+      "path": "signalsmith-linear/platform/linear-accelerate.h",
+      "repository": "Signalsmith-Audio/linear",
+      "revision": "7bb1c8f36794d6980080ce817c91f8da8fe56a66",
+      "git_blob": "a6e82508b58817368d1084b05caabd249f32e376",
+      "sha256": "36fdc4a431847cdfdb23c80f7331b4e41a438a6274efcf1d112d5d7baa240283"
+    },
+    {
+      "path": "signalsmith-linear/platform/linear-cmsisdsp.h",
+      "repository": "Signalsmith-Audio/linear",
+      "revision": "7bb1c8f36794d6980080ce817c91f8da8fe56a66",
+      "git_blob": "fa879aa7b0f58c374ca417761bb4642f8b03160f",
+      "sha256": "d21a8491444b2d00425c684a10eabc33c5504b3549d604fae1c34a409e6a2549"
+    },
+    {
+      "path": "signalsmith-linear/platform/linear-xsimd.h",
+      "repository": "Signalsmith-Audio/linear",
+      "revision": "7bb1c8f36794d6980080ce817c91f8da8fe56a66",
+      "git_blob": "c5454db6b55aa7fc702759deeb60bb61d1be9b22",
+      "sha256": "bf99af5932b37960c49c68af32ff19dfc7ff648e44d76799259fbdbbbaef483e"
+    },
+    {
+      "path": "signalsmith-linear/stft.h",
+      "repository": "Signalsmith-Audio/linear",
+      "revision": "7bb1c8f36794d6980080ce817c91f8da8fe56a66",
+      "git_blob": "eaa1aa4d14137fb9b2329c9186c0a24b069ec888",
+      "sha256": "20f3695bb8d162cf4b3f1aacdca477f0c8a301ffebd6fec53b437e9ce623462b"
+    }
+  ]
+}
