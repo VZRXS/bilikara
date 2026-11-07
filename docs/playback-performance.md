@@ -16,10 +16,89 @@ chosen build volume. No GPU is needed. For example:
 
 ```bash
 CUDA_VISIBLE_DEVICES='' .tmp/local-build-run.sh node scripts/profile-playback.mjs \
-  --profile 1280x720:30 --engine chromium --seconds 30 \
-  --modes idle,single,dual,dlna-l0,dlna-l1 \
+  --profile 1280x720:30 --engine chromium --seconds 60 \
+  --modes idle,single,dual,dlna-l0,dlna-l1,native-single,native-dual \
   --output /absolute/path/outside-the-checkout/profile-720p-chromium
 ```
+
+Always fetch the latest private `main` before choosing a baseline; historical
+SHAs are provenance, not a prerequisite. Record the actual source SHA, dirty
+state and tracked diff digest for each run. Compare pre-change and optimized
+sources under identical conditions; disclose differences rather than relabeling
+old measurements. Do not run builds or tests concurrently with steady samples.
+
+For comparisons across invocations, use the SAME explicit
+`--fixture-cache /absolute/HDD/path/outside-the-checkout`. The tool retains the
+synthetic H.264/AAC bitstreams and verifies their SHA-256 before reuse; matching
+encoder settings alone do not prove matching compressed inputs. Keep this cache
+and its manifest with the evidence. An incomplete or modified cache is rejected
+rather than silently overwritten. Different resolutions/durations use separate
+cache entries. `--static-dir /baseline-checkout/static` can serve a preserved
+pre-change frontend through the same current Rust fixture and observer. Reports
+record frontend commit/dirty/static-tree independently from tooling/backend SHA
+and Runtime tree; verify the backend trees match before comparing UI changes.
+
+Use `--repeats 3` for isolated repetitions (each owns fresh Host/browser processes).
+`--host-viewport 1280x800` and `--audience-viewport 1920x1080` set the independent
+logical viewports. Host and Audience have separate software browser processes
+so their CPU/PSS can be attributed; this differs from the older shared-browser
+profile and its extra process overhead must not be interpreted as a regression.
+`--seconds` accepts 10–1800 seconds; 60 seconds is the ordinary comparison window,
+while a 10-second diagnostic does not qualify a steady or sustained result.
+`--build-mode dev` records the existing debug-only alpha companion admission;
+this harness explicitly rejects a release label. A packaged release measurement
+requires a separate native product launch, not a renamed dev result.
+
+The `native-single`/`native-dual` modes select the actual Rust L1 local output,
+fetch its authenticated HLS and decode it in the shipped sink. They require the
+real full companion. An unavailable decoder is recorded `UNSUPPORTED` without
+selecting a fake pipeline. DLNA uses an independent consuming SOAP/TS fixture;
+it is neither Native HLS nor a qualified physical receiver.
+
+Measurement-only switches (never shipping player settings):
+
+- `--dual-experiment baseline|pause|retire|static`: current dual behavior;
+  pause only the Host video; additionally release its source; or retain the
+  Audience bridge/overlay without its video. Pause/retire suppress the paired
+  pause handler and automatic video play only within this diagnostic. Remaining
+  readiness, seek/EOS and restoration dependencies can still fail: use
+  `--actions` and inspect each outcome, never call a paused video an optimization.
+- `--overlay on|off` enables a synthetic five-row countdown; `--qr-bytes N`
+  adds a bounded synthetic data image for serialization attribution. Reports
+  retain lengths/timings only, never QR, password, authorization or media URLs.
+- `--effects baseline|flat` removes CSS blur/shadow/animation only in the
+  measurement page for attribution; it never changes shipped appearance.
+- `--hls-worker off|on` rewrites only the test-loaded decoder configuration.
+  Worker creation and HLS/SourceBuffer events are observations, not evidence
+  of Tauri asset/CSP, Android or iOS worker compatibility. `--worker-policy production`
+  retains the actual Host CSP and records blocked/fallback worker admission.
+  The separate `allow-blob` diagnostic changes only the test document's
+  `worker-src` header, retaining other directives; compare worker off/on under
+  this same diagnostic policy. It never changes product CSP or proves that a
+  packaged application supports blob workers.
+- `--actions` separately records pause/resume, seek, Next, actual EOS and return
+  to single-screen after steady sampling. Seek waits for the local position or the new authoritative HLS generation; full media/PCM regressions remain mandatory.
+
+Use `--frame-observer counters` to check observation overhead without registering
+continuous requestVideoFrameCallback loops. Decode/quality counters and media
+clocks remain observable; zero callback samples in this mode means NOT OBSERVED,
+not zero delivered frames. Compare it with the same cached input and normal
+observer before attributing hidden-video costs.
+
+`--cpu-profile` captures separate Chromium Host/Audience main-thread CDP CPU
+samples. It redacts script URLs to known static basenames and filters function
+names before persistence; no arguments or QR contents are retained. Keep this
+sampling diagnostic separate from ordinary resource comparisons. It does not
+sample native decoder/Rust threads or qualify a native OS bridge.
+
+Reports include per-process/tree CPU and RSS/PSS, average/p95 CPU, frame callback
+intervals/counters and actual media state, clock drift, bounded JS function
+samples, actual DOM mutations, long tasks where supported, HLS/SourceBuffer
+activity and Chromium layout/style/task counters. The Node relay round trip and
+message age are measured fixture IPC, not native OS bridge latency. Physical
+presentation, audible output, hardware decode, audio underruns and native CPU
+flamegraphs remain unavailable unless separately collected. An empty error list
+never proves these signals. No arbitrary CPU threshold is a CI acceptance gate.
 
 Repeat independently with `--engine webkit`, `--profile 1920x1080:30` and
 `1920x1080:60` as needed. Each evidence directory is unique; do not overwrite a
@@ -42,16 +121,18 @@ independent synthetic receiver and measurement driver are excluded.
 
 Presented video-frame callbacks, decoded/dropped counters, actual media clocks,
 pause/readiness state and delivered TS bytes are retained. Frame counters are
-plain JavaScript properties, never per-frame DOM mutations. A paused local video
-under admitted DLNA is recorded as paused; do not label that mode as an active
+plain JavaScript properties, never per-frame DOM mutations. Do not infer zero
+decoded work from a reset counter: the report's legacy
+`decoded` field is the browser's `totalVideoFrames`, not an independent decoder
+thread count. Seek/source changes may reset it and invalidate endpoint deltas.
+A local video paused under admitted DLNA is recorded as paused; do not label that mode as an active
 local preview. L0 uses the diagnostic pipeline endpoint with local playback;
 L1 uses the ordinary explicit player-output selection. Compare these different
 ownership modes explicitly. The dual-screen OS relay and DLNA renderer are
 local test fixtures, not a physical output path. WebKit's hardware H.264 plugin
 ranks and Chromium's acceleration are disabled for this software comparison.
 
-Use `BILIKARA_AV_DELAY_MATRIX=1` with
-`tests/presentation_timing_browser.test.mjs` for separate clock/PCM regressions,
+Run `tests/presentation_timing_browser.test.mjs` for its mandatory clock/PCM matrix,
 including repeated delay, pitch, paused seeks and foreground recovery. A
 performance sample does not replace those assertions or native acceptance.
 
