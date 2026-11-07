@@ -11,6 +11,16 @@ that desktop behavior baseline, including approved Preview 1 behavior and later
 changes. Remaining Python maintenance does not reopen the runtime migration or
 alter published Preview 2 tags/assets, storage paths or update contracts.
 
+The HTTP listener has two asynchronous I/O workers. Entry authorization, Remote
+admission, SSE/export admission and static-asset filesystem reads run in Tokio's
+blocking pool: waiting behind an AppState commit or slow disk must not occupy
+both network workers and stall otherwise independent sockets and deadlines.
+Media path checks and pin admission use the same blocking boundary. Media/SSE
+guards release immediately when the state lock is free; contended cancellation
+cleanup runs in the blocking pool and drains before Host shutdown.
+AppState still serializes and durably commits commands under its existing lock;
+this transport isolation does not shorten the underlying disk or upstream wait.
+
 LAN Remote links and QR codes use `http://<LAN address>:<port>/remote` without
 an invitation parameter. Opening `/remote` (also `/remote/` or `/remote.html`)
 establishes a Remote device cookie and then shows username registration, matching
@@ -267,6 +277,34 @@ Chromium and WebKit, including editable waiting ratings, shared control geometry
 seek gestures and download status across isolated audience storage. Its shell
 relay fixture does not qualify native monitor/fullscreen or device behavior.
 
+On macOS, audience placement resolves the selected display UUID to its current
+`NSScreen` and covers that screen with an owned borderless window, without
+creating a native fullscreen Space. Its window level covers the menu bar and
+Dock, it remains visible when Host takes focus, and its collection behavior
+keeps it on the selected display across Spaces. No application-wide presentation
+options are changed. Apply the screen frame synchronously on the AppKit main
+thread in AppKit points, order the window without taking key focus, then verify
+its actual `screen`. Do not convert through the previous backing scale or enter
+native fullscreen after placement, which can choose the active display again.
+Closing the audience window retires these per-window settings. Missing or
+changed displays enter the existing activation recovery path. Verify placement
+with mixed Retina/external scales and displays to the left or above the primary;
+cross-target Rust checks and browser fixtures do not qualify OS window behavior.
+
+The macOS Host retains a transparent native titlebar with its title hidden.
+AppKit owns its traffic lights and titlebar dragging, including activation and
+dragging from an inactive window. Do not add a second 30px strip inside the
+WebView. Its native background follows the Host surface color on theme changes.
+Spare toolbar content also supports Tauri dragging; buttons, links,
+menus and help retain their own pointer interactions. Windows retains its
+separate native caption row and double-click owner.
+Runtime selects on macOS retain native HTML select popup and keyboard behavior,
+while CSS paints the closed 34px/13px field as the shared pill with a
+non-interactive arrow. Keep their wrapper unclipped for focus geometry. Other
+desktop WebViews retain their existing native painting. Shared surfaces declare `color-scheme`
+explicitly: light for the light theme, dark for dark/blue. Native form controls
+and popup choices follow the app's selected theme even when the system differs.
+
 `npm run test:playback-restart` separately checks the shared restart affordances
 against an actual isolated native Host, Chromium and short synthetic media.
 Linux needs the cached native alpha build, the pinned Chromium and a test-only
@@ -446,19 +484,93 @@ signature and public archive round-trip gates remain required on macOS. AWS CLI
 still uses third-party Python for the independent R2 publication jobs. The broader
 CI Python setup stays while source/FFI and other live verification consumers remain.
 
-Pushes to `main` run desktop validation and nonpublishing bundles to maintain
-default-branch caches; documentation/image-only pushes skip these builds.
+`.github/workflows/ci.yml` is the sole PR/branch code-validation entry and also
+provides a manual Full check without a scope selector. CI never schedules install-package jobs.
+Its `Gate` rejects failed, cancelled, missing or unexpectedly skipped
+work. A branch push with an open PR for that same SHA defers to the PR's checks;
+old PR checks can be cancelled without cancelling manual bundles or tag releases.
+Announcement and Remote deployment validation run under CI; their separate
+production publication/sync workflows retain controlled push/manual triggers.
+
+Automatic CI uses Fast for plain documentation and shared HTML/CSS changes,
+including rendered layout/fullscreen smoke. Rust, JavaScript logic, iOS/native
+sources, icons, build scripts, dependencies and unknown/incomplete diffs select
+Full. Manual CI always selects Full; only PR/push comparisons select Fast. Full remains mandatory for
+tag releases. Fast retains actual shared Host/state tests, native import/lock
+checks, decoded Chromium/WebKit playback and platform construction contracts;
+it omits the Python/FFI release suite and the full libav/browser/media matrix.
+
+Test ownership follows execution platform and feature set:
+
+| Checks | Owner | Scope / reason |
+| --- | --- | --- |
+| Shared `test:frontend` and pure `rust/` fmt/clippy/test | Desktop Linux | Once per CI run; repeated ESM imports inside that process are cached |
+| Runtime default-feature tests and Tauri native tests | Linux/Windows/macOS jobs | Native filesystem/process/platform contracts |
+| Runtime `native-host` checks | Mobile Linux/macOS | Actual in-process HTTP/startup tests; distinct from desktop default features |
+| Decoded playback and shared UI smoke | Desktop Linux | Fast and Full; Chromium/Linux WebKit do not qualify device WebViews |
+| libav/Pure K/complete rendered media suites | Desktop Linux | Full; actual prepared companion remains required |
+| Python/FFI suite | Linux/Windows/macOS jobs | Full; consumes each OS's release `rust` and Runtime cdylibs |
+| Android libav/ABI and signer checks | Mobile Android | Pinned NDK/tools, independently of desktop E2E |
+| iOS application target check | Mobile iOS | Actual iOS crate and Apple SDK; no IPA export or signing |
+| Architecture/signature/extracted package qualification | Selected Bundle jobs | Every selected target, including manual builds |
+
+The native CI jobs build release cdylibs only for Full's FFI consumers. They do not
+build an unused release Tauri shell; actual shell execution uses the qualified
+extracted Bundle. Playback evidence uploads only on failure, for three days.
+Use job/step timing and account Billing to measure savings; source-level call
+counts and warm local builds are not runner-minute or billing measurements.
+
+`.github/workflows/bundle.yml` is the manual build/download entry. `target=all`
+builds Windows x64/ARM64, macOS ARM64/Intel, Android ARM64 and unsigned iOS ARM64.
+Choose `desktop`, `mobile`, `windows`, `macos`, `android` or `ios` to limit the
+native matrix. `scripts/ci_targets.mjs` owns the target map and rejects invalid
+targets or signing/target combinations before allocating build runners.
+Bundle jobs do not depend on the full Desktop/Mobile test matrices. They retain
+tool preparation, native build, extraction, architecture and signature checks;
+each successful target uploads its own artifact for seven days even if another
+fails. Optional iOS Ad Hoc requires an explicit trusted manual branch build and
+valid Apple credentials. Unsigned IPA still requires independent resigning.
+
+Full CI uses one static five-platform matrix: Linux, Windows, macOS, Android
+and iOS. Docs and frontend plans skip that whole matrix before expansion. Gate
+checks the actual complete matrix definition and its required aggregate result;
+no platform-result API lookup is needed. The matrix is a JSON flow mapping
+(valid YAML) so Gate can check the exact executed target set without another
+parser dependency. Changes to that definition must update its completeness tests.
+Keep `Gate` as the required CI status check: platform checks are intentionally
+absent on Docs/Frontend runs. Existing rules requiring individual platform checks
+must migrate to Gate; verify repository/ruleset settings before integration. Bundle uses one matrix containing only the
+selected package targets and never requires CI. Four local composite actions
+reuse the existing native checking and packaging steps. Its **Build target** choice
+(default **All**) builds all six packages; Desktop, Mobile or a platform narrows
+that set. No text label is required: branch/commit names are automatic and do not
+change embedded application versions or publish a release. **Sign iOS for
+registered devices** is off by default. Enabling it additionally produces an
+Ad Hoc IPA using Apple credentials and a registered-device provisioning profile;
+it does not enable App Store distribution. The unsigned IPA is always built.
+
+Release requires Full CI, then all six Bundles, then verification before any
+publication. Distributables are four desktop archives, the release-signed Android
+APK, the original device ARM64 unsigned IPA and SHA256SUMS. The IPA is a direct
+`.ipa` GitHub Release/R2 asset, named `bilikara-v0.9.0-ios-arm64-unsigned.ipa` for
+that tag. It normally requires signing before installation; it is not App Store,
+TestFlight or Ad Hoc signed. The collector verifies the exact Actions run/commit,
+ZIP safety, application identity/version, device architecture, unsigned status
+and original-byte checksum before staging the complete asset set. Build evidence
+remains available in the iOS Actions artifact.
+
+Draft assets and R2 asset bytes are read
+back and verified before publishing. A moved tag or existing published release
+fails closed. The R2 latest alias moves after the full mirror verification gate.
+Release upload and R2 mirroring remain tag-only. No custom Summary
+job or Summary artifact is scheduled. Use the native Actions Artifacts list to
+download packages and logs/step timings to inspect caches and runner time.
 Rustup uses a job-local home containing the repository-pinned toolchain, leaving
 preinstalled runner toolchains untouched and outside the Rust cache identity.
-The single `.github/workflows/ci-bundle.yml` entry starts independent Desktop and
-Mobile groups at the caller's commit. Each group runs its own Test matrix before
-its Bundle matrix; neither waits for the other group's tests. Desktop keeps the
-native Windows/macOS package matrix. Mobile currently validates on Linux and
-bundles Android ARM64, including actual APK signing checks; iOS is not yet part
-of the matrix. The reusable `desktop.yml` and `mobile.yml` have no standalone
-push/PR/manual triggers. Tag publication still waits for both groups; ordinary
-branch runs only upload workflow artifacts. Cache summaries report hits and keys, while
-the restore/save steps and job timings remain the source for performance diagnosis.
+On disposable GitHub-hosted Linux runners, SDK Manager removes unused Android
+SDK packages before desktop checks. Android jobs retain NDK 27, API 36 and build
+tools 36.0.0. This preparation refuses local/self-hosted machines and unexpected
+SDK roots; it does not remove Cargo outputs or application data.
 
 `npm run test:native-http` runs the current Rust HTTP integration binary with
 diagnostic requests terminated by a local rejecting proxy. `test:remote-load`
@@ -1048,6 +1160,26 @@ An explicit forced repair retires the old playback program immediately; a
 failed repair does not republish it. Automatic preference replacements keep
 the readable artifact until a validated replacement is published, including
 when the replacement attempt fails. The native package tests cover both paths.
+
+Part audio supplements use `POST /api/cache/audio` with the current item ID,
+exact item incarnation and available page number. Native AppState owns the
+operation and its progress; no song admission/requester change occurs. One
+reserved supplement worker operates beside the primary and urgent workers.
+Repeated requests for the same active page share one attempt. A different
+supplement, or a supplement requested during the same item's full refresh,
+reports busy. Ordinary force refresh retains its cancellation behavior;
+other ordinary and urgent cache work continues independently.
+
+The producer reuses verified existing video/audio bytes through hard links or
+copies, downloads only the missing audio and atomically publishes a complete
+immutable candidate group. Existing committed groups are not modified. Reuse
+preserves existing variant IDs and labels even if page ordering changes. Cache
+attempt tokens, item incarnation, publication identity and media validation
+remain mandatory. The candidate is retained by the artifact lifetime manager,
+while the current playback program stays unchanged. Explicit audio selection
+adopts the candidate through the existing versioned audio-selection command.
+Unselected candidates are transient to the live session; reopening drops this
+projection, while an adopted group follows ordinary checkpoint/cache recovery.
 
 ### Audit compatibility decisions
 

@@ -139,7 +139,7 @@
 桌面版使用 Rust 后端与 Tauri 窗口，Host / Remote 共用网页界面。构建步骤、依赖和运行参数集中在以下文档：
 
 - [原生桌面与本地构建](docs/native-desktop.md) · [macOS 开发包验收](docs/macos_testing.md)
-- [媒体依赖与打包](media-libav/PACKAGING.md) · [构建工作流](.github/workflows/ci-bundle.yml)
+- [媒体依赖与打包](media-libav/PACKAGING.md) · [构建工作流](.github/workflows/bundle.yml)
 - [版本路线图](docs/version-roadmap.md) · [共享曲库](docs/shared-catalog.md)
 - [Source 开发与兼容边界](docs/source-compatibility.md)
 
