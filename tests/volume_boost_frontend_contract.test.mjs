@@ -44,7 +44,7 @@ let result;
 result = (await this.run_node(concatenate(concatenate(concatenate(`
 const state = {localPlayerVolume: 1, localPlayerMuted: false, volumeSaveSeq: 0,
   playerSettingsEchoSuppressUntil: 0, data: {player_settings: {volume_percent: 100, is_muted: false}}};
-const playerSettingsEchoSuppressMs = 1800;
+function recordPlaybackTrace() {}
 function persistLocalVolumePreferences() {}
 function activeLocalPlayerElements() { return {}; }
 function applyStoredVolumeToMountedPlayer() {}
@@ -68,6 +68,7 @@ async test_gain_survives_native_volume_echo_mute_pitch_and_media_replacement() {
 let result;
 result = (await this.run_node(concatenate(concatenate(concatenate(`
 const assert = require("node:assert/strict");
+function recordPlaybackTrace() {}
 let created = 0;
 class Node {
   constructor(name) { this.name = name; this.connections = []; }
@@ -119,6 +120,9 @@ syncSplitPlayerVolumeFromVideo(video, audio);
 assert.equal(state.localPlayerVolume, 5, "programmatic native-volume echo must not reset gain");
 video.muted = true;
 syncSplitPlayerVolumeFromVideo(video, audio);
+assert.equal(state.localPlayerMuted, false);
+state.localPlayerMuted = true;
+applyStoredVolumeToSplitPlayer(video, audio);
 assert.equal(state.localPlayerVolume, 5);
 assert.equal(audio.muted, true);
 applyKeyShiftToAudio(audio, 3);
@@ -138,7 +142,10 @@ assert.equal(replacement.volume, 1);
 assert.equal(replacement.bilikaraVolumeGain.gain.value, .4);
 video.volume = .25;
 syncSplitPlayerVolumeFromVideo(video, replacement);
-assert.equal(state.localPlayerVolume, .25, "real native-control changes still work");
+assert.equal(state.localPlayerVolume, .4, "observation does not create volume intent");
+state.localPlayerVolume = .25;
+applyStoredVolumeToSplitPlayer(video, replacement);
+assert.equal(state.localPlayerVolume, .25, "explicit intent still controls the retained gain");
 assert.equal(replacement.volume, 1);
 assert.equal(replacement.bilikaraVolumeGain.gain.value, .25);
 assert.deepEqual(errors, []);

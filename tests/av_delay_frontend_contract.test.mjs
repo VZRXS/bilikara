@@ -52,7 +52,8 @@ assert.ok(contains("#remote-av-sync-panel .remote-input-wrap input[type=\"number
 },
 async test_host_and_remote_contextual_info_markup_is_accessible_and_audited() {
 let advanced, metadata_popover, playback_controls, playback_sheet, volume_panel;
-advanced = this.host_html.slice(sourceIndex(this.host_html, "id=\"cache-advanced-inline-view\""), sourceIndex(this.host_html, "class=\"cache-panel-footer\""));
+const advancedStart = sourceIndex(this.host_html, "id=\"cache-advanced-inline-view\"");
+advanced = this.host_html.slice(advancedStart, this.host_html.indexOf("</section>", advancedStart));
 assert.deepEqual(countOccurrences(advanced, "class=\"cache-advanced-info-button\""), 4);
 assert.deepEqual(countOccurrences(advanced, "class=\"contextual-info-glyph\" aria-hidden=\"true\">i</span>"), 4);
 assert.deepEqual(countOccurrences(advanced, "data-i18n-aria-label=\"common.moreInfo\""), 4);
@@ -181,7 +182,7 @@ async test_api_post_aborts_a_stalled_av_delay_request() {
 let api_post_source, childResult, end, end_marker, fixtures, script, source, start;
 fixtures = [[this.host_js, "function submitSongRating"], [this.remote_js, "function normalizedRemoteIdentity"]];
 for (const [source, end_marker] of iterableValues(fixtures)) {
-start = sourceIndex(source, "async function apiPost");
+start = sourceIndex(source, source === this.host_js ? "async function fetchHostApi" : "async function apiPost");
 end = sourceIndex(source, end_marker, start);
 api_post_source = source.slice(start, end);
 script = (`

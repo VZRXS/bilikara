@@ -118,7 +118,11 @@ function nativePause({android, seeking, playing}) {
     "Seeking a paused song must not resume it");
   assert.equal(nativePause({android: true, seeking: false, playing: true}), false,
     "Native play/pause button still records an explicit pause");
-  assert.equal(nativePause({android: false, seeking: true, playing: true}), false,
-    "Desktop native pause behavior is unchanged");
-  console.log("PASS shared Host: Android double-tap playback; single tap/controls and desktop unchanged");
+  assert.equal(nativePause({android: false, seeking: true, playing: true}), true,
+    "Desktop native scrub pause must preserve play intent just as on Android");
+  assert.equal(nativePause({android: false, seeking: true, playing: false}), false,
+    "Desktop seeking of a paused song never invents a resume intent");
+  assert.equal(nativePause({android: false, seeking: false, playing: true}), false,
+    "The desktop native pause button still records an explicit pause outside scrubbing");
+  console.log("PASS shared Host: native scrub intent; Android double-tap and desktop click controls");
 })().catch(error => {console.error(error); process.exitCode = 1;});

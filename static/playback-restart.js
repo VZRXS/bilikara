@@ -203,11 +203,16 @@
     }
     function positionPopup() {
       const bounds = anchor.getBoundingClientRect(), width = popup.offsetWidth, height = popup.offsetHeight;
-      const targetInset = (height - bounds.height) / 2;
-      const parent = group.getBoundingClientRect();
-      // The right target stays over Next; only the restart target expands left.
-      popup.style.left = `${bounds.right + targetInset - width - parent.left}px`;
-      popup.style.top = `${bounds.top - targetInset - parent.top}px`;
+      // A capsule extends 4px beyond Next. An absolute child contributes those
+      // pixels to a fitting primary scroller, adding a scrollbar and shifting
+      // Next by half its width. Fixed positioning retains the local stacking
+      // order while keeping transient paint out of the scrollable layout.
+      popup.style.left = '0px'; popup.style.top = '0px';
+      const origin = popup.getBoundingClientRect();
+      const scaleX = origin.width / width || 1, scaleY = origin.height / height || 1;
+      const targetInset = (origin.height - bounds.height) / 2;
+      popup.style.left = `${(bounds.right + targetInset - origin.width - origin.left)/scaleX}px`;
+      popup.style.top = `${(bounds.top - targetInset - origin.top)/scaleY}px`;
     }
     function scheduleHint() {
       if (hintActive) {

@@ -81,7 +81,8 @@ assert.ok(contains("addMountedPlayerListener(audio, \"ended\"", this.app_source)
 async test_video_ended_defers_to_audio_and_audio_completion_advances_once() {
 let handler;
 handler = (await this.function_source("async function handleSplitVideoEnded", "function holdVideoForAudio"));
-assert.ok(contains("if (!audio.ended)", handler));
+assert.ok(contains("if (!splitAudioOutputEnded(audio))", handler));
+assert.ok(contains("audio.ended || audio.bilikaraAudioClock?.isOutputComplete?.()", handler));
 assert.ok(contains("\"defer-video-recovery\"", handler));
 assert.ok(contains("state.localPlaybackEndHandled", handler));
 assert.deepEqual(countOccurrences(handler, "handleLocalPlaybackEnded(\"media-ended\", endingSession)"), 1);
@@ -115,10 +116,12 @@ assert.ok(contains("resyncMountedLocalPlayerIfOffsetChanged(previousOffsetMs)", 
 assert.ok(contains("resyncMountedLocalPlayerIfOffsetChanged(previousOffsetMs)", snapshot_handler));
 resync_handler = (await this.function_source("function resyncMountedLocalPlayerForOffsetChange", "function applyStoredVolumeToSinglePlayer"));
 assert.ok(contains("Number(video.currentTime || 0) - currentAvOffsetSeconds()", resync_handler));
-assert.ok(contains("setMediaCurrentTime(audio, targetAudioTime)", resync_handler));
+assert.ok(contains("setMediaCurrentTime(audio, targetAudioTime, localPlayerForceSyncEpsilonSeconds,", resync_handler));
+assert.ok(contains("shouldContinuePlaying && rawTargetAudioTime >= 0", resync_handler));
+assert.ok(contains("state.hostPlaybackSession?.logicalPlayIntent !== false", resync_handler));
 assert.ok(contains("\"av-delay-audio-resync\"", resync_handler));
 assert.ok(contains("if (Number(previousOffsetMs) === currentAvOffsetMs())", resync_handler));
-assert.deepEqual(countOccurrences(resync_handler, "resyncMountedLocalPlayerForOffsetChange();"), 1);
+assert.deepEqual(countOccurrences(resync_handler, "resyncMountedLocalPlayerForOffsetChange(previousOffsetMs);"), 1);
 assert.ok(!contains("beginSplitPlayerSeek", resync_handler));
 assert.ok(!contains("seekVideoForNavigation", resync_handler));
 assert.ok(!contains("setMediaCurrentTime(video", resync_handler));

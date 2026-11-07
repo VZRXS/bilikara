@@ -62,7 +62,7 @@ for (const layout of ['portrait','landscape']) test(`real Remote ${layout} resta
     player.on('requestfinished',request=>pendingStatus.delete(request));
     player.on('requestfailed',request=>pendingStatus.delete(request));
     await remote.goto(host.base+'/remote');
-    await remote.waitForFunction(()=>state.data?.session_user_entries?.length>0);
+    await remote.waitForFunction(()=>typeof state !== 'undefined' && state.data?.session_user_entries?.length>0);
     await remote.locator('#remote-identity-input').fill('Restart fixture');
     await remote.locator('#remote-identity-submit').click();
     await remote.locator('#remote-identity-modal').waitFor({state:'hidden'});
@@ -348,6 +348,7 @@ for (const layout of ['portrait','landscape']) test(`real Remote ${layout} resta
         await remote.locator('#playback-sheet-title').tap();
         await menu.waitFor({state:'hidden'});
         const samples=await frames;
+        writeFileSync(path.join(evidence,`next-exit-${size}.json`),JSON.stringify(samples,null,2),'utf8');
         assert.ok(samples.every(sample=>sample.opacity==='1'&&sample.visibility==='visible'),'Next never fades during capsule exit');
         assert.ok(samples.every(sample=>JSON.stringify(sample)===JSON.stringify(samples[0])),'Next geometry, fill and outline remain fixed at every exit frame');
         assert.equal(commands.length,beforeHold,'Outside dismissal never mutates playback');

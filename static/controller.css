@@ -285,10 +285,10 @@ body.is-cursor-hidden * {
 }
 
 /* Android audience output is controlled by the Host, including its QR panel. */
-:root[data-output-platform="android"] #controller-exit { display: none; }
-:root[data-output-platform="android"] .presentation-output-control { width: 0; height: 0; }
-:root[data-output-platform="android"] .presentation-output-remote-popover { top: 0; }
-:root[data-output-platform="android"] .presentation-output-control:not(.is-qr-pinned) .presentation-output-remote-popover {
+:root:is([data-output-platform="android"], [data-output-platform="ios"]) #controller-exit { display: none; }
+:root:is([data-output-platform="android"], [data-output-platform="ios"]) .presentation-output-control { width: 0; height: 0; }
+:root:is([data-output-platform="android"], [data-output-platform="ios"]) .presentation-output-remote-popover { top: 0; }
+:root:is([data-output-platform="android"], [data-output-platform="ios"]) .presentation-output-control:not(.is-qr-pinned) .presentation-output-remote-popover {
   visibility: hidden;
   opacity: 0;
   pointer-events: none;

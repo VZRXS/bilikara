@@ -50,7 +50,7 @@
       session.seekResumeAfterSettle = false;
       session.seekResumePending = false;
       clearSplitPlaybackStartupWatchdog(session);
-      clearAndroidAudioClockRecovery(session);
+      clearSplitAudioClockRecovery(session);
       if (session.hiddenPauseTimer) window.clearTimeout(session.hiddenPauseTimer);
       session.hiddenPauseTimer = null;
       delete video.dataset.bilikaraInternalPlay;

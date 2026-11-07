@@ -25,6 +25,15 @@
   const automaticEvents = [];
   function refreshAutomatic(slider) { automaticRenderers.get(slider)?.(); }
 
+  function setText(node, text) {
+    if (node.textContent === text) return;
+    // WebKit can cancel a press if its hit text node is removed before release.
+    // Keep that node through live snapshots, including actual value changes.
+    const child = node.firstChild;
+    if (child?.nodeType === 3 && !child.nextSibling) child.nodeValue = text;
+    else node.textContent = text;
+  }
+
   function resetForSong(slider, percent) {
     if (slider) songResetHandlers.get(slider)?.(bounded(percent));
   }
@@ -37,7 +46,7 @@
     slider.setAttribute("aria-valuenow", String(toPosition(current)));
     slider.setAttribute("aria-valuetext", `${current}%`);
     slider.closest(".volume-control")?.classList.toggle("is-boosted", current > 100);
-    value.textContent = `${current}%`;
+    setText(value, `${current}%`);
   }
 
   function bind({ slider, value, t, getValue, onInput, onCommit, getAutomatic, onAutomatic, bindInfo, closeInfo }) {
@@ -158,6 +167,7 @@
         </div>
         <button type="button" class="${resetClass}" data-auto-reference hidden></button>
         <button type="button" class="${resetClass}" data-auto-resume hidden></button>
+        <button type="button" class="${resetClass}" data-auto-cancel hidden></button>
       </section>
       <p class="volume-adjust-error" role="alert" hidden></p>
     </form>`;
@@ -223,7 +233,7 @@
       const left = viewport?.offsetLeft || 0;
       const top = viewport?.offsetTop || 0;
       const box = { width: dialog.offsetWidth, height: dialog.offsetHeight };
-      const thumbX = anchor.left + 10 + Math.max(0, anchor.width - 20) * toPosition(getValue()) / 100;
+      const thumbX = anchor.left + 10 + Math.max(0, anchor.width - 20) * openingPosition / 100;
       const x = (isRemote ? thumbX + 20 : anchor.right) - box.width;
       let y = anchor.top - box.height - 8;
       if (isRemote && y < top + 12 && anchor.bottom + box.height + 8 <= top + height - 12) {
@@ -233,7 +243,8 @@
       dialog.style.top = `${Math.max(top + 12, Math.min(y, top + height - box.height - 12))}px`;
     };
     function dismiss() {
-      if (busy || autoBusy || closing || !dialog.open) return;
+      if (busy || closing || !dialog.open) return;
+      uiLease += 1;
       closeInfo?.();
       closing = true;
       dialog.classList.add("closing");
@@ -246,11 +257,16 @@
     }
     function openDialog() {
       if (dialog.open) return;
-      heading.textContent = t("player.volumeAdjust");
+      uiLease += 1;
+      openingPosition = toPosition(getValue());
+      const phoneHost = document.documentElement.dataset.hostPlatform === "android"
+        && document.documentElement.dataset.hostLayout === "portrait";
+      close.autofocus = isRemote || phoneHost;
+      setText(heading, t("player.volumeAdjust"));
       dialog.setAttribute("aria-label", t("player.volumeAdjust"));
       input.setAttribute("aria-label", t("player.volumeTag"));
       close.setAttribute("aria-label", t("common.close"));
-      reset.textContent = t("common.resetShort");
+      setText(reset, t("common.resetShort"));
       errorMessage.hidden = true;
       input.value = String(bounded(getValue()));
       draftDirty = false;
@@ -265,7 +281,7 @@
       position();
       for (const [element, top, left] of scrollers) element.scrollTo({top, left, behavior: "instant"});
       // Opening the mobile editor should not immediately summon its keyboard.
-      if (isRemote) close.focus({ preventScroll: true });
+      if (isRemote || phoneHost) close.focus({ preventScroll: true });
       else {
         input.focus({ preventScroll: true });
         input.select();
@@ -273,7 +289,7 @@
     }
     value.addEventListener("click", openDialog);
     close.addEventListener("click", async () => {
-      if (busy || autoBusy || closing) return;
+      if (busy || closing) return;
       if (input.validity.valid && bounded(input.value) !== bounded(getValue())) {
         await applyValue(bounded(input.value), close);
         if (!errorMessage.hidden) return;
@@ -293,7 +309,7 @@
       }
     });
     dialog.addEventListener("cancel", (event) => { event.preventDefault(); dismiss(); });
-    dialog.addEventListener("close", () => value.setAttribute("aria-expanded", "false"));
+    dialog.addEventListener("close", () => { uiLease += 1; value.setAttribute("aria-expanded", "false"); });
     let backdropPressed = false;
     const trackBackdropPress = (event) => { backdropPressed = event.target === dialog; };
     dialog.addEventListener("mousedown", trackBackdropPress);
@@ -330,7 +346,7 @@
     input.addEventListener("change", applyInput);
     form.addEventListener("submit", (event) => { event.preventDefault(); applyInput(); });
     async function applyValue(percent, activeControl) {
-      if (busy || autoBusy || closing) return;
+      if (busy || closing) return;
       input.value = String(percent);
       errorMessage.hidden = true;
       if (percent === bounded(getValue()) && !(getAutomatic?.()?.enabled && getAutomatic?.()?.calibrated)) {
@@ -399,7 +415,7 @@
       const reason = draft ? "draft" : automatic.reference_reason;
       const explanation = reason ? t(reasonKeys[reason] || reasonKeys.unavailable) : '';
       const labels = isRemote ? compactStatusKeys : statusKeys;
-      autoStatus.textContent = t(labels[status] || labels.off);
+      const statusText = t(labels[status] || labels.off);
       reference.title = explanation || t(automatic.calibrated ? 'automaticVolume.updateHint' : 'automaticVolume.referenceHint');
       reference.setAttribute('aria-label', `${reference.textContent} · ${reference.title}`);
       autoStatus.id = `${isRemote ? 'remote' : 'host'}-automatic-volume-status`;
@@ -426,10 +442,10 @@
         : { action, context: automatic.context };
       if (action === 'enable') recordAutomatic('request');
       autoBusy = true;
+      const lease = uiLease;
+      const epoch = songEpoch;
       errorMessage.hidden = true;
-      const controls = [...form.querySelectorAll('button, input')];
-      const disabled = controls.map(element => element.disabled);
-      controls.forEach(element => { element.disabled = true; });
+      control.disabled = true;
       control.setAttribute('aria-busy', 'true');
       renderAutomatic();
       try {
@@ -446,11 +462,13 @@
           errorMessage.hidden = false;
         }
       } finally {
-        controls.forEach((element, i) => { element.disabled = disabled[i]; });
         control.removeAttribute('aria-busy');
         autoBusy = false;
         renderAutomatic();
-        control.focus({preventScroll:true});
+        if (dialog.open && !closing && lease === uiLease && epoch === songEpoch
+          && (document.activeElement === dialog || document.activeElement === control)) {
+          (control.disabled ? close : control).focus({preventScroll:true});
+        }
       }
     }
     cancelAnalysis.addEventListener('click', async () => {

@@ -51,7 +51,7 @@ for (const forbidden of iterableValues(["createElement(\"audio\")", "/api/player
 assert.ok(!contains(forbidden, presentation_only));
 }
 assert.ok(contains("createElement(\"video\")", this.controller));
-assert.ok(contains("video.muted = true", this.controller));
+assert.ok(contains("video.muted = !scene.nativeOutput", this.controller));
 assert.ok(contains("BroadcastChannel", presentation_only));
 assert.ok(!contains("invoke(\"send_presentation_command\"", this.controller));
 },

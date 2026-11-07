@@ -26,7 +26,7 @@ function fixture(android = true, nativeBridge = false) {
     shouldHoldCurrentItemForTransition:()=>false,
     clearSplitPlaybackStartupWatchdog:()=>calls.push(["clear-watchdog"]),
     scheduleSplitPlaybackStartupWatchdog:()=>calls.push(["arm-watchdog"]),
-    clearAndroidAudioClockRecovery:()=>calls.push(["clear-audio-recovery"]),
+    clearSplitAudioClockRecovery:()=>calls.push(["clear-audio-recovery"]),
     reportPlayerStatus:()=>{calls.push(["status"]);return true;},
     clearPlayerFrameClickTimer:()=>calls.push(["clear-click"]),
     revealMountedPlayerControlsForUserInteraction:()=>calls.push(["reveal-controls"]),

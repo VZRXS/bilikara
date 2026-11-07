@@ -19,7 +19,7 @@ const localPlayerSeekSettleMaxMs = 1400;
 const splitPlaybackStartupWatchdogMs = 3000;
 const tauriMediaSessionPositionUpdateMs = 1000;
 const playerStatusMaxSeconds = 7 * 24 * 60 * 60;
-const mediaPlayPromisesInFlight = new WeakSet();
+const mediaPlayPromisesInFlight = new WeakMap();
 const audioVariantSwitchDebounceMs = 350;
 const playerSettingsEchoSuppressMs = 1800;
 const playerClickDelayMs = 220;
@@ -495,6 +495,8 @@ const state = {
   presentationOutputChannel: null,
   presentationOutputSenderId: `host-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
   presentationOutputSequence: 0,
+  presentationOutputLastPublication: null,
+  presentationOutputHeartbeatTimer: null,
   presentationOutputRelayPending: null,
   presentationOutputRelayInFlight: false,
   presentationHostControlBusy: false,
@@ -1418,12 +1420,12 @@ function isTauriWebKitRuntime() {
 function isAndroidNativePlaybackRuntime() {
   return typeof document !== "undefined"
     && document.documentElement?.dataset?.nativeHost === "true"
-    && document.documentElement?.dataset?.hostPlatform !== "desktop"
+    && document.documentElement?.dataset?.hostPlatform === "android"
     && typeof navigator !== "undefined"
     && /Android/i.test(navigator.userAgent || "");
 }
 
-function clearAndroidAudioClockRecovery(session = state.hostPlaybackSession) {
+function clearSplitAudioClockRecovery(session = state.hostPlaybackSession) {
   if (!session) {
     return;
   }
@@ -1451,8 +1453,16 @@ function isAudiencePlayerSurface() {
   return isPlayerPanelFullscreen();
 }
 
+function iosPlayerFullscreenPlatform() {
+  return document.documentElement?.dataset?.nativeHost === "true"
+    && document.documentElement?.dataset?.hostPlatform === "ios"
+    && window.BilikaraIosPlatform?.available?.() === true
+    && typeof window.BilikaraIosPlatform.setPlayerFullscreen === "function"
+    ? window.BilikaraIosPlatform : null;
+}
+
 function supportsPlayerFullscreen() {
-  if (typeof tauriInvoke() === "function") {
+  if (iosPlayerFullscreenPlatform() || typeof tauriInvoke() === "function") {
     return Boolean(elements.playerPanel);
   }
   return Boolean(
@@ -1472,9 +1482,11 @@ function canTogglePlayerFullscreen() {
   if (state.playerFullscreenTransitioning || presentationCompositionActive()) {
     return false;
   }
+  const item = state.data?.current_item;
+  const playable = Boolean(item);
   return state.presentationSession.phase === "inactive"
     && supportsPlayerFullscreen()
-    && (Boolean(state.data?.current_item) || isPlayerPanelFullscreen());
+    && (Boolean(playable) || isPlayerPanelFullscreen());
 }
 
 function tauriInvoke(capability = "desktop") {
@@ -1789,6 +1801,31 @@ function presentationSyncApi() {
   return window.BilikaraPresentationSync || null;
 }
 
+const presentationOutputClockIntervalMs = 250;
+const presentationOutputHeartbeatMs = 1000;
+
+function stopPresentationOutputHeartbeat() {
+  if (state.presentationOutputHeartbeatTimer !== null) {
+    window.clearInterval(state.presentationOutputHeartbeatTimer);
+    state.presentationOutputHeartbeatTimer = null;
+  }
+}
+
+function syncPresentationOutputHeartbeat() {
+  const session = state.presentationSession;
+  if (session.mode !== "localDualScreen" || !["activating", "active"].includes(session.phase)) {
+    stopPresentationOutputHeartbeat();
+    return;
+  }
+  if (state.presentationOutputHeartbeatTimer === null) {
+    // A live Host lease is independent of decoder readiness, media events,
+    // cache waits and paused playback. Keep the existing publication cadence.
+    state.presentationOutputHeartbeatTimer = window.setInterval(
+      () => publishPresentationOutputState(), presentationOutputClockIntervalMs,
+    );
+  }
+}
+
 function ensurePresentationOutputChannel() {
   const sync = presentationSyncApi();
   if (!sync) {
@@ -1803,7 +1840,7 @@ function ensurePresentationOutputChannel() {
       previous = candidate;
       // The initial scene can precede the new window's session initialization.
       // Replay after readiness, including when no song/state changes follow.
-      publishPresentationOutputState();
+      publishPresentationOutputState(undefined, { force: true });
     };
     state.presentationOutputReadyListener = ready;
     window.addEventListener("storage", event => {
@@ -1824,11 +1861,11 @@ function ensurePresentationOutputChannel() {
 function relayPresentationOutputState(envelope) {
   const invoke = tauriInvoke("presentation");
   if (typeof invoke !== "function") {
-    return;
+    return false;
   }
   state.presentationOutputRelayPending = { generation: state.presentationSession.generation, envelope };
   if (state.presentationOutputRelayInFlight) {
-    return;
+    return true;
   }
   const next = state.presentationOutputRelayPending;
   state.presentationOutputRelayPending = null;
@@ -1844,9 +1881,10 @@ function relayPresentationOutputState(envelope) {
         state.presentationOutputRelayPending = null;
       }
     });
+  return true;
 }
 
-function publishPresentationOutputState(session = state.hostPlaybackSession) {
+function publishPresentationOutputState(session = state.hostPlaybackSession, { force = false } = {}) {
   const sync = presentationSyncApi();
   if (
     !sync
@@ -1886,14 +1924,14 @@ function publishPresentationOutputState(session = state.hostPlaybackSession) {
     playbackRate: Math.max(0.1, Number((ownsAudio ? audio : video)?.playbackRate || 1)),
     seeking: ownsAudio ? Boolean(session.seekSettling) : Boolean(video?.seeking),
   };
-  const envelope = sync.makeEnvelope("master-state", {
+  const payload = {
     scene,
     clock,
     language: state.language,
     incomingRequest: state.presentationIncomingRequest || null,
     actionFeedback: state.presentationActionFeedback || null,
     remoteAccess: remoteAccessForPresentation(),
-    remoteMenuVisible: Boolean(window.BilikaraAndroidPresentation && state.remoteQrPinned),
+    remoteMenuVisible: Boolean((window.BilikaraNativePresentation || window.BilikaraAndroidPresentation) && state.remoteQrPinned),
     internetRemote: {
       active: Boolean(state.internetRemoteDisplay?.active),
       hint: String(state.internetRemoteDisplay?.hint || "").slice(0, 512),
@@ -1904,16 +1942,34 @@ function publishPresentationOutputState(session = state.hostPlaybackSession) {
         ? internetQrImage.slice(0, 524_288)
         : "",
     },
-  }, {
+  };
+  // Only the media clock needs periodic transport. Metadata and explicit
+  // playback changes must bypass that cadence, including an unchanged replay
+  // requested by a newly opened audience window.
+  const signature = JSON.stringify({
+    ...payload,
+    clock: { ...clock, mediaTime: undefined, sampledAt: undefined },
+  });
+  const previous = state.presentationOutputLastPublication;
+  const clockJumped = previous && Math.abs(
+    sync.predictedMediaTime(previous.clock, now) - clock.mediaTime,
+  ) > sync.softSyncThresholdSeconds;
+  const interval = clock.paused ? presentationOutputHeartbeatMs : presentationOutputClockIntervalMs;
+  if (!force && previous?.signature === signature && !clockJumped
+    && now - previous.sentAt < interval) return false;
+  state.presentationOutputLastPublication = { signature, clock, sentAt: now };
+  const envelope = sync.makeEnvelope("master-state", payload, {
     senderId: state.presentationOutputSenderId,
     sequence: ++state.presentationOutputSequence,
-    sentAt: Date.now(),
+    sentAt: now,
   });
-  if (window.BilikaraAndroidPresentation) {
-    window.BilikaraAndroidPresentation.postMaster(envelope);
+  if ((window.BilikaraNativePresentation || window.BilikaraAndroidPresentation)) {
+    (window.BilikaraNativePresentation || window.BilikaraAndroidPresentation).postMaster(envelope);
     return true;
   }
-  relayPresentationOutputState(envelope);
+  // Native WebViews have an explicit relay. Repeating the same large scene
+  // through browser storage synchronously blocks both windows for no benefit.
+  if (relayPresentationOutputState(envelope)) return true;
   ensurePresentationOutputChannel()?.postMessage(envelope);
   if(nativeOutput)return true; // The private live URI never enters browser storage.
   try {
@@ -2107,6 +2163,7 @@ function applyPresentationSession(candidate) {
     state.presentationHostReadyKey = "";
   }
   state.presentationSession = session;
+  syncPresentationOutputHeartbeat();
   state.presentationLastAppliedCommandSequence = Math.max(
     state.presentationLastAppliedCommandSequence,
     session.lastAppliedCommandSequence,
@@ -3058,8 +3115,7 @@ function hostPlaybackSessionObservedPlaying(
     && session.video === video
     && session.audio === audio
     && isActiveSplitPlayer(video, audio)
-    && !video.paused
-    && !audio.paused
+    && ((!video.paused && !audio.paused) || audio.bilikaraAudioClock?.hasPlayingTail?.())
   );
 }
 
@@ -3152,11 +3208,15 @@ function renderPresentationHostAnnouncement() {
     return null;
   }
   overlay.classList.add("presentation-host-next-song-overlay");
-  renderer.renderOverlay(overlay, presentationHostAnnouncementSnapshot(), {
-    manageVisibility: true,
-    now: 0,
-    primaryIndex: state.data?.playlist?.length ? 1 : null,
-  });
+  const model = presentationHostAnnouncementSnapshot();
+  if (overlay.bilikaraPresentationModel !== model) {
+    renderer.renderOverlay(overlay, model, {
+      manageVisibility: true,
+      now: 0,
+      primaryIndex: state.data?.playlist?.length ? 1 : null,
+    });
+    overlay.bilikaraPresentationModel = model;
+  }
   return overlay;
 }
 
@@ -3216,7 +3276,11 @@ function renderPresentationHostSurface(session = state.hostPlaybackSession) {
   if(preview)preview.muted=presentationCompositionActive();
   const active = network || (typeof presentationCompositionActive === "function"
     ? presentationCompositionActive()
-    : false;
+    : false);
+  const showTransport = active;
+  const layoutChanged = document.body?.classList.contains("is-presentation-control-host") !== active;
+  document.body?.classList.toggle("is-presentation-control-host", active);
+  if (layoutChanged && typeof schedulePersistentStageMeasurement === "function") schedulePersistentStageMeasurement();
   const currentItem = state.data?.current_item || null;
   const playback = network ? {
     paused: !output.desired_playing,
@@ -3233,7 +3297,7 @@ function renderPresentationHostSurface(session = state.hostPlaybackSession) {
     }
   }
   if (elements.presentationHostControls) {
-    elements.presentationHostControls.hidden = !active;
+    elements.presentationHostControls.hidden = !showTransport;
   }
   const playLabel = playback.paused ? t("controller.play") : t("controller.pause");
   setTextContent(
@@ -3254,20 +3318,20 @@ function renderPresentationHostSurface(session = state.hostPlaybackSession) {
       ?.classList.toggle("hidden", playback.paused);
   }
   const hasPlayableMedia = Boolean(
-    active
+    showTransport
     && currentItem
-    && session?.readyCommitted
-    && isCurrentHostPlaybackSession(session, session.video, session.audio),
+    && (network || (session?.readyCommitted
+      && isCurrentHostPlaybackSession(session, session.video, session.audio))),
   );
   if (elements.presentationHostPlay) {
-    elements.presentationHostPlay.disabled = !hasPlayableMedia
-      || state.presentationHostControlBusy;
+    elements.presentationHostPlay.disabled = !(hasPlayableMedia || (showTransport && canRetryHostPlaybackReadiness(session)))
+      || busy;
   }
   const durationAvailable = Number(playback.durationSeconds || 0) > 0;
   for (const button of [elements.presentationHostBack, elements.presentationHostForward]) {
     if (button) {
       button.disabled = !hasPlayableMedia
-        || state.presentationHostControlBusy;
+        || busy;
     }
   }
   if (elements.presentationHostProgress) {
@@ -3285,12 +3349,12 @@ function renderPresentationHostSurface(session = state.hostPlaybackSession) {
   if (elements.presentationHostNext) {
     elements.presentationHostNext.disabled = !active
       || !playback.canSkip
-      || state.presentationHostControlBusy;
+      || busy;
   }
   playbackRestartMenu?.refresh();
 }
 
-function publishPresentationPlaybackState(session = state.hostPlaybackSession) {
+function publishPresentationPlaybackState(session = state.hostPlaybackSession, { force = false } = {}) {
   const invoke = tauriInvoke("presentation");
   const capturedVideo = session?.video;
   const capturedAudio = session?.audio;
@@ -3316,9 +3380,9 @@ function publishPresentationPlaybackState(session = state.hostPlaybackSession) {
     generation: state.presentationSession.generation,
     playbackGeneration: session?.playbackGeneration ?? null,
     playbackProgram: session?.playbackProgram ?? null,
-    playbackState,
+    playbackState: { ...playbackState, currentTimeSeconds: Math.floor(playbackState.currentTimeSeconds) },
   });
-  if (signature === state.presentationPlaybackPublishSignature) {
+  if (!force && signature === state.presentationPlaybackPublishSignature) {
     return state.presentationPlaybackPublishPromise || Promise.resolve(null);
   }
   state.presentationPlaybackPublishSignature = signature;
@@ -3330,6 +3394,7 @@ function publishPresentationPlaybackState(session = state.hostPlaybackSession) {
     .then(() => {
       if (
         state.presentationSession.generation !== generation
+        || state.presentationPlaybackPublishSignature !== signature
         || (
           session
             ? !isCurrentHostPlaybackSession(session, capturedVideo, capturedAudio)
@@ -3373,6 +3438,7 @@ function tauriEventListen(capability = "desktop") {
 }
 
 function teardownLocalPresentationListeners() {
+  stopPresentationOutputHeartbeat();
   state.presentationUnlisteners.splice(0).forEach((unlisten) => {
     try {
       unlisten();
@@ -3438,7 +3504,7 @@ async function initializeLocalPresentation() {
     // A newly loaded audience page asks for the current output through the shell.
     const unlistenOutputRequest = await listen("bilikara-presentation-output-request", (event) => {
       if (Number(event?.payload?.generation) === state.presentationSession.generation) {
-        publishPresentationOutputState();
+        publishPresentationOutputState(undefined, { force: true });
       }
     });
     state.presentationUnlisteners.push(
@@ -3502,7 +3568,7 @@ function renderPlayerFullscreenButton() {
   const enabled = canTogglePlayerFullscreen();
   const label = active ? t("player.fullscreenExit") : t("player.fullscreen");
   const title = enabled
-    ? (active ? t("player.fullscreenRemoteExit") : t("player.fullscreenEnterLabel"))
+    ? (active ? t("player.fullscreenExit") : t("player.fullscreenEnterLabel"))
     : supportsPlayerFullscreen()
       ? t("player.fullscreenDisabled")
       : t("player.fullscreenUnsupported");
@@ -3518,7 +3584,7 @@ function renderPlayerFullscreenButton() {
   }
   setTextContent(elements.playerFullscreenLabel, label);
   setElementAttribute(button, "aria-pressed", String(active));
-  setElementAttribute(button, "aria-label", active ? t("player.fullscreenRemoteExit") : title);
+  setElementAttribute(button, "aria-label", active ? t("player.fullscreenExit") : title);
   setElementTitle(button, active ? "" : title);
   syncPlayerFullscreenExpandedWidth();
   if (!active) {
@@ -3532,22 +3598,6 @@ function setPlayerFullscreenRemotePinned(pinned) {
   elements.playerFullscreenControl?.classList.toggle(
     "is-qr-pinned",
     state.playerFullscreenRemotePinned,
-  );
-  elements.playerFullscreenButton?.setAttribute(
-    "aria-expanded",
-    String(state.playerFullscreenRemotePinned),
-  );
-}
-
-function playerFullscreenActivationUsesTouch(event) {
-  const pointerType = state.playerFullscreenLastPointerType;
-  state.playerFullscreenLastPointerType = "";
-  if (pointerType) {
-    return pointerType === "touch";
-  }
-  return Boolean(
-    event?.detail
-    && window.matchMedia?.("(hover: none), (pointer: coarse)")?.matches,
   );
 }
 
@@ -3586,10 +3636,12 @@ async function togglePlayerFullscreen() {
   hideMountedPlayerControls();
   state.playerFullscreenTransitioning = true;
   state.playerFullscreenRevision += 1;
+  const revision = state.playerFullscreenRevision;
   renderPlayerFullscreenButton();
   try {
     let changed;
-    if (typeof tauriInvoke() === "function") {
+    const iosPlatform = iosPlayerFullscreenPlatform();
+    if (iosPlatform || typeof tauriInvoke() === "function") {
       // Desktop has one native fullscreen owner, just like dual-screen output.
       // DOM fullscreen also drives the WebView2 window and must not race it.
       // Hide windowed chrome before the OS expands the window. Keep fullscreen
@@ -3597,7 +3649,10 @@ async function togglePlayerFullscreen() {
       if (entering) {
         document.body?.classList.add("is-tauri-fullscreen-active");
       }
-      changed = await setTauriWindowFullscreen(entering);
+      changed = iosPlatform
+        ? await iosPlatform.setPlayerFullscreen(entering).catch(() => false)
+        : await setTauriWindowFullscreen(entering);
+      if (revision !== state.playerFullscreenRevision) return;
       if (changed || entering) {
         const active = changed ? entering : !entering;
         elements.playerPanel?.classList.toggle("is-tauri-fullscreen", active);
@@ -3676,6 +3731,7 @@ function hidePlayerControls(video) {
   }
   video.controls = false;
   video.removeAttribute("controls");
+  video.bilikaraInlineControls?.hide();
 }
 
 function hideMountedPlayerControls() {
@@ -3686,13 +3742,13 @@ function hideMountedPlayerControls() {
 function scheduleMountedPlayerControlsHide() {
   clearLocalPlayerControlsHideTimer();
   const video = mountedLocalVideoElement();
-  if (!video || !video.controls) {
+  if (!video || (!video.controls && (!video.bilikaraInlineControls || video.bilikaraInlineControls.element.hidden))) {
     return;
   }
-  // Android's UA-shadow controls consume thumb events before the page sees
+  // Mobile UA-shadow controls consume thumb events before the page sees
   // them. Let the WebView fade its own controls instead of removing the entire
   // controls attribute on a timer and aborting an in-progress native drag.
-  if (isAndroidNativePlaybackRuntime()) return;
+  if (isAndroidNativePlaybackRuntime() || globalThis.document?.documentElement?.dataset?.hostPlatform === "ios") return;
   const hideGeneration = state.localPlayerControlsHideGeneration;
   const hideTimer = window.setTimeout(() => {
     if (
@@ -3703,7 +3759,8 @@ function scheduleMountedPlayerControlsHide() {
       return;
     }
     state.localPlayerControlsHideTimer = null;
-    if (state.playerFullscreenInteraction?.holdingPointer()) {
+    if (state.playerFullscreenInteraction?.holdingPointer()
+      || video.bilikaraInlineControls?.element.contains(document.activeElement)) {
       scheduleMountedPlayerControlsHide();
       return;
     }
@@ -3719,14 +3776,21 @@ function revealMountedPlayerControlsForUserInteraction(event) {
   }
   // Incidental focus/hover is not permission to show controls, but must not
   // dismiss controls already revealed by the preceding pointerdown either.
-  if (isPlayerPanelFullscreen() && !state.playerFullscreenInteraction?.allowsReveal(event)) return;
+  const inline = globalThis.document?.documentElement?.dataset?.hostPlatform === "ios";
+  if (inline && ["pointerenter", "pointermove", "pointerdown", "touchstart"].includes(event?.type)) return;
+  if (isPlayerPanelFullscreen() && !(inline && event?.type === "click")
+    && !state.playerFullscreenInteraction?.allowsReveal(event)) return;
   const video = mountedLocalVideoElement();
   if (!video) {
     return;
   }
+  // After the first tap, WebKit owns the visibility of its system overlay.
+  // Reapplying the controls attribute on every bubbled tap reveals it again
+  // just as the UA tries to hide it. Native seek/play gestures keep ownership.
+  if (inline && video.controls) return;
   const { video: splitVideo, audio } = activeLocalPlayerElements();
   if (
-    audio
+    !inline && audio
     && splitVideo === video
     && (
       state.localPlaybackStartState === "pending"
@@ -5718,6 +5782,14 @@ function initializeWindowChrome() {
   if (!appWindow) {
     return;
   }
+  if (platform === "macos") {
+    // The native titlebar owns primary dragging, including inactive windows.
+    // Spare non-interactive header content remains draggable as well; menus
+    // and controls retain their own pointer interactions.
+    elements.topbar?.setAttribute("data-tauri-drag-region", "deep");
+    elements.topbar?.querySelectorAll('[role="dialog"], [role="menu"], [role="tooltip"], .cache-panel')
+      .forEach(panel => panel.setAttribute("data-tauri-drag-region", "false"));
+  }
   let frameStateRequest = 0;
   const syncWindowFrameState = () => {
     if (platform !== "windows" || typeof appWindow.isMaximized !== "function") {
@@ -5762,11 +5834,24 @@ function initializeWindowChrome() {
     elements.windowClose?.addEventListener("click", () => appWindow.close().catch(() => {}));
     syncWindowFrameState();
   }
+  let nativeDragDoubleClick = false;
+  elements.topbar?.addEventListener("mousedown", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    // Tauri handles the second press, before dblclick. Maximizing can move
+    // the drag region away from the pointer, retargeting release/dblclick to
+    // the header. Keep the press's owner instead of toggling a second time.
+    // Every new press clears this even when the OS consumed the old release.
+    nativeDragDoubleClick = event.button === 0 && event.detail === 2
+      && Boolean(target?.closest("[data-tauri-drag-region]"));
+  }, true);
   elements.topbar?.addEventListener("dblclick", (event) => {
+    const nativeOwned = nativeDragDoubleClick;
+    nativeDragDoubleClick = false;
     const target = event.target instanceof Element ? event.target : null;
     if (
       event.button !== 0
       || platform !== "windows"
+      || nativeOwned
       || target?.closest("[data-tauri-drag-region]")
       || target?.closest("button, a, input, select, textarea, [role='button']")
     ) {
@@ -5809,7 +5894,9 @@ function rememberedMuted() {
 }
 
 function syncLocalPlayerSettingsFromSnapshot(playerSettings) {
-  if (Date.now() < state.playerSettingsEchoSuppressUntil) {
+  const item = state.data?.current_item?.item_incarnation_id || "";
+  if (state.playerSettingsWriteActive?.item === item
+    || state.playerSettingsWrites?.some(write => write.item === item)) {
     return;
   }
   const volumePercent = Math.max(0, Math.min(500, Number(playerSettings?.volume_percent ?? 100)));
@@ -5824,9 +5911,45 @@ function syncLocalPlayerSettingsFromSnapshot(playerSettings) {
 }
 
 function markLocalVolumeWrite() {
-  state.playerSettingsEchoSuppressUntil = Date.now() + playerSettingsEchoSuppressMs;
+  state.playerSettingsEchoSuppressUntil = 0;
   state.volumeSaveSeq += 1;
   return state.volumeSaveSeq;
+}
+
+function queueLocalPlayerSettingsWrite(path, body, options) {
+  const item = state.data?.current_item?.item_incarnation_id || "";
+  if (!state.playerSettingsWrites) state.playerSettingsWrites = [];
+  return new Promise((resolve, reject) => {
+    const tail = state.playerSettingsWrites.at(-1);
+    if (["/api/player/volume", "/api/player/key-shift"].includes(path) && tail?.path === path && tail.item === item) {
+      // Keep the final slider value, including any earlier explicit volume
+      // intent when the last operation only changes mute.
+      Object.assign(tail.body, body);
+      tail.waiters.push({resolve, reject});
+    } else {
+      state.playerSettingsWrites.push({path, body: {...body}, options, item, waiters: [{resolve, reject}]});
+    }
+    if (!state.playerSettingsWriteActive) void drainLocalPlayerSettingsWrites();
+  });
+}
+
+async function drainLocalPlayerSettingsWrites() {
+  while (state.playerSettingsWrites.length) {
+    const write = state.playerSettingsWrites.shift();
+    state.playerSettingsWriteActive = write;
+    try {
+      const currentItem = () => state.data?.current_item?.item_incarnation_id || "";
+      // Never dispatch an old song's queued settings into the replacement.
+      const result = write.item === currentItem()
+        ? await apiPost(write.path, {...write.body, expected_item_incarnation_id: write.item}, write.options)
+        : null;
+      write.waiters.forEach(waiter => waiter.resolve(write.item === currentItem() ? result : null));
+    } catch (error) {
+      write.waiters.forEach(waiter => waiter.reject(error));
+    } finally {
+      state.playerSettingsWriteActive = null;
+    }
+  }
 }
 
 function clientHeaders(extraHeaders = {}) {
@@ -6665,10 +6788,8 @@ async function fetchState({signal = null} = {}) {
 
   syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
   if (!state.localPreferencesHydrated) {
-    const rememberedVolume = rememberedVolumePercent();
-    const rememberedMute = rememberedMuted();
-    const serverVolume = Number(state.data?.player_settings?.volume_percent ?? 100);
-    const serverMuted = Boolean(state.data?.player_settings?.is_muted);
+    // The Rust checkpoint is authoritative after startup. Browser preferences
+    // are a defensive display cache and must never overwrite a restored room.
     state.localPreferencesHydrated = true;
     if (rememberedVolume !== serverVolume || rememberedMute !== serverMuted) {
       await apiPostStateSnapshot("/api/player/volume", {
@@ -11937,6 +12058,7 @@ function acceptHostStateSnapshot(snapshot) {
   if (previousSnapshot?.current_item?.item_incarnation_id !== snapshot.current_item?.item_incarnation_id) {
     state.playerSettingsEchoSuppressUntil = 0;
     state.volumeSaveSeq += 1;
+    state.pendingPlayerKeyShift = null;
     syncLocalPlayerSettingsFromSnapshot(snapshot.player_settings);
     globalThis.BilikaraVolumeControl?.resetForSong(elements.volumeSlider, snapshot.player_settings.volume_percent);
   }
@@ -12461,16 +12583,18 @@ function clampMediaTime(media, nextTime) {
   return Math.min(target, Number(media.duration));
 }
 
-function setMediaCurrentTime(media, nextTime, toleranceSeconds = localPlayerForceSyncEpsilonSeconds) {
+function setMediaCurrentTime(media, nextTime, toleranceSeconds = localPlayerForceSyncEpsilonSeconds, resumeWanted = undefined) {
   if (!media) {
     return false;
   }
   const target = clampMediaTime(media, nextTime);
-  const currentTime = Number(media.currentTime || 0);
-  if (Number.isFinite(currentTime) && Math.abs(currentTime - target) <= toleranceSeconds) {
+  const currentTime = Number(media.bilikaraAudioClock?.time() ?? media.currentTime ?? 0);
+  if (Number.isFinite(currentTime) && Math.abs(currentTime - target) <= toleranceSeconds
+    && !media.bilikaraAudioClock?.needsReposition) {
     return false;
   }
   try {
+    if (media.bilikaraAudioClock) return media.bilikaraAudioClock.seek(target, resumeWanted);
     media.currentTime = target;
     return true;
   } catch {
@@ -12490,7 +12614,7 @@ function clearLocalPlayerSyncTimer(session = state.hostPlaybackSession) {
   if (!session) {
     return;
   }
-  clearAndroidAudioClockRecovery(session);
+  clearSplitAudioClockRecovery(session);
   if (session.syncTimer) {
     window.clearInterval(session.syncTimer);
     session.syncTimer = null;
@@ -12565,7 +12689,7 @@ function takeLocalPlayerSeekCompletion(session) {
 }
 
 function clearLocalPlayerSeekState(session = state.hostPlaybackSession) {
-  clearAndroidAudioClockRecovery(session);
+  clearSplitAudioClockRecovery(session);
   const completion = takeLocalPlayerSeekCompletion(session);
   if (typeof completion === "function") {
     try {
@@ -13060,7 +13184,7 @@ function activePrimaryVideoElement() {
 }
 
 function isActiveSplitPlayer(video, audio) {
-  return isCurrentHostPlaybackSession(state.hostPlaybackSession, video, audio);
+  return !networkOutputOwnsPlayback() && isCurrentHostPlaybackSession(state.hostPlaybackSession, video, audio);
 }
 
 function isSplitPlayerSeekSettling(video, audio) {
@@ -13074,15 +13198,8 @@ function isSplitPlayerSeekSettling(video, audio) {
 function captureLocalPlayerPreferences() {
   const { video, audio } = activeLocalPlayerElements();
   const primaryVideo = video || activePrimaryVideoElement();
-  const mediaWithVolume = audio || primaryVideo;
-  if (mediaWithVolume) {
-    const volume = Number(mediaWithVolume.bilikaraVolume ?? mediaWithVolume.volume);
-    if (Number.isFinite(volume)) {
-      state.localPlayerVolume = Math.max(0, Math.min(5, volume));
-    }
-    state.localPlayerMuted = Boolean(mediaWithVolume.muted);
-    persistLocalVolumePreferences();
-  }
+  // Renderer observations never replace Rust/user volume intent. In particular,
+  // WebKit can change element volume asynchronously after accepting a write.
   if (
     primaryVideo
     && !state.hostPlaybackSession?.seekSettling
@@ -13099,6 +13216,9 @@ function applyStoredVolumeToSplitPlayer(video, audio) {
   // The video carries the native controls; only the selected audio is amplified.
   video.bilikaraVolume = state.localPlayerVolume;
   video.volume = Math.min(1, state.localPlayerVolume);
+  // Record the value actually exposed by the engine. iOS may ignore the write
+  // and continue reporting 1 even though the audio gain correctly applies .4.
+  video.bilikaraAppliedNativeVolume = Number(video.volume);
   video.muted = state.localPlayerMuted;
   applyMediaVolume(audio);
 }
@@ -13107,25 +13227,26 @@ function syncSplitPlayerVolumeFromVideo(video, audio) {
   if (!video || !audio) {
     return;
   }
-  const appliedVolume = Math.min(1, Number(video.bilikaraVolume ?? state.localPlayerVolume));
-  const nextVolume = Math.abs(video.volume - appliedVolume) <= 0.001
-    ? state.localPlayerVolume
-    : Number.isFinite(video.volume)
-    ? Math.max(0, Math.min(1, Number(video.volume)))
-    : state.localPlayerVolume;
-  const nextMuted = Boolean(video.muted);
-  const changed = Math.abs(nextVolume - state.localPlayerVolume) > 0.001
-    || nextMuted !== state.localPlayerMuted;
+  // Observation only. Tick, mount and native events must not create commands.
+  // Explicit native-control intent is admitted separately with session checks.
+  recordPlaybackTrace("volume-observed", "native-observed");
 
-  if (changed) {
-    state.localPlayerVolume = nextVolume;
-    state.localPlayerMuted = nextMuted;
-    persistLocalVolumePreferences();
-    renderVolumeControls(frontendPlaybackMode(state.data?.playback_mode));
-  }
+}
 
-  video.bilikaraVolume = state.localPlayerVolume;
-  applyMediaVolume(audio);
+function handleNativePlayerVolumeChange(session, video, audio) {
+    if (!isCurrentHostPlaybackSession(session, video, audio)) return;
+    syncSplitPlayerVolumeFromVideo(video, audio);
+    // iOS provides no reliable element-volume intent source for this split
+    // renderer. System output volume remains separate; its events are observed.
+    if (document.documentElement.dataset.hostPlatform === "ios" || !video.controls) return;
+    const nextVolume = Number(video.volume);
+    const volumeChanged = Number.isFinite(nextVolume)
+      && Math.abs(nextVolume - Number(video.bilikaraAppliedNativeVolume)) > .001;
+    const mutedChanged = Boolean(video.muted) !== state.localPlayerMuted;
+    if (!volumeChanged && !mutedChanged) return;
+    video.bilikaraAppliedNativeVolume = nextVolume;
+    void setLocalPlayerVolumeAndMuted(volumeChanged ? nextVolume : state.localPlayerVolume,
+      Boolean(video.muted), {volumeIntent: volumeChanged, origin: "native-observed"}).catch(() => {});
 }
 
 function syncSplitSeekAudioTarget(video, audio) {
@@ -13174,6 +13295,7 @@ function beginSplitPlayerSeek(video, audio, options = {}) {
     return false;
   }
 
+  session.avOffsetAlignment = false;
   audio.bilikaraPitch?.reset();
   clearLocalPlayerSeekState(session);
 
@@ -13215,6 +13337,7 @@ function beginSplitPlayerSeek(video, audio, options = {}) {
     audio.pause();
   }
   if (!video.paused) {
+    video.bilikaraOwnedPause = true;
     video.dataset.bilikaraInternalPause = "true";
     video.pause();
   }
@@ -13339,11 +13462,15 @@ function splitSyncSnapshot(video, audio, offsetSeconds, action) {
   const audioTime = Number(audio?.currentTime || 0);
   const videoTime = Number(video?.currentTime || 0);
   const targetVideoTime = clampMediaTime(video, audioTime - (audio?.bilikaraPitch?.delay() || 0) + offsetSeconds);
+  const renderedAudioTime = audio?.bilikaraAudioClock?.outputTime?.() ?? audio?.bilikaraAudioClock?.time() ?? audioTime;
   return {
     audio_current_time: audioTime,
     video_current_time: videoTime,
     target_video_time: targetVideoTime,
     drift_seconds: videoTime - targetVideoTime,
+    audio_clock_source: audio?.bilikaraAudioClock ? "web-audio-segment" : "media-element",
+    rendered_audio_time: renderedAudioTime,
+    rendered_audio_drift_seconds: videoTime - (renderedAudioTime - (audio?.bilikaraPitch?.delay() || 0) + offsetSeconds),
     effective_av_delay_seconds: offsetSeconds,
     pitch: audio?.bilikaraPitch?.snapshot() || null,
     audio_playback_rate: Number(audio?.playbackRate || 1),
@@ -13385,6 +13512,56 @@ function splitSyncSnapshot(video, audio, offsetSeconds, action) {
   };
 }
 
+// Opt-in, memory-only and bounded. Deliberately project numeric/enum facts:
+// no media URLs, identifiers, exception text or filesystem paths enter this trace.
+function recordPlaybackTrace(event, origin = "renderer") {
+  const now = Date.now();
+  if ((globalThis.BILIKARA_PLAYBACK_TRACE !== true && !(state.avDelayTraceUntil > now))
+    || !/^[a-z0-9:-]{1,64}$/.test(event)) return;
+  if (event === "av-delay-recovery") {
+    if (now - (state.avDelayTraceLastSample || 0) < 250) return;
+    state.avDelayTraceLastSample = now;
+  }
+  const session = state.hostPlaybackSession;
+  const audio = session?.audio, video = session?.video;
+  const finite = value => value != null && Number.isFinite(Number(value)) ? Number(value) : null;
+  const pitch = audio?.bilikaraPitch?.snapshot?.();
+  const frames = video?.getVideoPlaybackQuality?.();
+  const entry = {
+    event, origin: ["ui", "remote", "auto", "native-observed", "renderer"].includes(origin) ? origin : "renderer",
+    at: Date.now(), command_seq: Number(state.volumeSaveSeq || 0),
+    playback_generation: Number(session?.playbackGeneration || 0),
+    attempt: Number(state.localPlaybackStartGeneration || 0),
+    requested_volume: finite(state.localPlayerVolume), committed_volume: finite(state.data?.player_settings?.volume_percent),
+    element_volume: finite(video?.volume), muted: Boolean(state.localPlayerMuted),
+    gain_target: finite(audio?.bilikaraVolumeGain?.bilikaraTarget), gain_actual: finite(audio?.bilikaraVolumeGain?.gain.value),
+    holding: Boolean(audio?.bilikaraAudioClock?.holding),
+    offset_ms: finite(state.data?.player_settings?.av_offset_ms),
+    video_time: finite(video?.currentTime), audio_time: finite(audio?.currentTime),
+    output_time: finite(audio?.bilikaraAudioClock?.outputTime?.() ?? audio?.bilikaraAudioClock?.time()), context_time: finite(state.audioContext?.currentTime),
+    context_running: state.audioContext?.state === "running", ready: Boolean(session?.readyCommitted),
+    video_paused: Boolean(video?.paused), audio_paused: Boolean(audio?.paused),
+    logical_play_intent: session?.logicalPlayIntent === true,
+    should_play: state.localShouldBePlaying === true,
+    audio_pending: Boolean(audio?.bilikaraAudioClock?.pending),
+    audio_resume_wanted: Boolean(audio?.bilikaraAudioClock?.resumeWanted),
+    audio_needs_reposition: Boolean(audio?.bilikaraAudioClock?.needsReposition),
+    audio_ready_state: finite(audio?.readyState), video_ready_state: finite(video?.readyState),
+    audio_seeking: Boolean(audio?.seeking), video_seeking: Boolean(video?.seeking),
+    audio_ended: Boolean(audio?.ended), video_ended: Boolean(video?.ended),
+    context_state: ["running","suspended","interrupted","closed"].includes(state.audioContext?.state) ? state.audioContext.state : "none",
+    pitch_phase: ["bypass","active","priming","starting","unavailable","idle","failed"].includes(pitch?.state) ? pitch.state : "other",
+    key_shift: finite(pitch?.applied),
+    av_delay_sequence: finite(state.avDelayTraceSequence), previous_offset_ms: finite(state.avDelayTracePreviousOffset),
+    av_delay_aligning: Boolean(session?.avOffsetAlignment), requested_rate: finite(state.localPlayerRequestedRate),
+    output_alignment_delay_seconds: finite(audio?.bilikaraOutputDelay?.seconds()),
+    decoded_frames: finite(frames?.totalVideoFrames), dropped_frames: finite(frames?.droppedVideoFrames),
+  };
+  if (!state.playbackTrace) state.playbackTrace = [];
+  state.playbackTrace.push(entry);
+  if (state.playbackTrace.length > 256) state.playbackTrace.splice(0, state.playbackTrace.length - 256);
+}
+
 function reportMediaDiagnostic(
   itemId,
   mediaKind,
@@ -13406,6 +13583,7 @@ function reportMediaDiagnostic(
     return false;
   }
   const mediaError = media.error;
+  recordPlaybackTrace(eventName);
   const payload = {
     event: eventName,
     item_id: String(itemId || ""),
@@ -13444,6 +13622,7 @@ function reportSplitSyncDiagnostic(itemId, video, audio, action, force = false, 
     return false;
   }
   const now = Date.now();
+  if (state.avDelayTraceUntil > now) recordPlaybackTrace("av-delay-recovery");
   if (
     !force
     && now - state.localPlayerSyncLastDiagnosticAt < localPlayerSyncDiagnosticThrottleMs
@@ -13476,7 +13655,7 @@ async function handleSplitVideoEnded(currentItem, video, audio, reportStatus) {
     return false;
   }
   reportStatus();
-  if (!audio.ended) {
+  if (!splitAudioOutputEnded(audio)) {
     state.localVideoDeferredRecovery = true;
     reportSplitSyncDiagnostic(currentItem.id, video, audio, "defer-video-recovery", true);
     return false;
@@ -13484,9 +13663,15 @@ async function handleSplitVideoEnded(currentItem, video, audio, reportStatus) {
   return handleSplitAudioEnded(currentItem, video, audio, reportStatus);
 }
 
+function splitAudioOutputEnded(audio) {
+  return Boolean(audio.ended || audio.bilikaraAudioClock?.isOutputComplete?.());
+}
+
 async function handleSplitAudioEnded(currentItem, video, audio, reportStatus) {
   if (
     state.localPlaybackEndHandled
+    || !state.localShouldBePlaying
+    || state.hostPlaybackSession?.logicalPlayIntent === false
     || !isActiveSplitPlayer(video, audio)
     || !state.hostPlaybackSession?.readyCommitted
   ) {
@@ -13495,17 +13680,27 @@ async function handleSplitAudioEnded(currentItem, video, audio, reportStatus) {
   const endingSession = state.hostPlaybackSession;
   if (endingSession.pitchDraining) return;
   endingSession.pitchDraining = true;
+  if (audio.bilikaraAudioClock && !await audio.bilikaraAudioClock.drain()) {
+    endingSession.pitchDraining = false;
+    return;
+  }
   if (audio.bilikaraPitch && !await audio.bilikaraPitch.drain()) {
     endingSession.pitchDraining = false;
     return;
   }
+  if (audio.bilikaraOutputDelay && !await audio.bilikaraOutputDelay.drain()) {
+    endingSession.pitchDraining = false;
+    return;
+  }
   endingSession.pitchDraining = false;
-  if (!isActiveSplitPlayer(video, audio) || state.localPlaybackEndHandled || !audio.ended
+  if (!isActiveSplitPlayer(video, audio) || state.localPlaybackEndHandled || !splitAudioOutputEnded(audio)
+    || !state.localShouldBePlaying || endingSession.logicalPlayIntent === false
     || shouldHoldCurrentItemForTransition(currentItem)) return;
   state.localPlaybackEndHandled = true;
   state.localShouldBePlaying = false;
   state.hostPlaybackSession.seekResumePending = false;
   if (!video.paused) {
+    video.bilikaraOwnedPause = true;
     video.dataset.bilikaraInternalPause = "true";
     video.pause();
   }
@@ -13517,12 +13712,13 @@ async function handleSplitAudioEnded(currentItem, video, audio, reportStatus) {
 function holdVideoForAudio(video) {
   state.localVideoHeldForAudio = true;
   if (!video.paused) {
+    video.bilikaraOwnedPause = true;
     video.dataset.bilikaraInternalPause = "true";
     video.pause();
   }
 }
 
-function scheduleAndroidAudioClockRecovery(video, audio) {
+function scheduleSplitAudioClockRecovery(video, audio) {
   const session = state.hostPlaybackSession;
   if (session.audioClockRecoveryFrame != null) {
     return;
@@ -13582,7 +13778,7 @@ function applyInitialHostPlaybackIntent(session, video, audio) {
   return true;
 }
 
-function commitHostPlaybackSessionReadyPaused(session, video, audio) {
+function commitHostPlaybackSessionReadyPaused(session, video, audio, { applyIntent = true } = {}) {
   if (
     state.hostPlaybackSession !== session
     || !isActiveSplitPlayer(video, audio)
@@ -13597,6 +13793,7 @@ function commitHostPlaybackSessionReadyPaused(session, video, audio) {
     audio.pause();
   }
   if (!video.paused) {
+    video.bilikaraOwnedPause = true;
     video.dataset.bilikaraInternalPause = "true";
     video.pause();
   }
@@ -13606,7 +13803,11 @@ function commitHostPlaybackSessionReadyPaused(session, video, audio) {
   clearSplitPlaybackStartupWatchdog(session);
   syncTauriMediaSessionState(video, { forcePosition: true });
   publishPresentationPlaybackState(session).catch(() => {});
-  applyInitialHostPlaybackIntent(session, video, audio);
+  if (applyIntent) applyInitialHostPlaybackIntent(session, video, audio);
+  if (Number(state.data?.player_control_command?.seq) > Number(state.lastAppliedPlayerControlSeq || 0)) {
+    applyRemotePlayerControl(state.data.player_control_command, state.data.current_item,
+      frontendPlaybackMode(state.data.playback_mode));
+  }
   return true;
 }
 
@@ -13641,7 +13842,8 @@ function splitPlaybackPairNeedsStart(video, audio) {
     && audio
     && isActiveSplitPlayer(video, audio)
     && isRecoverableSplitPlaybackStartState()
-    && (video.paused || audio.paused),
+    && (video.paused || audio.paused
+      || (audio.bilikaraPitchSource && ["suspended", "interrupted"].includes(state.audioContext?.state))),
   );
 }
 
@@ -13652,7 +13854,9 @@ function updateSplitPlaybackStartOverlay(video, audio) {
   }
   const button = overlay.querySelector(".split-playback-start-button");
   const needsManualRecovery = state.localPlaybackStartState === "needs-user-gesture"
-    || state.localPlaybackStartState === "startup-failed";
+    || state.localPlaybackStartState === "startup-failed"
+    || (state.hostPlaybackSession?.foregroundRecovery && audio?.bilikaraPitchSource
+      && ["suspended", "interrupted"].includes(state.audioContext?.state));
   overlay.classList.toggle("hidden", !needsManualRecovery);
   overlay.setAttribute("aria-hidden", String(!needsManualRecovery));
   if (button) {
@@ -13729,9 +13933,11 @@ function setSplitPlaybackStartState(nextState, video, audio) {
   } else if (nextState === "starting") {
     setHostPlaybackSessionPhase(session, "starting");
   } else if (nextState === "established") {
+    const capturedOutputPlaying = audio.bilikaraAudioClock?.isOutputRunning?.()
+      && (audio.ended || state.localVideoHeldForAudio);
     setHostPlaybackSessionPhase(
       session,
-      video.paused || audio.paused ? "paused" : "playing",
+      (video.paused || audio.paused) && !capturedOutputPlaying ? "paused" : "playing",
     );
   } else if (nextState === "needs-user-gesture") {
     setHostPlaybackSessionPhase(session, "needs-user-gesture");
@@ -13759,7 +13965,19 @@ function requestSplitPlaybackStart(
   audio,
   { source = "", userGesture = false } = {},
 ) {
+  if(holdLocalPlaybackForNetworkOutput())return false;
   if (window.BilikaraAndroidPlayback?.blockStart()) return true;
+  if (userGesture && isActiveSplitPlayer(video, audio)) {
+    if (!video.paused && !audio.paused && resumeForegroundAudioOutput(video, audio, {renew: true})) {
+      state.hostPlaybackSession.logicalPlayIntent = true;
+      state.localShouldBePlaying = true;
+      return true;
+    }
+    // Preserve the gesture's permission even while decoder readiness/seek
+    // settlement prevents the normal pair-start transaction from running yet.
+    resumeAudioContextBestEffort();
+    state.hostPlaybackSession?.retryReadiness?.();
+  }
   if (
     !splitPlaybackPairNeedsStart(video, audio)
     || shouldHoldCurrentItemForTransition(video.dataset.playerItemId)
@@ -13799,6 +14017,16 @@ function requestSplitPlaybackStartFromUserGesture(video, audio, source = "user-s
   return requestSplitPlaybackStart(video, audio, { source, userGesture: true });
 }
 
+function canRetryHostPlaybackReadiness(session = state.hostPlaybackSession) {
+  const video = session?.video, audio = session?.audio;
+  return Boolean(video && audio && !session.readyCommitted
+    && session.phase === "failed" && session.failureStage === "media-readiness"
+    && session.ownershipClaimed && session.loadingStarted && !video.error && !audio.error
+    && isCurrentHostPlaybackSession(session, video, audio)
+    && !video.seeking && !audio.seeking && !session.seekSettling
+    && splitPlaybackPairCanStartAutomatically(video, audio));
+}
+
 function requireSplitPlaybackUserGesture(video, audio, action) {
   if (!video || !audio || !isActiveSplitPlayer(video, audio)) {
     return false;
@@ -13817,6 +14045,7 @@ function requireSplitPlaybackUserGesture(video, audio, action) {
     audio.pause();
   }
   if (!video.paused) {
+    video.bilikaraOwnedPause = true;
     video.dataset.bilikaraInternalPause = "true";
     video.pause();
   }
@@ -13846,20 +14075,23 @@ function setSplitPlaybackIntent(
     userGesture = false,
   } = {},
 ) {
+  if(holdLocalPlaybackForNetworkOutput())return false;
   const session = state.hostPlaybackSession;
   if (!video || !audio || !isActiveSplitPlayer(video, audio)) {
     return false;
   }
+  if (shouldPlay && userGesture) session?.retryReadiness?.();
   if (window.BilikaraAndroidPlayback?.interceptIntent(shouldPlay, source)) return true;
 
   const itemId = video.dataset.playerItemId || "";
   const nextIntent = Boolean(shouldPlay);
   const changedIntent = session.logicalPlayIntent !== nextIntent;
   session.logicalPlayIntent = nextIntent;
+  if (nextIntent && video.paused) video.bilikaraOwnedPause = true;
   if (!nextIntent) {
     session.presentationFeedbackPlayPending = false;
     audio.bilikaraPitch?.reset();
-    clearAndroidAudioClockRecovery(session);
+    clearSplitAudioClockRecovery(session);
   }
   if (!session.readyCommitted) {
     state.localShouldBePlaying = shouldHoldCurrentItemForTransition(itemId)
@@ -13871,6 +14103,7 @@ function setSplitPlaybackIntent(
       audio.pause();
     }
     if (!video.paused) {
+      video.bilikaraOwnedPause = true;
       video.dataset.bilikaraInternalPause = "true";
       video.pause();
     }
@@ -13887,6 +14120,7 @@ function setSplitPlaybackIntent(
       audio.pause();
     }
     if (!video.paused) {
+      video.bilikaraOwnedPause = true;
       video.dataset.bilikaraInternalPause = "true";
       video.pause();
     }
@@ -13906,10 +14140,12 @@ function setSplitPlaybackIntent(
   if (!nextIntent) {
     session.seekResumeAfterSettle = false;
     session.seekResumePending = false;
+    audio.bilikaraAudioClock?.stop();
     if (!audio.paused) {
       audio.pause();
     }
     if (!video.paused) {
+      video.bilikaraOwnedPause = true;
       video.dataset.bilikaraInternalPause = "true";
       video.pause();
     }
@@ -13927,6 +14163,7 @@ function setSplitPlaybackIntent(
       audio.pause();
     }
     if (!video.paused) {
+      video.bilikaraOwnedPause = true;
       video.dataset.bilikaraInternalPause = "true";
       video.pause();
     }
@@ -14131,11 +14368,19 @@ function ensureTauriMediaSessionHandlers() {
 }
 
 function invokeMediaPlay(media, { internalVideo = false } = {}) {
+  if(networkOutputOwnsPlayback())return Promise.resolve();
+  if (media.bilikaraAudioClock && !media.bilikaraAudioClock.preparePlay()) {
+    return Promise.reject(new Error("Captured audio output unavailable"));
+  }
   if (internalVideo) {
     media.dataset.bilikaraInternalPlay = "true";
   }
   try {
-    return Promise.resolve(media.play());
+    const result = media.bilikaraAudioClock
+      ? media.bilikaraAudioClock.playPrepared(() => media.play())
+      : media.play();
+    if (internalVideo && !media.paused) media.bilikaraOwnedPause = false;
+    return Promise.resolve(result);
   } catch (error) {
     return Promise.reject(error);
   }
@@ -14146,6 +14391,7 @@ function pauseSplitPlaybackForStartupRecovery(video, audio) {
     audio.pause();
   }
   if (!video.paused) {
+    video.bilikaraOwnedPause = true;
     video.dataset.bilikaraInternalPause = "true";
     video.pause();
   }
@@ -14290,13 +14536,19 @@ function startSplitPlaybackPair(video, audio, { userGesture = false } = {}) {
   state.localPlaybackStartGeneration = Number(state.localPlaybackStartGeneration || 0) + 1;
   const attemptGeneration = state.localPlaybackStartGeneration;
   setSplitPlaybackStartState("starting", video, audio);
-  syncSplitPlayerVolumeFromVideo(video, audio);
+  applyStoredVolumeToSplitPlayer(video, audio);
   const targetAudioTime = clampMediaTime(
     audio,
     Number(video.currentTime || 0) - currentAvOffsetSeconds(),
   );
   setMediaCurrentTime(audio, targetAudioTime);
   resumeAudioContextBestEffort();
+  session.startupProgressProbe = {
+    generation: attemptGeneration,
+    videoTime: Number(video.currentTime),
+    audioTime: Number(audio.currentTime),
+    frames: Number(video.getVideoPlaybackQuality?.()?.totalVideoFrames ?? video.webkitDecodedFrameCount ?? 0),
+  };
 
   reportSplitStartupDiagnostic(
     video.dataset.playerItemId || "",
@@ -14413,6 +14665,21 @@ function startSplitPlaybackPair(video, audio, { userGesture = false } = {}) {
           `${prefix}-${firstFailure.mediaKind}-aborted`,
         );
 
+        // A seek-owned video pause rejects its play() with AbortError. If
+        // captured output is already running, restarting it destroys the
+        // resumed tail. Keep the existing watchdog and require real video
+        // progress through the synchronizer instead of replaying the audio.
+        if (state.localVideoHeldForAudio && audio.bilikaraAudioClock
+          && failed.every(result => result.mediaKind === "video" && result.error?.name === "AbortError")) {
+          audio.bilikaraAudioClock.ready();
+          if (audio.bilikaraAudioClock.isOutputRunning()) {
+            reportSplitStartupDiagnostic(video.dataset.playerItemId || "", video, audio,
+              `${prefix}-owned-video-abort-await-progress`);
+            syncSplitPlayer(video, audio, currentAvOffsetSeconds(), false);
+            return;
+          }
+        }
+
         if (!state.localWebKitStartRetryDone) {
           state.localWebKitStartRetryDone = true;
           scheduleWebKitSplitPlaybackRetry(video, audio, { userGesture, prefix });
@@ -14428,7 +14695,23 @@ function startSplitPlaybackPair(video, audio, { userGesture = false } = {}) {
         return;
       }
 
-      if (video.paused || audio.paused) {
+      // The synchronizer deliberately holds video while captured output
+      // starts. That owned hold must not trigger a destructive decoder retry.
+      const capturedClock = audio.bilikaraAudioClock;
+      if (capturedClock && !capturedClock.failure && state.localShouldBePlaying
+        && (capturedClock.pending || capturedClock.needsReposition
+          || (state.audioContext && state.audioContext.state !== "running"))) {
+        // Context resume may seek/pause the decoder AFTER play() resolves.
+        // That seek is owned recovery, not a failed play transaction. Keep
+        // the original watchdog and require actual output/frame progress.
+        capturedClock.sync();
+        holdVideoForAudio(video);
+        scheduleSplitAudioClockRecovery(video, audio);
+        return;
+      }
+      const capturedOutputPlaying = audio.bilikaraAudioClock?.isOutputRunning?.()
+        && (audio.ended || state.localVideoHeldForAudio);
+      if ((video.paused || audio.paused) && !capturedOutputPlaying) {
         delete video.dataset.bilikaraInternalPlay;
         reportSplitStartupDiagnostic(
           video.dataset.playerItemId || "",
@@ -14447,6 +14730,13 @@ function startSplitPlaybackPair(video, audio, { userGesture = false } = {}) {
         return;
       }
 
+      audio.bilikaraAudioClock?.ready();
+      if (audio.bilikaraAudioClock && !audio.bilikaraAudioClock.isOutputRunning()) {
+        // Both play promises resolved, but output may still await context/seek.
+        // Keep the bounded startup watchdog and let reconciliation prepare it.
+        reportSplitStartupDiagnostic(video.dataset.playerItemId || "", video, audio, "startup-await-output");
+        return;
+      }
       delete video.dataset.bilikaraInternalPlay;
       setSplitPlaybackStartState("established", video, audio);
       state.localShouldBePlaying = true;
@@ -14573,33 +14863,36 @@ function playMediaBestEffort(
 ) {
   if (window.BilikaraAndroidPlayback?.blockStart()) return false;
   const guardPendingPlay = isWebKitPlaybackRuntime();
+  const generation = Number(state.localPlaybackStartGeneration || 0);
+  const pending = media && mediaPlayPromisesInFlight.get(media);
   if (
     !media
     || !media.paused
     || media.ended
-    || (guardPendingPlay && mediaPlayPromisesInFlight.has(media))
+    || (guardPendingPlay && pending && pending.generation === generation)
   ) {
     return false;
   }
-  if (guardPendingPlay) {
-    mediaPlayPromisesInFlight.add(media);
-  }
+  const attempt = {generation};
+  if (guardPendingPlay) mediaPlayPromisesInFlight.set(media, attempt);
   invokeMediaPlay(media, { internalVideo }).then(
     () => {
-      if (guardPendingPlay) {
+      if (guardPendingPlay && mediaPlayPromisesInFlight.get(media) === attempt) {
         mediaPlayPromisesInFlight.delete(media);
       }
-      if (internalVideo) {
+      if (internalVideo && state.localPlaybackStartGeneration === generation) {
         delete media.dataset.bilikaraInternalPlay;
       }
     },
     (error) => {
-      if (guardPendingPlay) {
+      if (guardPendingPlay && mediaPlayPromisesInFlight.get(media) === attempt) {
         mediaPlayPromisesInFlight.delete(media);
       }
-      if (internalVideo) {
+      if (internalVideo && state.localPlaybackStartGeneration === generation) {
         delete media.dataset.bilikaraInternalPlay;
       }
+      if (video && audio && (!isActiveSplitPlayer(video, audio)
+        || state.localPlaybackStartGeneration !== generation)) return;
       if (video && audio && isPlaybackPolicyRejection(error)) {
         requireSplitPlaybackUserGesture(video, audio, `${mediaKind}-playback-blocked`);
       } else if (video && audio) {
@@ -14624,13 +14917,55 @@ function seekVideoForNavigation(video, targetTime) {
   return changed;
 }
 
+function hasSplitPlaybackStartProgress(session, video, audio) {
+  const probe = session.startupProgressProbe;
+  return Boolean(session.readyCommitted && state.localShouldBePlaying
+    && probe?.generation === state.localPlaybackStartGeneration
+    && !video.paused && (!audio.paused || audio.bilikaraAudioClock?.hasPlayingTail?.())
+    && !video.seeking && !audio.seeking
+    && !video.error && !audio.error && video.readyState >= 2 && audio.readyState >= 2
+    && (!audio.bilikaraPitchSource || (state.audioContext?.state === "running"
+      && (!audio.bilikaraAudioClock || audio.bilikaraAudioClock.isOutputRunning())))
+    && Number(video.currentTime) > probe.videoTime + .02
+    && Number(audio.bilikaraAudioClock?.time() ?? audio.currentTime) > probe.audioTime + .02
+    && Number(video.getVideoPlaybackQuality?.()?.totalVideoFrames ?? video.webkitDecodedFrameCount ?? 0) > probe.frames + 1);
+}
+
 function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
   if (window.BilikaraAndroidPlayback?.blockStart()) return "pause";
   if (!video || !audio || !isActiveSplitPlayer(video, audio)) {
     return "none";
   }
+  const session = state.hostPlaybackSession;
+  // Let an unowned native pause reach its queued media event. A sync tick must
+  // not race that event by manufacturing an internal resume first.
+  if (session.readyCommitted && session.phase === "playing" && state.localShouldBePlaying
+    && video.paused && !video.bilikaraOwnedPause && !video.ended && !video.seeking
+    && (!audio.paused || audio.bilikaraAudioClock?.isOutputRunning?.())
+    && !session.seekSettling && !session.seekResumePending && !globalThis.document?.hidden) {
+    return "await-native-pause-intent";
+  }
+  if (audio.bilikaraAudioClock?.isOutputComplete?.()) return "none";
   if (audio.ended) {
-    clearAndroidAudioClockRecovery();
+    // The captured input may end before its queued output. Release a video
+    // held during the last seek/resume so that the final output stays visible.
+    if (audio.bilikaraAudioClock?.running && !audio.bilikaraAudioClock.holding
+      && state.localShouldBePlaying && !video.ended && !video.seeking
+      && !shouldHoldCurrentItemForTransition(video.dataset.playerItemId)) {
+      state.localVideoHeldForAudio = state.localVideoDeferredRecovery = false;
+      playMediaBestEffort(video, { internalVideo: true, video, audio, mediaKind: "video" });
+      // Native input EOF can precede captured output EOF. Qualify recovery
+      // from advancing output and decoded frames even on this early path.
+      if (state.localPlaybackStartState === "starting" && isWebKitPlaybackRuntime()
+        && hasSplitPlaybackStartProgress(state.hostPlaybackSession, video, audio)) {
+        state.localPlaybackStartPromisesSettled = true;
+        state.localAudioPlaybackBlocked = state.localVideoPlaybackBlocked = false;
+        setSplitPlaybackStartState("established", video, audio);
+        reportSplitSyncDiagnostic(video.dataset.playerItemId || "", video, audio,
+          "startup-output-tail-progress", true);
+      }
+    }
+    clearSplitAudioClockRecovery();
     return "none";
   }
 
@@ -14639,9 +14974,8 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
   if (Math.abs(audio.playbackRate - requestedRate) > 0.001) {
     audio.playbackRate = requestedRate;
   }
-  if (Math.abs(video.playbackRate - requestedRate) > 0.001) {
-    video.playbackRate = requestedRate;
-  }
+  if (!state.localShouldBePlaying) session.avOffsetAlignment = false;
+  if (Math.abs(video.playbackRate - requestedRate) > .001) video.playbackRate = requestedRate;
 
   const reportAction = (action, force = false, correction = null) => {
     reportSplitSyncDiagnostic(video.dataset.playerItemId || "", video, audio, action, force, {
@@ -14653,14 +14987,43 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
   const isWebKit = isWebKitPlaybackRuntime();
 
   const isAndroid = isAndroidNativePlaybackRuntime();
+  const releaseBufferedVideoHold = () => {
+    if (!isWebKit || !session.readyCommitted || !state.localShouldBePlaying
+      || !state.localVideoHeldForAudio || !video.paused || video.readyState < 2
+      || video.seeking || audio.seeking || video.error || audio.error) return false;
+    const outputRunning = audio.bilikaraAudioClock
+      ? audio.bilikaraAudioClock.isOutputRunning()
+      : !audio.paused && audio.readyState >= 2;
+    const time = Number(video.currentTime || 0), buffered = video.buffered;
+    if (!outputRunning || !buffered || !Array.from({length: buffered.length}, (_, i) => i)
+      .some(i => buffered.start(i) <= time && buffered.end(i) > time + .1)) return false;
+    // The same per-generation Promise guard bounds recovery. Neither this
+    // attempt nor a fulfilled play() is evidence that frames have advanced.
+    return playMediaBestEffort(video, {internalVideo: true, video, audio, mediaKind: "video"});
+  };
+  let videoAdvancing = false, audioAdvancing = false;
+  if (isWebKit) {
+    const sampledAt = Date.now();
+    const clockAdvancing = (media, previous) => {
+      if (!previous || previous.seeking || media.seeking || media.paused || media.readyState < 2) return false;
+      const delta = Number(media.currentTime) - previous.time;
+      const elapsed = Math.max(0, sampledAt - previous.at) / 1000;
+      return delta > 0 && delta <= elapsed * requestedRate + localPlayerForceSyncEpsilonSeconds;
+    };
+    videoAdvancing = clockAdvancing(video, session.syncVideoClockSample);
+    audioAdvancing = clockAdvancing(audio, session.syncAudioClockSample);
+    session.syncVideoClockSample = { time: Number(video.currentTime), at: sampledAt, seeking: video.seeking };
+    session.syncAudioClockSample = { time: Number(audio.currentTime), at: sampledAt, seeking: audio.seeking };
+  }
 
   if (shouldHoldCurrentItemForTransition(video.dataset.playerItemId)) {
-    clearAndroidAudioClockRecovery();
+    clearSplitAudioClockRecovery();
     state.localShouldBePlaying = false;
     if (!audio.paused) {
       audio.pause();
     }
     if (!video.paused) {
+      video.bilikaraOwnedPause = true;
       video.dataset.bilikaraInternalPause = "true";
       video.pause();
     }
@@ -14681,7 +15044,7 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
     return reportAction("pause");
   }
   if (audio.seeking) {
-    if (isAndroid && state.localShouldBePlaying) {
+    if ((isAndroid || isWebKit) && state.localShouldBePlaying) {
       holdVideoForAudio(video);
     }
     return reportAction("wait-for-audio");
@@ -14693,6 +15056,32 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
   if (state.localPlaybackStartState === "startup-failed") {
     return reportAction("startup-failed");
   }
+  if (isWebKit && state.localPlaybackStartState === "pending"
+    && session.readyCommitted && state.localShouldBePlaying
+    && video.readyState >= 2 && audio.readyState >= 2) {
+    // Settling can enqueue one final audio seek. If it made the immediate
+    // restart ineligible, retry only after this tick's seek/readiness guards.
+    startSplitPlaybackPair(video, audio);
+  }
+  // Output preparation must run while the start attempt is pending too.
+  // A resumed context/seek can be ready without another media canplay event.
+  audio.bilikaraAudioClock?.sync();
+  if (isWebKit && state.localPlaybackStartState === "starting") {
+    // Seeking audio during resume may abort/hold the initial video play while
+    // the audio play Promise stays pending. Release that owned hold before
+    // requiring video progress; otherwise both startup gates wait on each other.
+    releaseBufferedVideoHold();
+  }
+  if (isWebKit && state.localPlaybackStartState === "starting"
+    && hasSplitPlaybackStartProgress(session, video, audio)) {
+    // WebKit can keep play() pending after a seek although both decoders are
+    // advancing. Actual decoded frames and clocks qualify this attempt; an
+    // old promise's later rejection must not fail the established playback.
+    state.localPlaybackStartPromisesSettled = true;
+    state.localAudioPlaybackBlocked = state.localVideoPlaybackBlocked = false;
+    setSplitPlaybackStartState("established", video, audio);
+    reportAction("startup-progress-confirmed", true);
+  }
   if (
     state.localPlaybackStartState === "pending"
     || state.localPlaybackStartState === "starting"
@@ -14701,17 +15090,24 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
   }
 
   if (!state.localShouldBePlaying) {
-    clearAndroidAudioClockRecovery();
+    clearSplitAudioClockRecovery();
     if (!audio.paused) {
       audio.pause();
     }
     return reportAction("pause");
   }
 
-  // waiting/stalled can be queued by a seek that has already been superseded.
-  // Reconcile the sticky event flag with the live media state so a missed
-  // canplay event cannot leave an otherwise-ready audio track paused forever.
-  if (!audio.seeking && audio.readyState >= 3) {
+  // waiting can outlive its seek; stalled describes network progress, not
+  // decoder starvation. Reconcile both sticky flags with live readiness: a
+  // buffered video may keep playing without another canplay/playing event,
+  // otherwise its old flag would keep the independent audio paused forever.
+  // WebKit may keep HAVE_CURRENT_DATA after recovering without another
+  // canplay/playing event. Real clock advance also retires an old waiting flag;
+  // a seek jump, paused media or a stopped clock is not recovery evidence.
+  if (!video.seeking && (video.readyState >= 3 || (isWebKit && videoAdvancing))) {
+    state.localVideoPlaybackBlocked = false;
+  }
+  if (!audio.seeking && (audio.readyState >= 3 || (isWebKit && audioAdvancing))) {
     state.localAudioPlaybackBlocked = false;
   }
 
@@ -14724,8 +15120,16 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
     // before that pause so their AbortError cannot fail the new prime.
     beforePrime: () => { state.localPlaybackStartGeneration += 1; },
   })) {
-    scheduleAndroidAudioClockRecovery(video, audio);
+    scheduleSplitAudioClockRecovery(video, audio);
     return reportAction("pitch-priming");
+  }
+  audio.bilikaraAudioClock?.sync();
+  if (audio.bilikaraAudioClock?.holding) {
+    holdVideoForAudio(video);
+    if (!audio.bilikaraAudioClock.failure && state.audioContext?.state === "running") {
+      scheduleSplitAudioClockRecovery(video, audio);
+    }
+    return reportAction("wait-for-captured-audio");
   }
   const videoTime = Number(video.currentTime || 0);
   if (video.ended) {
@@ -14736,6 +15140,12 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
   }
 
   if (video.readyState < 2 || state.localVideoPlaybackBlocked) {
+    // A synchronization-owned pause cannot prove recovery by clock advance.
+    // WebKit may keep HAVE_CURRENT_DATA without another canplay event. When
+    // that exact position has future buffered frames and output is running,
+    // one generation-scoped play attempt lets the decoder resume. Keep the
+    // waiting flag until readiness/actual progress independently clears it.
+    releaseBufferedVideoHold();
     state.localVideoDeferredRecovery = true;
     if (!isWebKit && !audio.paused) {
       audio.pause();
@@ -14743,7 +15153,8 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
     return reportAction("wait-for-video");
   }
 
-  const rawTargetAudioTime = videoTime - offsetSeconds + (audio.bilikaraPitch?.delay(requestedRate) || 0);
+  const rawTargetAudioTime = videoTime - offsetSeconds + (audio.bilikaraPitch?.delay(requestedRate) || 0)
+    + (audio.bilikaraOutputDelay?.seconds() || 0)*requestedRate;
   if (rawTargetAudioTime < 0) {
     if (!audio.paused) {
       audio.pause();
@@ -14764,31 +15175,64 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
     return reportAction("wait-for-audio");
   }
 
-  const audioTime = Number(audio.currentTime || 0);
+  const audioTime = Number(audio.bilikaraAudioClock?.time() ?? audio.currentTime ?? 0);
   const targetAudioTime = clampMediaTime(audio, rawTargetAudioTime);
   const drift = audioTime - targetAudioTime;
   const absoluteDrift = Math.abs(drift);
 
-  const session = state.hostPlaybackSession;
-  if (isAndroid) {
-    const catchUpThreshold = session.audioClockRecovering || state.localVideoHeldForAudio || forceCorrection
+  if (session.avOffsetPreciseSync && audio.bilikaraOutputDelay) {
+    // A ready seek and fulfilled play() still do not say when the video
+    // decoder actually restarts. Close that remaining error against output,
+    // without another audio seek or inheriting the 140/500ms steady deadband.
+    if (drift < -localPlayerForceSyncEpsilonSeconds) {
+      holdVideoForAudio(video);
+    } else {
+      state.localVideoHeldForAudio = state.localVideoDeferredRecovery = false;
+      if (drift > localPlayerForceSyncEpsilonSeconds
+        && !audio.bilikaraOutputDelay.add(drift/requestedRate)) {
+        // A decoder recovered more than the short alignment buffer can hold.
+        // Rebase once against the frozen reference, rather than clamp the
+        // requested offset or accumulate an unbounded renderer buffer.
+        resyncMountedLocalPlayerForOffsetChange(currentAvOffsetMs());
+        return reportAction("av-delay-rebase", true);
+      }
+      playMediaBestEffort(video, {internalVideo: true, video, audio, mediaKind: "video"});
+      if (!video.paused && absoluteDrift <= localPlayerForceSyncEpsilonSeconds) {
+        session.avOffsetAlignment = false;
+        clearSplitAudioClockRecovery(session);
+        return reportAction("av-delay-aligned");
+      }
+    }
+    playMediaBestEffort(audio, {video, audio, mediaKind: "audio"});
+    session.avOffsetAlignment = true;
+    scheduleSplitAudioClockRecovery(video, audio);
+    return reportAction("av-delay-aligning");
+  }
+
+  if (isAndroid || isWebKit) {
+    const catchUpThreshold = isWebKit
+      ? session.audioClockRecovering || state.localVideoHeldForAudio
+        ? localPlayerDriftToleranceSeconds
+        : localPlayerModerateSyncThresholdSeconds
+      : session.audioClockRecovering || state.localVideoHeldForAudio || forceCorrection
       ? localPlayerForceSyncEpsilonSeconds
       : localPlayerDriftToleranceSeconds;
     if (drift < -catchUpThreshold) {
-      // seeked/canplay only establish decoder readiness. Android's separate
-      // audio output clock can still stall after seek/play while video runs.
-      // Seeking audio again restarts that stall. Let audio catch the held
-      // video instead, preserving both the audio timeline and the AV offset.
+      // Decoder readiness does not guarantee that the output clock resumed.
+      // WebKit can report a completed seek while Web Audio still drains old
+      // buffers. Seeking that lagging audio again restarts the interruption
+      // and lets video run further ahead. Hold video until audio catches up;
+      // explicit user seeks and AV-delay changes retain their own positioning.
       session.audioClockRecovering = true;
       holdVideoForAudio(video);
       playMediaBestEffort(audio, { video, audio, mediaKind: "audio" });
       if (absoluteDrift < localPlayerHardSyncThresholdSeconds) {
-        scheduleAndroidAudioClockRecovery(video, audio);
+        scheduleSplitAudioClockRecovery(video, audio);
       }
       return reportAction("wait-for-audio-clock");
     }
     if (session.audioClockRecovering) {
-      clearAndroidAudioClockRecovery(session);
+      clearSplitAudioClockRecovery(session);
       state.localVideoDeferredRecovery = false;
       state.localVideoHeldForAudio = false;
       playMediaBestEffort(video, { internalVideo: true, video, audio, mediaKind: "video" });
@@ -14864,23 +15308,45 @@ function syncMountedLocalPlayer(forceCorrection = false) {
   syncSplitPlayer(video, audio, currentAvOffsetSeconds(), forceCorrection);
 }
 
-function resyncMountedLocalPlayerForOffsetChange() {
+function resyncMountedLocalPlayerForOffsetChange(previousOffsetMs = null) {
   const { video, audio } = activeLocalPlayerElements();
   if (!video || !audio) {
     return;
   }
+  // Desktop WebKit may still use native unity volume. Install its existing
+  // captured clock/gain route before the explicit rebase; iOS already owns it.
+  if (isWebKitPlaybackRuntime() && !audio.bilikaraPitchSource) {
+    holdVideoForAudio(video);
+    try { ensureAudioPitchSource(audio); resumeAudioContextBestEffort(); }
+    catch { setAppMessage(t("player.volumeUnavailable"), true); }
+  }
+  audio.bilikaraOutputDelay?.reset();
   audio.bilikaraPitch?.reset();
-  const rawTargetAudioTime = Number(video.currentTime || 0) - currentAvOffsetSeconds();
-  const targetAudioTime = clampMediaTime(audio, rawTargetAudioTime);
-  const audioRepositioned = audio.readyState >= 1
-    && setMediaCurrentTime(audio, targetAudioTime);
   const shouldContinuePlaying = Boolean(
-    (state.localShouldBePlaying || !video.paused)
+    state.localShouldBePlaying && state.hostPlaybackSession?.logicalPlayIntent !== false
     && !video.ended
-    && !audio.ended
     && !state.localPlaybackEndHandled
     && !shouldHoldCurrentItemForTransition(video.dataset.playerItemId),
   );
+  // Freeze the reference BEFORE sampling it. Letting video advance during an
+  // asynchronous audio seek adds that decoder's variable seek duration to the
+  // requested offset. Ordinary drift thresholds cannot repair small changes.
+  const waitingForOpening = Number(video.currentTime || 0) < currentAvOffsetSeconds();
+  const alignWebKit = isWebKitPlaybackRuntime() && shouldContinuePlaying && !waitingForOpening;
+  // Keep this clock relationship for the session: a later WebKit decoder hold
+  // must not reintroduce a random residual just after the first aligned tick.
+  if (isWebKitPlaybackRuntime()) state.hostPlaybackSession.avOffsetPreciseSync = true;
+  state.hostPlaybackSession.avOffsetAlignment = alignWebKit;
+  if (alignWebKit) holdVideoForAudio(video);
+  const rawTargetAudioTime = Number(video.currentTime || 0) - currentAvOffsetSeconds();
+  const targetAudioTime = clampMediaTime(audio, rawTargetAudioTime);
+  state.avDelayTraceUntil = Date.now() + 8000;
+  state.avDelayTraceSequence = (state.avDelayTraceSequence || 0) + 1;
+  state.avDelayTracePreviousOffset = previousOffsetMs;
+  recordPlaybackTrace("av-delay-change", "ui");
+  const audioRepositioned = audio.readyState >= 1
+    && setMediaCurrentTime(audio, targetAudioTime, localPlayerForceSyncEpsilonSeconds,
+      shouldContinuePlaying && rawTargetAudioTime >= 0);
 
   if (!shouldContinuePlaying || rawTargetAudioTime < 0) {
     if (!audio.paused) {
@@ -14903,6 +15369,11 @@ function resyncMountedLocalPlayerForOffsetChange() {
       true,
     );
   }
+  if (alignWebKit) {
+    // Release against the ready output on frame cadence, not the 120ms steady
+    // tick. Readiness/play events below resume this work after a pending seek.
+    scheduleSplitAudioClockRecovery(video, audio);
+  }
   return audioRepositioned;
 }
 
@@ -14910,7 +15381,7 @@ function resyncMountedLocalPlayerIfOffsetChanged(previousOffsetMs) {
   if (Number(previousOffsetMs) === currentAvOffsetMs()) {
     return false;
   }
-  resyncMountedLocalPlayerForOffsetChange();
+  resyncMountedLocalPlayerForOffsetChange(previousOffsetMs);
   return true;
 }
 
@@ -14986,7 +15457,7 @@ function renderKeyShiftControls(playbackMode) {
   const isLocalMode = playbackMode === "local";
   setClassToggle(elements.keyShiftPanel, "hidden", !isLocalMode);
 
-  const keyShift = Number(state.data?.player_settings?.key_shift ?? 0);
+  const keyShift = Number(state.pendingPlayerKeyShift?.value ?? state.data?.player_settings?.key_shift ?? 0);
   if (document.activeElement !== elements.keyShiftInput) {
     elements.keyShiftInput.value = String(keyShift);
   }
@@ -15009,33 +15480,40 @@ function renderKeyShiftControls(playbackMode) {
 async function setLocalPlayerKeyShift(keyShift) {
   const boundedKeyShift = Math.max(-6, Math.min(6, Number(keyShift || 0)));
   const requestSeq = markLocalVolumeWrite();
+  state.pendingPlayerKeyShift = {value: boundedKeyShift, seq: requestSeq};
 
   const { audio } = activeLocalPlayerElements();
   if (audio) {
     applyKeyShiftToAudio(audio, boundedKeyShift);
   }
 
-  if (state.data && state.data.player_settings) {
-    state.data.player_settings.key_shift = boundedKeyShift;
-  }
   renderKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode));
 
   try {
-    const nextData = await apiPost("/api/player/key-shift", { key_shift: boundedKeyShift });
+    const nextData = await queueLocalPlayerSettingsWrite("/api/player/key-shift", { key_shift: boundedKeyShift });
+    if (!nextData) return;
     const accepted = acceptHostStateSnapshot(nextData);
+    if (state.pendingPlayerKeyShift?.seq === requestSeq) state.pendingPlayerKeyShift = null;
     if (requestSeq !== state.volumeSaveSeq) {
       return;
     }
     // Once this write is acknowledged, newer Remote volume/mute settings
     // must no longer be hidden by the optimistic-update suppression window.
     state.playerSettingsEchoSuppressUntil = 0;
-  if (accepted) {
+    if (accepted) {
       syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
     }
     if (accepted) renderPresentationFeedback();
     renderKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode));
   } catch (error) {
-    // Ignore or handle errors gracefully
+    if (state.pendingPlayerKeyShift?.seq === requestSeq) {
+      state.pendingPlayerKeyShift = null;
+      if (requestSeq === state.volumeSaveSeq) state.playerSettingsEchoSuppressUntil = 0;
+      const {audio} = activeLocalPlayerElements();
+      if (audio) applyKeyShiftToAudio(audio);
+      renderKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode));
+      setAppMessage(error.message, true);
+    }
   }
 }
 
@@ -15075,11 +15553,15 @@ function disposeAudioPitchShifter(audio) {
     return;
   }
   disposeAudioPitchProcessor(audio);
+  audio.bilikaraAudioClock?.dispose();
+  audio.bilikaraAudioClock = null;
   disconnectAudioPitchSource(audio);
   // Retain the source identity: an element cannot be wrapped a second time.
   audio.bilikaraPitchRetired = true;
   audio.bilikaraVolumeGain?.disconnect();
   audio.bilikaraVolumeGain = null;
+  audio.bilikaraOutputDelay?.dispose();
+  audio.bilikaraOutputDelay = null;
 }
 
 function disposeSharedAudioContext() {
@@ -15098,7 +15580,7 @@ function disposeSharedAudioContext() {
 
 function resumeAudioContextBestEffort() {
   const audioContext = state.audioContext;
-  if (!audioContext || audioContext.state !== "suspended") {
+  if (!audioContext || !["suspended", "interrupted"].includes(audioContext.state)) {
     return;
   }
   try {
@@ -15120,6 +15602,13 @@ function ensureAudioPitchSource(audio) {
   if (!state.audioContext) {
     state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
   }
+  const session = state.hostPlaybackSession;
+  const needsClock = typeof isWebKitPlaybackRuntime === "function" && isWebKitPlaybackRuntime()
+    && session?.audio === audio;
+  if (needsClock && !globalThis.BilikaraAudioClock) throw new Error("Audio clock unavailable");
+  const wasPlaying = !audio.paused;
+  const initialTime = Number(audio.currentTime || 0);
+  if (needsClock) audio.pause();
 
   addMountedPlayerListener(audio, "play", resumeAudioContextBestEffort);
   const gain = state.audioContext.createGain();
@@ -15130,24 +15619,50 @@ function ensureAudioPitchSource(audio) {
     audio.bilikaraPitchSource = state.audioContext.createMediaElementSource(audio);
   } catch (error) {
     gain.disconnect();
+    if (needsClock && wasPlaying) playMediaBestEffort(audio, { video: session.video, audio, mediaKind: "audio" });
     throw error;
   }
   audio.bilikaraVolumeGain = gain;
   // Once routed through Web Audio, gain owns the full level. This also avoids
   // relying on writable HTMLMediaElement.volume in mobile WebKit.
   audio.volume = 1;
-  audio.bilikaraPitchSource.connect(gain);
+  if (needsClock) audio.bilikaraOutputDelay = new BilikaraAudioClock.AlignmentDelay({
+    context: state.audioContext, destination: gain,
+    current: () => isCurrentHostPlaybackSession(session, session.video, audio),
+  });
+  audio.bilikaraPitchSource.connect(audio.bilikaraOutputDelay?.node || gain);
   audio.bilikaraPitchRoute = "direct";
+  if (needsClock) {
+    audio.bilikaraAudioClock = new BilikaraAudioClock.CapturedClock({
+      audio, context: state.audioContext,
+      current: () => isCurrentHostPlaybackSession(session, session.video, audio),
+      shouldPlay: () => Boolean(session.logicalPlayIntent && state.localShouldBePlaying),
+      play: () => playMediaBestEffort(audio, { video: session.video, audio, mediaKind: "audio" }),
+      changed: () => applyMediaVolume(audio),
+      unavailable: kind => {
+        setAppMessage(t("player.volumeUnavailable"), true);
+        if (kind === "context-closed") recoverAudioPitchOutput(audio, kind);
+      },
+    });
+    audio.bilikaraAudioClock.seek(initialTime, wasPlaying);
+  }
   return audio.bilikaraPitchSource;
 }
 
 function applyMediaVolume(media) {
   if (!media) return;
   const volume = Math.max(0, Math.min(5, state.localPlayerVolume));
+  // iOS does not expose a writable element volume. Reuse the existing Web
+  // Audio gain route for attenuation as well as boost. WebKit iOS prepares it
+  // before first playback: capturing an already-running decoder can leave a
+  // silent gap in the new source. Other platforms keep their native unity path.
+  const iosVolume = globalThis.document?.documentElement?.dataset?.nativeHost === "true"
+    && globalThis.document.documentElement.dataset.hostPlatform === "ios";
+  const prepareIOSSource = iosVolume && typeof isWebKitPlaybackRuntime === "function" && isWebKitPlaybackRuntime();
   media.bilikaraVolume = volume;
   media.volume = media.bilikaraVolumeGain ? 1 : Math.min(1, volume);
   media.muted = state.localPlayerMuted;
-  if (volume > 1 && !media.bilikaraPitchSource && !media.bilikaraGainErrorReported) {
+  if ((volume > 1 || (iosVolume && volume !== 1) || prepareIOSSource) && !media.bilikaraPitchSource && !media.bilikaraGainErrorReported) {
     try {
       if (state.pitchContextFailure === "media-clock") throw new Error("Media source clock unavailable");
       if (!ensureAudioPitchSource(media)) throw new Error("Web Audio unavailable");
@@ -15162,9 +15677,14 @@ function applyMediaVolume(media) {
   }
   const gain = media.bilikaraVolumeGain;
   if (gain) {
-    const target = volume;
+    const target = media.bilikaraAudioClock && (media.bilikaraAudioClock.holding || state.localPlayerMuted) ? 0 : volume;
     if (gain.bilikaraTarget !== target) {
-      gain.gain.setTargetAtTime(target, state.audioContext.currentTime, 0.015);
+      if (media.bilikaraAudioClock?.holding) {
+        gain.gain.cancelScheduledValues(state.audioContext.currentTime);
+        gain.gain.value = 0;
+      } else {
+        gain.gain.setTargetAtTime(target, state.audioContext.currentTime, 0.015);
+      }
       gain.bilikaraTarget = target;
     }
   }
@@ -15201,7 +15721,7 @@ function recoverAudioPitchOutput(audio, kind) {
 
 function applyKeyShiftToAudio(audio, overrideKeyShift = null) {
   if (!audio || audio.bilikaraPitchRetired) return;
-  const rawKeyShift = Number(overrideKeyShift ?? state.data?.player_settings?.key_shift ?? 0);
+  const rawKeyShift = Number(overrideKeyShift ?? state.pendingPlayerKeyShift?.value ?? state.data?.player_settings?.key_shift ?? 0);
   const keyShift = Number.isFinite(rawKeyShift) ? Math.max(-6, Math.min(6, rawKeyShift)) : 0;
   if (!keyShift && !audio.bilikaraPitch) return; // native zero-shift path
   const unavailable = (kind) => {
@@ -15227,11 +15747,11 @@ function applyKeyShiftToAudio(audio, overrideKeyShift = null) {
       const session = state.hostPlaybackSession;
       audio.bilikaraPitch = new BilikaraPitch.PlayerPitch({
         audio, context: state.audioContext,
-        source: audio.bilikaraPitchSource, destination: audio.bilikaraVolumeGain,
+        source: audio.bilikaraPitchSource, destination: audio.bilikaraOutputDelay?.node || audio.bilikaraVolumeGain,
         connectInput: () => {
           const source = ensureAudioPitchSource(audio);
           if (!source) throw new Error("media-source");
-          return { source, destination: audio.bilikaraVolumeGain };
+          return { source, destination: audio.bilikaraOutputDelay?.node || audio.bilikaraVolumeGain };
         },
         current: () => isCurrentHostPlaybackSession(session, session.video, audio),
         changed: () => renderKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode)),
@@ -15255,7 +15775,7 @@ function persistLocalVolumePreferences() {
 async function setLocalPlayerVolumeAndMuted(
   nextVolume,
   nextMuted,
-  { reportError = true, volumeIntent = true } = {},
+  { reportError = true, volumeIntent = true, origin = "ui" } = {},
 ) {
   const normalizedVolume = Math.max(0, Math.min(5, Number(nextVolume || 0)));
   const normalizedMuted = Boolean(nextMuted);
@@ -15264,15 +15784,16 @@ async function setLocalPlayerVolumeAndMuted(
   const requestSeq = markLocalVolumeWrite();
   state.localPlayerVolume = normalizedVolume;
   state.localPlayerMuted = normalizedMuted;
+  recordPlaybackTrace("volume-command", origin);
   persistLocalVolumePreferences();
   applyStoredVolumeToMountedPlayer();
   renderVolumeControls(frontendPlaybackMode(state.data?.playback_mode));
   try {
-    const nextData = await apiPost("/api/player/volume", {
+    const nextData = await queueLocalPlayerSettingsWrite("/api/player/volume", {
       ...(volumeIntent ? { volume_percent: Math.round(normalizedVolume * 100) } : {}),
       is_muted: state.localPlayerMuted,
-      expected_item_incarnation_id: state.data?.current_item?.item_incarnation_id || "",
     });
+    if (!nextData) return;
     const accepted = acceptHostStateSnapshot(nextData);
     if (requestSeq !== state.volumeSaveSeq) {
       return;
@@ -15287,8 +15808,8 @@ async function setLocalPlayerVolumeAndMuted(
       return;
     }
     state.playerSettingsEchoSuppressUntil = 0;
-    state.localPlayerVolume = previousVolume;
-    state.localPlayerMuted = previousMuted;
+    state.localPlayerVolume = Number(state.data?.player_settings?.volume_percent ?? previousVolume * 100) / 100;
+    state.localPlayerMuted = state.data?.player_settings?.is_muted ?? previousMuted;
     persistLocalVolumePreferences();
     applyStoredVolumeToMountedPlayer();
     renderVolumeControls(frontendPlaybackMode(state.data?.playback_mode));
@@ -15633,6 +16154,7 @@ function createSplitPlayerStartupSynchronizer(video, audio, maybeRestorePlayback
       return true;
     }
     if (session.readyCommitted || session.phase !== "binding") {
+      if (canRetryHostPlaybackReadiness(session)) renderPresentationHostSurface(session);
       return false;
     }
     if (!splitPlaybackPairCanStartAutomatically(video, audio)) {
@@ -15765,6 +16287,7 @@ function retireHostPlaybackSession(
 
   const retiredMedia = [session.video, session.audio].filter(Boolean);
   retiredMedia.forEach((media) => {
+    media.bilikaraInlineControls?.dispose();
     disposeAudioPitchShifter(media);
     try {
       media.pause();
@@ -15830,6 +16353,7 @@ function exactHostPlaybackOwnershipIdentity(session) {
 }
 
 function failHostPlaybackOwnershipClaim(session) {
+  if(networkOutputOwnsPlayback()) {session.ownershipClaimStarted=false;session.ownershipClaimRequest=null;return false;}
   if (
     !isCurrentHostPlaybackSession(session, session?.video, session?.audio)
     || session.phase !== "binding"
@@ -15869,6 +16393,7 @@ function beginHostPlaybackSessionOwnershipClaim(session) {
           return;
         }
         session.ownershipClaimed = true;
+        if(networkOutputOwnsPlayback())return;
         if (!isCurrentHostPlaybackSession(session, session.video, session.audio)) {
           return;
         }
@@ -15976,9 +16501,15 @@ function claimPendingHostPlaybackRestore(session, currentItem) {
 function mountHostPlaybackSessionElements(session, currentItem, mountData) {
   const video = document.createElement("video");
   video.dataset.playerRole = "video";
+  video.bilikaraOwnedPause = false;
   video.controls = false;
   video.removeAttribute("controls");
   video.setAttribute("controlsList", "nofullscreen");
+  if (globalThis.document?.documentElement?.dataset?.hostPlatform === "ios") {
+    globalThis.BilikaraPresentationRenderer?.keepVideoLocal?.(video, "ios", globalThis.BILIKARA_IOS_VIDEO_HANDOFF_CONTROL === true);
+    video.disablePictureInPicture = true;
+    video.setAttribute("disablepictureinpicture", "");
+  }
   // Start the split pair together once both streams expose metadata. Waiting
   // for canplay deadlocks WebKit when the video intentionally preloads metadata.
   video.autoplay = false;
@@ -16193,6 +16724,11 @@ function renderPlayer(currentItem, playbackMode) {
   }
   const reconciliation = reconcileHostPlaybackSession(currentItem);
   if (reconciliation.kind !== "mounted") {
+    const retained=reconciliation.session;
+    if(retained?.phase==="binding" && !retained.loadingStarted) {
+      if(retained.ownershipClaimed)beginHostPlaybackSessionElementLoading(retained);
+      else beginHostPlaybackSessionOwnershipClaim(retained);
+    }
     return;
   }
   const { session, video, audio } = reconciliation;
@@ -16204,9 +16740,9 @@ function renderPlayer(currentItem, playbackMode) {
   createSplitPlaybackStartOverlay(video, audio);
   ensureTauriMediaSessionHandlers();
   syncTauriMediaSessionState(video, { forcePosition: true });
-  ["loadedmetadata", "durationchange", "timeupdate", "play", "pause", "seeked", "volumechange"].forEach((eventName) => {
+  ["loadedmetadata", "durationchange", "timeupdate", "play", "pause", "seeking", "seeked", "volumechange"].forEach((eventName) => {
     addMountedPlayerListener(video, eventName, () => {
-      publishPresentationPlaybackState(session).catch(() => {});
+      publishPresentationPlaybackState(session, { force: eventName !== "timeupdate" }).catch(() => {});
     });
   });
 
@@ -16258,6 +16794,19 @@ function renderPlayer(currentItem, playbackMode) {
     audio,
     maybeRestorePlayback,
   );
+  session.retryReadiness = () => {
+    if (!canRetryHostPlaybackReadiness(session)) return false;
+    // Late metadata must be admitted by the same claimed program. Commit its
+    // readiness synchronously so the following play calls retain this gesture.
+    setHostPlaybackSessionPhase(session, "binding");
+    if (!commitHostPlaybackSessionReadyPaused(session, video, audio, {applyIntent:false})) {
+      setHostPlaybackSessionPhase(session, "failed");
+      return false;
+    }
+    session.failureStage = "";
+    session.startSyncTimer();
+    return true;
+  };
 
   addMountedPlayerListener(video, "loadedmetadata", () => {
     synchronizeStartupPlayer();
@@ -16277,11 +16826,21 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   addMountedPlayerListener(video, "play", () => {
+    if (holdLocalPlaybackForNetworkOutput()) return;
     if (window.BilikaraAndroidPlayback?.blockStart()) return;
+    // Actual resumed playback retires an earlier internal hold. A pause that
+    // produced no event must not consume the user's next system-control pause.
+    if (!video.paused) {
+      video.bilikaraOwnedPause = false;
+      delete video.dataset.bilikaraInternalPause;
+    }
     if (video.dataset.bilikaraInternalPlay === "true") {
       delete video.dataset.bilikaraInternalPlay;
       return;
     }
+    // Media events are queued. A play event can arrive after an owned pause
+    // or a user pause; its name must not resurrect a superseded intent.
+    if (video.paused) return;
     if (isLocalAdvanceHoldingItem(currentItem.id)) {
       stopMountedPlayerForAdvanceDelay(currentItem.id);
       return;
@@ -16290,33 +16849,45 @@ function renderPlayer(currentItem, playbackMode) {
       session.seekResumeAfterSettle = true;
       state.localShouldBePlaying = true;
       session.seekResumePending = true;
-      video.dataset.bilikaraInternalPause = "true";
-      video.pause();
+      if (!video.paused) {
+        video.bilikaraOwnedPause = true;
+        video.dataset.bilikaraInternalPause = "true";
+        video.pause();
+      }
       return;
     }
     setSplitPlaybackIntent(video, audio, true, {
       source: "native-video-play-intent",
+      userGesture: globalThis.document?.documentElement?.dataset?.hostPlatform === "ios",
       synchronizeStartupPlayer,
     });
     reportCurrentVideoStatus();
   });
 
   addMountedPlayerListener(video, "pause", () => {
-    if (video.dataset.bilikaraInternalPause === "true") {
-      delete video.dataset.bilikaraInternalPause;
-      return;
-    }
+    const internalPause = video.dataset.bilikaraInternalPause === "true";
+    delete video.dataset.bilikaraInternalPause;
+    // A delayed pause from the previous seek/start cannot cancel the now
+    // playing pair. Explicit controls commit their intent synchronously.
+    if (!video.paused) return;
+    // An old hold can still have a queued event when the system controls issue
+    // a new pause. Its marker is valid only while that owned hold still exists.
+    if (internalPause && (video.bilikaraOwnedPause || session.seekSettling
+      || session.seekResumePending || session.phase !== "playing"
+      || !state.localShouldBePlaying || shouldHoldCurrentItemForTransition(currentItem))) return;
     if (window.BilikaraAndroidPlayback?.blockStart()) return;
     if (session.seekResumePending) {
       return;
     }
-    // Android's native timeline pauses before dispatching `seeking`. That
-    // temporary pause is not a new user intent: the existing seek lifecycle
-    // must retain whether playback should resume when the seek settles.
-    if (isAndroidNativePlaybackRuntime() && video.seeking) {
+    // Native timelines can pause before dispatching `seeking`, including
+    // Chromium/WebView2 desktop controls. Preserve the seek's play intent;
+    // explicit Host/Remote pauses still use setSplitPlaybackIntent directly.
+    if (video.seeking) {
       return;
     }
-    if (video.ended && !audio.ended) {
+    // Native EOS pauses are observations, not a new user pause intent. The
+    // shared completion path owns advancement after the audible tail drains.
+    if (video.ended) {
       return;
     }
     if (document.hidden && state.localShouldBePlaying) {
@@ -16363,7 +16934,7 @@ function renderPlayer(currentItem, playbackMode) {
     if (!settleSplitPlayerSeek(video, audio)) {
       reportCurrentVideoStatus();
     }
-    maybeShowRatingPromptForProgress(currentItem, audio.currentTime, audio.duration);
+    maybeShowRatingPromptForProgress(currentItem, audio.bilikaraAudioClock?.time() ?? audio.currentTime, audio.duration);
   });
 
   addMountedPlayerListener(video, "canplay", () => {
@@ -16381,6 +16952,7 @@ function renderPlayer(currentItem, playbackMode) {
 
   addMountedPlayerListener(audio, "seeked", () => {
     settleSplitPlayerSeek(video, audio);
+    if (state.localVideoHeldForAudio) scheduleSplitAudioClockRecovery(video, audio);
   });
 
   addMountedPlayerListener(audio, "canplay", () => {
@@ -16392,6 +16964,7 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   addMountedPlayerListener(video, "playing", () => {
+    if(holdLocalPlaybackForNetworkOutput())return;
     state.localVideoPlaybackBlocked = false;
     if (session.readyCommitted && !video.paused && !audio.paused) {
       setHostPlaybackSessionPhase(session, "playing");
@@ -16435,18 +17008,7 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   addMountedPlayerListener(video, "volumechange", () => {
-    const previousVolume = state.localPlayerVolume;
-    const previousMuted = state.localPlayerMuted;
-    syncSplitPlayerVolumeFromVideo(video, audio);
-    const nextVolume = state.localPlayerVolume;
-    const nextMuted = state.localPlayerMuted;
-    const volumeChanged = Math.abs(nextVolume - previousVolume) > 0.001;
-    if (!volumeChanged && nextMuted === previousMuted) return;
-    // Only actual native-control changes reach the authoritative manual path.
-    // Programmatic applications already match bilikaraVolume/local intent.
-    state.localPlayerVolume = previousVolume;
-    state.localPlayerMuted = previousMuted;
-    void setLocalPlayerVolumeAndMuted(nextVolume, nextMuted, { volumeIntent: volumeChanged }).catch(() => {});
+    handleNativePlayerVolumeChange(session, video, audio);
   });
 
   ["pointerenter", "pointermove", "pointerdown", "touchstart", "focus"].forEach((eventName) => {
@@ -16497,8 +17059,10 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   addMountedPlayerListener(audio, "playing", () => {
+    if(holdLocalPlaybackForNetworkOutput())return;
     clearWebKitAudioStarvationTimer(session);
     state.localAudioPlaybackBlocked = false;
+    if (state.localVideoHeldForAudio) scheduleSplitAudioClockRecovery(video, audio);
     if (session.readyCommitted && !video.paused && !audio.paused) {
       setHostPlaybackSessionPhase(session, "playing");
       confirmPresentationPlaybackFeedback(session);
@@ -16510,27 +17074,38 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   addMountedPlayerListener(audio, "timeupdate", () => {
-    maybeShowRatingPromptForProgress(currentItem, audio.currentTime, audio.duration);
+    maybeShowRatingPromptForProgress(currentItem, audio.bilikaraAudioClock?.time() ?? audio.currentTime, audio.duration);
   });
 
-  let syncTimer = null;
-  syncTimer = window.setInterval(() => {
-    if (
-      session.syncTimer !== syncTimer
-      || !isCurrentHostPlaybackSession(session, video, audio)
-    ) {
-      return;
-    }
-    if (isSplitPlayerSeekSettling(video, audio)) {
-      settleSplitPlayerSeek(video, audio);
+  session.startSyncTimer = () => {
+    if (session.syncTimer !== null || !isCurrentHostPlaybackSession(session, video, audio)) return;
+    const syncTimer = window.setInterval(() => {
+      if (
+        session.syncTimer !== syncTimer
+        || !isCurrentHostPlaybackSession(session, video, audio)
+      ) {
+        return;
+      }
+      if (isSplitPlayerSeekSettling(video, audio)) {
+        settleSplitPlayerSeek(video, audio);
+        reportCurrentVideoStatus();
+        return;
+      }
+      syncSplitPlayer(video, audio, currentAvOffsetSeconds(), false);
+      // Reuse this generation-bound end handler when a resumed WebKit tail has
+      // drained but the decoder no longer emits EOS. Its existing intent/drain/
+      // in-flight guards still own the sole automatic advance.
+      if (audio.bilikaraAudioClock?.isOutputComplete?.()) {
+        handleSplitAudioEnded(currentItem, video, audio, reportCurrentVideoStatus).catch(() => {
+          reportSplitSyncDiagnostic(currentItem.id, video, audio, "output-completion-failed", true);
+        });
+      }
       reportCurrentVideoStatus();
-      return;
-    }
-    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), false);
-    reportCurrentVideoStatus();
-    maybeShowRatingPromptForProgress(currentItem, audio.currentTime, audio.duration);
-  }, localPlayerSyncIntervalMs);
-  session.syncTimer = syncTimer;
+      maybeShowRatingPromptForProgress(currentItem, audio.bilikaraAudioClock?.time() ?? audio.currentTime, audio.duration);
+    }, localPlayerSyncIntervalMs);
+    session.syncTimer = syncTimer;
+  };
+  session.startSyncTimer();
 
   let startupTimer = null;
   startupTimer = window.setTimeout(() => {
@@ -16550,6 +17125,7 @@ function renderPlayer(currentItem, playbackMode) {
 
 
 function applyRemotePlayerControl(command, currentItem, playbackMode) {
+  if(networkOutputOwnsPlayback())return;
   const seq = Number(command?.seq || 0);
   if (!Number.isSafeInteger(seq) || seq < 1) {
     return;
@@ -16571,6 +17147,12 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
     && isCurrentHostPlaybackSession(state.hostPlaybackSession)
   );
 
+  // A current-program command can arrive before asynchronous media binding.
+  // Keep it at the native FIFO head; readiness retries it on this same owner.
+  if (!exactPlaybackProgram && playbackMode === "local" && currentItem
+    && expectedPlaybackGeneration === state.data?.playback_generation
+    && (!commandItemId || commandItemId === currentItem.id)) return;
+
   if (
     exactPlaybackProgram
     && playbackMode === "local"
@@ -16583,6 +17165,7 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
       const video = elements.playerFrame.querySelector("video");
       const audio = elements.playerFrame.querySelector('audio[data-player-role="audio"]');
       const playbackSession = state.hostPlaybackSession;
+      if (!video || !isCurrentHostPlaybackSession(playbackSession, video, audio)) return;
       if (video && isCurrentHostPlaybackSession(playbackSession, video, audio)) {
         // WebKit can keep a successful active pair in "starting" until its
         // initial play promises settle. Remote controls must treat that pair
@@ -16743,7 +17326,8 @@ function observedHostPlayerStatus(itemId, session, video, audio = session?.audio
     return null;
   }
   let observedPhase = "paused";
-  if (audio.ended) {
+  if ((audio.ended || audio.bilikaraAudioClock?.isOutputComplete?.())
+    && !(audio.bilikaraAudioClock && audio.bilikaraAudioClock.time() < audio.duration)) {
     observedPhase = "ended";
   } else if (hostPlaybackSessionObservedPlaying(session, video, audio)) {
     observedPhase = "playing";
@@ -16782,7 +17366,35 @@ function nextHostPlayerStatusSequence(session) {
   return nextSequence;
 }
 
+function sendHostPlayerStatus(session, payload, signature) {
+  if (session.playerStatusInFlight) {
+    // Observations describe current state, not a command FIFO. Keep one latest
+    // value while the previous HTTP request completes so network scheduling
+    // cannot deliver a lower status_sequence after a newer observation.
+    session.pendingPlayerStatus = { payload, signature };
+    return session.playerStatusRequest;
+  }
+  session.playerStatusInFlight = true;
+  session.playerStatusRequest = apiPost("/api/player/status", payload)
+    .catch(() => {
+      if (session.lastReportedStatusSignature === signature) {
+        session.lastReportedStatusSignature = "";
+      }
+    })
+    .finally(() => {
+      session.playerStatusInFlight = false;
+      const pending = session.pendingPlayerStatus;
+      session.pendingPlayerStatus = null;
+      if (pending && !networkOutputOwnsPlayback()
+        && isCurrentHostPlaybackSession(session, session.video, session.audio)) {
+        return sendHostPlayerStatus(session, pending.payload, pending.signature);
+      }
+    });
+  return session.playerStatusRequest;
+}
+
 function reportPlayerStatus(itemId, video, session) {
+  if(networkOutputOwnsPlayback())return false;
   const observed = observedHostPlayerStatus(itemId, session, video, session?.audio);
   const playbackGeneration = Number(session?.playbackGeneration);
   if (
@@ -16820,7 +17432,7 @@ function reportPlayerStatus(itemId, video, session) {
   }
   session.lastReportedStatusSignature = signature;
 
-  apiPost("/api/player/status", {
+  sendHostPlayerStatus(session, {
     playback_generation: playbackGeneration,
     status_sequence: statusSequence,
     item_id: normalizedItemId,
@@ -16831,7 +17443,7 @@ function reportPlayerStatus(itemId, video, session) {
       language: String(window.navigator?.language || ""),
       vendor: String(window.navigator?.vendor || ""),
     },
-  }).catch(() => {});
+  }, signature);
   return true;
 }
 
@@ -19562,6 +20174,11 @@ async function advanceLocalPlayerNow({
 }
 
 async function requestNextTrack(expectedPlaybackGeneration = null) {
+  if(networkOutputOwnsPlayback()) {
+    const item=state.data?.current_item;if(!item)return false;
+    const next=await apiPost("/api/player/control",{action:"next-track",item_id:item.id,playback_generation:state.data.playback_generation});
+    if(acceptHostStateSnapshot(next))render();return true;
+  }
   if (
     expectedPlaybackGeneration !== null
     && (
@@ -19920,26 +20537,44 @@ async function setAvOffset(offsetMs) {
   await dispatchAvDelayAction({ type: "set_effective", effective_delay_ms: Math.round(numeric) });
 }
 
-async function dispatchAvDelayAction(action) {
-  if (state.avOffsetSaving) {
-    return;
-  }
+function dispatchAvDelayAction(action) {
+  // Adjust/reset/lock are ordered operations, not interchangeable tail values.
+  // Keep every accepted action, including an input while an earlier one awaits.
+  state.avOffsetPending = Number(state.avOffsetPending || 0) + 1;
+  state.avOffsetSaving = true;
+  const task = (state.avOffsetTask || Promise.resolve()).then(() => performAvDelayAction(action));
+  state.avOffsetTask = task.catch(() => {});
+  return task.finally(() => {
+    state.avOffsetPending -= 1;
+    state.avOffsetSaving = state.avOffsetPending > 0;
+    renderAvSyncControls(frontendPlaybackMode(state.data?.playback_mode), state.data?.player_settings);
+  });
+}
+
+async function performAvDelayAction(action) {
   const previousOffsetMs = currentAvOffsetMs();
   const activeElement = document.activeElement;
   activeElement?.setAttribute?.("aria-busy", "true");
   state.avOffsetSaving = true;
   renderAvSyncControls(frontendPlaybackMode(state.data?.playback_mode), state.data?.player_settings);
   try {
-    const decision = await apiPost(
+    const decision = await queueLocalPlayerSettingsWrite(
       "/api/player/av-delay-action",
       action,
       { timeoutMs: avDelayRequestTimeoutMs },
     );
-    state.data.player_settings = {
-      ...state.data?.player_settings,
-      av_offset_ms: Number(decision?.effective_delay_ms || 0),
-      av_delay: decision,
-    };
+    if (!decision) return;
+    if (decision.state) {
+      // Native responses use the same revision/program acceptance as SSE;
+      // an older HTTP acknowledgement cannot overwrite a newer Remote edit.
+      acceptHostStateSnapshot(decision.state);
+    } else {
+      state.data.player_settings = {
+        ...state.data?.player_settings,
+        av_offset_ms: Number(decision?.effective_delay_ms || 0),
+        av_delay: decision,
+      };
+    }
     render();
     resyncMountedLocalPlayerIfOffsetChanged(previousOffsetMs);
   } catch (error) {
@@ -21059,9 +21694,7 @@ elements.keyShiftInput?.addEventListener("keydown", async (event) => {
 });
 
 document.addEventListener("click", () => {
-  if (state.audioContext && state.audioContext.state === "suspended") {
-    state.audioContext.resume().catch(() => {});
-  }
+  resumeAudioContextBestEffort();
 });
 
 elements.clearPlaylistButton.addEventListener("click", (event) => {
@@ -21114,20 +21747,7 @@ state.playerFullscreenInteraction = window.BilikaraFullscreenControls.bindPlayer
   revealControls: revealMountedPlayerControlsForUserInteraction,
 });
 
-elements.playerFullscreenButton?.addEventListener("pointerdown", (event) => {
-  state.playerFullscreenLastPointerType = String(event.pointerType || "");
-});
-
-elements.playerFullscreenButton?.addEventListener("click", async (event) => {
-  if (
-    isPlayerPanelFullscreen()
-    && !isAndroidNativePlaybackRuntime()
-    && playerFullscreenActivationUsesTouch(event)
-    && !state.playerFullscreenRemotePinned
-  ) {
-    setPlayerFullscreenRemotePinned(true);
-    return;
-  }
+elements.playerFullscreenButton?.addEventListener("click", async () => {
   setPlayerFullscreenRemotePinned(false);
   await togglePlayerFullscreen();
   renderPlayerFullscreenButton();
@@ -21157,9 +21777,10 @@ elements.playerFrame?.addEventListener("click", (event) => {
     return;
   }
   const { video, audio } = activeLocalPlayerElements();
-  if (isTauriWebKitRuntime()) {
+  const ios = globalThis.document?.documentElement?.dataset?.hostPlatform === "ios";
+  if (ios || isTauriWebKitRuntime()) {
     clearPlayerFrameClickTimer();
-    if (video && audio) {
+    if (!ios && video && audio) {
       requestSplitPlaybackStartFromUserGesture(video, audio, "tauri-video-click-start-intent");
     }
     revealMountedPlayerControlsForUserInteraction(event);
@@ -21179,6 +21800,11 @@ elements.playerFrame?.addEventListener("click", (event) => {
 
 elements.playerFrame?.addEventListener("dblclick", (event) => {
   if (event.target.closest("button, input, select, textarea, a")) {
+    return;
+  }
+  if (globalThis.document?.documentElement?.dataset?.hostPlatform === "ios") {
+    event.preventDefault();
+    clearPlayerFrameClickTimer();
     return;
   }
   if (isAndroidNativePlaybackRuntime()) {
@@ -23085,6 +23711,12 @@ async function restartHostPlaybackAfterPageRestore() {
   return accepted;
 }
 
+window.visualViewport?.addEventListener?.("resize", scheduleConfirmPopoverPositionSync);
+window.visualViewport?.addEventListener?.("scroll", scheduleConfirmPopoverPositionSync);
+document.fonts?.addEventListener?.("loadingdone", scheduleConfirmPopoverPositionSync);
+window.visualViewport?.addEventListener?.("resize", scheduleRowMenuGeometry);
+window.visualViewport?.addEventListener?.("scroll", scheduleRowMenuGeometry);
+document.fonts?.addEventListener?.("loadingdone", scheduleRowMenuGeometry);
 window.addEventListener("resize", () => {
   scheduleConfirmPopoverPositionSync();
   renderHostWorkspaceSelection();

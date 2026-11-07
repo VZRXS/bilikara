@@ -211,34 +211,23 @@ fn tauri_native_fullscreen_preserves_normal_and_maximized_placement() {
     use std::sync::{Arc, Mutex};
     let outcome: Arc<Mutex<Option<Result<(), String>>>> = Arc::default();
     let captured = Arc::clone(&outcome);
-    let profile = std::env::temp_dir().join(format!(
-        "bilikara-fullscreen-test-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let test_profile = profile.clone();
     let mut context = tauri::generate_context!();
     context.config_mut().app.windows.clear();
     let app = tauri::Builder::default()
         .any_thread()
         .setup(move |app| {
             let result = (|| {
-                let window = tauri::WebviewWindowBuilder::new(
-                    app,
-                    "fullscreen-regression",
-                    tauri::WebviewUrl::External("about:blank".parse().unwrap()),
-                )
-                .data_directory(test_profile.clone())
-                .decorations(false)
-                .transparent(true)
-                .shadow(true)
-                .visible(false)
-                .inner_size(900.0, 600.0)
-                .build()
-                .map_err(|error| error.to_string())?;
+                // Exercise the same Tauri native window used by the production
+                // adapter. Fullscreen geometry does not require a WebView2
+                // profile, browser startup or an about:blank navigation.
+                let window = tauri::WindowBuilder::new(app, "fullscreen-regression")
+                    .decorations(false)
+                    .transparent(true)
+                    .shadow(true)
+                    .visible(false)
+                    .inner_size(900.0, 600.0)
+                    .build()
+                    .map_err(|error| error.to_string())?;
                 let hwnd = window.hwnd().map_err(|error| error.to_string())?.0;
                 let changes: Box<RefCell<Vec<[i32; 4]>>> = Box::default();
                 unsafe {
@@ -268,9 +257,7 @@ fn tauri_native_fullscreen_preserves_normal_and_maximized_placement() {
                         {
                             let _animation = native::AnimationGuard::new(hwnd)?;
                             state.set(&window, true)?;
-                            let _ = crate::platform::sync_windows_main_window_frame(
-                                &window.as_ref().window(),
-                            );
+                            let _ = crate::platform::sync_windows_main_window_frame(&window);
                             let mut monitor: MONITORINFO = unsafe { std::mem::zeroed() };
                             monitor.cbSize = std::mem::size_of_val(&monitor) as u32;
                             let mut client: RECT = unsafe { std::mem::zeroed() };
@@ -310,9 +297,7 @@ fn tauri_native_fullscreen_preserves_normal_and_maximized_placement() {
                         {
                             let _animation = native::AnimationGuard::new(hwnd)?;
                             state.set(&window, false)?;
-                            let _ = crate::platform::sync_windows_main_window_frame(
-                                &window.as_ref().window(),
-                            );
+                            let _ = crate::platform::sync_windows_main_window_frame(&window);
                         }
                         if window.placement()? != original
                             || window.is_maximized().map_err(|error| error.to_string())?
@@ -330,7 +315,7 @@ fn tauri_native_fullscreen_preserves_normal_and_maximized_placement() {
                     }
                     Ok(())
                 })();
-                // Remove before releasing the recorder; closing a WebView may be deferred.
+                // Remove before releasing the recorder; window close is deferred.
                 unsafe {
                     RemoveWindowSubclass(hwnd, Some(record_changes), 1);
                 }
@@ -344,7 +329,6 @@ fn tauri_native_fullscreen_preserves_normal_and_maximized_placement() {
         .build(context)
         .expect("build native fullscreen test app");
     app.run_return(|_, _| {});
-    let _ = std::fs::remove_dir_all(profile);
     outcome
         .lock()
         .unwrap()

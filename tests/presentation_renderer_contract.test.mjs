@@ -6,6 +6,20 @@ import path from 'node:path';
 import { root, runNative } from './desktop_construction_support.mjs';
 const ROOT = root;
 import { contains, hasContent, iterableValues } from './frontend_contract_support.mjs';
+import { createRequire } from 'node:module';
+
+test('iOS video handoff policy is element-local, before source and has an explicit A/B control [AIRPLAY-LOCAL-VIDEO]',()=>{
+  const {keepVideoLocal}=createRequire(import.meta.url)('../static/presentation-renderer.js');
+  const video=()=>({dataset:{},attributes:new Map(),setAttribute(name,value){this.attributes.set(name.toLowerCase(),value);},hasAttribute(name){return this.attributes.has(name.toLowerCase());}});
+  for(const platform of ['android','windows','macos','desktop',undefined]){
+    const element=video();assert.equal(keepVideoLocal(element,platform),false);assert.equal(element.attributes.size,0);
+  }
+  const host=video();assert.equal(keepVideoLocal(host,'ios'),true);
+  assert.equal(host.disableRemotePlayback,true);assert.equal(host.attributes.get('x-webkit-airplay'),'deny');
+  assert.equal(host.attributes.has('disableremoteplayback'),true);assert.equal(host.dataset.remoteVideoPolicy,'deny');
+  const control=video();assert.equal(keepVideoLocal(control,'ios',true),false);assert.equal(control.attributes.size,0);assert.equal(control.dataset.remoteVideoPolicy,'control');
+  const active=video();active.currentSrc='already loaded';assert.equal(keepVideoLocal(active,'ios'),false);assert.equal(active.attributes.size,0);
+});
 async function checked(program, args, cwd) { const result = await runNative(program, args, process.env, 120000, cwd); assert.equal(result.status, 0, result.stdout + result.stderr); return result; }
 const PresentationRendererTest = {
 async setUpClass() {

@@ -30,7 +30,7 @@ assert.deepEqual(macos_window[key], value, key);
 }
 assert.ok(hasContent(macos_window["decorations"]));
 assert.ok(hasContent(macos_window["hiddenTitle"]));
-assert.deepEqual(macos_window["titleBarStyle"], "Overlay");
+assert.deepEqual(macos_window["titleBarStyle"], "Transparent");
 assert.deepEqual(capability["windows"], ["main"]);
 },
 async test_macos_main_webview_uses_creation_time_autoplay_policy() {
@@ -74,9 +74,10 @@ assert.deepEqual(macos_dependencies["objc2-web-kit"]["version"], "=0.3.2");
 assert.ok(!hasContent(macos_dependencies["objc2-web-kit"]["default-features"]));
 assert.deepEqual(macos_dependencies["objc2-web-kit"]["features"], ["std", "WKWebViewConfiguration"]);
 locked_versions = Object.fromEntries(Array.from(Array.from(iterableValues(cargo_lock["package"]))).map((lockedPackage) => [lockedPackage["name"], lockedPackage["version"]]));
-assert.deepEqual(locked_versions["tauri"], "2.11.2");
-assert.deepEqual(locked_versions["tauri-runtime-wry"], "2.11.2");
-assert.deepEqual(locked_versions["wry"], "0.55.1");
+assert.deepEqual(locked_versions["tauri"], "2.12.3");
+assert.deepEqual(locked_versions["tauri-runtime-wry"], "2.12.3");
+assert.deepEqual(locked_versions["wry"], "0.57.1");
+assert.deepEqual(locked_versions["tao"], "0.37.2");
 assert.deepEqual(locked_versions["objc2"], "0.6.4");
 assert.deepEqual(locked_versions["objc2-web-kit"], "0.3.2");
 }

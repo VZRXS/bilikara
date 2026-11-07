@@ -70,7 +70,7 @@ impl FullscreenState {
 }
 
 #[cfg(target_os = "windows")]
-impl Window for tauri::WebviewWindow {
+impl Window for tauri::Window {
     fn is_fullscreen(&self) -> Result<bool, String> {
         self.is_fullscreen().map_err(|error| error.to_string())
     }

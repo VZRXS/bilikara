@@ -10,6 +10,19 @@
   const overlaySelector = ".player-delay-overlay";
   const svgNamespace = "http://www.w3.org/2000/svg";
 
+  // Element-level iOS policy only. Leave split audio/system audio routes and
+  // WKWebView-wide AirPlay configuration alone. The control flag is a bounded
+  // diagnostic A/B input applied before assigning a source, never during play.
+  function keepVideoLocal(video, platform, control = false) {
+    if (platform !== "ios" || video.currentSrc || video.hasAttribute?.("src")) return false;
+    video.dataset.remoteVideoPolicy = control ? "control" : "deny";
+    if (control) return false;
+    video.disableRemotePlayback = true;
+    video.setAttribute("disableRemotePlayback", "");
+    video.setAttribute("x-webkit-airplay", "deny");
+    return true;
+  }
+
   function createElement(tagName, className = "") {
     const node = document.createElement(tagName);
     if (className) {
@@ -279,6 +292,7 @@
   }
 
   return {
+    keepVideoLocal,
     ensureOverlay,
     renderOverlay,
     renderScene,

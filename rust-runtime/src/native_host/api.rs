@@ -455,6 +455,24 @@ pub(super) fn dispatch(
             "/api/playlist/move-next",
         ];
         app.native_authorize(identity, !shared.contains(&path))?;
+        if matches!(
+            path,
+            "/api/player/volume" | "/api/player/key-shift" | "/api/player/av-delay-action"
+        ) && let Some(expected) = body.get("expected_item_incarnation_id")
+        {
+            let expected = expected
+                .as_str()
+                .ok_or_else(|| ApiError::invalid("歌曲标识无效"))?;
+            let snapshot = app.native_core_snapshot()?;
+            let current = snapshot
+                .current_item
+                .as_ref()
+                .map(|item| item.item_incarnation_id.as_str())
+                .unwrap_or("");
+            if current != expected {
+                return Err(ApiError::new(409, "stale_item", "此歌曲已更换"));
+            }
+        }
         let mut command = json!({"schema_version":1,"now":now});
         match path {
             "/api/session-users/add" => {
@@ -588,6 +606,10 @@ pub(super) fn dispatch(
             "/api/player/av-delay-action" => {
                 command["command"] = json!("apply_av_delay");
                 command["action"] = body.clone();
+                command["action"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("expected_item_incarnation_id");
             }
             "/api/backup/discard" | "/api/data/reset" => {
                 command["command"] = json!(if path == "/api/data/reset" {
@@ -612,7 +634,9 @@ pub(super) fn dispatch(
             return Err(ApiError::invalid("没有可继续的上一场记录"));
         }
         if path == "/api/player/av-delay-action" {
-            Ok(json!(app.native_core_snapshot()?.player_settings.av_delay))
+            let mut decision = json!(app.native_core_snapshot()?.player_settings.av_delay);
+            decision["state"] = app.native_snapshot(host)?;
+            Ok(decision)
         } else {
             app.native_snapshot(host)
         }

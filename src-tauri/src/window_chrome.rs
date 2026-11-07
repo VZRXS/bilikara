@@ -35,6 +35,16 @@ pub(crate) async fn set_window_chrome_theme(
             _ => tauri::Theme::Dark,
         }))
         .map_err(|error| error.to_string())?;
+    #[cfg(target_os = "macos")]
+    {
+        // Transparent titlebars reveal NSWindow's background above the WebView.
+        // Reuse the already validated Host surface color for that native strip.
+        let color = background.parse::<tauri::window::Color>()?;
+        window
+            .as_ref()
+            .set_background_color(Some(color))
+            .map_err(|error| error.to_string())?;
+    }
     #[cfg(target_os = "linux")]
     {
         let (sender, mut receiver) = tauri::async_runtime::channel(1);

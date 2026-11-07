@@ -7940,7 +7940,21 @@ function renderPlayerControls(currentItem, playbackMode) {
   playbackRestartMenu?.refresh();
   if (!currentItem) {
     state.playerControlsRenderSignature = "__empty__";
-    elements.playerControlPanel.classList.add("hidden");
+    elements.playerControlPanel.classList.remove("hidden");
+    for (const button of elements.playerControlPanel.querySelectorAll("button[data-control-action]")) {
+      button.disabled = true;
+      button.removeAttribute("aria-busy");
+    }
+    const toggle = elements.playerControlPanel.querySelector('[data-control-action="toggle-play"]');
+    if (toggle) {
+      toggle.setAttribute("aria-pressed", "false");
+      toggle.setAttribute("aria-label", t("remote.play"));
+      toggle.setAttribute("title", t("remote.play"));
+      toggle.classList.add("is-paused"); toggle.classList.remove("is-playing");
+      toggle.querySelector('[data-player-icon="play"]')?.classList.remove("hidden");
+      toggle.querySelector('[data-player-icon="pause"]')?.classList.add("hidden");
+    }
+    if (elements.playbackSheetSeek) { elements.playbackSheetSeek.disabled = true; elements.playbackSheetSeek.removeAttribute("aria-busy"); }
     if (typeof clearRemoteIssueByPrefix === "function") {
       clearRemoteIssueByPrefix("player-control-unsupported");
       clearRemoteIssueByPrefix("player-control-cache-pending");
@@ -8979,7 +8993,7 @@ async function sendPlayerNext() {
   renderPlayerControls(state.data?.current_item, frontendPlaybackMode(state.data?.playback_mode));
 }
 
-function disconnectClient() {
+function flushClientPendingRatings() {
   // Flush any pending auto-ratings before disconnecting so songs that
   // crossed the threshold but never got a deferred flush (e.g. the last
   // song in the session) still get their auto score=5 submitted.
@@ -10614,7 +10628,7 @@ function trapFocusWithin(root, event, preferredElement = null) {
 }
 
 function openPlaybackSheet({ animate = true } = {}) {
-  if (!state.data?.current_item || !elements.playbackSheet || anotherRemoteModalIsOpen()) {
+  if (!state.data || !elements.playbackSheet || anotherRemoteModalIsOpen()) {
     return false;
   }
   if (animate && playbackSheetGesture?.animateTo) return playbackSheetGesture.animateTo(true);
@@ -10702,7 +10716,6 @@ function closePlaybackSheet({ immediate = false, restoreFocus = true, animate = 
     if (
       restoreFocus
       && document.documentElement.dataset.remoteInputModality === "keyboard"
-      && state.data?.current_item
       && elements.playbackDock
       && !elements.playbackDock.classList.contains("hidden")
     ) {
@@ -10740,7 +10753,7 @@ function initPlaybackSheet() {
     header: elements.playbackSheetPanel?.querySelector(".playback-sheet-status-header"),
     body: elements.playbackSheetBody, collapse: elements.playbackSheetCollapse,
     isOpen: () => state.playbackSheetOpen,
-    canUse: () => Boolean(state.data?.current_item && !anotherRemoteModalIsOpen()),
+    canUse: () => Boolean(state.data && !anotherRemoteModalIsOpen()),
     getKey: () => remoteRestartContext().key,
     open: () => openPlaybackSheet({ animate: false }),
     close: options => closePlaybackSheet({ ...options, animate: false }),

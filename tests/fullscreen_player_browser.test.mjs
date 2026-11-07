@@ -45,6 +45,7 @@ test('Edge/Chromium fullscreen keeps entry quiet and restores real pointer, keyb
     const fullscreenControlHover={reset(){}};
     const canTogglePlayerFullscreen=()=>!state.playerFullscreenTransitioning;
     const tauriInvoke=()=>nativeMode ? ()=>{} : null;
+    const iosPlayerFullscreenPlatform=()=>null;
     async function setTauriWindowFullscreen(){nativeCalls++;return true;}
     const presentationCompositionActive=()=>false;
     const isAndroidNativePlaybackRuntime=()=>false;
@@ -62,7 +63,7 @@ test('Edge/Chromium fullscreen keeps entry quiet and restores real pointer, keyb
     ${section('function clearLocalPlayerControlsHideTimer()', 'function mountedLocalVideoElement()')}
     ${section('function hidePlayerControls(', 'function toggleMountedLocalPlayback()')}
     ${section('function handleFullscreenChange()', 'async function deferCurrentSong(')}
-    ${section('state.playerFullscreenInteraction =', 'elements.playerFullscreenButton?.addEventListener("pointerdown"')}
+    ${section('state.playerFullscreenInteraction =', 'elements.playerFullscreenButton?.addEventListener("click"')}
     ${section('  ["pointerenter", "pointermove", "pointerdown", "touchstart", "focus"].forEach', '  addMountedPlayerListener(video, "ended",')}
     document.getElementById('enter').addEventListener('click',togglePlayerFullscreen);
     document.addEventListener('keydown',handleNativePlayerFullscreenEscape);

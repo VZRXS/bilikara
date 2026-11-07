@@ -89,6 +89,7 @@
       currentItemIdentity: text(scene.currentItemIdentity),
       title: text(scene.title),
       videoUrl: text(scene.videoUrl),
+      ...(scene.nativeOutput===true?{nativeOutput:true,nativeOutputPeriod:Math.max(0,Math.trunc(finiteNumber(scene.nativeOutputPeriod)))}:{}),
       displayMetadata: {
         requester: text(metadata.requester),
         duration: text(metadata.duration),

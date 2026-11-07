@@ -1,3 +1,4 @@
+import {hostOutputGuards} from './frontend_contract_support.mjs';
 import { readSourceText as readFileSync } from './frontend_contract_support.mjs';
 // Existing frontend checks transferred to node:test; no Python execution.
 import assert from 'node:assert/strict';
@@ -25,7 +26,7 @@ return this.source.slice(start_index, sourceIndex(this.source, end, start_index)
 },
 async run_node(script) {
 let completed;
-completed = (await runNative(this.node, ["-e", script], process.env, 5 * 1000, root));
+completed = (await runNative(this.node, ["-e", hostOutputGuards()+script], process.env, 5 * 1000, root));
 assert.deepEqual(completed.status, 0, completed.stderr);
 return JSON.parse(completed.stdout);
 },
@@ -696,7 +697,7 @@ assert.deepEqual(result["calls"], result["afterFirst"]);
 assert.equal(result["pending"], null);
 assert.ok(!hasContent(result["busy"]));
 publish = (await this.source_slice("function publishPresentationOutputState", "const presentationModes"));
-assert.ok(sourceIndex(publish, "window.BilikaraAndroidPresentation.postMaster(envelope)") < sourceIndex(publish, "relayPresentationOutputState(envelope)"));
+assert.ok(sourceIndex(publish, "(window.BilikaraNativePresentation || window.BilikaraAndroidPresentation).postMaster(envelope)") < sourceIndex(publish, "relayPresentationOutputState(envelope)"));
 listeners = (await this.source_slice("async function initializeLocalPresentation", "function syncPlayerFullscreenExpandedWidth"));
 assert.ok(contains("listen(\"bilikara-presentation-output-request\"", listeners));
 assert.ok(contains("state.presentationSession.generation", listeners));
@@ -1306,7 +1307,8 @@ assert.ok(!contains("controller:", icon_shapes));
 },
 async test_unavailable_output_is_not_presented_as_busy() {
 let render, result, script, styles;
-render = (await this.source_slice("function renderPresentationOutputControl", "async function handlePresentationSession"));
+render = (await this.source_slice("function presentationDiscoveryStatus", "function renderPresentationDisplayList"))
+  + (await this.source_slice("function renderPresentationOutputControl", "async function handlePresentationSession"));
 styles = readFileSync(path.join(path.join(ROOT, "static"), "styles.css"), "utf8");
 script = (`
 const state = {
