@@ -456,6 +456,7 @@
   }
 
   function retireVideo() {
+    state.video?.bilikaraNativeOutputRelease?.();
     state.stopGeometryObservation?.();
     state.stopGeometryObservation = null;
     if (state.geometryFrame !== null) window.cancelAnimationFrame(state.geometryFrame);
@@ -506,6 +507,11 @@
       || !state.clock
       || state.clock.itemIdentity !== state.scene?.currentItemIdentity
     ) {
+      return;
+    }
+    if(state.scene?.nativeOutput) {
+      video.playbackRate=1;
+      if(state.clock.paused){video.bilikaraNativeOutputRelease?.pause();video.pause();}else video.bilikaraNativeOutputRelease?.resume();
       return;
     }
     const correction = sync.planClockCorrection(state.clock, {
@@ -602,6 +608,13 @@
   }
 
   function mountScene(scene) {
+    const retained=state.video;
+    if(scene.nativeOutput&&retained?.bilikaraNativeOutputRelease){
+      retained.bilikaraNativeOutputRelease.source(scene.videoUrl,{period:scene.nativeOutputPeriod,error:()=>setError(t('controller.outputVideoFailed'),'controller.outputVideoFailed')});
+      document.documentElement.dataset.theme=scene.theme;
+      document.title=scene.title?`${scene.title} · bilikara Stage`:"bilikara Stage";
+      renderOverlay();applyClock();return;
+    }
     retireVideo();
     document.documentElement.dataset.theme = scene.theme;
     document.title = scene.title ? `${scene.title} · bilikara Stage` : "bilikara Stage";
@@ -616,10 +629,14 @@
     video.preload = "auto";
     video.autoplay = false;
     video.controls = false;
-    video.muted = true;
-    video.defaultMuted = true;
-    video.setAttribute("muted", "");
-    video.src = scene.videoUrl;
+    video.muted = !scene.nativeOutput;
+    video.defaultMuted = !scene.nativeOutput;
+    if(!scene.nativeOutput)video.setAttribute("muted", "");
+    if(androidDisplay?.platform === "ios") renderer?.keepVideoLocal?.(video, "ios", globalThis.BILIKARA_IOS_VIDEO_HANDOFF_CONTROL === true);
+    if(scene.nativeOutput) {
+      BilikaraNativeOutput.attach(video,scene.videoUrl,{period:scene.nativeOutputPeriod,error:()=>setError(t('controller.outputVideoFailed'),'controller.outputVideoFailed')})
+        .then(release=>{if(state.video===video)video.bilikaraNativeOutputRelease=release;else release();});
+    } else video.src=scene.videoUrl;
     video.addEventListener("loadedmetadata", () => syncVideoAspect(video));
     video.addEventListener("resize", () => syncVideoAspect(video));
     video.addEventListener("loadedmetadata", applyClock);
@@ -652,7 +669,17 @@
     const shouldMount = !state.scene
       || nextScene.revision !== state.scene.revision
       || nextScene.currentItemIdentity !== state.scene.currentItemIdentity
-      || nextScene.videoUrl !== state.scene.videoUrl;
+      || nextScene.videoUrl !== state.scene.videoUrl
+      || nextScene.nativeOutputPeriod !== state.scene.nativeOutputPeriod;
+    const sceneKey = JSON.stringify(nextScene);
+    const sceneChanged = sceneKey !== state.sceneKey;
+    // Drift caused by a stalled master is not a fresh user seek. Only a new
+    // seek/pause target may bypass the decoder's correction cooldown.
+    if (!state.clock || state.clock.itemIdentity !== nextClock.itemIdentity
+      || (nextClock.seeking && !state.clock.seeking)
+      || ((nextClock.paused || nextClock.seeking)
+        && Math.abs(sync.predictedMediaTime(state.clock, nextClock.sampledAt) - nextClock.mediaTime)
+          > sync.hardSyncThresholdSeconds)) state.forceClockSeek = true;
     state.scene = nextScene;
     state.clock = nextClock;
     requestNotice.show(candidate.payload?.incomingRequest);

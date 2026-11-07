@@ -24,8 +24,10 @@ mod admin;
 mod maintenance;
 mod monthly;
 mod network;
+pub mod output_platform;
 mod owner_enrichment;
 pub(crate) mod preferences;
+pub(crate) mod purek;
 pub(crate) mod ratings;
 pub(crate) mod updates;
 
@@ -60,12 +62,49 @@ pub type AssetSource = Arc<dyn Fn(&str) -> Option<Asset> + Send + Sync>;
 /// and a server-generated private temporary path, never a client-supplied path.
 pub type RemoteExportRenderer = Arc<dyn Fn(&str, &Path) -> Result<(), String> + Send + Sync>;
 
+/// Android shell startup only: the path comes from ApplicationInfo's native
+/// library directory, never HTTP, environment search, PATH or the current cwd.
+#[cfg(target_os = "android")]
+pub fn configure_android_media(companion: &Path) -> Result<(), String> {
+    configure_media_companion(companion)
+}
+
+/// Explicit, debug-only admission for isolated profiling/acceptance harnesses.
+/// Products retain their normal platform startup and resource configuration.
+#[cfg(debug_assertions)]
+pub fn configure_development_media(companion: &Path) -> Result<(), String> {
+    configure_media_companion(companion)
+}
+
+#[cfg(any(target_os = "android", debug_assertions))]
+fn configure_media_companion(companion: &Path) -> Result<(), String> {
+    if !companion.is_absolute() || !companion.is_file() {
+        return Err("Android media libraries are missing; reinstall the complete APK".into());
+    }
+    // SAFETY: the native shell or explicit debug harness selected this trusted
+    // prepared library. No HTTP input, PATH search or automatic discovery.
+    let probe = unsafe { crate::experimental_libav::LibavMetadataProbe::load(companion) }
+        .map_err(|_| "Android media libraries are incompatible; reinstall the complete APK")?;
+    if !probe.live_ts_available() || !probe.live_l1_available() {
+        return Err("Android media companion lacks required L0/L1 capabilities".into());
+    }
+    crate::media_routing::configure(crate::media_routing::Configuration {
+        mode: crate::media_routing::Mode::Default,
+        companion: Some(companion.to_owned()),
+    })
+    .map_err(|_| "Cannot configure Android media libraries".to_owned())?;
+    Ok(())
+}
+
 #[derive(Debug)]
 pub(crate) struct ApiError {
     pub status: u16,
     pub code: String,
     pub message: String,
     pub extra: Value,
+    io_facts: Option<Box<(String, Option<i32>)>>,
+    /// Bounded Host diagnostic facts. Never serialized into an API response.
+    diagnostic: Option<Box<Value>>,
 }
 impl ApiError {
     pub(crate) fn new(status: u16, code: &str, message: impl Into<String>) -> Self {
@@ -75,6 +114,13 @@ impl ApiError {
             message: message.into(),
             extra: json!({}),
         }
+    }
+    pub(crate) fn with_diagnostic(mut self, diagnostic: Value) -> Self {
+        self.diagnostic = Some(Box::new(diagnostic));
+        self
+    }
+    pub(crate) fn diagnostic(&self) -> Option<&Value> {
+        self.diagnostic.as_deref()
     }
     pub(crate) fn invalid(message: impl Into<String>) -> Self {
         Self::new(400, "invalid_request", message)
@@ -408,6 +454,7 @@ fn start(
         }
         session.cache_policy = saved_preferences.cache;
         session.ui_language = saved_preferences.language;
+        session.purek.auto_discovery = saved_preferences.purek_auto_discovery;
         session.remote_access = remote_access;
         Ok(())
     })?;
@@ -523,6 +570,17 @@ fn start(
                 .map_err(|_| ApiError::new(503, "runtime", "无法创建工具检查线程"))?;
         }
     }
+    let room_context = context.clone();
+    context
+        .spawn("purek-room", move || purek::maintain(room_context))
+        .map_err(|_| ApiError::new(503, "runtime", "无法创建房间连接线程"))?;
+    let output_context = context.clone();
+    context
+        .spawn("purek-output-controller", move || {
+            purek::controller::maintain(output_context)
+        })
+        .map_err(|_| ApiError::new(503, "runtime", "无法创建播放输出线程"))?;
+    progress.enter(Stage::Ready);
     Ok(host)
 }
 
@@ -773,6 +831,13 @@ async fn handle_inner(
         if !host {
             return Err(ApiError::new(403, "host_only", "媒体只供 Host 播放"));
         }
+        if path.starts_with("/media/native-output/") {
+            return tokio::task::spawn_blocking(move || {
+                purek::preview::media(&path, method == Method::HEAD)
+            })
+            .await
+            .map_err(|_| ApiError::new(500, "output_task", "本机输出读取失败"))?;
+        }
         return files::media(&context, &path, request.headers(), method == Method::HEAD).await;
     }
     if !path.starts_with("/api/") && matches!(method, Method::GET | Method::HEAD) {
@@ -798,7 +863,14 @@ async fn handle_inner(
         }
         let bytes = tokio::time::timeout(
             Duration::from_secs(5),
-            to_bytes(request.into_body(), 64 * 1024),
+            to_bytes(
+                request.into_body(),
+                if host && path == "/api/purek/decode" {
+                    512 * 1024
+                } else {
+                    64 * 1024
+                },
+            ),
         )
         .await
         .map_err(|_| ApiError::new(408, "timeout", "请求接收超时"))?
@@ -948,21 +1020,40 @@ async fn event_stream(
     identity: Identity,
     host: bool,
 ) -> Result<Response, ApiError> {
-    struct LanConnection(Option<String>);
+    struct LanConnection(Option<String>, Option<String>);
     impl Drop for LanConnection {
         fn drop(&mut self) {
-            if let Some(key) = &self.0 {
-                let _ = with_app(|app| {
-                    app.native_close_lan_connection(key);
+            if let Some(id) = self.1.take() {
+                retire_state(move |app| {
+                    purek::assistance::close(app, &id);
+                    Ok(())
+                });
+            }
+            if let Some(key) = self.0.take() {
+                retire_state(move |app| {
+                    app.native_close_lan_connection(&key);
                     Ok(())
                 });
             }
         }
     }
-    let connection = LanConnection(with_app(|app| app.native_open_lan_connection(&identity))?);
+    let connection_identity = identity.clone();
+    // Return the guard from the blocking task itself: a disconnected request
+    // may discard its result after admission, and must still retire the stream.
+    let connection = state_task(move |app| {
+        let key = app.native_open_lan_connection(&connection_identity)?;
+        let mut connection = LanConnection(key, None);
+        if connection.0.is_some() {
+            connection.1 = Some(purek::assistance::open_lan(app, &connection_identity)?);
+        }
+        Ok(connection)
+    })
+    .await?;
     let (reader, mut writer) = tokio::io::duplex(64 * 1024);
     tokio::spawn(async move {
         let _connection = connection;
+        let connection_id = _connection.1.clone();
+        let mut last_ktv = None;
         let mut last_revision = None;
         while !context.stop.load(Ordering::Acquire) {
             // Register before reading state so a commit during the snapshot or
@@ -971,18 +1062,23 @@ async fn event_stream(
             tokio::pin!(changed);
             changed.as_mut().enable();
             let identity = identity.clone();
+            let connection_id = connection_id.clone();
             let value = tokio::task::spawn_blocking(move || {
                 with_app(|app| {
                     app.native_authorize(&identity, false)?;
-                    app.native_sse_frame(host)
+                    let private = connection_id
+                        .as_ref()
+                        .map(|id| purek::assistance::connection_frame(app, id));
+                    let (revision, frame) = app.native_sse_frame(host)?;
+                    Ok((revision, frame, private))
                 })
             })
             .await;
-            let Ok(Ok((current_revision, cached_frame))) = value else {
+            let Ok(Ok((current_revision, cached_frame, private))) = value else {
                 break;
             };
             let revision = Some(current_revision);
-            let frame = if revision == last_revision {
+            let mut frame = if revision == last_revision {
                 // Named heartbeat reaches EventSource listeners; an SSE
                 // comment alone cannot detect a silently stalled connection.
                 format!(
@@ -993,6 +1089,13 @@ async fn event_stream(
                 last_revision = revision;
                 cached_frame.to_string()
             };
+            if let Some(private) = private {
+                let encoded = private.to_string();
+                if last_ktv.as_ref() != Some(&encoded) {
+                    frame.push_str(&format!("event: ktv\ndata: {encoded}\n\n"));
+                    last_ktv = Some(encoded);
+                }
+            }
             if !matches!(
                 tokio::time::timeout(Duration::from_secs(5), writer.write_all(frame.as_bytes()))
                     .await,

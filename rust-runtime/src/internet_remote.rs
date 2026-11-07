@@ -118,6 +118,14 @@ impl InternetRemoteError {
 }
 
 impl InternetRemotePeers {
+    #[cfg(feature = "native-host")]
+    pub(crate) fn ktv_peers(&self) -> Vec<(String, String, Option<String>)> {
+        self.peers
+            .iter()
+            .filter(|(_, p)| p.profile == RemoteProfile::Controller)
+            .map(|(id, p)| (id.clone(), p.epoch.clone(), p.session_name.clone()))
+            .collect()
+    }
     pub(crate) fn open(
         &mut self,
         peer_id: &str,

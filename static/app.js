@@ -1702,11 +1702,13 @@ function presentationOverlayModel() {
 function currentPresentationScene() {
   const currentItem = state.data?.current_item || null;
   const mountedVideo = activePrimaryVideoElement();
-  const videoUrl = selectedVideoUrlForItem(currentItem)
+  const nativeOutput=state.data?.media_output?.target === "native";
+  const videoUrl = nativeOutput ? state.nativeOutputPreview?.url() || "" : selectedVideoUrlForItem(currentItem)
     || String(mountedVideo?.currentSrc || mountedVideo?.src || "");
   const sceneKey = JSON.stringify({
     generation: state.presentationSession.generation,
     item: currentItem?.id || "",
+    nativePeriod:nativeOutput?state.nativeOutputPreview?.period():null,
     title: currentItem?.display_title || currentItem?.title || "",
     theme: state.theme,
     language: state.language,
@@ -1721,6 +1723,8 @@ function currentPresentationScene() {
     currentItemIdentity: String(currentItem?.id || ""),
     title: String(currentItem?.display_title || currentItem?.title || ""),
     videoUrl,
+    nativeOutput,
+    nativeOutputPeriod:nativeOutput?state.nativeOutputPreview?.period():null,
     displayMetadata: {
       requester: String(currentItem?.requester_name || ""),
       duration: formatDurationSeconds(durationSecondsForItem(currentItem)),
@@ -1819,16 +1823,36 @@ function publishPresentationOutputState(session = state.hostPlaybackSession) {
   ) {
     return false;
   }
-  const video = session?.video || activePrimaryVideoElement();
+  const nativeOutput=state.data?.media_output?.target==='native';
+  const video = nativeOutput ? state.nativeOutputPreview?.video() : session?.video || activePrimaryVideoElement();
+  const audio = session?.audio;
+  const now = Date.now();
   const scene = currentPresentationScene();
   const internetQrImage = String(state.internetRemoteDisplay?.qr_image || "");
+  const ownsAudio = !nativeOutput && session?.readyCommitted && audio
+    && isCurrentHostPlaybackSession(session, video, audio);
+  const outputClock = ownsAudio && !session.seekSettling ? audio.bilikaraAudioClock : null;
+  const outputTime = ownsAudio && !session.seekSettling
+    ? Number(outputClock ? (outputClock.outputTime?.() ?? outputClock.time()) : audio.currentTime) : NaN;
+  // Host video can pause/seek internally to follow captured audio. Forwarding
+  // those decoder observations as transport intent makes the audience repeat
+  // every hold/correction, even while the actual audio output keeps advancing.
+  const outputRate = Number((ownsAudio ? audio : video)?.playbackRate || 1);
+  const pitchDelay = Number(audio?.bilikaraPitch?.delay(outputRate) || 0);
+  const mediaTime = Number.isFinite(outputTime)
+    ? outputTime + currentAvOffsetSeconds() - pitchDelay : Number(video?.currentTime || 0);
+  const outputPlaying = ownsAudio && !session.seekSettling
+    ? session.logicalPlayIntent && state.localShouldBePlaying && mediaTime >= 0
+      && (outputClock ? outputClock.isOutputRunning()
+        : !audio.paused && audio.readyState >= 2 && !audio.seeking && !audio.error)
+    : video && !video.paused;
   const clock = {
     itemIdentity: scene.currentItemIdentity,
-    mediaTime: Math.max(0, Number(video?.currentTime || 0)),
-    sampledAt: Date.now(),
-    paused: !video || Boolean(video.paused),
-    playbackRate: Math.max(0.1, Number(video?.playbackRate || 1)),
-    seeking: Boolean(video?.seeking),
+    mediaTime: Math.max(0, mediaTime),
+    sampledAt: now,
+    paused: nativeOutput ? !state.data.media_output.desired_playing : !outputPlaying,
+    playbackRate: Math.max(0.1, Number((ownsAudio ? audio : video)?.playbackRate || 1)),
+    seeking: ownsAudio ? Boolean(session.seekSettling) : Boolean(video?.seeking),
   };
   const envelope = sync.makeEnvelope("master-state", {
     scene,
@@ -1859,6 +1883,7 @@ function publishPresentationOutputState(session = state.hostPlaybackSession) {
   }
   relayPresentationOutputState(envelope);
   ensurePresentationOutputChannel()?.postMessage(envelope);
+  if(nativeOutput)return true; // The private live URI never enters browser storage.
   try {
     localStorage.setItem(sync.storageKey, JSON.stringify(envelope));
     localStorage.removeItem(sync.storageKey);
@@ -1955,7 +1980,7 @@ function applyPresentationCompositionDom(generation, composition) {
   state.presentationAppliedComposition = active ? "stageOnly" : "combined";
   state.playerFullscreenInteraction?.sync();
   state.presentationCompositionGeneration = generation;
-  document.body?.classList.toggle("is-presentation-control-host", active);
+  document.body?.classList.toggle("is-presentation-control-host", active || ["purek","native"].includes(state.data?.media_output?.target));
   document.body?.classList.remove("is-presentation-stage-only");
   if (elements.playerFrame) {
     elements.playerFrame.inert = active;
@@ -2555,7 +2580,7 @@ function renderPresentationOutputControl() {
     && Boolean(selected?.selectable)
     && !requiresHostConfirmation;
   const canDeactivate = session.phase === "active" || session.phase === "activating";
-  const disabled = state.presentationControlBusy
+  const disabled = state.data?.media_output?.target === "purek" || state.presentationControlBusy
     || state.presentationDisplayBusy
     || !(canActivate || canDeactivate);
   const signature = JSON.stringify({
@@ -2566,6 +2591,7 @@ function renderPresentationOutputControl() {
     displayError: state.presentationDisplayError,
     displayBusy: state.presentationDisplayBusy,
     controlBusy: state.presentationControlBusy,
+    networkOutput:networkOutputOwnsPlayback(),
     identifiersBusy: state.presentationIdentifiersBusy,
     language: state.language,
   });
@@ -2649,6 +2675,7 @@ async function handlePresentationSession(candidate) {
 }
 
 async function activateLocalPresentation() {
+  if(state.data?.media_output?.target === "purek")throw new Error(t("mediaOutput.chooseLocal"));
   const invoke = tauriInvoke("presentation");
   const displayId = state.presentationSelectedDisplayId;
   const selected = presentationDisplayById(displayId);
@@ -3109,11 +3136,21 @@ function paintPresentationHostProgress(currentSeconds, durationSeconds) {
 }
 
 function renderPresentationHostSurface(session = state.hostPlaybackSession) {
-  const active = typeof presentationCompositionActive === "function"
+  const network = ["purek","native"].includes(state.data?.media_output?.target);
+  const output = state.data?.media_output;
+  const preview=state.nativeOutputPreview?.video();
+  if(preview)preview.muted=presentationCompositionActive();
+  const active = network || (typeof presentationCompositionActive === "function"
     ? presentationCompositionActive()
     : false;
   const currentItem = state.data?.current_item || null;
-  const playback = presentationPlaybackStateModel(session);
+  const playback = network ? {
+    paused: !output.desired_playing,
+    currentTimeSeconds: output.position,
+    durationSeconds: output.duration,
+    canSkip: Boolean(currentItem),
+  } : presentationPlaybackStateModel(session);
+  const busy = state.presentationHostControlBusy || (network && (output.busy || globalThis.BilikaraMediaOutput?.busy?.()));
   if (elements.presentationHostAnnouncement) {
     elements.presentationHostAnnouncement.hidden = !active;
     elements.presentationHostAnnouncement.setAttribute("aria-hidden", String(!active));
@@ -3162,7 +3199,8 @@ function renderPresentationHostSurface(session = state.hostPlaybackSession) {
   if (elements.presentationHostProgress) {
     elements.presentationHostProgress.disabled = !hasPlayableMedia
       || !durationAvailable
-      || state.presentationHostControlBusy;
+      || busy;
+    elements.presentationHostProgress.setAttribute("aria-label",t(network?"mediaOutput.seek":"controller.seek"));
   }
   if (!state.presentationHostProgressScrubbing) {
     paintPresentationHostProgress(
@@ -3672,9 +3710,11 @@ function toggleMountedLocalPlayback() {
 }
 
 async function handlePresentationHostControl(action, button) {
+  const network = networkOutputOwnsPlayback();
   if (
     !presentationCompositionActive()
     || state.presentationHostControlBusy
+    || (network && (state.data.media_output.busy || globalThis.BilikaraMediaOutput?.busy?.()))
     || !button
   ) {
     return;
@@ -3685,6 +3725,17 @@ async function handlePresentationHostControl(action, button) {
   button.setAttribute("aria-busy", "true");
   renderPresentationHostSurface(session);
   try {
+    if (network) {
+      const item = state.data?.current_item;
+      const command = {toggle:"toggle-play",seek:"seek-absolute","seek-relative":"seek-relative",next:"next-track"}[action];
+      if (!item || !command) return;
+      const body = {action:command,item_id:item.id,playback_generation:state.data.playback_generation};
+      if (action === "seek") body.target_seconds = Number(elements.presentationHostProgress?.value || 0);
+      if (action === "seek-relative") body.delta_seconds = Number(button.dataset.delta || 0);
+      const outcome = await apiPostExactStateCommand("/api/player/control",body);
+      if (outcome.snapshotAccepted) render();
+      return;
+    }
     if (action === "toggle") {
       toggleMountedLocalPlayback();
     } else if (action === "seek" || action === "seek-relative") {
@@ -4698,9 +4749,9 @@ function syncNarrowToolLayout() {
   const variantHeight = elements.audioVariantAnchor && !elements.audioVariantAnchor.hidden
     ? elements.audioVariantAnchor.getBoundingClientRect?.().height || 0
     : 0;
-  const presentationActive = typeof presentationCompositionActive === "function"
+  const presentationActive = ["purek","native"].includes(state.data?.media_output?.target) || (typeof presentationCompositionActive === "function"
     ? presentationCompositionActive()
-    : false;
+    : false);
   const presentationControlsHeight = presentationActive
     && elements.presentationHostControls
     && !elements.presentationHostControls.hidden
@@ -5805,6 +5856,37 @@ function shouldReportStateFetchError(error) {
     return !error?.backendNotReady;
   }
   return ["non_json_response", "invalid_json_response"].includes(error?.kind);
+}
+
+// Native iOS owns this JSON transport, independently of WK's media/network
+// process. Android/Desktop/Remote and non-JSON resources keep ordinary fetch.
+// Both paths execute the same Rust Host HTTP adapter exactly once.
+async function fetchHostApi(url, options = {}) {
+  const native=globalThis.BilikaraIosPlatform?.requestJson;
+  if(typeof native!=='function')return fetch(url,options);
+  let target;
+  try{target=new URL(url,location.href);}catch{return fetch(url,options);}
+  const method=String(options.method||'GET').toUpperCase(),headers=new Headers(options.headers);
+  if(target.origin!==location.origin||!target.pathname.startsWith('/api/')||!['GET','POST'].includes(method)
+    ||headers.has('Range')||[...headers.keys()].some(key=>!['content-type','accept','x-bilikara-client'].includes(key))
+    ||/^\/api\/(?:playlist\/export|diagnostics\/file|media\/|purek\/stream)/.test(target.pathname))return fetch(url,options);
+  let body;
+  if(method==='POST'){
+    try{body=JSON.parse(options.body);if(!body||typeof body!=='object'||Array.isArray(body))return fetch(url,options);}
+    catch{return fetch(url,options);}
+    if(new TextEncoder().encode(options.body).length>512*1024)return fetch(url,options);
+  }
+  const facts=state.hostHttpTransport||(state.hostHttpTransport={kind:'native',completed:0,failed:0,last_error:''});
+  try{
+    const reply=await native({method,path:target.pathname+target.search,client_id:headers.get('X-Bilikara-Client')||state.clientId||'',body},options.signal);
+    facts.completed++;facts.last_error='';
+    return new Response(JSON.stringify(reply.body),{status:reply.status,headers:{'Content-Type':'application/json'}});
+  }catch(error){
+    if(error.name==='AbortError')throw error;
+    facts.failed++;facts.last_error=/^(?:native_api_[a-z_]+|ios_platform_[a-z_]+)$/.test(error.nativeTransportCode||error.message)?error.nativeTransportCode||error.message:'native_api_transport';
+    const reported=new Error(t(facts.last_error.includes('timeout')?'error.requestTimeout':'error.requestFailed'));
+    reported.hostTransportCode=facts.last_error;throw reported;
+  }
 }
 
 async function apiPost(url, payload = {}, options = {}) {
@@ -10082,6 +10164,8 @@ function render() {
   // Runtime preferences and LAN invitations do not depend on the restored
   // session. Keep them visible while Rust waits for the Host's choice, without
   // mounting its player or rendering the unresolved queue/roster.
+  window.BilikaraPureK?.sync(data.purek);
+  syncMediaOutputComponents();
   renderCacheSettings(data.bbdown, data.ffmpeg, data.cache_policy);
   renderRemoteAccess(data.remote_access);
   if (sessionChoicePending) return;
@@ -12894,7 +12978,7 @@ function activeLocalPlayerElements() {
 }
 
 function activePrimaryVideoElement() {
-  return mountedLocalVideoElement();
+  return state.nativeOutputPreview?.video() || mountedLocalVideoElement();
 }
 
 function isActiveSplitPlayer(video, audio) {
@@ -13887,6 +13971,7 @@ function tauriMediaSessionActionEvent(action) {
 }
 
 function handleTauriMediaSessionAction(action, details = {}) {
+  if(networkOutputOwnsPlayback())return false;
   const mediaSession = tauriWebKitMediaSession();
   if (!mediaSession) {
     return false;
@@ -15968,8 +16053,59 @@ function reconcileHostPlaybackSession(currentItem) {
   return { kind: "mounted", session, ...pair };
 }
 
+function networkOutputOwnsPlayback() {
+  return ["purek","native"].includes(state.data?.media_output?.target);
+}
+
+function syncMediaOutputComponents() {
+  window.BilikaraMediaOutput?.sync(state.data, {host:true,t,request:apiPost,
+    openManagement:()=>document.getElementById("purek-output-manage")?.click(),
+    bindHelp:bindHostContextualInfo,
+    onError:message=>setAppMessage(message,true),
+    onBusy:()=>renderPresentationHostSurface(),
+    accept:snapshot=>{if(acceptHostStateSnapshot(snapshot))render();},
+    beforeNetwork:()=>{
+      if(state.presentationSession?.phase !== "inactive") throw {outputKey:"mediaOutput.closeDisplay"};
+    },
+  });
+}
+
+function holdLocalPlaybackForNetworkOutput() {
+  if (!networkOutputOwnsPlayback()) return false;
+  state.localShouldBePlaying=false;
+  const session=state.hostPlaybackSession;
+  if (!state.networkOutputHoldingLocal) {
+    state.networkOutputHoldingLocal=true;
+    state.localPlaybackStartGeneration=Number(state.localPlaybackStartGeneration||0)+1;
+    if(session) {clearSplitPlaybackStartupWatchdog(session);if(session.readyCommitted)setHostPlaybackSessionPhase(session,"paused");}
+  }
+  for (const media of elements.playerFrame.querySelectorAll('video:not([data-player-role="native-output"]),audio')) {
+    media.bilikaraAudioClock?.stop();
+    if(!media.paused) {media.dataset.bilikaraInternalPause="true";media.pause();}
+  }
+  return true;
+}
+
 function renderPlayer(currentItem, playbackMode) {
   handleRatingCurrentItemChange(currentItem);
+  if (!state.nativeOutputPreview && globalThis.BilikaraNativeOutput) {
+    state.nativeOutputPreview=BilikaraNativeOutput.create(elements.playerFrame,{
+      read:async()=>{const response=await fetchHostApi('/api/player/output-preview',{headers:clientHeaders()});const body=await parseApiResponse(response,'/api/player/output-preview');if(!response.ok||!body.ok)throw new Error(body.error||t('mediaOutput.error'));return body.data;},
+      feedback:body=>apiPostStateSnapshot('/api/player/output-preview',body).then(()=>render()),
+      changed:()=>{renderCurrentPresentationScene();publishPresentationOutputState(state.hostPlaybackSession,{force:true});},
+      error:()=>setAppMessage(t('mediaOutput.error'),true),
+    });
+  }
+  void state.nativeOutputPreview?.sync(state.data,presentationCompositionActive());
+  const network=networkOutputOwnsPlayback();
+  if (network) {
+    holdLocalPlaybackForNetworkOutput();
+    renderPresentationHostSurface();
+    return;
+  }
+  if(state.networkOutputHoldingLocal) {
+    state.networkOutputHoldingLocal=false;
+  }
   const reconciliation = reconcileHostPlaybackSession(currentItem);
   if (reconciliation.kind !== "mounted") {
     return;
@@ -18821,6 +18957,40 @@ function diagnosticBrowserInfo() {
     platform: String(userAgentData?.platform || navigator.platform || ""),
     mobile: Boolean(userAgentData?.mobile),
     brands,
+    playback: diagnosticPlayerInfo(),
+    browse_layout: window.BilikaraResultPager?.diagnostics?.() || [],
+    volume_controls: window.BilikaraVolumeControl?.getDiagnostics?.() || [],
+  };
+}
+
+function diagnosticPlayerInfo() {
+  const session = state.hostPlaybackSession;
+  const video = session?.video;
+  const audio = session?.audio;
+  const toggle = document.querySelector('.volume-adjust-popover [data-auto-switch]');
+  return {
+    phase: String(session?.phase || 'none'),
+    playback_generation: Number(session?.playbackGeneration || 0),
+    trace: (state.playbackTrace || []).map(entry => ({...entry})),
+    last_applied_control_seq: Number(state.lastAppliedPlayerControlSeq || 0),
+    pending_control_seq: Number(state.data?.player_control_command?.seq || 0),
+    state_poll_in_flight: Boolean(state.statePollInFlight),
+    native_http: state.hostHttpTransport ? {...state.hostHttpTransport} : {kind:"web"},
+    native_output:state.nativeOutputPreview?.diagnostics()||null,
+    has_valid_state_response: Boolean(state.hasValidStateResponse),
+    ready_committed: Boolean(session?.readyCommitted),
+    current_pair: Boolean(session && isCurrentHostPlaybackSession(session, video, audio)),
+    should_play: Boolean(state.localShouldBePlaying),
+    seeking: Boolean(session?.seekSettling),
+    video_time: Number(video?.currentTime || 0), audio_time: Number(audio?.currentTime || 0),
+    video_rate: Number(video?.playbackRate || 1), audio_rate: Number(audio?.playbackRate || 1),
+    video_paused: !video || video.paused, audio_paused: !audio || audio.paused,
+    native_api: typeof window.__TAURI__?.core?.invoke === 'function',
+    native_window_api: typeof window.__TAURI__?.window?.getCurrentWindow === 'function',
+    chrome_platform: document.documentElement?.dataset?.tauriPlatform || 'browser',
+    page_hidden: document.hidden,
+    volume_dialog_open: Boolean(toggle?.closest('dialog')?.open),
+    automatic_disabled: Boolean(toggle?.disabled), automatic_checked: Boolean(toggle?.checked),
   };
 }
 
@@ -20464,10 +20634,12 @@ elements.presentationHostDisplayList?.addEventListener("click", (event) => {
 
 function hostRestartContext(requirePresentation = true) {
   const item = state.data?.current_item, generation = state.data?.playback_generation;
+  const network = networkOutputOwnsPlayback();
   return { key: `${item?.id}:${item?.item_incarnation_id}:${generation}`,
     itemId: item?.id, generation, title: item?.display_title || item?.title,
-    enabled: Boolean(item && (!requirePresentation || presentationCompositionActive()) && !state.presentationHostControlBusy && state.hostPlaybackSession?.readyCommitted
-      && isCurrentHostPlaybackSession(state.hostPlaybackSession)) };
+    enabled: Boolean(item && (!requirePresentation || network || presentationCompositionActive() || usesIosApplicationTransport()) && !state.presentationHostControlBusy
+      && (network ? !state.data.media_output.busy && !globalThis.BilikaraMediaOutput?.busy?.()
+        : state.hostPlaybackSession?.readyCommitted && isCurrentHostPlaybackSession(state.hostPlaybackSession))) };
 }
 function setHostRestartBusy(busy) {
   state.presentationHostControlBusy = busy;

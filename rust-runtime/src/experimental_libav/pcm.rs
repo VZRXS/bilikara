@@ -1,44 +1,26 @@
 //! Whole-track integrated loudness over the optional, negotiated PCM visitor.
 use super::{LibavMetadataProbe, ProbeError};
-use serde::{Deserialize, Serialize};
 use std::{path::Path, sync::atomic::AtomicBool};
 
-pub const ALGORITHM: &str = "ebur128-0.1.10-i-histogram-pcm-v1";
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct LoudnessMeasurement {
-    pub algorithm: String,
-    pub integrated_lufs: f64,
-    pub duration_seconds: f64,
-    pub elapsed_seconds: f64,
-    pub sample_rate: u32,
-    pub channels: u32,
-    pub codec: String,
-}
-
-impl LoudnessMeasurement {
-    pub fn valid(&self) -> bool {
-        self.algorithm == ALGORITHM
-            && bilikara_rust::automatic_volume::valid_loudness(self.integrated_lufs)
-            && self.duration_seconds.is_finite()
-            && (0.4..=21600.0).contains(&self.duration_seconds)
-            && self.elapsed_seconds.is_finite()
-            && self.elapsed_seconds >= 0.0
-            && (8000..=192000).contains(&self.sample_rate)
-            && (1..=2).contains(&self.channels)
-            && !self.codec.is_empty()
-            && self.codec.len() <= 128
-    }
-}
+pub use crate::loudness::{ALGORITHM, LoudnessMeasurement};
 
 impl LibavMetadataProbe {
     pub fn loudness_available(&self) -> bool {
-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        #[cfg(any(
+            target_os = "android",
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "windows"
+        ))]
         {
             self.pcm.is_ok()
         }
-        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        #[cfg(not(any(
+            target_os = "android",
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "windows"
+        )))]
         {
             false
         }
@@ -49,11 +31,21 @@ impl LibavMetadataProbe {
         source: &Path,
         cancelled: &AtomicBool,
     ) -> Result<LoudnessMeasurement, ProbeError> {
-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        #[cfg(any(
+            target_os = "android",
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "windows"
+        ))]
         {
             self.decode_loudness(source, cancelled)
         }
-        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        #[cfg(not(any(
+            target_os = "android",
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "windows"
+        )))]
         {
             let _ = (source, cancelled);
             Err(ProbeError::Unavailable(
@@ -63,7 +55,12 @@ impl LibavMetadataProbe {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 mod native {
     use super::*;
     use crate::experimental_libav::{
@@ -250,7 +247,12 @@ mod native {
         }
     }
 }
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 pub(super) use native::Capability;
 
 #[cfg(test)]

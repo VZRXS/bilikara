@@ -9,6 +9,9 @@ fn public_state(app: &mut AppState) -> Result<Value, ApiError> {
         .native_execute(AppStateRequest::InternetRemoteState { schema_version: 1 })?["remote_state"]
         .clone();
     let snapshot = app.native_snapshot(false)?;
+    state["media_output"] = snapshot["media_output"].clone();
+    state["ktv_room"] = snapshot["ktv_room"].clone();
+    state["capabilities"]["ktv_assistance"] = json!(true);
     state["song_ratings"] = snapshot["song_ratings"].clone();
     // Rating navigation needs only the current/previous plays. Explicitly
     // project public fields; catalog projection wraps arrays and omits eligibility.
@@ -117,6 +120,10 @@ pub(super) fn route(
                         reset_av_delay,
                         now: now(),
                     })?;
+                if reply["_host_effect"]["kind"] == "ktv_assistance" {
+                    reply["_host_effect"]["connection_id"] =
+                        json!(purek::assistance::bind_internet(app, &peer)?);
+                }
                 // Reserve while typed peer identity, session and play validation
                 // still hold the same lock. Never re-admit a peer as a Host name.
                 let rating = if reply["_host_effect"]["kind"] == "submit_rating" {
@@ -210,7 +217,20 @@ fn effect(
         ("requester_name", "requester_name"),
     ];
     let result = match kind {
+        "ktv_assistance" => {
+            let request = serde_json::from_value(effect["request"].clone())
+                .map_err(|_| ApiError::invalid("Invalid KTV request"))?;
+            let connection = effect["connection_id"]
+                .as_str()
+                .ok_or_else(|| ApiError::invalid("Invalid KTV connection"))?;
+            reply["data"] = purek::assistance::internet(context, peer, connection, request)?;
+            return Ok(reply);
+        }
         "sync_cache" => return Ok(reply), // Native pump observes committed AppState.
+        "output_mode" => {
+            purek::controller::command(identity, &json!({"offset_mode":effect["offset_mode"]}))?;
+            return Ok(reply);
+        }
         "player_control" => {
             with_app(|app| app.native_control(identity, &effect, now()))?;
             return Ok(reply);

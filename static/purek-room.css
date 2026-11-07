@@ -1,0 +1,85 @@
+/* One settings group owns its surface; dialog actions retain ordinary sizing. */
+.settings-section-card.purek-settings {padding-block:14px;}
+.purek-settings[hidden], #purek-modal [hidden] { display: none !important; }
+.purek-heading { justify-content: flex-start; gap: 6px; }
+.purek-heading h3 { margin: 0; }
+.purek-scan-tool {position:relative;display:inline-flex;align-items:center;min-height:44px;margin-inline-start:auto;}
+#purek-open {position:relative;}
+/* The shared 30px settings pill has its own 44px hit region. Reserve that
+   space in the wrapper so the target cannot overlap another control. */
+#purek-open::before {content:"";position:absolute;inset:auto 0;top:50%;height:44px;transform:translateY(-50%);}
+:root .purek-action { min-width: 0; height: 44px; min-height: 44px; padding: 0 16px; border-radius: var(--host-control-radius, 14px); font-size: 16px; line-height: 1; font-weight: 400; }
+:root .purek-primary:not(:disabled) { background: var(--accent); color: var(--on-accent); }
+:root .purek-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.purek-settings.android-my-card { margin-top: 18px; margin-bottom: 0; }
+.purek-assistance-actions {display:flex;gap:8px;flex-wrap:wrap;}
+.purek-assistance-actions > .purek-action {flex:1 1 auto;}
+.android-my-card.purek-settings h3 { margin: 0; }
+#purek-modal {
+  --purek-top-inset: max(12px, env(safe-area-inset-top, 0px));
+  --purek-bottom-inset: max(12px, calc(env(safe-area-inset-bottom, 0px) + 12px), calc(var(--mobile-dock-height, 0px) + 12px), calc(var(--mobile-ime-height, 0px) + 12px));
+  padding: var(--purek-top-inset) max(12px, env(safe-area-inset-right, 0px)) var(--purek-bottom-inset) max(12px, env(safe-area-inset-left, 0px));
+  overflow-y: auto;
+}
+#purek-modal .purek-card {
+  --ktv-scanner-radius: 14px;
+  width: min(440px, 100%);
+  max-height: calc(var(--legacy-vh, 1vh) * 100 - var(--purek-top-inset) - var(--purek-bottom-inset));
+  max-height: calc(100dvh - var(--purek-top-inset) - var(--purek-bottom-inset));
+  box-sizing: border-box; display: grid; grid-template-rows: auto minmax(0,1fr) auto; gap: 12px;
+}
+#purek-modal .selection-modal-head { margin: 0; padding: 0; border: 0; display: flex; justify-content: space-between; gap: 12px; }
+.purek-dialog-heading {display:flex;align-items:flex-start;gap:8px;min-width:0;}
+.purek-dialog-heading h2 {min-width:0;overflow-wrap:anywhere;}
+.purek-dialog-heading > .cache-advanced-info {margin-top:3px;flex-shrink:0;}
+#purek-dialog-info > span {display:block;}
+#purek-dialog-info > span:not([hidden])~span:not([hidden]) {margin-top:8px;}
+#purek-modal .purek-body {
+  min-height: 0; overflow: auto; overscroll-behavior: contain;
+}
+#purek-input-step, #purek-authorization-step { display: grid; gap: 14px; }
+#purek-modal p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+.purek-room-line { display: flex; flex-wrap:wrap; justify-content: space-between; align-items: center; gap: 12px; }
+.purek-room-line strong { min-width: 0; overflow-wrap: anywhere; font-size: 16px; }
+.purek-room-title {display:flex;flex:1 1 140px;flex-wrap:wrap;align-items:baseline;gap:4px 8px;min-width:0;}
+.purek-room-line > .purek-action {max-width:100%;margin-inline-start:auto;}
+#purek-output-status {color:var(--muted);font-size:13px;line-height:1.45;}
+#purek-modal .purek-actions { padding: 0; margin: 0; border: 0; display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+#purek-error:not([hidden]) { color: var(--danger-text, var(--accent)); margin-top: 14px; }
+@media (hover: hover) and (pointer: fine) {
+  .purek-action:not(:disabled):hover { transform: translateY(-1px); }
+}
+.purek-action:not(:disabled):active { transform: none; }
+@media (prefers-reduced-motion: reduce) { .purek-action { transition: none !important; } }
+.purek-output { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 14px 20px 0; padding-top: 14px; border-top: 1px solid var(--line); }
+.purek-output[hidden] { display: none; }
+#purek-output-name { min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
+.purek-settings .purek-heading {display:grid;grid-template-columns:auto auto auto minmax(0,1fr);align-items:center;gap:6px;margin:0;}
+.purek-settings .purek-heading h3 { margin: 0; }
+.ktv-host-devices {display:grid;gap:8px;margin:12px 0;}
+.ktv-host-devices:empty {display:none;}
+.ktv-host-devices .purek-action {height:auto;min-height:44px;padding-block:10px;white-space:normal;overflow-wrap:anywhere;text-align:start;}
+#ktv-host-session:empty {display:none;}
+#ktv-host-empty {display:grid;gap:12px;margin-block:12px;}
+#ktv-host-empty[hidden] {display:none;}
+#ktv-host-room-status {color:var(--muted);font-size:13px;line-height:1.45;}
+.purek-settings #ktv-host-room-status {min-width:0;text-align:end;justify-self:end;}
+.media-output-header.purek-settings-controls {display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;}
+.purek-settings-controls > .purek-scan-tool {grid-column:1;grid-row:1;justify-self:start;margin-inline-start:0;}
+.purek-settings-controls .media-output-title {display:contents;}
+.purek-settings-controls :is(.media-output-heading,.experimental-label) {display:none;}
+.purek-settings-controls .media-output-targets {grid-column:2;grid-row:1;}
+.purek-settings-controls :is(.media-output-status,.media-output-retry) {grid-column:1/-1;}
+#purek-modal.is-actions-empty .purek-card {grid-template-rows:auto minmax(0,1fr);}
+#ktv-host-local-scan {display:grid;gap:12px;margin-block:0 12px;}
+#ktv-host-authorization {display:grid;gap:8px;}
+#ktv-host-authorization-url {box-sizing:border-box;width:100%;min-width:0;height:44px;border:1px solid var(--muted);border-radius:14px;padding-inline:12px;background:var(--input-bg);color:var(--ink);}
+.purek-dlna-entry {margin-block:12px;min-width:0;}
+.purek-dlna-entry > summary {box-sizing:border-box;min-height:44px;display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;color:var(--ink);font-size:16px;list-style:none;}
+.purek-dlna-entry > summary::-webkit-details-marker {display:none;}
+.purek-dlna-entry > summary::after {content:"";flex:none;width:7px;height:7px;margin-right:4px;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:rotate(-45deg);transition:transform 120ms ease;}
+.purek-dlna-entry[open] > summary::after {transform:rotate(45deg);}
+@media (prefers-reduced-motion:reduce) {.purek-dlna-entry > summary::after {transition:none;}}
+.purek-dlna-entry > form {display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;min-width:0;margin-block:8px;}
+.purek-dlna-entry input {width:100%;min-width:0;}
+.purek-dlna-entry > summary:focus-visible {outline:2px solid var(--accent);outline-offset:-2px;border-radius:14px;}

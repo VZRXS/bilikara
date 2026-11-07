@@ -21,6 +21,8 @@
   <link rel="stylesheet" href="/volume-control.css" />
   <link rel="stylesheet" href="/request-tabs.css" />
   <link rel="stylesheet" href="/ui-surfaces.css" />
+  <link rel="stylesheet" href="/media-output.css" />
+  <link rel="stylesheet" href="/ktv-remote.css" />
 </head>
   <body>
     <main class="remote-shell" id="remote-shell">
@@ -181,6 +183,19 @@
                     </button>
                   </div>
                 </div>
+              </div>
+            </section>
+            <div class="remote-menu-divider" aria-hidden="true"></div>
+            <section class="remote-menu-section" aria-labelledby="ktv-menu-title">
+              <button type="button" id="ktv-menu-toggle" class="remote-menu-section-toggle" aria-expanded="false" aria-controls="ktv-menu-content">
+                <span id="ktv-menu-title" class="remote-menu-section-title" data-i18n="ktv.title">投屏设备</span>
+                <span class="remote-menu-section-toggle-chevron" aria-hidden="true"></span>
+              </button>
+              <div id="ktv-menu-content" class="ktv-menu-content hidden">
+                <p id="ktv-room-status" role="status"></p>
+                <button type="button" id="ktv-menu-scan" class="primary-button" data-i18n="ktv.scan">扫描房间二维码</button>
+                <button type="button" id="ktv-menu-resume" class="ghost-button" data-i18n="ktv.requestResume" hidden>请求恢复上次授权</button>
+                <p id="ktv-menu-guidance" data-i18n="ktv.remoteGuide">需要 Host 批准此次协助。照片只在本机识别。</p>
               </div>
             </section>
           </div>
@@ -963,6 +978,7 @@
 
           <section class="playback-sheet-secondary" aria-label="设置" data-i18n-aria-label="settings.title">
             <div class="playback-sheet-settings-card">
+              <section class="remote-setting-panel" data-media-output="remote" hidden></section>
               <section id="remote-av-sync-panel" class="remote-setting-panel">
                 <div class="remote-setting-copy">
                   <div class="remote-setting-header remote-contextual-info-region">
@@ -974,6 +990,7 @@
                       <div class="remote-tooltip-bubble" id="remote-av-sync-info" role="tooltip"
                         data-i18n="player.avSyncHint">正数表示画面提前，负数表示画面延后。</div>
                     </div>
+                    <span data-media-output-latency hidden></span>
                   </div>
                 </div>
                 <div class="remote-setting-controls">
@@ -1099,6 +1116,54 @@
       </div>
     </div>
 
+    <dialog id="ktv-remote-modal" class="history-export-dialog ktv-dialog" aria-labelledby="ktv-remote-title">
+      <div class="ktv-dialog-head">
+        <div class="ktv-dialog-heading remote-contextual-info-region">
+          <h2 id="ktv-remote-title" data-i18n="ktv.title">投屏设备</h2>
+          <span class="info-trigger-wrap">
+            <button type="button" class="remote-info-button" aria-expanded="false" aria-describedby="ktv-transport-info" data-i18n-aria-label="common.moreInfo"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+            <span class="remote-tooltip-bubble" id="ktv-transport-info" role="tooltip">
+              <span data-i18n="ktv.remoteGuide"></span>
+              <span id="ktv-secure-fallback" data-i18n="ktv.secureFallback" hidden>本地 HTTP 连接未加密，二维码中的授权信息会经局域网传给 Host。</span>
+            </span>
+          </span>
+        </div>
+        <button type="button" id="ktv-remote-close" class="ghost-button ktv-close" data-i18n-aria-label="common.close" aria-label="关闭"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
+      </div>
+      <p id="ktv-session-status" role="status" aria-live="polite"></p>
+      <div id="ktv-invitation" hidden>
+        <p data-i18n="ktv.invitation">Host 请求你扫描 KTV 房间二维码。</p>
+        <div class="ktv-actions">
+          <button type="button" id="ktv-decline" class="ghost-button" data-i18n="ktv.decline">拒绝</button>
+          <button type="button" id="ktv-accept" class="primary-button" data-i18n="ktv.accept">接受（扫码）</button>
+        </div>
+      </div>
+      <div id="ktv-scanner" hidden>
+        <div id="ktv-scan-view"></div>
+        <details id="ktv-advanced"><summary data-i18n="ktv.advanced">已有二维码链接 / DLNA 地址</summary>
+          <label for="ktv-room-url" data-i18n="purek.qrUrl">二维码链接或 DLNA 描述地址</label>
+          <input type="url" id="ktv-room-url" autocomplete="off" spellcheck="false" maxlength="12000" data-i18n-placeholder="purek.paste" placeholder="二维码链接或 DLNA 设备描述地址" />
+          <button type="button" id="ktv-submit-url" class="primary-button" data-i18n="purek.continue">继续</button>
+        </details>
+      </div>
+      <div id="ktv-authorization" hidden>
+        <p id="ktv-wechat-help" data-i18n="ktv.wechatHelp">请复制官方授权链接，在微信中打开并完成授权。返回本页后检查连接。普通浏览器不能保证拉起微信。</p>
+        <input id="ktv-authorization-url" type="text" readonly autocomplete="off" spellcheck="false" data-i18n-aria-label="ktv.authorizationLink" aria-label="官方微信授权链接" />
+        <div class="ktv-actions">
+          <button type="button" id="ktv-copy-authorization" class="ghost-button" data-i18n="purek.authorize">复制微信授权链接</button>
+          <button type="button" id="ktv-load-authorization" class="ghost-button" data-i18n="ktv.loadAuthorization" hidden>获取官方授权链接</button>
+          <a id="ktv-open-wechat" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" data-i18n="ktv.openWeChat" hidden>打开官方授权页</a>
+          <button type="button" id="ktv-share-authorization" class="ghost-button" data-i18n="ktv.shareWeChat" hidden>分享至微信（如可用）</button>
+        </div>
+      </div>
+      <p id="ktv-remote-error" role="alert" hidden></p>
+      <div class="ktv-actions">
+        <button type="button" id="ktv-cancel-session" class="ghost-button" data-i18n="ktv.cancelSession">取消本次协助</button>
+        <button type="button" id="ktv-camera" class="primary-button" data-i18n="ktv.camera" hidden>扫描二维码</button>
+        <button type="button" id="ktv-check" class="primary-button" data-i18n="ktv.check" hidden>我已完成授权 — 检查连接</button>
+        <button type="button" id="ktv-rescan" class="primary-button" data-i18n="ktv.rescan" hidden>重新扫码</button>
+      </div>
+    </dialog>
     <script src="/internet-remote-transport.js" defer></script>
     <script src="/remote-transport-client.js" defer></script>
     <script src="/export-guard.js" defer></script>
@@ -1113,7 +1178,11 @@
     <script src="/request-input.js" defer></script>
     <script src="/playback-restart.js" defer></script>
     <script src="/playback-sheet-gestures.js" defer></script>
+    <script src="/media-output.js" defer></script>
     <script src="/remote.js" defer></script>
     <script src="/remote-queue.js" defer></script>
+    <script src="/qr-decoder.js" defer></script>
+    <script src="/ktv-scanner.js" defer></script>
+    <script src="/ktv-remote.js" defer></script>
   </body>
 </html>

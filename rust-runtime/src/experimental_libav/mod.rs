@@ -5,11 +5,18 @@
 //! Application routing lives in media_routing; this module owns native mechanics.
 //! See `media-libav/README.md` for the trusted-artifact contract and build.
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 mod wire;
 
 /// Pure developer comparison semantics; never consulted by normal media work.
 pub mod comparison;
+pub mod live_audio;
+pub mod live_ts;
 mod pcm;
 mod scan;
 pub use pcm::LoudnessMeasurement;
@@ -18,7 +25,12 @@ pub(crate) mod remux;
 pub use remux::{CopyProfile, CopyRemuxRequest, CopyRemuxResult, FlacStreamInfo};
 
 use crate::MediaError;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 use crate::MediaErrorKind;
 use serde::Serialize;
 use std::path::Path;
@@ -114,17 +126,47 @@ pub struct Metadata {
 /// values and released in the companion before each call returns.
 pub struct LibavMetadataProbe {
     info: BackendInfo,
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[cfg(any(
+        target_os = "android",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows"
+    ))]
     probe: wire::Probe,
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[cfg(any(
+        target_os = "android",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows"
+    ))]
     release: wire::Release,
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[cfg(any(
+        target_os = "android",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows"
+    ))]
     _library: wire::Library,
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[cfg(any(
+        target_os = "android",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows"
+    ))]
     scan: Result<scan::Capability, ProbeError>,
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[cfg(any(
+        target_os = "android",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows"
+    ))]
     remux: Result<remux::Capability, ProbeError>,
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[cfg(any(
+        target_os = "android",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows"
+    ))]
     pcm: Result<pcm::Capability, ProbeError>,
 }
 
@@ -140,7 +182,12 @@ impl LibavMetadataProbe {
     pub unsafe fn load(companion: &Path) -> Result<Self, ProbeError> {
         #[cfg(test)]
         TEST_LOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        #[cfg(any(
+            target_os = "android",
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "windows"
+        ))]
         {
             if !companion.is_absolute() || !companion.is_file() {
                 return Err(ProbeError::Unavailable(
@@ -189,7 +236,12 @@ impl LibavMetadataProbe {
                 _library: library,
             })
         }
-        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        #[cfg(not(any(
+            target_os = "android",
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "windows"
+        )))]
         {
             let _ = companion;
             Err(ProbeError::Unavailable(
@@ -211,11 +263,21 @@ impl LibavMetadataProbe {
         source: &Path,
         cancelled: &AtomicBool,
     ) -> Result<Metadata, ProbeError> {
-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        #[cfg(any(
+            target_os = "android",
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "windows"
+        ))]
         {
             self.probe_with_callback(source, &Callback::new(cancelled))
         }
-        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        #[cfg(not(any(
+            target_os = "android",
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "windows"
+        )))]
         {
             let _ = (source, cancelled);
             Err(ProbeError::Unavailable(
@@ -224,7 +286,12 @@ impl LibavMetadataProbe {
         }
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[cfg(any(
+        target_os = "android",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows"
+    ))]
     pub(crate) fn probe_with_callback(
         &self,
         source: &Path,
@@ -262,7 +329,12 @@ impl LibavMetadataProbe {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 pub(crate) fn open_input(source: &Path) -> Result<std::fs::File, ProbeError> {
     use std::fs::OpenOptions;
     #[cfg(unix)]
@@ -295,7 +367,12 @@ pub(crate) fn open_input(source: &Path) -> Result<std::fs::File, ProbeError> {
     Ok(file)
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 fn media_error(kind: MediaErrorKind, message: &str) -> ProbeError {
     ProbeError::Media(MediaError {
         kind,
@@ -303,7 +380,12 @@ fn media_error(kind: MediaErrorKind, message: &str) -> ProbeError {
     })
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 fn input_error(error: std::io::Error) -> ProbeError {
     let kind = match error.kind() {
         std::io::ErrorKind::NotFound => MediaErrorKind::SourceMissing,
@@ -313,12 +395,22 @@ fn input_error(error: std::io::Error) -> ProbeError {
     media_error(kind, &error.to_string())
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 fn backend_error(message: &str) -> ProbeError {
     ProbeError::BackendFailure(message.into())
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 pub(crate) struct Callback<'a> {
     pub(crate) flag: &'a AtomicBool,
     poll: Option<&'a dyn Fn() -> bool>,
@@ -327,7 +419,12 @@ pub(crate) struct Callback<'a> {
     #[cfg(test)]
     observations: std::sync::atomic::AtomicU32,
 }
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 impl<'a> Callback<'a> {
     fn new(flag: &'a AtomicBool) -> Self {
         Self {
@@ -359,7 +456,12 @@ impl<'a> Callback<'a> {
         self.flag.load(Ordering::Relaxed)
     }
 }
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 extern "C" fn cancellation_callback(opaque: *mut std::ffi::c_void) -> i32 {
     #[cfg(test)]
     use std::sync::atomic::Ordering;
@@ -373,12 +475,22 @@ extern "C" fn cancellation_callback(opaque: *mut std::ffi::c_void) -> i32 {
     i32::from(callback.is_cancelled())
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 struct OwnedResult<'a> {
     pointer: *mut wire::ProbeResult,
     owner: &'a LibavMetadataProbe,
 }
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 impl Drop for OwnedResult<'_> {
     fn drop(&mut self) {
         // SAFETY: only the allocating companion releases its aggregate. This
@@ -389,7 +501,12 @@ impl Drop for OwnedResult<'_> {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 fn text<const N: usize>(value: &wire::Text<N>) -> Result<String, ProbeError> {
     let bytes = value
         .bytes
@@ -400,7 +517,12 @@ fn text<const N: usize>(value: &wire::Text<N>) -> Result<String, ProbeError> {
         .map_err(|_| backend_error("non-UTF-8 companion string"))
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 fn convert_info(i: &wire::Info) -> Result<BackendInfo, ProbeError> {
     let convert = || {
         let build_configuration = text(&i.build_config)?;
@@ -447,7 +569,12 @@ fn convert_info(i: &wire::Info) -> Result<BackendInfo, ProbeError> {
     convert().map_err(|error| ProbeError::Unavailable(error.to_string()))
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 fn status_error(status: u32, message: String) -> ProbeError {
     match status {
         1 => ProbeError::Unavailable(message),
@@ -464,7 +591,12 @@ fn status_error(status: u32, message: String) -> ProbeError {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 fn ticks_us(value: i64, base: TimeBase) -> Result<i64, ProbeError> {
     if value == i64::MIN || base.numerator <= 0 || base.denominator <= 0 {
         return Err(backend_error("invalid known timestamp/time base"));
@@ -477,12 +609,22 @@ fn ticks_us(value: i64, base: TimeBase) -> Result<i64, ProbeError> {
     i64::try_from(rounded).map_err(|_| backend_error("timestamp conversion overflow"))
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 fn known<T: Copy>(bits: u32, bit: u32, value: T) -> Option<T> {
     (bits & bit != 0).then_some(value)
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+))]
 fn convert_metadata(r: &wire::ProbeResult, backend: &str) -> Result<Metadata, ProbeError> {
     use wire::*;
     if r.status != 0 {

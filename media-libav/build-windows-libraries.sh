@@ -28,9 +28,9 @@ else
       cp "$BILIKARA_LIBAV_SOURCE_DIR/$name" "$prefix/source/$name"
     done
   else
-    curl --fail --location --retry 5 "$url" -o "$prefix/source/ffmpeg-${version}.tar.xz"
-    curl --fail --location --retry 5 "$url.asc" -o "$prefix/source/ffmpeg-${version}.tar.xz.asc"
-    curl --fail --location --retry 5 https://ffmpeg.org/ffmpeg-devel.asc -o "$prefix/source/ffmpeg-devel.asc"
+    curl --fail --location --retry 5 --retry-all-errors --retry-max-time 90 --connect-timeout 15 --max-time 120 "$url" -o "$prefix/source/ffmpeg-${version}.tar.xz"
+    curl --fail --location --retry 5 --retry-all-errors --retry-max-time 90 --connect-timeout 15 --max-time 120 "$url.asc" -o "$prefix/source/ffmpeg-${version}.tar.xz.asc"
+    curl --fail --location --retry 5 --retry-all-errors --retry-max-time 90 --connect-timeout 15 --max-time 120 https://ffmpeg.org/ffmpeg-devel.asc -o "$prefix/source/ffmpeg-devel.asc"
   fi
   # Same pinned official release signer used by the accepted Linux 9.0.1 build.
   mkdir -p "$work/keyring"

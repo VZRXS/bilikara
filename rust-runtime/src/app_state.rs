@@ -4141,6 +4141,20 @@ impl AppState {
 
         let request = validation.request.clone();
         let (mutation, host_effect, identity_reply) = match request {
+            RemoteRequestV1::Ktv(request) => {
+                if !matches!(request, bilikara_rust::KtvRequestV1::Status {})
+                    && validation.session_name.is_none()
+                {
+                    return internet_remote_error_response(InternetRemoteError::IdentityRequired);
+                }
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    Value::Null,
+                    Some(json!({"kind":"ktv_assistance","request":request})),
+                    false,
+                );
+            }
             RemoteRequestV1::ConnectionHealth => {
                 return internet_remote_reply(
                     data,
@@ -4553,6 +4567,15 @@ impl AppState {
                         "delta_seconds": delta_seconds,
                         "target_seconds": target_seconds,
                     })),
+                    false,
+                );
+            }
+            RemoteRequestV1::OutputSetOffsetMode { offset_mode } => {
+                return internet_remote_reply(
+                    data,
+                    &validation,
+                    json!(project_remote_state(&snapshot)),
+                    Some(json!({"kind":"output_mode","offset_mode":offset_mode})),
                     false,
                 );
             }
@@ -5309,6 +5332,9 @@ impl AppState {
                     Err(error) => return execute_error_response(error),
                 };
                 let now = request.now();
+                #[cfg(feature = "native-host")]
+                let output_audio_selection =
+                    matches!(&request, AppStateRequest::SetAudioVariant { .. });
                 let replaces_live_items = matches!(
                     &request,
                     AppStateRequest::RestoreBackup { .. }
@@ -5431,6 +5457,14 @@ impl AppState {
                     );
                     if clears_controls {
                         self.player_controls.clear();
+                        // L1 follows selected audio in place. Its source lifetime
+                        // still changes on every other playback-program commit,
+                        // including a restart that retains the same item/files.
+                        #[cfg(feature = "native-host")]
+                        if !output_audio_selection {
+                            self.native_session.purek.program_epoch =
+                                self.native_session.purek.program_epoch.wrapping_add(1);
+                        }
                     }
                     self.data = Some(next);
                     #[cfg(feature = "native-host")]

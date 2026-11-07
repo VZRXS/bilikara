@@ -51,6 +51,7 @@ pub enum RemotePlaylistPositionV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteCapability {
+    KtvAssistance,
     ConnectionHealth,
     StateRead,
     CatalogRead,
@@ -65,6 +66,7 @@ pub enum RemoteCapability {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteOperation {
+    KtvAssistance,
     ConnectionHealth,
     StateGet,
     CatalogSearch,
@@ -110,6 +112,7 @@ pub enum RemoteOperation {
 impl RemoteOperation {
     pub const fn capability(self) -> RemoteCapability {
         match self {
+            Self::KtvAssistance => RemoteCapability::KtvAssistance,
             Self::ConnectionHealth => RemoteCapability::ConnectionHealth,
             Self::StateGet => RemoteCapability::StateRead,
             Self::CatalogSearch
@@ -174,6 +177,7 @@ pub const fn profile_allows(profile: RemoteProfile, operation: RemoteOperation) 
                 | RemoteCapability::RatingWrite
                 | RemoteCapability::CacheRetry
                 | RemoteCapability::GatchaManage
+                | RemoteCapability::KtvAssistance
         ),
     }
 }
@@ -199,6 +203,7 @@ pub enum RemoteAvDelayActionV1 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", content = "body")]
 pub enum RemoteRequestV1 {
+    Ktv(crate::KtvRequestV1),
     #[serde(rename = "connection.health")]
     ConnectionHealth,
     #[serde(rename = "state.get")]
@@ -389,6 +394,8 @@ pub enum RemoteRequestV1 {
 impl RemoteRequestV1 {
     pub const fn operation(&self) -> RemoteOperation {
         match self {
+            Self::Ktv(crate::KtvRequestV1::Status {}) => RemoteOperation::StateGet,
+            Self::Ktv(_) => RemoteOperation::KtvAssistance,
             Self::ConnectionHealth => RemoteOperation::ConnectionHealth,
             Self::StateGet { .. } => RemoteOperation::StateGet,
             Self::CatalogSearch { .. } => RemoteOperation::CatalogSearch,
@@ -810,6 +817,7 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
     let valid_catalog = |value: &str| valid_catalog_item_id(value);
     let valid_expected = |value: u64| valid_revision(value);
     let valid = match request {
+        RemoteRequestV1::Ktv(request) => request.valid(),
         RemoteRequestV1::ConnectionHealth
         | RemoteRequestV1::GatchaPoolConfigGet
         | RemoteRequestV1::GatchaCandidate
@@ -1091,6 +1099,21 @@ fn valid_manual_binding_selection(
 }
 
 fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProtocolError> {
+    if kind.starts_with("ktv.") {
+        let mut fields = value
+            .as_object()
+            .cloned()
+            .ok_or(RemoteProtocolError::InvalidRequestBody)?;
+        if fields
+            .insert("operation".into(), Value::String(kind.into()))
+            .is_some()
+        {
+            return Err(RemoteProtocolError::InvalidRequestBody);
+        }
+        let request = RemoteRequestV1::Ktv(body(Value::Object(fields))?);
+        validate_request(&request)?;
+        return Ok(request);
+    }
     let request = match kind {
         "connection.health" => {
             let _: EmptyBody = body(value)?;
@@ -2252,6 +2275,11 @@ mod tests {
             ),
             request("player.set_volume", json!({"volume_percent": 501})),
             request("player.set_key_shift", json!({"key_shift": 7})),
+            request("output.set_offset_mode", json!({"offset_mode":"unsafe"})),
+            request(
+                "output.set_offset_mode",
+                json!({"offset_mode":"gradual","target":"purek"}),
+            ),
             request("rating.submit", json!({"play_id": "p", "score": 0})),
         ];
         for message in cases {

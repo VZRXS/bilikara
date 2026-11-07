@@ -21,6 +21,15 @@ pub(super) fn bound_saved_remote_state(seed: &mut AppStateSeed) {
 }
 mod media;
 
+/// Lightweight immutable output facts, obtained under the existing AppState
+/// lock without cloning the queue/history on every audio block.
+pub(crate) struct OutputAudioFacts {
+    pub source: (String, String, String, u64),
+    pub track: String,
+    pub cache_ready: bool,
+    pub settings: PlayerSettingsSnapshot,
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -56,6 +65,8 @@ pub(crate) struct NativeSession {
     pub startup_warning: String,
     pub updates: crate::native_host::updates::UpdateState,
     pub announcements: crate::announcements::State,
+    pub purek: crate::native_host::purek::RoomState,
+    pub ktv: crate::native_host::purek::assistance::Assistance,
     pub host_token: String,
     pub state_epoch: String,
     pub cookie: String,
@@ -238,6 +249,53 @@ impl AppState {
         } else {
             Err(ApiError::new(403, "forbidden", "请重新打开手机点歌页面"))
         }
+    }
+
+    pub(crate) fn native_ktv_identity(&self, identity: &Identity) -> Option<(String, String, u64)> {
+        if self.native_authorize(identity, false).ok()? {
+            return None;
+        }
+        let data = self.data.as_ref()?;
+        let key = device_digest(&identity.token);
+        let name = self
+            .native_session
+            .devices
+            .get(&key)
+            .filter(|d| d.generation == data.session_generation)
+            .map(|d| &d.name)
+            .or_else(|| data.remote_identities.get(&key))?;
+        Some((
+            name.clone(),
+            data.session_user_ids.get(name)?.clone(),
+            data.session_generation,
+        ))
+    }
+
+    pub(crate) fn native_ktv_internet(
+        &self,
+    ) -> Vec<crate::native_host::purek::assistance::InternetPresence> {
+        self.internet_remote_peers
+            .ktv_peers()
+            .into_iter()
+            .map(|(peer, epoch, name)| {
+                let identity = name.and_then(|name| {
+                    let data = self.data.as_ref()?;
+                    Some((
+                        name.clone(),
+                        data.session_user_ids.get(&name)?.clone(),
+                        data.session_generation,
+                    ))
+                });
+                (peer, epoch, identity)
+            })
+            .collect()
+    }
+
+    pub(crate) fn native_ktv_user_exists(&self, id: &str, generation: u64) -> bool {
+        self.data.as_ref().is_some_and(|data| {
+            data.session_generation == generation
+                && data.session_user_ids.values().any(|current| current == id)
+        })
     }
 
     pub(crate) fn native_open_lan_connection(
@@ -558,6 +616,44 @@ impl AppState {
             .map_err(|_| ApiError::new(500, "snapshot", "无法读取 Rust 状态"))
     }
 
+    pub(crate) fn native_output_control(&self) -> Option<Value> {
+        self.player_control_head()
+    }
+
+    pub(crate) fn native_clear_output_controls(&mut self) {
+        self.player_controls.clear();
+    }
+
+    pub(crate) fn native_output_audio_facts(&self) -> Result<OutputAudioFacts, ApiError> {
+        let data = self
+            .data
+            .as_ref()
+            .ok_or_else(|| ApiError::new(503, "state_unavailable", "Rust Host 尚未初始化"))?;
+        let item = data
+            .current_item
+            .as_ref()
+            .ok_or_else(|| ApiError::new(409, "output_media", "当前没有歌曲"))?;
+        let av_delay = data.av_snapshot();
+        Ok(OutputAudioFacts {
+            source: (
+                item.id.clone(),
+                item.item_incarnation_id.clone(),
+                item.artifact_set_id.clone(),
+                data.playback_generation,
+            ),
+            track: item.selected_audio_variant_id.clone(),
+            cache_ready: item.cache_status == "ready",
+            settings: PlayerSettingsSnapshot {
+                av_offset_ms: av_delay.effective_delay_ms,
+                av_delay,
+                volume_percent: data.player_settings.volume_percent,
+                is_muted: data.player_settings.is_muted,
+                song_advance_delay_seconds: data.player_settings.song_advance_delay_seconds,
+                key_shift: data.player_settings.key_shift,
+            },
+        })
+    }
+
     pub(crate) fn native_execute(
         &mut self,
         mut command: AppStateRequest,
@@ -708,7 +804,21 @@ impl AppState {
             })
             .cloned()
             .unwrap_or(Value::Null);
-        value["player_control_command"] = if host {
+        value["media_output"] = session.purek.controller.projection(&session.purek, host);
+        if session.purek.controller.owns_playback {
+            value["player_status"] = snapshot
+                .current_item
+                .as_ref()
+                .map(|i| {
+                    session.purek.controller.observation(
+                        &i.id,
+                        snapshot.playback_generation,
+                        &session.purek,
+                    )
+                })
+                .unwrap_or(Value::Null);
+        }
+        value["player_control_command"] = if host && !session.purek.controller.owns_playback {
             self.player_control_head().unwrap_or(Value::Null)
         } else {
             Value::Null
@@ -800,7 +910,11 @@ impl AppState {
             // check-only loop and the Android loop project the same state the
             // status route returns; there is no second placeholder projection.
             value["app_update"] = session.updates.snapshot();
+            value["purek"] = crate::native_host::purek::snapshot(session);
+            value["ktv_assistance"] = crate::native_host::purek::assistance::host_snapshot(session);
         }
+        value["ktv_room"] =
+            crate::native_host::purek::assistance::room_status(&session.purek, &session.ktv);
         value["bbdown"] = json!({"available":session.cache_policy.available_with(session.desktop && session.bbdown_available, session.desktop && session.aria2_available),"download_source":session.cache_policy.download_source,"ready":session.cache_policy.available_with(session.desktop && session.bbdown_available, session.desktop && session.aria2_available),"state":if session.cache_policy.available_with(session.desktop && session.bbdown_available, session.desktop && session.aria2_available) {"ready"} else {"unavailable"},"version":if session.cache_policy.download_source == "bbdown" {"BBDown"} else if session.cache_policy.download_source == "downkyi" {"DownKyi/aria2c"} else {"Rust Native"},"max_cache_items":session.cache_policy.max_cache_items,"message":if !session.cache_policy.available_with(session.desktop && session.bbdown_available, session.desktop && session.aria2_available) {"Imported downloader/preferences unavailable; select supported Native settings explicitly"} else if session.desktop {"Desktop Rust preview"} else {"Android Alpha"}});
         if value["cache_policy"]["enabled"] == false {
             value["bbdown"]["ready"] = json!(false);
@@ -891,6 +1005,9 @@ impl AppState {
             }
             return Ok(json!({"released":released}));
         }
+        if self.native_session.purek.controller.owns_playback {
+            return Ok(json!({"claimed":false}));
+        }
         let snapshot = self.native_core_snapshot()?;
         let current = snapshot.playback_program.as_ref();
         let matches = !self.artifact_program_retired(&identity.client, generation)
@@ -928,6 +1045,13 @@ impl AppState {
     ) -> Result<Value, ApiError> {
         self.native_authorize(identity, true)?;
         let generation = positive(body, "playback_generation")?;
+        if self.native_session.purek.controller.owns_playback {
+            return Err(ApiError::new(
+                409,
+                "network_output_active",
+                "电视输出正在接管播放",
+            ));
+        }
         let sequence = positive(body, "status_sequence")?;
         let item_id = text(body, "item_id")?;
         let current_time = number(body, "current_time")?;
@@ -1031,6 +1155,13 @@ impl AppState {
 
     pub(crate) fn native_ack(&mut self, identity: &Identity, body: &Value) -> Result<(), ApiError> {
         self.native_authorize(identity, true)?;
+        if self.native_session.purek.controller.owns_playback {
+            return Err(ApiError::new(
+                409,
+                "network_output_active",
+                "电视输出正在接管播放",
+            ));
+        }
         let seq = positive(body, "seq")?;
         self.native_execute(AppStateRequest::AckPlayerControl {
             schema_version: 1,
@@ -1132,6 +1263,7 @@ impl AppState {
             "bilibili_login":self.native_session.login_diagnostics,
             "library_refresh":self.native_session.library_diagnostics,
             "ratings":self.native_session.ratings.events,
+            "purek":self.native_session.purek.diagnostics(),
             "gatcha_task":self.native_session.login.gacha_snapshot()})
     }
 

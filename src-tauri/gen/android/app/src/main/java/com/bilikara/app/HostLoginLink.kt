@@ -4,6 +4,16 @@ import java.net.URI
 
 /** Match the native login service's two HTTPS QR origins. Never accept arbitrary app intents. */
 internal object HostLoginLink {
+  fun roomAuthorization(value: String): String? = try {
+    val uri = URI(value)
+    value.takeIf {
+      value.length <= 4096 && uri.scheme in setOf("http", "https") &&
+        uri.host == "wx.chunk.cn" && uri.rawPath == "/projection/login" &&
+        uri.rawUserInfo == null && uri.rawFragment == null && uri.port == -1 &&
+        !uri.rawQuery.isNullOrEmpty() && !value.any { it.isISOControl() }
+    }
+  } catch (_: Exception) { null }
+
   fun validated(value: String): String? = try {
     val uri = URI(value)
     value.takeIf {

@@ -266,6 +266,12 @@ fn all_native_companion_commands_preserve_flags_paths_and_private_outputs() {
         for arch in ["x86_64", "aarch64"] {
             let c = config(root, os, arch);
             let commands = prepare::companion_commands(&c, &prefix, &out, true, false).unwrap();
+            let cpp = prepare::stretch_command(&c, &out, false);
+            assert!(cpp.contains(&c.root.join("media-libav/stretch.cpp").into_os_string()));
+            assert!(
+                !cpp.iter()
+                    .any(|arg| arg.to_string_lossy().contains("python"))
+            );
             assert_eq!(commands.len(), 4);
             assert!(
                 commands[0]
@@ -293,6 +299,18 @@ fn all_native_companion_commands_preserve_flags_paths_and_private_outputs() {
                     .any(|arg| arg.to_string_lossy().contains("python"))
             );
             if os == "windows" {
+                for flag in [
+                    "cl.exe",
+                    "/std:c++17",
+                    "/MD",
+                    "/EHsc",
+                    "/c",
+                    "/Fostretch.obj",
+                ] {
+                    assert!(cpp.contains(&OsString::from(flag)), "{cpp:?}");
+                }
+                assert!(commands[0].contains(&out.join("stretch.obj").into_os_string()));
+                assert!(commands[0].contains(&OsString::from("swresample.lib")));
                 assert!(commands[0].contains(&OsString::from("/I.")));
                 assert!(commands[0].contains(&OsString::from("/Fo.\\")));
                 assert!(commands[0].contains(&OsString::from("/OUT:bilikara_media_libav.dll")));
@@ -308,6 +326,27 @@ fn all_native_companion_commands_preserve_flags_paths_and_private_outputs() {
                 })));
                 assert!(prepare::companion_commands(&c, &prefix, &out, false, true).is_err());
             } else {
+                for flag in [
+                    "-std=c++17",
+                    "-fPIC",
+                    "-fvisibility=hidden",
+                    "-Werror",
+                    "-c",
+                ] {
+                    assert!(cpp.contains(&OsString::from(flag)), "{cpp:?}");
+                }
+                assert!(cpp.contains(&out.join("stretch.o").into_os_string()));
+                assert!(commands[0].contains(&out.join("stretch.o").into_os_string()));
+                assert!(commands[0].contains(&OsString::from("-lswresample")));
+                assert!(commands[0].contains(&OsString::from(if os == "macos" {
+                    "-lc++"
+                } else {
+                    "-lstdc++"
+                })));
+                assert!(
+                    prepare::stretch_command(&c, &out, true)
+                        .contains(&OsString::from("-fsanitize=address,undefined"))
+                );
                 let sanitizers =
                     prepare::companion_commands(&c, &prefix, &out, false, true).unwrap();
                 assert!(sanitizers[0].contains(&OsString::from("-fsanitize=address,undefined")));
@@ -420,9 +459,15 @@ fn windows_msvc_companion_paths_compile_generated_header() {
     // This is a compiler/path probe without FFmpeg prerequisites. The later
     // bundle recipe still builds and executes the actual libav C companion.
     compiler.retain(|arg| {
-        !["avformat.lib", "avcodec.lib", "avutil.lib"]
-            .iter()
-            .any(|library| arg == library)
+        ![
+            "avformat.lib",
+            "avcodec.lib",
+            "avutil.lib",
+            "swresample.lib",
+        ]
+        .iter()
+        .any(|library| arg == library)
+            && !arg.to_string_lossy().ends_with("stretch.obj")
     });
     prepare::run_companion_commands(&out, &[compiler, commands[2].clone()]).unwrap();
     assert!(out.join("test_shim.exe").is_file());

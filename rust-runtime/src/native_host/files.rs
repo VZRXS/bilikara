@@ -29,7 +29,7 @@ impl tokio::io::AsyncRead for LeasedReader {
     }
 }
 
-fn safe_relative(value: &str) -> Option<PathBuf> {
+pub(super) fn safe_relative(value: &str) -> Option<PathBuf> {
     if value.is_empty() || value.contains(['\\', '%', '\0']) || value.starts_with('/') {
         return None;
     }
@@ -82,7 +82,7 @@ pub(super) fn asset(context: &HostContext, path: &str, head: bool) -> Result<Res
     // The packaged Signalsmith worklet compiles WASM. This narrowly permits
     // that compilation while JavaScript eval, inline/remote scripts, embedding
     // and generic network access remain prohibited.
-    response.headers_mut().insert("content-security-policy","default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.hdslb.com https://*.bilibili.com https://i.ytimg.com; media-src 'self' blob:; connect-src 'self' https://rtc.kevinx96.icu wss://rtc.kevinx96.icu; font-src 'self' data:; object-src 'none'; frame-src 'none'; base-uri 'self'".parse().unwrap());
+    response.headers_mut().insert("content-security-policy","default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.hdslb.com https://*.bilibili.com https://i.ytimg.com; media-src 'self' blob:; connect-src 'self' https://rtc.kevinx96.icu wss://rtc.kevinx96.icu; font-src 'self' data:; object-src 'none'; frame-src 'none'; base-uri 'self'".parse().unwrap());
     Ok(response)
 }
 

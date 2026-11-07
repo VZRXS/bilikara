@@ -568,6 +568,7 @@ const elements = {
   historyViewButton: document.getElementById("history-view-button"),
   historyExportButton: document.getElementById("history-export-button"),
   historyExportDialog: document.getElementById("history-export-dialog"),
+  ktvRemoteDialog: document.getElementById("ktv-remote-modal"),
   historyExportClose: document.getElementById("history-export-close"),
   historyExportStatus: document.getElementById("history-export-status"),
   historyExportRow: document.getElementById("history-export-row"),
@@ -3527,6 +3528,10 @@ function connectStateStream() {
   }
   const source = new window.EventSource(`/api/events?client_id=${encodeURIComponent(state.clientId)}`);
   state.eventSource = source;
+  source.addEventListener("ktv", event => {
+    if (state.eventSource!==source) return;
+    try {window.BilikaraKtvRemote?.presence(JSON.parse(event.data));} catch { /* malformed private frame */ }
+  });
   scheduleStateFallbackRefresh();
 
   source.addEventListener("state", (event) => {
@@ -3571,6 +3576,7 @@ function connectStateStream() {
     if (state.eventSource !== source) {
       return;
     }
+    window.BilikaraKtvRemote?.disconnected();
     const nextPhase = remoteConnectionRecoveryPhase();
     closeEventStream();
     if (typeof setRemoteConnectionPhase === "function") {
@@ -5689,6 +5695,8 @@ function render() {
   }
   const playbackMode = frontendPlaybackMode(data.playback_mode);
 
+  window.BilikaraMediaOutput?.sync(data,{host:false,t,request:apiPost,bindHelp:bindRemoteContextualInfo,onError:message=>setFormMessage(message,true),accept:snapshot=>{if(applyStateSnapshot(snapshot))render();}});
+  window.BilikaraKtvRemote?.room(data.ktv_room);
   renderRemoteIdentity();
   renderCurrentItem(data.current_item, playbackMode);
   renderCurrentRatingButton(data.current_item);
@@ -8972,6 +8980,10 @@ function disconnectClient() {
   } catch (error) {
     console.warn("Failed to flush pending auto-ratings on disconnect:", error);
   }
+}
+
+function disconnectClient() {
+  flushClientPendingRatings();
   clearStateFallbackTimer();
   closeEventStream();
   if (window.BilikaraRemoteTransport?.mode === "internet") {
@@ -10466,7 +10478,18 @@ document.addEventListener("visibilitychange", () => {
   scheduleViewportScaleReset();
 });
 
-window.addEventListener("pageshow", () => {
+window.addEventListener("pageshow", event => {
+  if (event?.persisted) {
+    // Keeping a page in BFCache does not prove the transport survived. Preserve
+    // live connections, otherwise let the existing transport authenticate again.
+    // KTV restoration reads current permission only; it never resumes receiver I/O.
+    state.disconnectSent = false;
+    void fetchRemoteIdentity();
+    void fetchState().catch(error => setFormMessage(error.message, true));
+    if(!state.eventSource||state.eventSource.readyState===2)connectStateStream();
+    else{armNativeEventStreamWatchdog(state.eventSource);scheduleStateFallbackRefresh();}
+    void window.BilikaraKtvRemote?.restorePage();
+  }
   window.requestAnimationFrame(() => {
     blurActiveEditableElement();
   });
@@ -10488,8 +10511,16 @@ if (window.visualViewport) {
 
 window.addEventListener("pagehide", blurActiveEditableElement);
 window.addEventListener("pagehide", clearViewportScaleResetTimers);
-window.addEventListener("pagehide", disconnectClient);
-window.addEventListener("beforeunload", disconnectClient);
+window.addEventListener("pagehide", event => {
+  window.BilikaraKtvRemote?.suspendPage();
+  if(event?.persisted){
+    flushClientPendingRatings();
+    clearStateFallbackTimer();
+    clearEventStreamReconnectTimer();
+    window.clearTimeout(state.eventStreamWatchdog);
+    state.eventStreamWatchdog=null;
+  }else disconnectClient();
+});
 
 function playbackSheetIsOpen() {
   return Boolean(
@@ -10527,6 +10558,7 @@ function syncRemoteShellInert() {
 function anotherRemoteModalIsOpen() {
   return Boolean(
     elements.historyExportDialog?.open
+    || elements.ktvRemoteDialog?.open
     || state.ratingPromptElement
     || remoteIdentityModalIsOpen()
     || state.bindingSheetOpen

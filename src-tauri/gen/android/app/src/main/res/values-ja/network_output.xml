@@ -1,0 +1,6 @@
+<resources>
+    <string name="network_output_channel">ネットワーク再生</string>
+    <string name="network_output_playing">実験的なテレビ出力で再生中</string>
+    <string name="network_output_paused">テレビ出力は一時停止または待機中</string>
+    <string name="network_output_stop">出力を停止</string>
+</resources>
