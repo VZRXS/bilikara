@@ -20,10 +20,19 @@
     start(true);
     return true;
   };
+  window.bilikaraBootstrapReady = true;
   async function start(legacy) {
     starting = true;
     needsDiagnostics = false;
     try {
+      if (window.isSecureContext !== true || typeof URL !== 'function' || typeof Number.isSafeInteger !== 'function'
+        || typeof crypto !== 'object' || crypto === null || typeof crypto.getRandomValues !== 'function'
+        || typeof ResizeObserver !== 'function') {
+        needsDiagnostics = true;
+        throw new Error("当前启动页缺少安全上下文或必要 API，请打开 WebView 兼容性自检。无需清除应用数据。");
+      }
+      const hint = /(?:Chrome|Chromium)\/(\d+)/.exec(navigator.userAgent);
+      if (legacy && hint && Number(hint[1]) < 83) throw new Error("当前 UA 内核提示低于兼容模式基线，请复制 WebView 自检信息。无需清除应用数据。");
       if (legacy && (typeof AbortController !== "function" || typeof crypto !== "object"
         || typeof crypto.getRandomValues !== "function" || typeof Promise.allSettled !== "function"
         || typeof ResizeObserver !== "function")) {

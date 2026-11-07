@@ -4,10 +4,14 @@
   var root = document.documentElement;
   var selected = location.hash === "#bilikara-legacy";
   var major = /(?:Chrome|Chromium)\/(\d+)/.exec(navigator.userAgent);
-  var legacy = selected && major && Number(major[1]) >= 83;
+  var required = typeof AbortController === 'function' && typeof crypto === 'object'
+    && typeof crypto.getRandomValues === 'function' && typeof Promise.allSettled === 'function'
+    && typeof ResizeObserver === 'function' && typeof URL === 'function' && typeof Number.isSafeInteger === 'function'
+    && (root.getAttribute('data-host-platform') !== 'android' || window.isSecureContext === true);
+  var legacy = selected && required && (!major || Number(major[1]) >= 83);
   root.setAttribute("data-webview-mode", legacy ? "legacy" : "latest");
   if (!legacy) return;
-  window.BilikaraWebViewCompatibility = { mode: "legacy", chromiumMajor: Number(major[1]), engine: Number(major[1]) < 91 ? 83 : 91, adapters: [
+  window.BilikaraWebViewCompatibility = { mode: "legacy", chromiumMajor: major ? Number(major[1]) : null, engine: !major || Number(major[1]) < 91 ? 83 : 91, adapters: [
     ["Element.replaceChildren", typeof Element.prototype.replaceChildren !== "function"],
     ["String.replaceAll", typeof String.prototype.replaceAll !== "function"],
     ["Object.hasOwn", typeof Object.hasOwn !== "function"],
@@ -301,6 +305,16 @@
     "r27",
     ".source-frame-footer",
     "> .host-result-pager:not([hidden])"
+  ],
+  [
+    "r28",
+    ".media-output-targets",
+    "input:disabled"
+  ],
+  [
+    "r29",
+    ".request-mode-panel",
+    ".android-result-frame:not([hidden]) .host-result-pager:not([hidden])"
   ]
 ];
   if (window.BilikaraWebViewCompatibility.engine === 83) relations.forEach(function (rule) {

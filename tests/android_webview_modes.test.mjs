@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {readFileSync, readdirSync} from 'node:fs';
 import test from 'node:test';
-import {chromium} from 'playwright';
+import {chromium,webkit} from 'playwright';
 
 // Behavioral adapter tests on a current browser with isolated missing features.
 // These never qualify a historic Android WebView; the actual provider is tested separately.
-async function fixture(t, {legacy = false, missing = false, userAgent} = {}) {
+async function fixture(t, {legacy = false, missing = false, userAgent, requiredMissing} = {}) {
   const server = createServer((req, res) => {
     if (req.url.endsWith('/native-fixture.css')) {
       const compiled = req.url.startsWith('/compat83/');
@@ -26,16 +26,22 @@ async function fixture(t, {legacy = false, missing = false, userAgent} = {}) {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   // Browser cleanup runs later; retire its fixture connections before waiting.
   t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
-  const browser = await chromium.launch({headless: true}); t.after(() => browser.close());
+  const browser = await (process.env.BILIKARA_WEBVIEW_ENGINE === 'webkit' ? webkit : chromium).launch({headless: true}); t.after(() => browser.close());
   const context = await browser.newContext({userAgent});
   await context.route('**/*', route => new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort());
-  await context.addInitScript(({missing}) => {
+  await context.addInitScript(({missing,requiredMissing}) => {
     window.nativeHasOwn = Object.hasOwn;
     window.nativeAt = Array.prototype.at;
     window.nativeChildren = Element.prototype.replaceChildren;
     window.nativeReplace = String.prototype.replaceAll;
     window.nativeAnimate = Element.prototype.animate;
     window.nativeUUID = crypto.randomUUID;
+    if (requiredMissing === 'Web Crypto') Object.defineProperty(crypto,'getRandomValues',{configurable:true,value:undefined});
+    if (requiredMissing === 'AbortController') window.AbortController=undefined;
+    if (requiredMissing === 'ResizeObserver') window.ResizeObserver=undefined;
+    if (requiredMissing === 'Promise.allSettled') Promise.allSettled=undefined;
+    if (requiredMissing === 'URL') window.URL=undefined;
+    if (requiredMissing === 'Number.isSafeInteger') Number.isSafeInteger=undefined;
     if (!missing) return;
     Object.defineProperty(Object, 'hasOwn', {configurable: true, writable: true, value: undefined});
     Object.defineProperty(Array.prototype, 'at', {configurable: true, writable: true, value: undefined});
@@ -46,7 +52,7 @@ async function fixture(t, {legacy = false, missing = false, userAgent} = {}) {
       if (['selector(:has(*))', 'height: 100dvh', 'container-type: size', 'color: color-mix(in srgb, black, white)'].includes(rule)) return false;
       return arguments.length === 1 ? supports(rule) : supports(rule, value);
     };
-  }, {missing});
+  }, {missing,requiredMissing});
   const page = await context.newPage(), errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}/${legacy ? '#bilikara-legacy' : ''}`);
@@ -129,6 +135,10 @@ test('legacy relational styles, viewport and container sizes follow real DOM cha
   await page.waitForFunction(() => document.querySelector('.source-uid-form').getAttribute('data-legacy-has')?.includes('r24'));
   await page.evaluate(() => document.querySelector('.source-refresh-button').remove());
   await page.waitForFunction(() => !document.querySelector('.source-uid-form').getAttribute('data-legacy-has').includes('r24'));
+  await page.evaluate(() => document.body.insertAdjacentHTML('beforeend', '<section class="request-mode-panel"><div class="android-result-frame"><div class="host-result-pager"></div></div></section>'));
+  await page.waitForFunction(() => document.querySelector('.request-mode-panel').getAttribute('data-legacy-has')?.split(' ').includes('r29'));
+  await page.evaluate(() => {document.querySelector('.host-result-pager').hidden = true;});
+  await page.waitForFunction(() => !document.querySelector('.request-mode-panel').getAttribute('data-legacy-has').split(' ').includes('r29'));
   await page.waitForFunction(() => document.querySelector('.request-workspace').hasAttribute('data-legacy-wide'));
   await page.evaluate(() => { document.querySelector('.request-workspace').style.width = '300px'; });
   await page.waitForFunction(() => !document.querySelector('.request-workspace').hasAttribute('data-legacy-wide'));
@@ -183,4 +193,16 @@ test('legacy colors follow late CSS token changes without a theme toggle', async
     document.querySelector('#background').classList.add('tokens-arrived');
   });
   await page.waitForFunction(()=>getComputedStyle(document.documentElement).getPropertyValue('--legacy-pressed').trim()==='rgba(0,240,0,1)',null,{timeout:3000});
+});
+
+for(const userAgent of ['Custom OEM WebView', 'Mozilla/5.0 Chrome/82.0.0.0']) test(`explicit legacy admission with constrained UA hint ${userAgent}`,async t=>{
+  const page=await fixture(t,{legacy:true,userAgent});
+  const unknown=userAgent.startsWith('Custom');
+  assert.equal(await page.evaluate(()=>document.documentElement.dataset.webviewMode),unknown?'legacy':'latest');
+  if(unknown)assert.deepEqual(await page.evaluate(()=>[BilikaraWebViewCompatibility.chromiumMajor,BilikaraWebViewCompatibility.engine]),[null,83]);
+});
+for(const requiredMissing of ['Web Crypto','AbortController','ResizeObserver','Promise.allSettled','URL','Number.isSafeInteger']) test(`legacy selection rejects missing required ${requiredMissing}`,async t=>{
+  const page=await fixture(t,{legacy:true,userAgent:'Chrome/99.0.4844.88',requiredMissing});
+  assert.equal(await page.evaluate(()=>document.documentElement.dataset.webviewMode),'latest');
+  assert.equal(await page.evaluate(()=>typeof window.BilikaraWebViewCompatibility),'undefined');
 });

@@ -2487,7 +2487,7 @@ function renderRatingPromptContent() {
   const bvid = String(activeItem.bvid || "").trim();
   const ownerName = String(activeItem.owner_name || "").trim() || t("rating.unknownOwner");
   const coverUrl = safeHttpUrl(activeItem.cover_url);
-  const url = safeHttpUrl(ratingItemUrl(activeItem) || (bvid ? `https://www.bilibili.com/video/${bvid}` : ""));
+  const url = window.BilikaraSongDetail.canonicalBilibiliUrl(activeItem);
   const media = document.createElement("div");
   media.className = "song-detail-hero";
   const cover = document.createElement("div");

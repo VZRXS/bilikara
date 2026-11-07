@@ -1,4 +1,8 @@
 <resources>
     <string name="app_name">bilikara beta</string>
     <string name="main_activity_title">bilikara beta</string>
+    <string name="network_output_channel">Network playback</string>
+    <string name="network_output_playing">Experimental TV output is playing</string>
+    <string name="network_output_paused">TV output is paused or waiting</string>
+    <string name="network_output_stop">Stop output</string>
 </resources>

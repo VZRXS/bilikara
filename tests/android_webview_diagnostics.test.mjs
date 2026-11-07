@@ -19,7 +19,7 @@ function fixture({inert = true, css = () => true, invoke = async () => valid} = 
     navigator: {userAgent: 'Fixture: no Android/device acceptance'},
     document: {getElementById: id => id === 'bootstrap-status' ? status : id === 'webview-diagnostics' ? button : null,
       documentElement: {getAttribute: () => null}, createElement: () => inert ? {inert: false} : {}},
-    window: {__TAURI__: {core: {invoke}}, location: {replace: url => {destination = url;}}}});
+    window: {isSecureContext: true, __TAURI__: {core: {invoke}}, location: {replace: url => {destination = url;}}}});
   return {context, button, status, attributes, click: () => listeners.click(), destination: () => destination};
 }
 
@@ -95,4 +95,33 @@ test('legacy cannot bypass native readiness or malformed bootstrap URLs', async 
     f.context.window.bilikaraStartLegacy(); await new Promise(resolve => setImmediate(resolve));
     assert.equal(f.destination(), undefined); assert.match(f.status.textContent, /启动检查失败/u);
   }
+});
+
+test('native probe sees startup readiness after entry registration and separates unsafe context',async()=>{
+  const f=fixture({inert:false});
+  assert.equal(JSON.parse(vm.runInContext(probe,f.context)).resources_ready,false);
+  await vm.runInContext(bootstrap,f.context);
+  const ready=JSON.parse(vm.runInContext(probe,f.context));
+  assert.equal(ready.legacy_entry,true);assert.equal(ready.resources_ready,true);
+  assert.deepEqual(ready.legacy_missing,[]);
+  f.context.window.isSecureContext=false;
+  assert.ok(JSON.parse(vm.runInContext(probe,f.context)).legacy_missing.includes('secure context'));
+  f.context.window.bilikaraStartLegacy();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.destination(),undefined);
+  assert.match(f.status.textContent,/安全上下文/u);
+  assert.doesNotMatch(native,/versionName\?\.substringBefore/u,'OEM provider package versions are diagnostics only');
+});
+
+for(const missing of ['Web Crypto','ResizeObserver','URL','Number.isSafeInteger','secure context'])test(`standard and legacy startup require measured ${missing}`,async()=>{
+  const f=fixture();
+  if(missing==='Web Crypto')f.context.crypto.getRandomValues=undefined;
+  if(missing==='ResizeObserver')f.context.ResizeObserver=undefined;
+  if(missing==='URL')f.context.URL=undefined;
+  if(missing==='Number.isSafeInteger')vm.runInContext('Number.isSafeInteger=undefined',f.context);
+  if(missing==='secure context')f.context.window.isSecureContext=false;
+  await vm.runInContext(bootstrap,f.context);
+  assert.equal(f.destination(),undefined);
+  assert.match(f.status.textContent,/安全上下文或必要 API/u);
+  const report=JSON.parse(vm.runInContext(probe,f.context));
+  assert.ok(report.missing.includes(missing));assert.ok(report.legacy_missing.includes(missing));
 });

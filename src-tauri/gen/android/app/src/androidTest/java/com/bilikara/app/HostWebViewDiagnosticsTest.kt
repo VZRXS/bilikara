@@ -43,17 +43,17 @@ class HostWebViewDiagnosticsTest {
     ActivityScenario.launch<WindowTestActivity>(Intent(context, WindowTestActivity::class.java)).use { scenario ->
       scenario.onActivity { activity ->
         val diagnostics = HostWebViewDiagnostics(activity)
-        val facts = JSONObject().put("legacy_entry", true).put("legacy_missing", org.json.JSONArray())
-        assertTrue(diagnostics.canEnterLegacy(91, true, facts))
-        assertTrue(diagnostics.canEnterLegacy(83, true, facts))
-        assertFalse(diagnostics.canEnterLegacy(82, true, facts))
-        assertFalse(diagnostics.canEnterLegacy(null, true, facts))
-        assertFalse(diagnostics.canEnterLegacy(91, false, facts))
-        assertFalse(diagnostics.canEnterLegacy(91, true, null))
+        val facts = JSONObject().put("legacy_entry", true).put("resources_ready", true).put("secure_context", true).put("user_agent", "Chrome/99.0.4844.88").put("legacy_missing", org.json.JSONArray())
+        assertTrue(diagnostics.canEnterLegacy(true, facts))
+        assertTrue(diagnostics.canEnterLegacy(true, facts))
+        facts.put("user_agent", "Chrome/82.0"); assertFalse(diagnostics.canEnterLegacy(true, facts)); facts.put("user_agent", "Chrome/99.0.4844.88")
+        facts.put("user_agent", "Unknown OEM"); assertTrue(diagnostics.canEnterLegacy(true, facts)); facts.put("user_agent", "Chrome/99.0.4844.88")
+        assertFalse(diagnostics.canEnterLegacy(false, facts))
+        assertFalse(diagnostics.canEnterLegacy(true, null))
         facts.put("legacy_entry", false)
-        assertFalse(diagnostics.canEnterLegacy(91, true, facts))
+        assertFalse(diagnostics.canEnterLegacy(true, facts))
         facts.put("legacy_entry", true).put("legacy_missing", org.json.JSONArray().put("Web Crypto"))
-        assertFalse(diagnostics.canEnterLegacy(91, true, facts))
+        assertFalse(diagnostics.canEnterLegacy(true, facts))
       }
     }
   }

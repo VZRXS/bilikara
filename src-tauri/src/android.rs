@@ -1,12 +1,9 @@
 //! Android's in-process Rust Host. The shell resolves private storage and serves
 //! the existing bundled Host/Remote assets; it owns no playlist business rules.
 use bilikara_runtime::native_host::{Asset, NativeHost, RemoteExportRenderer};
-use bilikara_runtime::{
-    AppStateRequest, AppStateSeed, PlayerSettingsSeed, execute_app_state, initialize_native_host,
-};
+use bilikara_runtime::{AppStateRequest, execute_app_state};
 use serde::Serialize;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 
 // Operational startup result, not a second application-state authority.
@@ -231,48 +228,13 @@ fn initialize_platform_tls(app: &tauri::App) -> Result<(), String> {
 fn initialize(app: &tauri::App) -> Result<NativeHost, String> {
     // Reqwest's platform verifier must be ready before any Host worker can use HTTPS.
     initialize_platform_tls(app)?;
+    initialize_platform_media(app)?;
     let directory = app
         .path()
         .app_data_dir()
         .map_err(|_| "Android app-private storage directory is unavailable".to_owned())?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| "System time is before the Unix epoch".to_owned())?
-        .as_secs_f64();
-    let response = initialize_native_host(
-        &directory,
-        AppStateSeed {
-            automatic_volume: Default::default(),
-            session_user_ids: std::collections::HashMap::new(),
-            requester_user_ids: std::collections::HashMap::new(),
-
-            playback_mode: "local".to_owned(),
-            player_settings: PlayerSettingsSeed::default(),
-            current_item: None,
-            current_item_started: false,
-            playlist: Vec::new(),
-            history: Vec::new(),
-            session_history: Vec::new(),
-            session_users: Vec::new(),
-            remote_identities: Default::default(),
-            gatcha_pool_preferences: Default::default(),
-            session_started_at: now,
-            session_played_file: "native-session.json".to_owned(),
-            session_played: Vec::new(),
-            session_archives: Vec::new(),
-            previous_session: None,
-            backup: None,
-            updated_at: now,
-        },
-    );
-    response.snapshot().ok_or_else(|| {
-        response.error().map_or_else(
-            || "Native Host returned no snapshot".to_owned(),
-            |error| format!("{}: {}", error.kind, error.message),
-        )
-    })?;
     let resolver = app.asset_resolver();
-    NativeHost::start(
+    bilikara_runtime::native_host::mobile::start(
         &directory,
         Arc::new(move |path| {
             resolver.get(path.to_owned()).map(|asset| Asset {
@@ -281,6 +243,94 @@ fn initialize(app: &tauri::App) -> Result<NativeHost, String> {
             })
         }),
     )
+}
+
+fn initialize_platform_media(app: &tauri::App) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Android main WebView is unavailable".to_owned())?;
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    window
+        .with_webview(move |webview| {
+            webview.jni_handle().exec(move |env, activity, _| {
+                let result = (|| -> jni::errors::Result<std::path::PathBuf> {
+                    let vm = env.get_java_vm()?;
+                    let class = env.get_object_class(activity)?;
+                    let class = env.new_global_ref(class)?;
+                    let application = env
+                        .call_method(
+                            activity,
+                            "getApplicationContext",
+                            "()Landroid/content/Context;",
+                            &[],
+                        )?
+                        .l()?;
+                    let application = env.new_global_ref(application)?;
+                    let hook: bilikara_runtime::native_host::output_platform::OutputActivityHook =
+                        Arc::new(move |phase| {
+                            use bilikara_runtime::native_host::output_platform::OutputActivity;
+                            let mode = match phase {
+                                OutputActivity::Stopped => 0,
+                                OutputActivity::Paused => 1,
+                                OutputActivity::Playing => 2,
+                            };
+                            let mut env = vm
+                                .attach_current_thread()
+                                .map_err(|_| "purek_output_platform".to_owned())?;
+                            let class: &jni::objects::JClass<'_> = class.as_obj().into();
+                            let result = env
+                                .call_static_method(
+                                    class,
+                                    "updateNetworkPlayback",
+                                    "(Landroid/content/Context;I)I",
+                                    &[
+                                        jni::objects::JValue::Object(application.as_obj()),
+                                        jni::objects::JValue::Int(mode),
+                                    ],
+                                )
+                                .and_then(|v| v.i());
+                            if result.is_err() {
+                                let _ = env.exception_clear();
+                            }
+                            match result {
+                                Ok(0) => Ok(()),
+                                Ok(2) => Err("purek_output_foreground_required".into()),
+                                _ => Err("purek_output_platform".into()),
+                            }
+                        });
+                    // Startup installs once before the Host can admit output.
+                    // A duplicate setup is an initialization failure, not a fallback.
+                    bilikara_runtime::native_host::output_platform::install(hook)
+                        .map_err(|_| jni::errors::Error::NullPtr("output resources"))?;
+                    let info = env
+                        .call_method(
+                            activity,
+                            "getApplicationInfo",
+                            "()Landroid/content/pm/ApplicationInfo;",
+                            &[],
+                        )?
+                        .l()?;
+                    let directory = jni::objects::JString::from(
+                        env.get_field(info, "nativeLibraryDir", "Ljava/lang/String;")?
+                            .l()?,
+                    );
+                    let directory: String = env.get_string(&directory)?.into();
+                    Ok(std::path::PathBuf::from(directory).join("libbilikara_media_libav.so"))
+                })();
+                if result.is_err() {
+                    let _ = env.exception_clear();
+                }
+                let _ = sender.send(
+                    result
+                        .map_err(|_| "Android native library directory is unavailable".to_owned()),
+                );
+            });
+        })
+        .map_err(|_| "Cannot initialize Android media libraries".to_owned())?;
+    let companion = receiver
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|_| "Android media initialization timed out".to_owned())??;
+    bilikara_runtime::native_host::configure_android_media(&companion)
 }
 
 pub(crate) fn run() {
@@ -301,4 +351,23 @@ pub(crate) fn run() {
         })
         .run(tauri::generate_context!())
         .expect("Android Beta application failed");
+}
+
+// Packaged service callbacks carry only fixed operation codes and OS facts.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_bilikara_app_HostMediaPlayback_nativeStopped(
+    _env: jni::JNIEnv<'_>,
+    _class: jni::objects::JClass<'_>,
+    reason: jni::sys::jint,
+) {
+    bilikara_runtime::native_host::output_platform::interrupted(reason);
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_bilikara_app_HostMediaPlayback_nativeThermal(
+    _env: jni::JNIEnv<'_>,
+    _class: jni::objects::JClass<'_>,
+    status: jni::sys::jint,
+    headroom: jni::sys::jfloat,
+) {
+    bilikara_runtime::native_host::output_platform::thermal(status, headroom);
 }

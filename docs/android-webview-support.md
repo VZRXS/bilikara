@@ -165,3 +165,27 @@ clears each timer, including response-body handling. Timeout failures still
 surface through the existing error/recovery path. This removes that API
 dependency, not older-engine syntax, missing input/layout features or bridge
 requirements. The LAN QR comes from Host state, not the public-room POST.
+
+### ANDROID-OEM-ADMISSION
+
+Provider package name/version, UA-advertised Chromium hint and measured API/CSS
+support are separate facts. In particular Huawei provider 14.0.2.319 is not
+Chromium 14. Native admission uses the pure JVM HostWebViewAdmission policy:
+bridge, secure context, loaded startup entry/resources and complete required
+feature checks. Unknown/custom UAs retain an actionable unknown hint and can
+explicitly try the conservative 83 profile only after those checks; a known
+pre-83 hint is rejected. Full standard capability checks take precedence over
+provider/UA numbering. No implicit fallback, UA spoofing or authentication bypass.
+
+The startup JavaScript registers its legacy entry/resource readiness before
+performing capability admission and requesting native diagnostics on failure.
+Native onCreate opens early only for unconditional bridge/known syntax-floor
+failures; it no longer probes a partially loaded page based on OEM package
+numbers. Reopening diagnostics refreshes measured actions. This avoids a timer
+or a permanently hidden legacy action from an earlier incomplete document.
+
+Tests cover the exact Huawei facts, missing APIs/bridge/entry/resources/security,
+unknown/mismatched hints, standard mode, Chromium/WebKit feature fixtures, actual
+Chromium 83 shared authenticated Host and actual Chromium 74 startup diagnostics.
+Historic Linux Chromium is engine evidence, not Huawei OEM WebView, camera,
+physical cache publication or Android playback/scanner acceptance.

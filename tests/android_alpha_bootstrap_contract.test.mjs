@@ -29,7 +29,9 @@ assert.ok(contains("#[cfg_attr(mobile, tauri::mobile_entry_point)]", entry));
 assert.ok(contains(`#[cfg(target_os = "android")]
 mod android;`, entry));
 source = readFileSync(path.join(TAURI, "src/android.rs"), "utf8");
-assert.ok(contains("initialize_native_host(", source));
+const sharedStartup = readFileSync(path.join(ROOT, "rust-runtime/src/native_host/mobile.rs"), "utf8");
+assert.ok(contains("bilikara_runtime::native_host::mobile::start(", source));
+assert.ok(contains("initialize_native_host(", sharedStartup));
 assert.match(source, new RegExp("app\\s*\\.path\\(\\)\\s*\\.app_data_dir\\(\\)",""));
 assert.ok(contains("execute_app_state(AppStateRequest::Snapshot", source));
 for (const forbidden of iterableValues(["Command::new", "backend_process::", "execute_app_state_json", "CString"])) {
@@ -42,7 +44,8 @@ assert.ok(contains("persistence_ready: true", source));
 assert.ok(contains("stage: \"native-host-alpha\"", source));
 assert.ok(contains("if let Some(error) = &bootstrap.error", source));
 assert.ok(contains("app.asset_resolver()", source));
-assert.ok(contains("NativeHost::start(", source));
+assert.ok(contains("super::start_observed(directory, assets, false, None", sharedStartup));
+assert.ok(contains("start_diagnosed(directory, assets)", sharedStartup));
 assert.ok(contains("app.manage(AndroidBootstrap { host, error });", source));
 assert.ok(!contains("std::fs::remove", source));
 },
@@ -65,7 +68,7 @@ assert.ok(contains("default-src 'self'", config["app"]["security"]["csp"]));
 assert.deepEqual(config["app"]["windows"][0]["url"], "android-alpha.html");
 assert.ok(hasContent(config["app"]["windows"][0]["visible"]));
 },
-async test_android_scopes_cleartext_to_loopback_and_keeps_foreground_only() {
+async test_android_scopes_cleartext_and_declares_private_network_media_service() {
 let activity, build, config, gradle, guard, manifest, security, updater;
 config = JSON.parse(readFileSync(path.join(TAURI, "tauri.android.conf.json"), "utf8"));
 assert.ok(!contains("version", config));
@@ -77,7 +80,9 @@ assert.ok(contains("std::env::var(\"CARGO_CFG_TARGET_OS\").as_deref() == Ok(\"an
 assert.ok(contains("cargo:rustc-link-arg=-Wl,-z,max-page-size=16384", build));
 assert.ok(contains("cargo:rustc-link-arg=-Wl,-z,common-page-size=16384", build));
 manifest = readFileSync(path.join(TAURI, "gen/android/app/src/main/AndroidManifest.xml"), "utf8");
-assert.ok(!contains("FOREGROUND_SERVICE", manifest));
+assert.ok(contains('android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK',manifest));
+assert.match(manifest, /<service[^>]+android:name=".HostMediaPlaybackService"[^>]+android:exported="false"[^>]+android:foregroundServiceType="mediaPlayback"/);
+assert.ok(!contains('RECEIVE_BOOT_COMPLETED',manifest));
 assert.ok(contains("android.permission.REQUEST_INSTALL_PACKAGES", manifest));
 updater = readFileSync(path.join(TAURI, "gen/android/app/src/main/java/com/bilikara/app/HostUpdate.kt"), "utf8");
 for (const guard of iterableValues(["BuildConfig.DEBUG", "canRequestPackageInstalls()", "validatePackage(partial)", "candidate.packageName == activity.packageName", "signers(candidate) == expected", "nextCode > oldCode", "Intent.ACTION_VIEW", "digestHex(digest.digest()) == expectedHash"])) {
@@ -126,7 +131,7 @@ const valid = {schema_version: 3, stage: "native-host-alpha", backend: "rust", r
 async function render(invoke) {
   const nodes = {"bootstrap-status": {textContent: ""}, "bootstrap-details": {hidden: true}};
   let destination = null;
-  const context = {URL, AbortController, CSS: {supports: () => true}, window: {location: {replace: url => {destination = url;}},
+  const context = {URL, AbortController, navigator: {userAgent: "Chrome/111.0"}, crypto: {getRandomValues() {}}, ResizeObserver: function() {}, CSS: {supports: () => true}, window: {isSecureContext: true, location: {replace: url => {destination = url;}},
     ...(invoke ? {__TAURI__: {core: {invoke}}} : {})},
     document: {getElementById: id => nodes[id], createElement: () => ({inert: false})}};
   await vm.runInNewContext(source, context);
@@ -163,6 +168,6 @@ assert.deepEqual(result.status, 0, concatenate(result.stdout, result.stderr));
 };
 test("AndroidAlphaBootstrapTest.test_android_links_runtime_without_desktop_launcher", async () => { const instance = Object.create(AndroidAlphaBootstrapTest); await instance.test_android_links_runtime_without_desktop_launcher(); });
 test("AndroidAlphaBootstrapTest.test_bootstrap_ipc_is_local_read_only_and_mobile_scoped", async () => { const instance = Object.create(AndroidAlphaBootstrapTest); await instance.test_bootstrap_ipc_is_local_read_only_and_mobile_scoped(); });
-test("AndroidAlphaBootstrapTest.test_android_scopes_cleartext_to_loopback_and_keeps_foreground_only", async () => { const instance = Object.create(AndroidAlphaBootstrapTest); await instance.test_android_scopes_cleartext_to_loopback_and_keeps_foreground_only(); });
+test("AndroidAlphaBootstrapTest.test_android_scopes_cleartext_and_declares_private_network_media_service", async () => { const instance = Object.create(AndroidAlphaBootstrapTest); await instance.test_android_scopes_cleartext_and_declares_private_network_media_service(); });
 test("AndroidAlphaBootstrapTest.test_native_window_owns_insets_for_bootstrap_and_host", async () => { const instance = Object.create(AndroidAlphaBootstrapTest); await instance.test_native_window_owns_insets_for_bootstrap_and_host(); });
 test("AndroidAlphaBootstrapTest.test_bootstrap_page_reports_native_success_failure_and_wrong_schema", async () => { const instance = Object.create(AndroidAlphaBootstrapTest); await instance.test_bootstrap_page_reports_native_success_failure_and_wrong_schema(); });

@@ -20,6 +20,7 @@ internal class HostWindowControls(private val activity: AppCompatActivity) {
   private var previousOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
   private var installed = false
   private var announcementOpen = false
+  private var roomOpen = false
   // Device-local window preferences, not playlist/session/player state. Native
   // storage survives the loopback origin's port changing between launches.
   // MainActivity constructs this helper before ContextWrapper is attached.
@@ -45,6 +46,12 @@ internal class HostWindowControls(private val activity: AppCompatActivity) {
       !WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) return false
     val back = object : OnBackPressedCallback(false) {
       override fun handleOnBackPressed() {
+        if (roomOpen) {
+          roomOpen = false
+          isEnabled = active || announcementOpen
+          webView.evaluateJavascript("window.BilikaraPureK?.close()", null)
+          return
+        }
         if (announcementOpen) {
           announcementOpen = false
           isEnabled = active
@@ -66,15 +73,20 @@ internal class HostWindowControls(private val activity: AppCompatActivity) {
       if (page.scheme != expected.scheme || page.authority != expected.authority ||
         page.path !in listOf("/", "/index.html")) return@addWebMessageListener
       val raw = message.data ?: return@addWebMessageListener
+      if (raw in listOf("purek-open", "purek-close")) {
+        roomOpen = raw == "purek-open"
+        back.isEnabled = active || announcementOpen || roomOpen
+        return@addWebMessageListener
+      }
       if (raw in listOf("announcements-open", "announcements-close")) {
         announcementOpen = raw == "announcements-open"
-        back.isEnabled = active || announcementOpen
+        back.isEnabled = active || announcementOpen || roomOpen
         return@addWebMessageListener
       }
       if (raw in listOf("enter", "exit")) {
         val enabled = raw == "enter"
         setFullscreen(enabled)
-        back.isEnabled = enabled || announcementOpen
+        back.isEnabled = enabled || announcementOpen || roomOpen
         reply.postMessage(if (enabled) "entered" else "exited")
         return@addWebMessageListener
       }

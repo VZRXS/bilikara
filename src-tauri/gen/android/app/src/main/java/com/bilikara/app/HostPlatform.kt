@@ -13,7 +13,8 @@ import org.json.JSONObject
 /** Origin-scoped Android I/O only. Remote pages and subframes never get this bridge. */
 internal class HostPlatform(private val activity: AppCompatActivity,
   private val updatePreferenceName: String = "bilikara-update-preferences-v1",
-  private val diagnostics: HostWebViewDiagnostics = HostWebViewDiagnostics(activity)) {
+  private val diagnostics: HostWebViewDiagnostics = HostWebViewDiagnostics(activity),
+  private val openVideo: (Intent) -> Unit = activity::startActivity) {
   private var installed = false
   private val updater = HostUpdate(activity)
 
@@ -44,9 +45,17 @@ internal class HostPlatform(private val activity: AppCompatActivity,
       }
       try {
         val data = when (input.optString("action")) {
+          "open-room-authorization" -> {
+            HostRoomAuthorization(activity).open(input.optString("url"))
+          }
           "open-bilibili-login" -> {
             val url = HostLoginLink.validated(input.optString("url")) ?: error("invalid_login_url")
             activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE))
+            JSONObject().put("opened", true)
+          }
+          "open-bilibili-video" -> {
+            val url = HostBilibiliVideo.validated(input.optString("url")) ?: error("invalid_video_url")
+            openVideo(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE))
             JSONObject().put("opened", true)
           }
           "environment" -> environment()
@@ -56,6 +65,8 @@ internal class HostPlatform(private val activity: AppCompatActivity,
           else -> error("Unsupported platform action")
         }
         result.put("ok", true).put("data", data)
+      } catch (_: HostRoomAuthorization.WeChatUnavailable) {
+        result.put("ok", false).put("code", "purek_wechat_unavailable").put("error", "WeChat unavailable")
       } catch (_: Exception) {
         result.put("ok", false).put("error", "Android 系统操作失败，请确认有可用的浏览器或系统组件")
       }

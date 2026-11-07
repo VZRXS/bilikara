@@ -1,6 +1,7 @@
 package com.bilikara.app
 
 import android.content.Intent
+import android.content.ActivityNotFoundException
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.test.core.app.ActivityScenario
@@ -49,18 +50,23 @@ class HostBridgeRoleTest {
         lateinit var view: WebView
         lateinit var controls: HostWindowControls
         lateinit var presentation: HostPresentation
+        val videoIntents = mutableListOf<Intent>()
         scenario.onActivity { activity ->
           view = WebView(activity)
           view.settings.javaScriptEnabled = true
           activity.setContentView(view)
           controls = HostWindowControls(activity)
           assertTrue(controls.install(view, origin))
-          assertTrue(HostPlatform(activity, preferenceName).install(view, origin))
+          assertTrue(HostPlatform(activity, preferenceName, openVideo = { intent ->
+            videoIntents.add(intent)
+            if (intent.dataString?.endsWith("?p=2") == true) throw ActivityNotFoundException("synthetic handler absence")
+          }).install(view, origin))
           presentation = HostPresentation(activity)
           assertTrue(presentation.install(view, origin))
         }
         try {
           for (path in listOf("/", "/remote", "/remote.html", "/controller.html", "/audience", "/index.html")) {
+            videoIntents.clear()
             val loaded = CountDownLatch(1)
             scenario.onActivity {
               view.webViewClient = object : WebViewClient() {
@@ -88,6 +94,9 @@ class HostBridgeRoleTest {
                 };
                 BilikaraHostWindow.postMessage('enter');
                 BilikaraHostPlatform.postMessage(JSON.stringify({id:'role-test',action:'environment'}));
+                BilikaraHostPlatform.postMessage(JSON.stringify({id:'videoSuccess',action:'open-bilibili-video',url:'https://www.bilibili.com/video/BV1yyjzzCEQn'}));
+                BilikaraHostPlatform.postMessage(JSON.stringify({id:'videoFailure',action:'open-bilibili-video',url:'https://www.bilibili.com/video/BV1yyjzzCEQn?p=2'}));
+                BilikaraHostPlatform.postMessage(JSON.stringify({id:'videoDenied',action:'open-bilibili-video',url:'https://account.bilibili.com/login'}));
                 if (!['/', '/index.html'].includes(location.pathname)) {
                   BilikaraHostPlatform.postMessage(JSON.stringify({id:'diagnosticsDenied',action:'webview-diagnostics'}));
                 }
@@ -109,6 +118,11 @@ class HostBridgeRoleTest {
             if (path in listOf("/", "/index.html")) {
               assertEquals("entered", replies.getString("window"))
               assertTrue(replies.getBoolean("platform"))
+              assertTrue(replies.getJSONObject("videoSuccess").getBoolean("ok"))
+              assertFalse(replies.getJSONObject("videoFailure").getBoolean("ok"))
+              assertFalse(replies.getJSONObject("videoDenied").getBoolean("ok"))
+              assertEquals(2, videoIntents.size)
+              assertTrue(videoIntents.all { it.action == Intent.ACTION_VIEW && it.hasCategory(Intent.CATEGORY_BROWSABLE) })
               assertTrue(replies.getBoolean("presentation"))
               assertTrue(replies.getJSONObject("preferencesRead").getBoolean("ok"))
               if (path == "/") assertTrue(replies.getJSONObject("preferencesRead").isNull("data"))
@@ -122,6 +136,8 @@ class HostBridgeRoleTest {
             } else {
               assertFalse("Window authority on $path", replies.has("window"))
               assertFalse("Platform authority on $path", replies.has("platform"))
+              assertFalse(replies.has("videoSuccess")); assertFalse(replies.has("videoFailure")); assertFalse(replies.has("videoDenied"))
+              assertTrue(videoIntents.isEmpty())
               assertFalse("WebView diagnostic authority on $path", replies.has("diagnosticsDenied"))
               assertFalse("UI preference authority on $path", replies.has("presentation"))
               assertFalse("Update preference read authority on $path", replies.has("preferencesRead"))

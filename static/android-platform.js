@@ -1,6 +1,6 @@
 (function (root) {
   "use strict";
-  if (root.document?.documentElement?.dataset?.nativeHost !== "true" || root.document.documentElement.dataset.hostPlatform === "desktop") return;
+  if (root.document?.documentElement?.dataset?.nativeHost !== "true" || root.document.documentElement.dataset.hostPlatform !== "android") return;
   const bridge = root.BilikaraHostPlatform;
   if (!bridge?.postMessage) return;
   const pending = new Map();
@@ -13,7 +13,11 @@
     pending.delete(result.id);
     clearTimeout(request.timeout);
     if (result.ok) request.resolve(result.data);
-    else request.reject(new Error(result.error || "Android 系统操作失败"));
+    else {
+      const error = new Error(result.error || "Android 系统操作失败");
+      if (result.code === "purek_wechat_unavailable") error.code = result.code;
+      request.reject(error);
+    }
   };
   function call(action, data = {}, timeoutMs = 30000) {
     if (pending.size >= 8) return Promise.reject(new Error("Android 系统操作繁忙"));
@@ -34,6 +38,8 @@
       save: preferences => call("save-update-preferences", {preferences}),
     },
     openLoginLink: url => call("open-bilibili-login", {url}),
+    openBilibiliVideo: url => call("open-bilibili-video", {url}),
+    openRoomAuthorization: url => call("open-room-authorization", {url}),
     environment: () => call("environment"),
     webviewDiagnostics: () => call("webview-diagnostics"),
     installUpdate: candidate => call("install-update", {package:candidate}, 540000),
