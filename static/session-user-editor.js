@@ -34,7 +34,6 @@
       this.entries = [];
       this.selected = new Set();
       this.mode = "";
-      this.openActionsId = "";
       this.busy = false;
       this.version = "";
       this.drag = null;
@@ -68,6 +67,16 @@
       });
       list.addEventListener("click", event => this.click(event));
       list.addEventListener("keydown", event => {
+        if (event.altKey && ["ArrowUp", "ArrowDown"].includes(event.key) && event.target.matches(".session-user-name")) {
+          event.preventDefault();
+          if (this.busy || this.mode === "rename") return;
+          const badge = event.target.closest(".session-user-badge");
+          const index = this.entries.findIndex(user => user.id === badge?.dataset.userId);
+          const up = event.key === "ArrowUp";
+          if (index < 0 || (up ? index === 0 : index === this.entries.length - 1)) return;
+          void this.commit({ action: "reorder", user_ids: [badge.dataset.userId], before_user_id: this.entries[index + (up ? -1 : 2)]?.id || null });
+          return;
+        }
         if (["Enter", " "].includes(event.key) && event.target.matches(".session-user-name")) {
           event.preventDefault(); this.click(event);
         }
@@ -97,10 +106,16 @@
         const drag = this.drag; this.finishDrag();
         void this.commit({ action: "remove", user_ids: drag.ids }, drag.version);
       });
-      // Normal mode keeps the numbered touch handle. Selection mode reserves
-      // its checkbox for clicks and lets the remaining tag drag the group.
+      // Hold anywhere on a tag to drag. Until then retain native scrolling;
+      // selection mode keeps immediate group dragging outside its checkbox.
       list.addEventListener("pointerdown", event => this.pointerDown(event));
       list.addEventListener("pointermove", event => this.pointerMove(event));
+      list.addEventListener("touchmove", event => {
+        if (this.drag && this.pointer) event.preventDefault();
+      }, { passive: false });
+      list.addEventListener("contextmenu", event => {
+        if (this.pointer || this.drag) event.preventDefault();
+      });
       list.addEventListener("pointerup", event => this.pointerUp(event));
       list.addEventListener("pointercancel", event => {
         // Native HTML dragging itself cancels the mouse pointer stream.
@@ -113,6 +128,7 @@
         }
       });
       document.addEventListener("pointerdown", event => {
+        if (this.pointer && event.pointerId !== this.pointer.id && event.pointerType !== "mouse") this.finishDrag();
         if (this.editor && !this.busy && !this.editor.node.contains(event.target) && !event.target.closest(".session-user-badge")) this.closeEditor();
       });
       global.addEventListener("blur", () => this.finishDrag());
@@ -124,7 +140,7 @@
       this.closeEditor();
       this.finishDrag();
       this.mode = mode;
-      this.selected.clear(); this.openActionsId = "";
+      this.selected.clear();
       this.sync();
     }
 
@@ -137,7 +153,7 @@
       this.entries = entries;
       const ids = new Set(entries.map(user => user.id));
       for (const id of this.selected) if (!ids.has(id)) this.selected.delete(id);
-      if (this.drag && this.drag.version !== this.version) this.finishDrag();
+      if ((this.drag && this.drag.version !== this.version) || (this.pointer && this.pointer.version !== this.version)) this.finishDrag();
       if (this.editor && !this.busy) {
         const current = entries.find(user => user.id === this.editor.id);
         if (!current || current.name !== this.editor.originalName) {
@@ -156,7 +172,7 @@
             badge = document.createElement("div");
             badge.className = "session-user-badge";
             badge.dataset.userId = user.id;
-            badge.innerHTML = '<span class="session-user-order-number"><span class="session-user-number"></span><input type="checkbox" class="session-user-checkbox" hidden></span><span class="session-user-name android-user-toggle" role="button" tabindex="0" aria-expanded="false"></span><div class="android-user-actions" hidden><button type="button" data-user-action="up">↑</button><button type="button" data-user-action="down">↓</button><button type="button" data-user-action="remove"></button></div>';
+            badge.innerHTML = '<span class="session-user-order-number"><span class="session-user-number"></span><input type="checkbox" class="session-user-checkbox" hidden></span><span class="session-user-name" role="button" tabindex="0" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"></span>';
           }
           badge.dataset.name = user.name;
           badge.dataset.index = String(index);
@@ -221,17 +237,7 @@
       }
       for (const badge of this.list.querySelectorAll(".session-user-badge")) {
         const selected = this.selected.has(badge.dataset.userId);
-        badge.draggable = !this.coarse && !this.busy && this.mode !== "rename";
-        const open = this.coarse && !this.mode && this.openActionsId === badge.dataset.userId;
-        badge.classList.toggle("is-actions-open", open);
-        badge.querySelector(".android-user-actions").hidden = !open;
-        badge.querySelector(".session-user-name").setAttribute("aria-expanded", String(open));
-        for (const button of badge.querySelectorAll("[data-user-action]")) {
-          const action = button.dataset.userAction;
-          button.disabled = this.busy || (action === "up" && badge.dataset.index === "0") || (action === "down" && Number(badge.dataset.index) === this.entries.length - 1);
-          button.setAttribute("aria-label", this.t(action === "up" ? "common.moveUp" : action === "down" ? "common.moveDown" : "common.delete"));
-          if (action === "remove") button.textContent = this.t("common.delete");
-        }
+        badge.draggable = !this.coarse && !this.pointer && !this.busy && this.mode !== "rename";
         badge.classList.toggle("is-selected", selected);
         const checkbox = badge.querySelector(".session-user-checkbox");
         checkbox.hidden = this.mode !== "select"; checkbox.checked = selected; checkbox.disabled = this.busy;
@@ -248,18 +254,7 @@
       if (this.busy) return;
       const badge = event.target.closest(".session-user-badge");
       if (!badge) return;
-      if (!this.mode && this.coarse) {
-        const action = event.target.closest("[data-user-action]")?.dataset.userAction;
-        if (!action) this.openActionsId = this.openActionsId === badge.dataset.userId ? "" : badge.dataset.userId;
-        else if (action === "remove") void this.commit({ action: "remove", user_ids: [badge.dataset.userId] });
-        else {
-          const index = Number(badge.dataset.index);
-          const before = action === "up" ? this.entries[index - 1] : this.entries[index + 2];
-          void this.commit({ action: "reorder", user_ids: [badge.dataset.userId], before_user_id: before?.id || null });
-        }
-        this.sync();
-      }
-      else if (this.mode === "rename") this.openEditor(badge);
+      if (this.mode === "rename") this.openEditor(badge);
       else if (this.mode === "select") {
         const id = badge.dataset.userId;
         if (this.selected.has(id)) this.selected.delete(id); else this.selected.add(id);
@@ -269,6 +264,7 @@
 
     async commit(edit, version = this.version) {
       if (this.busy) return;
+      this.finishDrag();
       this.busy = true; this.sync();
       const editor = this.editor;
       if (editor) { editor.input.disabled = true; for (const button of editor.node.querySelectorAll("button")) button.disabled = true; editor.submit.setAttribute("aria-busy", "true"); }
@@ -431,6 +427,8 @@
     }
 
     finishDrag() {
+      clearTimeout(this.pointer?.timer);
+      if (this.pointer?.badge.hasPointerCapture?.(this.pointer.id)) this.pointer.badge.releasePointerCapture(this.pointer.id);
       this.drag?.image?.remove();
       this.drag = null; this.pointer = null;
       this.stage.classList.remove("is-dragging"); this.trash.classList.remove("drag-over");
@@ -441,17 +439,37 @@
     pointerDown(event) {
       this.checkboxPress = this.mode === "select" && Boolean(event.target.closest(".session-user-order-number"));
       if (event.pointerType === "mouse" || this.busy || this.mode === "rename") return;
+      if (this.pointer) { this.finishDrag(); return; }
       const badge = event.target.closest(".session-user-badge");
-      if (!badge || (this.mode === "select" ? this.checkboxPress : !event.target.closest(".session-user-order-number"))) return;
+      if (!badge || this.checkboxPress || !this.version) return;
       const box = badge.getBoundingClientRect();
       this.pointer = { id: event.pointerId, x: event.clientX, y: event.clientY, badge,
+        version: this.version, immediate: this.mode === "select",
         offsetX: event.clientX - box.left + 2, offsetY: event.clientY - box.top + 2 };
-      badge.setPointerCapture(event.pointerId);
+      badge.draggable = false;
+      if (this.pointer.immediate) badge.setPointerCapture(event.pointerId);
+      else {
+        const pointer = this.pointer;
+        pointer.timer = setTimeout(() => {
+          if (this.pointer !== pointer || pointer.cancelled || this.busy || this.mode || this.version !== pointer.version || !badge.isConnected) return;
+          badge.setPointerCapture(pointer.id);
+          this.beginDrag(badge);
+          this.createDragImage(badge).classList.add("is-pointer-drag-preview");
+          this.drag.image.style.left = `${pointer.x - pointer.offsetX}px`;
+          this.drag.image.style.top = `${pointer.y - pointer.offsetY}px`;
+        }, 350);
+      }
     }
 
     pointerMove(event) {
       if (!this.pointer || this.pointer.id !== event.pointerId) return;
-      if (!this.drag && Math.hypot(event.clientX - this.pointer.x, event.clientY - this.pointer.y) < 6) return;
+      if (this.pointer.cancelled) return;
+      const distance = Math.hypot(event.clientX - this.pointer.x, event.clientY - this.pointer.y);
+      if (!this.drag && !this.pointer.immediate) {
+        if (distance > 8) { clearTimeout(this.pointer.timer); this.pointer.cancelled = true; }
+        return;
+      }
+      if (!this.drag && distance < 6) return;
       if (!this.drag) {
         this.beginDrag(this.pointer.badge);
         this.createDragImage(this.pointer.badge).classList.add("is-pointer-drag-preview");
@@ -477,10 +495,11 @@
     pointerUp(event) {
       if (!this.pointer || this.pointer.id !== event.pointerId) return;
       const drag = this.drag; const overTrash = this.pointer.overTrash;
+      const cancelled = this.pointer.cancelled;
       const id = this.pointer.badge.dataset.userId;
       this.finishDrag();
+      if (drag || cancelled) this.suppressClick = { id, time: event.timeStamp };
       if (!drag) return;
-      this.suppressClick = { id, time: event.timeStamp };
       if (overTrash) void this.commit({ action: "remove", user_ids: drag.ids }, drag.version);
       else if (drag.overList) void this.commit({ action: "reorder", user_ids: drag.ids, before_user_id: drag.before }, drag.version);
     }

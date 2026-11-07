@@ -99,7 +99,7 @@
 }
 /* Android Sources retain the native bottom frame, with Remote's compact
    44px track rather than another padded 52px row. */
-:root[data-host-platform="android"] .source-frame-footer > .host-result-pager {
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) .source-frame-footer > .host-result-pager {
   --host-result-pager-block-size: 44px;
   padding-block: 0;
 }

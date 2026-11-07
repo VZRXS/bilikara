@@ -7,15 +7,12 @@ import path from 'node:path';
 import test from 'node:test';
 import {chromium} from 'playwright';
 import {root,runNative} from './desktop_construction_support.mjs';
-import {buildNativeHost} from './native_runtime_artifacts.mjs';
+import {buildNativeHost,buildUpdatePreferences} from './native_runtime_artifacts.mjs';
 import {RunningHost,isolatedEnvironment,waitFor} from './native_host_support.mjs';
 
 async function preferenceBinary() {
   if(process.env.BILIKARA_TEST_UPDATE_PREFERENCE_BINARY)return process.env.BILIKARA_TEST_UPDATE_PREFERENCE_BINARY;
-  const built=await runNative('cargo',['build','--manifest-path',path.join(root,'src-tauri/Cargo.toml'),'--example','update_preferences_fixture','--locked','--target','host-tuple','--message-format=json'],process.env,300000);
-  assert.equal(built.status,0,built.stderr);
-  const files=built.stdout.split('\n').filter(Boolean).map(JSON.parse).filter(item=>item.reason==='compiler-artifact'&&item.target.name==='update_preferences_fixture'&&item.executable);
-  assert.equal(files.length,1);return files[0].executable;
+  return buildUpdatePreferences();
 }
 
 test('native first launch, reloads and full restarts retain update choices and defer busy checks',{

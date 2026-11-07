@@ -2,6 +2,30 @@
    presentation output. Surface-specific CSS owns only positioning, opening,
    and the Host's expanded management controls. */
 :root { --qr-frame-padding: 3px; }
+
+/* Mobile single-screen fullscreen uses logical viewport/safe-area bounds.
+   Audience and controller-only compositions keep their separate surfaces. */
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) body:not(.is-presentation-control-host):not(.is-presentation-stage-only)
+  .player-panel:is(:fullscreen, .is-tauri-fullscreen) #player-fullscreen-remote-popover {
+  --fullscreen-remote-qr-size: 128px;
+  width: min(340px, max(240px, 38vw), calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px));
+  max-height: calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 96px);
+  max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 96px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) body:not(.is-presentation-control-host):not(.is-presentation-stage-only) #player-fullscreen-remote-popover .remote-access-qr {
+  width: var(--fullscreen-remote-qr-size, 160px);
+  height: var(--fullscreen-remote-qr-size, 160px);
+}
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) body:not(.is-presentation-control-host):not(.is-presentation-stage-only) #player-fullscreen-remote-popover .remote-access-card:is(.is-local-only-preview, .is-management-layout) .remote-access-entry-content {
+  grid-template-columns: var(--fullscreen-remote-qr-size, 160px) minmax(0, 1fr);
+}
+@media (max-width: 800px) {
+  :root:is([data-host-platform="android"], [data-host-platform="ios"]) body:not(.is-presentation-control-host):not(.is-presentation-stage-only) #player-fullscreen-remote-popover .remote-access-card { grid-template-columns: minmax(0, 1fr); }
+  :root:is([data-host-platform="android"], [data-host-platform="ios"]) body:not(.is-presentation-control-host):not(.is-presentation-stage-only) #player-fullscreen-remote-popover .remote-access-entry--local { padding-right: 0; padding-bottom: 12px; }
+  :root:is([data-host-platform="android"], [data-host-platform="ios"]) body:not(.is-presentation-control-host):not(.is-presentation-stage-only) #player-fullscreen-remote-popover .remote-access-entry--public { padding-left: 0; padding-top: 12px; border-left: 0; border-top: 1px solid var(--line); }
+}
 .remote-access-popover {
   width: min(390px, calc(100vw - 32px));
 }
@@ -326,6 +350,9 @@
 
 .remote-access-link {
   display: block;
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
   max-width: 100%;
   color: var(--accent-deep);
   line-height: 1.35;

@@ -183,6 +183,8 @@
 .browse-search-bar.is-open .browse-search-form:focus-within {
   box-shadow: none;
   border-color: var(--accent);
+  outline: var(--field-focus-outline, none);
+  outline-offset: var(--field-focus-outline-offset, 0px);
 }
 .browse-search-bar svg {
   width: 21px;

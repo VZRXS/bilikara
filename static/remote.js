@@ -4186,7 +4186,7 @@ function createSearchResultRow(item, { eagerCover = false } = {}) {
 
 function remoteResultPaginationOptions(container, items, emptyText) {
   const owner = requestDetailOwnerForContainer(container);
-  let data = {}, load = null, loading = false, key = owner;
+  let data = {}, load = null, loading = false, key = owner, positionKey;
   if (owner === "uids" || owner === "favorites") {
     const favorites = owner === "favorites";
     data = (favorites ? state.favlistBrowseData : state.followBrowseData) || {};
@@ -4194,6 +4194,7 @@ function remoteResultPaginationOptions(container, items, emptyText) {
     const query = String(data.query || "");
     loading = favorites ? state.favlistBrowseLoading : state.followBrowseLoading;
     key = JSON.stringify([owner, selected, query, favorites ? state.favlistBrowseSeq : state.followBrowseSeq]);
+    positionKey = JSON.stringify([owner, selected, query]);
     load = page => favorites
       ? fetchGatchaFavlistBrowse(selected, query, page)
       : fetchGatchaBrowse(selected, query, page);
@@ -4226,7 +4227,7 @@ function remoteResultPaginationOptions(container, items, emptyText) {
     ? data.matched_count : (limited || data.has_more === false ? items.length : null);
   const readAhead = ["name", "artist", "categories", "shared"].includes(owner) ? 2 : 0;
   const readSize = ["shared", "local"].includes(owner) ? 72 : undefined;
-  return { key, items, total, hasMore: Boolean(data.has_more), limited, load, loading, readAhead, readSize,
+  return { key, positionKey, items, total, hasMore: Boolean(data.has_more), limited, load, loading, readAhead, readSize,
     emptyText, language: state.language, prefetch: readAhead > 0 };
 }
 
@@ -4240,6 +4241,12 @@ function renderSearchResultItems(container, items, emptyText = "") {
   if (!pager) {
     pager = window.BilikaraResultPager.create(container, {
       translate: t,
+      retainPages:true,
+      onCommit:(items, target) => {
+        const owner = requestDetailOwnerForContainer(container);
+        target.querySelectorAll(".search-result-item").forEach((row, index) => applyRequestResultSelection(row, items[index], owner));
+        syncRemoteRequestPanelSizeTier();
+      },
       renderItems: (page, message, target = container) => renderSearchResultPage(target, page, message, requestDetailOwnerForContainer(container)),
       reportError: message => setAppMessage(message, true),
     });
@@ -4321,23 +4328,22 @@ function renderSearchResultPage(container, items, emptyText = "", owner = reques
     return;
   }
   const normalizedItems = Array.isArray(items) ? items : [];
-  container.innerHTML = "";
   container.classList.remove("hidden");
   if (!normalizedItems.length) {
     const empty = document.createElement("div");
     empty.className = "search-empty";
     empty.textContent = emptyText || t("search.empty");
-    container.appendChild(empty);
+    container.replaceChildren(empty);
     syncRemoteRequestPanelSizeTier();
     return;
   }
-  normalizedItems.forEach((item, index) => {
+  container.replaceChildren(...normalizedItems.map((item, index) => {
     const row = createSearchResultRow(item, {
       eagerCover: index < expandedSearchEagerCoverCount,
     });
     applyRequestResultSelection(row, item, owner);
-    container.appendChild(row);
-  });
+    return row;
+  }));
   syncRemoteRequestPanelSizeTier();
 }
 
@@ -4880,7 +4886,6 @@ function renderCategoryBrowseView() {
   if (tabs) {
     tabs.innerHTML = "";
     const backButton = createCategoryBrowseBackCard();
-    backButton.disabled = state.categoryBrowseLoading;
     tabs.appendChild(backButton);
     categories.forEach((category) => {
       const tab = createCategoryBrowseCard(category, { compact: true });
@@ -4969,6 +4974,7 @@ function renderFavlistBrowse() {
     return;
   }
   const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
+  elements.sourcesFavlistPullForm?.classList.toggle("hidden", Boolean(state.favlistBrowseSelectedFolderId));
   const items = Array.isArray(state.favlistBrowseData?.items) ? state.favlistBrowseData.items : [];
   const hasMore = Boolean(state.favlistBrowseData?.has_more);
   const placeholders = window.BilikaraSourceStatus?.queuedSources?.(state.data?.gatcha, "favorites",
@@ -5343,6 +5349,7 @@ function renderSourcesFollowBrowse() {
   }
 
   const owners = Array.isArray(state.followBrowseData?.owners) ? state.followBrowseData.owners : [];
+  elements.sourcesFollowUidForm?.classList.toggle("hidden", Boolean(state.followBrowseSelectedUid));
   const items = Array.isArray(state.followBrowseData?.items) ? state.followBrowseData.items : [];
   const hasMore = Boolean(state.followBrowseData?.has_more);
   const placeholders = window.BilikaraSourceStatus?.queuedSources?.(state.data?.gatcha, "uids",
@@ -6503,17 +6510,16 @@ function renderCurrentItem(current, playbackMode) {
     state.playbackMetadataIdentity = "";
     closePlaybackMetadataPopover();
     clearCurrentPlaybackClock();
-    closePlaybackSheet({ immediate: true, restoreFocus: false });
     elements.currentTitle.textContent = t("remote.noCurrentSong");
     elements.currentRequester.textContent = "";
     elements.currentRequester.classList.add("hidden");
     resetPlaybackDockMarquees();
+    setPlaybackDockMarqueeText(elements.playbackDockTitle, elements.playbackDockTitleText, t("remote.noCurrentSong"));
     elements.playbackDockRequester.classList.add("hidden");
-    elements.playbackDock.removeAttribute("aria-label");
-    elements.playbackDock.classList.add("hidden");
-    elements.playbackDock.setAttribute("aria-hidden", "true");
-    elements.playbackDock.setAttribute("aria-expanded", "false");
-    elements.remoteShell?.classList.remove("has-playback-dock");
+    elements.playbackDock.setAttribute("aria-label", t("remote.openPlaybackControls", { title: t("remote.noCurrentSong") }));
+    elements.playbackDock.classList.remove("hidden");
+    elements.playbackDock.setAttribute("aria-hidden", "false");
+    elements.remoteShell?.classList.add("has-playback-dock");
     syncPlaybackCoverImage(elements.playbackDockCoverImage, "", "__empty__");
     syncPlaybackCoverImage(elements.playbackSheetCoverImage, "", "__empty__");
     if (elements.currentOwner) {
@@ -6530,7 +6536,9 @@ function renderCurrentRatingButton(current) {
   const button = elements.openRatingButton;
   if (!button) return;
   if (button.classList.contains("hidden")) button.classList.remove("hidden");
-  if (button.disabled) button.disabled = false;
+  // Opening a rating is navigation; the dialog independently guards actual
+  // submission, including previous-song and view-only empty-session states.
+  button.disabled = false;
   const label = t("rating.rate");
   const title = t("rating.rateTitle");
   if (button.textContent !== label) button.textContent = label;
@@ -10155,9 +10163,6 @@ async function handleAudioVariantSelection(event) {
   if (button.dataset.itemId !== currentItem.id) {
     return;
   }
-
-  setAudioVariantPopoverOpen(false);
-
   if (button.dataset.bound !== "true") {
     await window.BilikaraPartSelector.cacheAudio({
       item: currentItem, page: Number(button.dataset.page), snapshot: state.data,
@@ -10866,4 +10871,31 @@ async function startRemoteSession() {
   sync();
 })();
 
+// Remote's Request card is an isolated genuine sub-tab scope. Its standalone
+// Gatcha card and Queue are not adjacent leaves of that scope.
+if (window.BilikaraSubTabSwipe) {
+  const modes = (buttons, key) => [...buttons].map(button => ({id:button.dataset[key],
+    hidden:button.hidden||button.classList.contains('hidden')||button.getAttribute('aria-hidden')==='true',
+    disabled:button.disabled||button.getAttribute('aria-disabled')==='true'}));
+  const tree = () => [{id:'request',children:modes(elements.remoteRequestViewButtons,'remoteRequestView').map(node => {
+    const children = {search:modes(elements.remoteSearchModeButtons,'remoteSearchMode'),
+      discover:modes(elements.remoteDiscoverModeButtons,'remoteDiscoverMode'),
+      sources:modes(elements.remoteSourcesModeButtons,'remoteSourcesMode')}[node.id];
+    return children ? {...node,children} : node;
+  })}];
+  const current = () => {
+    const view = state.remoteRequestView;
+    const child = {search:state.remoteSearchMode,discover:state.remoteDiscoverMode,sources:state.remoteSourcesMode}[view];
+    return `request.${view}${child ? `.${child}` : ''}`;
+  };
+  const panel = () => [...elements.remoteRequestViewPanels].find(node => !node.hidden);
+  window.BilikaraSubTabSwipe.bind(document.querySelector('.request-panel'),{scope:()=>'request',tree,current,panel,
+    fixedZones:()=>[...document.querySelectorAll('.remote-request-head,.remote-request-tabs-viewport,.browse-search-bar')],
+    commit:([,view,child])=>{
+      if(view==='search') state.remoteSearchMode=child;
+      if(view==='discover') state.remoteDiscoverMode=child;
+      if(view==='sources') state.remoteSourcesMode=child;
+      activateRemoteRequestView(view);
+    }});
+}
 startRemoteSession();

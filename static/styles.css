@@ -8,7 +8,6 @@
   --ink: #1d1a18;
   --muted: #6d6258;
   --panel: rgba(255, 251, 245, 0.82);
-  --settings-group-bg: #ffffff;
   --line: rgba(87, 63, 43, 0.12);
   --update-available-dot: var(--accent);
   --on-accent: #ffffff;
@@ -39,10 +38,6 @@
   --host-peer-panel-padding: 16px;
   --host-peer-panel-inline-padding: 16px;
   --host-peer-request-head-padding: 16px;
-  --font-sans: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", "Microsoft YaHei",
-    sans-serif;
-  --font-display: "Avenir Next", "Trebuchet MS", "Noto Sans SC", sans-serif;
-
   /* Global viewport layers. Component-internal stacking stays local to its
      own stacking context, matching the Remote layer contract. */
   --host-layer-header: 300;
@@ -243,24 +238,24 @@
   box-sizing: border-box;
 }
 
-/* Android keeps the system overlay scrollbar and its idle fade. */
-:root:not([data-host-platform="android"]),
-:root:not([data-host-platform="android"]) * {
+/* Mobile Hosts keep system overlay scrollbars and their idle fade. */
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])),
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) * {
   scrollbar-color: var(--scrollbar-thumb-bg) var(--scrollbar-track-bg);
   scrollbar-width: thin;
 }
 
-:root:not([data-host-platform="android"]) *::-webkit-scrollbar {
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
-:root:not([data-host-platform="android"]) *::-webkit-scrollbar-track {
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) *::-webkit-scrollbar-track {
   border-radius: 999px;
   background: var(--scrollbar-track-bg);
 }
 
-:root:not([data-host-platform="android"]) *::-webkit-scrollbar-thumb {
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) *::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   border-radius: 999px;
   background: var(--scrollbar-thumb-bg);
@@ -268,7 +263,7 @@
 }
 
 @media (hover: hover) and (pointer: fine) {
-  :root:not([data-host-platform="android"]) *::-webkit-scrollbar-thumb:hover {
+  :root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) *::-webkit-scrollbar-thumb:hover {
     background: var(--scrollbar-thumb-hover-bg);
     background-clip: padding-box;
   }
@@ -281,6 +276,7 @@ body {
   font-family: var(--font-sans);
   color: var(--ink);
   background:
+    var(--mobile-viewport-wash, none),
     radial-gradient(circle at top left, var(--bg-glow), transparent 28%),
     linear-gradient(140deg, var(--bg) 0%, var(--bg-middle) 45%, var(--bg-deep) 100%);
 }
@@ -328,27 +324,7 @@ p {
 }
 
 .app-toast {
-  position: fixed;
-  left: 50%;
-  bottom: 22px;
-  transform: translateX(-50%);
-  max-width: min(520px, calc(100vw - 32px));
-  padding: 11px 16px;
-  border-radius: 999px;
-  background: var(--toast-bg);
-  border: var(--toast-border);
-  box-shadow: var(--toast-shadow);
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.4;
-  text-align: center;
   z-index: var(--host-layer-toast);
-  backdrop-filter: blur(14px);
-}
-
-.app-toast.is-error {
-  color: var(--red);
-  border-color: var(--toast-error-border, rgba(177, 69, 69, 0.22));
 }
 
 .backup-banner.hidden {
@@ -1044,7 +1020,7 @@ html:not([data-host-layout="portrait"]) .current-title-text {
 #remote-mini-popover .internet-remote-password-row input,
 .internet-remote-duration-input { min-width: 0; height: var(--host-control-height, 44px); box-sizing: border-box; padding: 0 13px; border: 1px solid var(--line); border-radius: var(--host-control-radius, 14px); color: var(--ink); background: var(--input-bg, rgba(255, 255, 255, 0.7)); font-family: var(--font-sans); font-size: var(--host-control-font-size, 14px); line-height: 1; }
 #remote-mini-popover .internet-remote-password-row input:focus,
-.internet-remote-duration-input:focus { border-color: var(--focus-border-color); outline: none; box-shadow: var(--focus-ring-shadow); }
+.internet-remote-duration-input:focus { border-color: var(--focus-border-color); outline: var(--field-focus-outline, none); outline-offset: var(--field-focus-outline-offset, 0px); box-shadow: var(--field-focus-shadow, var(--focus-ring-shadow)); }
 .internet-remote-password-row .icon-button { width: var(--host-control-height, 44px); height: var(--host-control-height, 44px); border: var(--btn-secondary-border); border-radius: 50%; background: var(--btn-secondary-bg); color: var(--ink); }
 .internet-remote-password-row .icon-button svg { width: 18px; height: 18px; }
 .internet-remote-duration-control { position: relative; min-width: 0; }
@@ -2187,21 +2163,6 @@ html:not([data-host-layout="portrait"]) .current-title-text {
   cursor: pointer;
 }
 
-.cache-quality-select {
-  width: 100%;
-  height: var(--cache-control-height);
-  border: none;
-  border-radius: 999px;
-  padding: 0 30px 0 12px;
-  background: var(--quality-select-bg);
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 700;
-  outline: none;
-  box-shadow: var(--quality-select-shadow);
-  cursor: pointer;
-}
-
 .cache-quality-select:disabled {
   opacity: 0.62;
   cursor: wait;
@@ -3287,8 +3248,10 @@ body.is-tauri-fullscreen-active {
 
 .av-sync-input-wrap:focus-within {
   border-color: var(--sync-focus-border);
+  outline: var(--field-focus-outline, none);
+  outline-offset: var(--field-focus-outline-offset, 0px);
   box-shadow:
-    0 0 0 3px var(--sync-focus-ring),
+    var(--field-focus-shadow, 0 0 0 3px var(--sync-focus-ring)),
     var(--sync-input-shadow);
 }
 
@@ -3541,11 +3504,7 @@ body.is-tauri-fullscreen-active {
   border-style: dashed;
 }
 
-.audio-variant-button.pending-bind::after {
-  content: "+";
-  margin-left: 6px;
-  font-weight: 700;
-}
+
 
 .audio-variant-button.active {
   background: var(--accent);
@@ -3607,7 +3566,9 @@ select {
 input[type="text"]:focus,
 select:focus {
   border-color: var(--focus-border-color);
-  box-shadow: var(--focus-ring-shadow);
+  outline: var(--field-focus-outline, none);
+  outline-offset: var(--field-focus-outline-offset, 0px);
+  box-shadow: var(--field-focus-shadow, var(--focus-ring-shadow));
 }
 
 select:disabled {
@@ -3702,7 +3663,7 @@ select:disabled {
   transition: opacity 0.2s, transform 0.2s;
 }
 
-/* One session-user subtree and action surface for pointer and touch layouts. */
+/* The same pill body and text baseline on pointer and touch layouts. */
 .session-user-name {
   min-width: 0;
   min-height: var(--session-user-row-height);
@@ -3717,27 +3678,15 @@ select:disabled {
   white-space: nowrap;
   cursor: pointer;
 }
-.session-user-badge.is-actions-open {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  height: auto;
-  min-width: 184px;
-  border-radius: 20px;
-}
-.android-user-actions:not([hidden]) { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 6px; padding: 4px 0; }
-.android-user-actions button { min-width: 40px; min-height: 40px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 12px; color: var(--ink); background: var(--panel); }
-.android-user-actions button[data-user-action="remove"] { color: var(--red); }
-html[data-host-touch-users="true"] .session-user-list { padding: 4px 8px; }
-html[data-host-touch-users="true"] .session-user-badge {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  height: auto;
-  min-height: 44px;
-  max-width: 100%;
-  box-sizing: border-box;
-  padding: 4px 12px;
-  cursor: pointer;
-  -webkit-touch-callout: none;
+.session-user-badge { -webkit-touch-callout: none; touch-action: pan-y; }
+@media (any-pointer: coarse) {
+  /* Expand the hit region independently of the 36px visual body. The 10px
+     row gap keeps adjacent 44px regions separate. */
+  .session-user-badge:not(.drop-before)::before {
+    content: ""; position: absolute; inset: auto 0;
+    top: 50%; height: 44px; transform: translateY(-50%);
+  }
+  .session-user-order-number, .session-user-name { position: relative; }
 }
 
 .session-user-badge:active {
@@ -5324,34 +5273,34 @@ button.queue-current-drag-handle:focus-visible { outline: 2px solid var(--accent
   padding-right: 4px;
 }
 
-:root:not([data-host-platform="android"]) .history-list::-webkit-scrollbar,
-:root:not([data-host-platform="android"]) .search-results::-webkit-scrollbar,
-:root:not([data-host-platform="android"]) .session-user-list::-webkit-scrollbar,
-:root:not([data-host-platform="android"]) .follow-up-grid::-webkit-scrollbar {
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .history-list::-webkit-scrollbar,
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .search-results::-webkit-scrollbar,
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .session-user-list::-webkit-scrollbar,
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .follow-up-grid::-webkit-scrollbar {
   width: 8px;
 }
 
-:root:not([data-host-platform="android"]) .history-list::-webkit-scrollbar-track,
-:root:not([data-host-platform="android"]) .search-results::-webkit-scrollbar-track,
-:root:not([data-host-platform="android"]) .session-user-list::-webkit-scrollbar-track,
-:root:not([data-host-platform="android"]) .follow-up-grid::-webkit-scrollbar-track {
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .history-list::-webkit-scrollbar-track,
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .search-results::-webkit-scrollbar-track,
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .session-user-list::-webkit-scrollbar-track,
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .follow-up-grid::-webkit-scrollbar-track {
   background: var(--scrollbar-track-bg);
   border-radius: 999px;
 }
 
-:root:not([data-host-platform="android"]) .history-list::-webkit-scrollbar-thumb,
-:root:not([data-host-platform="android"]) .search-results::-webkit-scrollbar-thumb,
-:root:not([data-host-platform="android"]) .session-user-list::-webkit-scrollbar-thumb,
-:root:not([data-host-platform="android"]) .follow-up-grid::-webkit-scrollbar-thumb {
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .history-list::-webkit-scrollbar-thumb,
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .search-results::-webkit-scrollbar-thumb,
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .session-user-list::-webkit-scrollbar-thumb,
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .follow-up-grid::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb-bg);
   border-radius: 999px;
 }
 
 @media (hover: hover) and (pointer: fine) {
-  :root:not([data-host-platform="android"]) .history-list::-webkit-scrollbar-thumb:hover,
-  :root:not([data-host-platform="android"]) .search-results::-webkit-scrollbar-thumb:hover,
-  :root:not([data-host-platform="android"]) .session-user-list::-webkit-scrollbar-thumb:hover,
-  :root:not([data-host-platform="android"]) .follow-up-grid::-webkit-scrollbar-thumb:hover {
+  :root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .history-list::-webkit-scrollbar-thumb:hover,
+  :root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .search-results::-webkit-scrollbar-thumb:hover,
+  :root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .session-user-list::-webkit-scrollbar-thumb:hover,
+  :root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .follow-up-grid::-webkit-scrollbar-thumb:hover {
     background: var(--scrollbar-thumb-hover-bg);
   }
 }
@@ -6307,7 +6256,9 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 
 .bilikara-secret-form .input-group input:focus {
   border-color: var(--focus-border-color);
-  box-shadow: var(--focus-ring-shadow);
+  outline: var(--field-focus-outline, none);
+  outline-offset: var(--field-focus-outline-offset, 0px);
+  box-shadow: var(--field-focus-shadow, var(--focus-ring-shadow));
 }
 
 .bilikara-secret-form input::placeholder {
@@ -6740,28 +6691,28 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   min-height: 0;
 }
 
-:root:not([data-host-platform="android"]) .category-browser-home {
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .category-browser-home {
   scrollbar-color: var(--scrollbar-thumb-bg) var(--category-scrollbar-track-bg);
   scrollbar-width: thin;
 }
 
-:root:not([data-host-platform="android"]) .category-browser-home::-webkit-scrollbar {
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .category-browser-home::-webkit-scrollbar {
   width: 10px;
 }
 
-:root:not([data-host-platform="android"]) .category-browser-home::-webkit-scrollbar-track {
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .category-browser-home::-webkit-scrollbar-track {
   border-radius: 999px;
   background: var(--category-scrollbar-track-bg);
 }
 
-:root:not([data-host-platform="android"]) .category-browser-home::-webkit-scrollbar-thumb {
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .category-browser-home::-webkit-scrollbar-thumb {
   border: var(--category-scrollbar-thumb-border);
   border-radius: 999px;
   background: var(--category-scrollbar-thumb-bg);
 }
 
 @media (hover: hover) and (pointer: fine) {
-  :root:not([data-host-platform="android"]) .category-browser-home::-webkit-scrollbar-thumb:hover {
+  :root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .category-browser-home::-webkit-scrollbar-thumb:hover {
     background: var(--category-scrollbar-thumb-hover-bg);
   }
 }
@@ -7298,7 +7249,6 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   --ink: #f6f1eb;
   --muted: #b5a89e;
   --panel: rgba(30, 26, 23, 0.85);
-  --settings-group-bg: #302925;
   --line: rgba(246, 241, 235, 0.15);
   --green: #5fca9d;
   --shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
@@ -7673,7 +7623,6 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   --ink: #f0f4f8;
   --muted: #8b9bb4;
   --panel: rgba(17, 25, 40, 0.85);
-  --settings-group-bg: #1e293b;
   --line: rgba(255, 255, 255, 0.1);
   --green: #00ffa3;
   --red: #ff3366;
@@ -7968,7 +7917,10 @@ body {
 .app-shell {
   --host-shell-padding-inline: 12px;
   --host-shell-gap: 12px;
-  --host-tool-card-width: minmax(380px, 1fr);
+  --host-stage-min-rem: 28;
+  --host-workspace-min-rem: 25;
+  --host-two-column-min-block-rem: 25;
+  --host-tool-card-width: minmax(calc(var(--host-workspace-min-rem) * 1rem), 1fr);
   --host-rail-width: 80px;
   width: 100%;
   height: 100vh;
@@ -8891,45 +8843,39 @@ body {
   }
 }
 
-@media (max-width: 1179px) {
-  .app-shell {
+/* CSS and stage fitting use the same measured Desktop/Tablet admission. */
+:root[data-host-columns="compact"] .app-shell {
     --host-rail-width: 80px;
     --host-tool-card-width: 100%;
-    padding: 0 9px 9px;
   }
 
-  .topbar {
-    height: 56px;
-    min-height: 56px;
-  }
-
-  .host-content-region {
+:root[data-host-columns="compact"] .host-content-region {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: clamp(190px, 34%, 280px) minmax(0, 1fr);
     gap: 10px;
   }
 
-  .left-column {
+:root[data-host-columns="compact"] .left-column {
     grid-row: 1;
     padding-right: 2px;
   }
 
-  .left-column > .player-panel {
+:root[data-host-columns="compact"] .left-column > .player-panel {
     height: 100%;
     align-self: start;
   }
 
-  .left-column .av-sync-panel {
+:root[data-host-columns="compact"] .left-column .av-sync-panel {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .left-column .av-sync-controls {
+:root[data-host-columns="compact"] .left-column .av-sync-controls {
     width: min(578px, 100%);
     justify-self: end;
   }
 
-  .host-workspace-region,
-  .app-shell[data-active-workspace="request"] .host-workspace-region {
+:root[data-host-columns="compact"] .host-workspace-region,
+:root[data-host-columns="compact"] .app-shell[data-active-workspace="request"] .host-workspace-region {
     position: relative;
     inset: auto;
     grid-row: 2;
@@ -8946,25 +8892,24 @@ body {
     pointer-events: auto;
   }
 
-  .host-workspace-region[data-active-workspace="request"] {
+:root[data-host-columns="compact"] .host-workspace-region[data-active-workspace="request"] {
     overflow: hidden;
   }
 
-  .request-workspace-head {
+:root[data-host-columns="compact"] .request-workspace-head {
     padding: 14px 16px 12px;
   }
 
-  .host-workspace-region .player-panel,
-  .host-workspace-region .request-panel,
-  .host-workspace-region .gatcha-panel,
-  .host-workspace-region .list-card {
+:root[data-host-columns="compact"] .host-workspace-region .player-panel,
+:root[data-host-columns="compact"] .host-workspace-region .request-panel,
+:root[data-host-columns="compact"] .host-workspace-region .gatcha-panel,
+:root[data-host-columns="compact"] .host-workspace-region .list-card {
     border-radius: 16px;
   }
 
-  .host-workspace-backdrop:not([hidden]) {
+:root[data-host-columns="compact"] .host-workspace-backdrop:not([hidden]) {
     display: none;
   }
-}
 
 @media (max-width: 699px) {
   /* The supported narrow Host window starts at 700px. Below that floor, keep
@@ -9126,8 +9071,7 @@ body {
   flex: 1 1 auto;
 }
 
-body[data-tauri-platform="windows"] .window-drag-region,
-body[data-tauri-platform="macos"] .window-drag-region {
+body[data-tauri-platform="windows"] .window-drag-region {
   display: block;
 }
 
@@ -9311,12 +9255,10 @@ body[data-tauri-platform="macos"] .window-drag-region {
   }
 }
 
-body[data-tauri-platform="macos"] .app-shell {
-  padding-top: 30px;
-}
-
-body[data-tauri-platform="macos"] .topbar {
-  padding-left: 72px;
+/* macOS keeps its native titlebar above the WebView. Its traffic lights and
+   background-window dragging must not depend on a DOM overlay. */
+body[data-tauri-platform="macos"] .window-drag-region {
+  display: none;
 }
 
 body[data-tauri-platform="linux"] .app-shell {
@@ -9550,7 +9492,7 @@ body[data-tauri-platform="linux"] .app-shell {
   max-height: none !important;
 }
 
-.app-shell[data-stage-controls-layout="inline"] .stage-control-backdrop {
+.app-shell[data-stage-controls-layout^="inline"] .stage-control-backdrop {
   display: none !important;
 }
 
@@ -9559,17 +9501,17 @@ body[data-tauri-platform="linux"] .app-shell {
   align-content: start;
 }
 
-.app-shell[data-stage-controls-layout="inline"] .left-column > .player-panel {
+.app-shell[data-stage-controls-layout^="inline"] .left-column > .player-panel {
   grid-template-rows: auto auto auto;
   align-content: start;
 }
 
-.app-shell[data-stage-controls-layout="inline"] .stage-controls-toggle,
-.app-shell[data-stage-controls-layout="inline"] .stage-control-tray-head {
+.app-shell[data-stage-controls-layout^="inline"] .stage-controls-toggle,
+.app-shell[data-stage-controls-layout^="inline"] .stage-control-tray-head {
   display: none;
 }
 
-.app-shell[data-stage-controls-layout="inline"] .stage-control-tray {
+.app-shell[data-stage-controls-layout^="inline"] .stage-control-tray {
   position: relative;
   z-index: 7;
   width: 100%;
@@ -9591,8 +9533,19 @@ body[data-tauri-platform="linux"] .app-shell {
   color: var(--accent);
 }
 
-.app-shell[data-stage-controls-layout="inline"] .stage-control-tray.is-open {
+.app-shell[data-stage-controls-layout^="inline"] .stage-control-tray.is-open {
   transform: none;
+}
+
+/* Only the controls scroll; media, title and track strip retain their nodes
+   and measured positions in the shared Desktop/Tablet left column. */
+:root[data-host-columns="two"] .app-shell[data-stage-controls-layout="inline-scrollable"] .stage-control-tray {
+  height: var(--stage-control-region-block-size);
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scroll-padding-block: 6px;
 }
 
 .host-workspace-region {
@@ -9974,8 +9927,8 @@ body[data-tauri-platform="linux"] .app-shell {
   }
 }
 
-@media (max-width: 1179px) {
-  .app-shell {
+/* CSS and stage fitting use the same measured Desktop/Tablet admission. */
+:root[data-host-columns="compact"] .app-shell {
     --host-rail-width: 80px;
     --host-tool-card-width: 100%;
     /* Match peer tool headings/actions to the compact Stage's 12px axis while
@@ -9985,7 +9938,7 @@ body[data-tauri-platform="linux"] .app-shell {
     --host-peer-request-head-padding: 10px 12px;
   }
 
-  .host-content-region {
+:root[data-host-columns="compact"] .host-content-region {
     position: relative;
     isolation: isolate;
     grid-template-columns: minmax(0, 1fr);
@@ -9994,7 +9947,7 @@ body[data-tauri-platform="linux"] .app-shell {
     overflow: hidden;
   }
 
-  .left-column {
+:root[data-host-columns="compact"] .left-column {
     grid-column: 1;
     grid-row: 1;
     z-index: 1;
@@ -10002,8 +9955,8 @@ body[data-tauri-platform="linux"] .app-shell {
     padding-right: 0;
   }
 
-  .host-workspace-region,
-  .app-shell[data-active-workspace="request"] .host-workspace-region {
+:root[data-host-columns="compact"] .host-workspace-region,
+:root[data-host-columns="compact"] .app-shell[data-active-workspace="request"] .host-workspace-region {
     position: absolute;
     z-index: 20;
     inset: auto 0 0;
@@ -10022,26 +9975,26 @@ body[data-tauri-platform="linux"] .app-shell {
     transition: transform 160ms ease, opacity 160ms ease;
   }
 
-  .app-shell.host-tool-sheet-closed .host-workspace-region,
-  .app-shell.host-tool-sheet-closed[data-active-workspace="request"] .host-workspace-region {
+:root[data-host-columns="compact"] .app-shell.host-tool-sheet-closed .host-workspace-region,
+:root[data-host-columns="compact"] .app-shell.host-tool-sheet-closed[data-active-workspace="request"] .host-workspace-region {
     opacity: 0;
     transform: translateY(calc(100% + 8px));
     pointer-events: none;
   }
 
-  .app-shell[data-narrow-tool-layout="resident"] .host-content-region {
+:root[data-host-columns="compact"] .app-shell[data-narrow-tool-layout="resident"] .host-content-region {
     grid-template-rows: minmax(0, var(--narrow-stage-resident-height)) minmax(300px, 1fr);
     gap: var(--host-shell-gap);
   }
 
-  .app-shell[data-narrow-tool-layout="resident"] .left-column {
+:root[data-host-columns="compact"] .app-shell[data-narrow-tool-layout="resident"] .left-column {
     grid-row: 1;
     height: 100%;
     z-index: 30;
   }
 
-  .app-shell[data-narrow-tool-layout="resident"] .host-workspace-region,
-  .app-shell[data-narrow-tool-layout="resident"][data-active-workspace="request"] .host-workspace-region {
+:root[data-host-columns="compact"] .app-shell[data-narrow-tool-layout="resident"] .host-workspace-region,
+:root[data-host-columns="compact"] .app-shell[data-narrow-tool-layout="resident"][data-active-workspace="request"] .host-workspace-region {
     position: relative;
     inset: auto;
     z-index: 2;
@@ -10055,40 +10008,40 @@ body[data-tauri-platform="linux"] .app-shell {
     transform: none;
   }
 
-  .layout > .work-rail {
+:root[data-host-columns="compact"] .layout > .work-rail {
     grid-column: 2;
     grid-row: 1;
   }
 
-  .left-column > .player-panel {
+:root[data-host-columns="compact"] .left-column > .player-panel {
     height: 100%;
     padding: 10px 12px;
   }
 
-  .left-column .panel-head {
+:root[data-host-columns="compact"] .left-column .panel-head {
     min-height: 42px;
   }
 
-  .left-column .panel-head .section-tag {
+:root[data-host-columns="compact"] .left-column .panel-head .section-tag {
     display: block;
   }
 
-  .host-workspace-region .request-workspace,
-  .host-workspace-region .request-panel,
-  .host-workspace-region .gatcha-panel,
-  .host-workspace-region .settings-workspace,
-  .host-workspace-region .list-card {
+:root[data-host-columns="compact"] .host-workspace-region .request-workspace,
+:root[data-host-columns="compact"] .host-workspace-region .request-panel,
+:root[data-host-columns="compact"] .host-workspace-region .gatcha-panel,
+:root[data-host-columns="compact"] .host-workspace-region .settings-workspace,
+:root[data-host-columns="compact"] .host-workspace-region .list-card {
     border-radius: 16px;
     border: 1px solid var(--line);
     background: var(--settings-panel-bg);
   }
 
-  .host-workspace-region .queue-card,
-  .host-workspace-region .history-card {
+:root[data-host-columns="compact"] .host-workspace-region .queue-card,
+:root[data-host-columns="compact"] .host-workspace-region .history-card {
     padding: 14px;
   }
 
-  .host-workspace-region .gatcha-head {
+:root[data-host-columns="compact"] .host-workspace-region .gatcha-head {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-rows: auto auto;
@@ -10097,30 +10050,29 @@ body[data-tauri-platform="linux"] .app-shell {
     align-items: center;
   }
 
-  .host-workspace-region .gatcha-head > div:first-child {
+:root[data-host-columns="compact"] .host-workspace-region .gatcha-head > div:first-child {
     display: contents;
   }
 
-  .host-workspace-region .gatcha-head .section-tag {
+:root[data-host-columns="compact"] .host-workspace-region .gatcha-head .section-tag {
     grid-column: 1 / -1;
     grid-row: 1;
   }
 
-  .host-workspace-region .gatcha-head h2 {
+:root[data-host-columns="compact"] .host-workspace-region .gatcha-head h2 {
     grid-column: 1;
     grid-row: 2;
   }
 
-  .host-workspace-region .gatcha-head-actions {
+:root[data-host-columns="compact"] .host-workspace-region .gatcha-head-actions {
     grid-column: 2;
     grid-row: 2;
     flex-wrap: nowrap;
   }
 
-  .work-rail {
+:root[data-host-columns="compact"] .work-rail {
     border-radius: 16px;
   }
-}
 
 @media (pointer: coarse) {
   .work-rail-button,
@@ -10458,6 +10410,8 @@ body.is-presentation-stage-only .left-column {
   gap: 8px;
 }
 
+/* Ordinary Host fields share geometry and theme treatment across input types. */
+.host-text-input,
 .source-action-row input,
 .source-action-row button {
   box-sizing: border-box;
@@ -10471,6 +10425,7 @@ body.is-presentation-stage-only .left-column {
   line-height: 1;
 }
 
+.host-text-input,
 .source-action-row input {
   padding-inline: 13px;
   border: 1px solid var(--line);
@@ -10478,10 +10433,12 @@ body.is-presentation-stage-only .left-column {
   color: var(--ink);
 }
 
+.host-text-input:focus,
 .source-action-row input:focus {
   border-color: var(--focus-border-color);
-  outline: none;
-  box-shadow: var(--focus-ring-shadow);
+  outline: var(--field-focus-outline, none);
+  outline-offset: var(--field-focus-outline-offset, 0px);
+  box-shadow: var(--field-focus-shadow, var(--focus-ring-shadow));
 }
 
 .source-action-row button {
@@ -10726,6 +10683,24 @@ body.is-presentation-stage-only .left-column {
 .app-shell[data-stage-control-density="plain"] .stage-extended-controls > .av-sync-panel,
 .app-shell[data-stage-control-density="plain"] .stage-extended-controls > .volume-panel {
   gap: 8px;
+}
+
+:root[data-host-columns="two"] .app-shell[data-stage-control-density="plain"] .stage-extended-controls > .av-sync-panel,
+:root[data-host-columns="two"] .app-shell[data-stage-control-density="plain"] .stage-extended-controls > .volume-panel {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+:root[data-host-columns="two"] .app-shell[data-stage-control-density="plain"] .av-sync-controls > button {
+  min-width: 44px;
+}
+
+:root[data-host-columns="two"] .app-shell[data-stage-control-density="plain"] .av-sync-controls {
+  gap: 5px;
+}
+
+:root[data-host-columns="two"] .app-shell[data-stage-control-density="plain"] .av-sync-lock-button {
+  flex-basis: 44px;
+  width: 44px;
 }
 
 .app-shell[data-stage-control-density="plain"] .stage-extended-controls .av-sync-step-button,
@@ -11451,11 +11426,12 @@ body.is-presentation-stage-only #player-fullscreen-button {
   color: var(--ink);
 }
 
-/* The native select needs enough intrinsic width for "Downkyi (aria2c)";
-   the sibling runtime field can continue using the remaining space. */
+/* Reserve the source field's intrinsic width before sharing the runtime row. */
+.cache-quality-field[for="cache-download-source-select"] {
+  min-width: min(160px, 100%);
+}
 #cache-download-source-select {
-  width: max-content;
-  min-width: 160px;
+  width: 100%;
   max-width: 100%;
 }
 
@@ -12257,7 +12233,7 @@ html .volume-adjust-popover::backdrop {
 .session-user-tools .session-user-trash::before { content: none; }
 .session-user-tools .session-user-trash.drag-over, .source-tools .source-remove-selected.drag-over { transform: scale(1.15); background: var(--red); color: white; }
 :is(.session-user-stage, .session-user-drag-image)[data-edit-mode="select"] .session-user-order-number { background: transparent; padding: 0; }
-.session-user-order-number { touch-action: none; }
+.session-user-order-number { touch-action: pan-y; }
 .session-user-checkbox {
   appearance: auto; -webkit-appearance: checkbox;
   width: 16px; min-width: 16px; height: 16px; min-height: 16px;

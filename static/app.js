@@ -21,7 +21,6 @@ const tauriMediaSessionPositionUpdateMs = 1000;
 const playerStatusMaxSeconds = 7 * 24 * 60 * 60;
 const mediaPlayPromisesInFlight = new WeakMap();
 const audioVariantSwitchDebounceMs = 350;
-const playerSettingsEchoSuppressMs = 1800;
 const playerClickDelayMs = 220;
 const playerControlsAutoHideMs = 5000;
 const defaultSongAdvanceDelaySeconds = 3;
@@ -216,7 +215,6 @@ const state = {
   cacheSettingsOpen: false,
   remoteQrPinned: false,
   playerFullscreenRemotePinned: false,
-  playerFullscreenLastPointerType: "",
   playerFullscreenTransitioning: false,
   playerFullscreenRevision: 0,
   playerFullscreenInteraction: null,
@@ -397,6 +395,7 @@ const state = {
   categoryBrowseItems: [],
   categoryBrowseOffset: 0,
   categoryBrowseHasMore: false,
+  categoryBrowseMatchedCount: null,
   categoryBrowseLoading: false,
   categoryBrowseSeq: 0,
   categoryBrowseError: "",
@@ -506,6 +505,7 @@ const state = {
   activeHostWorkspace: "request",
   focusedHostWorkspace: "request",
   hostWorkspaceOverlayOpen: false,
+  hostWorkspaceOverlayRestoreOpen: false,
   hostNarrowToolSheetActive: false,
   hostWorkspaceTransition: null,
   hostWorkspaceTransitionTimer: null,
@@ -725,6 +725,7 @@ const elements = {
   playlistTemplate: document.getElementById("playlist-item-template"),
   historyTemplate: document.getElementById("history-item-template"),
   confirmPopover: document.getElementById("confirm-popover"),
+  confirmExportBackdrop: document.getElementById("confirm-export-backdrop"),
   confirmText: document.getElementById("confirm-text"),
   confirmSource: document.getElementById("confirm-source"),
   confirmPageSize: document.getElementById("confirm-page-size"),
@@ -1319,6 +1320,100 @@ async function loadTranslations() {
   if (languageLoadFailed) setAppMessage(t("settings.languageLoadFailed"), true);
 }
 
+const rowMenuAnimations = new WeakMap();
+let rowMenuGeometryObserver = null;
+let observedRowMenu = null;
+let rowMenuGeometryFrame = null;
+
+function positionPhoneRowMenu(menu) {
+  const properties = ["--row-menu-x", "--row-menu-y", "--row-menu-max-width", "--row-menu-max-height"];
+  if (!globalThis.BilikaraHostLayout?.isPortrait?.()) {
+    properties.forEach(name => menu.style.removeProperty(name));
+    return;
+  }
+  const card = menu.closest(".song-item, .history-item");
+  const trigger = card?.querySelector('[data-action="toggle-menu"]');
+  if (!card || !trigger) return;
+  const anchor = trigger.getBoundingClientRect(), row = card.getBoundingClientRect();
+  const viewport = window.visualViewport;
+  const viewportLeft = viewport?.offsetLeft || 0, viewportTop = viewport?.offsetTop || 0;
+  const style = getComputedStyle(menu);
+  const inset = parseFloat(style.getPropertyValue("--row-menu-inset"));
+  const gap = parseFloat(style.getPropertyValue("--row-menu-anchor-gap"));
+  const padding = parseFloat(style.paddingLeft);
+  const left = Math.max(viewportLeft + inset, row.left + padding);
+  const right = Math.min(anchor.left - gap, row.right - padding, viewportLeft + (viewport?.width || innerWidth) - inset);
+  const top = viewportTop + inset;
+  const dock = document.getElementById("android-host-dock")?.getBoundingClientRect();
+  const bottom = Math.min(viewportTop + (viewport?.height || innerHeight) - inset,
+    dock && dock.height ? dock.top - inset : Infinity);
+  const set = (name, value) => {
+    const next = `${Math.max(0, value).toFixed(2)}px`;
+    if (menu.style.getPropertyValue(name) !== next) menu.style.setProperty(name, next);
+  };
+  set("--row-menu-max-width", right - left);
+  set("--row-menu-max-height", bottom - top);
+  // Use the untransformed border box while an entry/exit animation is active.
+  set("--row-menu-x", Math.max(left, right - menu.offsetWidth));
+  set("--row-menu-y", Math.max(top, Math.min((anchor.top + anchor.bottom - menu.offsetHeight) / 2, bottom - menu.offsetHeight)));
+}
+
+function scheduleRowMenuGeometry() {
+  if (!observedRowMenu || rowMenuGeometryFrame !== null) return;
+  rowMenuGeometryFrame = requestAnimationFrame(() => {
+    rowMenuGeometryFrame = null;
+    if (observedRowMenu?.isConnected && !observedRowMenu.inert) positionPhoneRowMenu(observedRowMenu);
+  });
+}
+
+function setRowMenuVisible(menu, visible) {
+  const previous = rowMenuAnimations.get(menu);
+  if (!visible && previous && menu.inert) return;
+  const visual = previous ? getComputedStyle(menu) : null;
+  const from = visual ? { opacity: visual.opacity, transform: visual.transform } : null;
+  previous?.cancel();
+  rowMenuAnimations.delete(menu);
+  if (visible) {
+    menu.classList.remove("hidden");
+    positionPhoneRowMenu(menu);
+    observedRowMenu = menu;
+    rowMenuGeometryObserver?.disconnect();
+    if (typeof ResizeObserver === "function") {
+      if (!rowMenuGeometryObserver) rowMenuGeometryObserver = new ResizeObserver(scheduleRowMenuGeometry);
+      rowMenuGeometryObserver.observe(menu);
+      const card = menu.closest(".song-item, .history-item");
+      if (card) rowMenuGeometryObserver.observe(card);
+    }
+  } else if (observedRowMenu === menu) {
+    rowMenuGeometryObserver?.disconnect();
+    observedRowMenu = null;
+  }
+  const animate = globalThis.BilikaraHostLayout?.isPortrait?.()
+    && !hostWorkspaceReducedMotion() && typeof menu.animate === "function";
+  if (!animate || (!visible && menu.classList.contains("hidden"))) {
+    menu.classList.toggle("hidden", !visible);
+    menu.inert = false;
+    return;
+  }
+  menu.classList.remove("hidden");
+  menu.inert = !visible;
+  const transform = getComputedStyle(menu).transform;
+  const base = transform === "none" ? "" : transform;
+  const rest = { opacity: 1, transform: `${base} translateX(0px)` };
+  const away = { opacity: 0, transform: `${base} translateX(6px)` };
+  const animation = menu.animate([from || (visible ? away : rest), visible ? rest : away], {
+    duration: visible ? 160 : 120, easing: "ease-out",
+  });
+  rowMenuAnimations.set(menu, animation);
+  animation.onfinish = () => {
+    if (rowMenuAnimations.get(menu) !== animation) return;
+    menu.classList.toggle("hidden", !visible);
+    menu.inert = false;
+    rowMenuAnimations.delete(menu);
+    animation.cancel();
+  };
+}
+
 function closeOpenMenus({ restoreFocus = false } = {}) {
   const trigger = state.openRowMenuTrigger;
   let closed = false;
@@ -1326,7 +1421,7 @@ function closeOpenMenus({ restoreFocus = false } = {}) {
     if (!menu.classList.contains("hidden")) {
       closed = true;
     }
-    menu.classList.add("hidden");
+    setRowMenuVisible(menu, false);
     menu.closest(".song-actions-wrap, .history-actions-wrap")
       ?.querySelector('[data-action="toggle-menu"]')
       ?.setAttribute("aria-expanded", "false");
@@ -2419,14 +2514,16 @@ function schedulePresentationDisplayRefreshFromWindowEvent() {
 }
 
 function presentationDisplayById(displayId) {
-  return state.presentationDisplayInfo?.displays?.find(
-    (display) => display.id === displayId,
+  const displays = state.presentationDisplayInfo?.displays;
+  return (Array.isArray(displays) ? displays : []).find(
+    (display) => display?.id === displayId,
   ) || null;
 }
 
 function presentationDisplayNumber(displayId) {
-  const index = (state.presentationDisplayInfo?.displays || []).findIndex(
-    (display) => display.id === displayId,
+  const displays = state.presentationDisplayInfo?.displays;
+  const index = (Array.isArray(displays) ? displays : []).findIndex(
+    (display) => display?.id === displayId,
   );
   return index >= 0 ? index + 1 : 0;
 }
@@ -2577,6 +2674,23 @@ function createPresentationHostDisplayOption(display) {
   return button;
 }
 
+function presentationDiscoveryStatus() {
+  if (typeof tauriInvoke("presentation") !== "function") return "unsupported";
+  if (state.presentationDisplayBusy) return "discovering";
+  if (state.presentationDisplayError) return "failed";
+  const info = state.presentationDisplayInfo;
+  if (!info) return "discovering";
+  if (!Array.isArray(info.displays) || info.displays.some(display => !display || typeof display !== "object")) return "failed";
+  const selectable = info.displays.some(display => display.selectable);
+  if (info.discoveryStatus) {
+    if (!["available", "no_targets", "mirroring_only", "unsupported"].includes(info.discoveryStatus)) return "failed";
+    if ((info.discoveryStatus === "available") !== selectable) return "failed";
+    return info.discoveryStatus;
+  }
+  return selectable ? "available"
+    : info.displays.some(display => display.mirrored === true) ? "mirroring_only" : "no_targets";
+}
+
 function renderPresentationDisplayList() {
   const list = elements.presentationDisplayList;
   if (!list) {
@@ -2640,18 +2754,21 @@ function renderPresentationOutputControl() {
     return;
   }
   const nativeAvailable = typeof tauriInvoke("presentation") === "function";
+  const discovery = presentationDiscoveryStatus();
   settings.classList.toggle("hidden", false);
   if (!nativeAvailable) {
     button.disabled = true;
     button.removeAttribute("aria-busy");
-    setElementAttribute(button, "aria-label", t("display.presentationUnavailable"));
-    setTextContent(status, t("display.presentationUnavailable"));
+    setElementAttribute(button, "aria-label", t("display.discovery.unsupported"));
+    setTextContent(status, t("display.discovery.unsupported"));
     setTextContent(elements.presentationOutputSummary, t("display.outputOff"));
-    setTextContent(elements.presentationOutputMeta, t("display.presentationUnavailable"));
+    setTextContent(elements.presentationOutputMeta, t("display.discovery.unsupported"));
+    if (elements.presentationRefreshButton) elements.presentationRefreshButton.disabled = true;
     if (elements.presentationIdentifyButton) {
       elements.presentationIdentifyButton.disabled = true;
       elements.presentationIdentifyButton.removeAttribute("aria-busy");
     }
+    renderPresentationDisplayList();
     return;
   }
   const session = state.presentationSession;
@@ -2662,9 +2779,7 @@ function renderPresentationOutputControl() {
     : "";
   const requiresHostConfirmation = Boolean(selected?.controller && !hostDisplayId);
   const monitorName = selected?.name || t("display.secondaryDisplay");
-  const hasSelectableDisplay = Boolean(
-    state.presentationDisplayInfo?.displays?.some((display) => display.selectable),
-  );
+  const hasSelectableDisplay = discovery === "available";
   const noExternalDisplayAvailable = (
     session.phase === "inactive"
       && !state.presentationDisplayBusy
@@ -2672,7 +2787,9 @@ function renderPresentationOutputControl() {
       && Boolean(state.presentationDisplayInfo)
       && !hasSelectableDisplay
   );
-  const statusText = state.presentationControlBusy
+  const statusText = session.phase === "inactive" && ["unsupported", "mirroring_only"].includes(discovery)
+    ? t(`display.discovery.${discovery}`)
+    : state.presentationControlBusy
     ? t("display.presentationTransitioning")
     : session.phase === "active"
       ? t("display.presentationActive", { monitor: monitorName })
@@ -2694,7 +2811,9 @@ function renderPresentationOutputControl() {
       : session.phase === "inactive"
         ? t("display.outputOff")
         : t("display.presentationTransitioning");
-  const metaText = state.presentationDisplayBusy
+  const metaText = ["unsupported", "mirroring_only", "failed"].includes(discovery)
+    ? t(`display.discovery.${discovery}`)
+    : state.presentationDisplayBusy
     ? t("display.detectingDisplays")
     : state.presentationDisplayError
       ? t("display.presentationUnavailable")
@@ -2702,6 +2821,7 @@ function renderPresentationOutputControl() {
         ? t("display.displayCount", { count: state.presentationDisplayInfo.monitorCount })
         : t("display.detectingDisplays");
   const canActivate = session.phase === "inactive"
+    && discovery === "available"
     && Boolean(selected?.selectable)
     && !requiresHostConfirmation;
   const canDeactivate = session.phase === "active" || session.phase === "activating";
@@ -2748,7 +2868,7 @@ function renderPresentationOutputControl() {
   );
   setClassToggle(elements.presentationRefreshButton, "is-loading", state.presentationDisplayBusy);
   if (elements.presentationRefreshButton) {
-    elements.presentationRefreshButton.disabled = state.presentationDisplayBusy
+    elements.presentationRefreshButton.disabled = discovery === "unsupported" || state.presentationDisplayBusy
       || state.presentationControlBusy
       || session.phase !== "inactive";
     if (state.presentationDisplayBusy) {
@@ -4397,12 +4517,12 @@ function closeRequestDetailForNavigation() {
   return true;
 }
 
-function activateRequestSubview(subview, { focusTab = false } = {}) {
+function activateRequestSubview(subview, { focusTab = false, rememberScroll = true } = {}) {
   const nextSubview = normalizeRequestSubview(subview, "");
   if (!nextSubview) {
     return false;
   }
-  rememberRequestScrollPosition();
+  if (rememberScroll) rememberRequestScrollPosition();
   const changed = state.requestSubview !== nextSubview;
   if (changed) leaveSourceEditors();
   if (changed) {
@@ -4420,6 +4540,7 @@ function activateRequestSubview(subview, { focusTab = false } = {}) {
       .find((button) => button.dataset.requestView === nextSubview)
       ?.focus({ preventScroll: true });
   }
+  globalThis.BilikaraHostLayout?.rememberSubTabs?.();
   return changed;
 }
 
@@ -4442,6 +4563,7 @@ function activateSearchMode(mode, { focusTab = false } = {}) {
       .find((button) => button.dataset.searchMode === nextMode)
       ?.focus({ preventScroll: true });
   }
+  globalThis.BilikaraHostLayout?.rememberSubTabs?.();
   return changed;
 }
 
@@ -4468,6 +4590,7 @@ function activateDiscoverMode(mode, { focusTab = false } = {}) {
       .find((button) => button.dataset.discoverMode === nextMode)
       ?.focus({ preventScroll: true });
   }
+  globalThis.BilikaraHostLayout?.rememberSubTabs?.();
   return changed;
 }
 
@@ -4492,6 +4615,7 @@ function activateSourcesMode(mode, { focusTab = false } = {}) {
       .find((button) => button.dataset.sourcesMode === nextMode)
       ?.focus({ preventScroll: true });
   }
+  globalThis.BilikaraHostLayout?.rememberSubTabs?.();
   return changed;
 }
 
@@ -4539,12 +4663,17 @@ function renderHostWorkspaceSelection({ measureNarrowLayout = true } = {}) {
     && hostRequestWorkspaceUsesOverlay();
   const narrowToolSheet = hostNarrowToolSheetUsesOverlay();
   if (narrowToolSheet && !state.hostNarrowToolSheetActive) {
-    // Resizing while editing must not hide/inert the active form. Keep the
-    // shared tool drawer open for that focus owner; idle layouts still fold.
-    state.hostWorkspaceOverlayOpen = typeof document !== "undefined"
-      && Boolean(elements.hostWorkspaceRegion?.contains?.(document.activeElement)
-        || state.sessionUserEditor?.editor?.node.contains(document.activeElement));
+    // A temporary two-column layout must not erase an explicitly opened drawer.
+    // Fresh idle layouts still fold; an active focus owner also keeps it open.
+    state.hostWorkspaceOverlayOpen = state.hostWorkspaceOverlayRestoreOpen
+      || typeof document !== "undefined"
+        && Boolean(elements.hostWorkspaceRegion?.contains?.(document.activeElement)
+          || state.sessionUserEditor?.editor?.node.contains(document.activeElement));
+    state.hostWorkspaceOverlayRestoreOpen = false;
   } else if (!narrowToolSheet) {
+    if (state.hostNarrowToolSheetActive) {
+      state.hostWorkspaceOverlayRestoreOpen = state.hostWorkspaceOverlayOpen;
+    }
     state.hostWorkspaceOverlayOpen = false;
   }
   state.hostNarrowToolSheetActive = narrowToolSheet;
@@ -4850,9 +4979,28 @@ function trapDeveloperDialogFocus(event, dialog) {
   }
 }
 
+function syncHostColumnAdmission() {
+  const root = document.documentElement;
+  if (globalThis.BilikaraHostLayout?.isPortrait()) {
+    root.dataset.hostColumns = "phone";
+    return "phone";
+  }
+  const bounds = elements.hostContentRegion?.getBoundingClientRect?.();
+  if (!bounds || typeof window.getComputedStyle !== "function") return "compact";
+  const style = window.getComputedStyle(elements.appShell);
+  const rem = parseFloat(window.getComputedStyle(root).fontSize) || 16;
+  const minimum = name => (parseFloat(style.getPropertyValue(name)) || 0) * rem;
+  const gap = parseFloat(style.getPropertyValue("--host-shell-gap")) || 12;
+  const fits = bounds.width >= minimum("--host-stage-min-rem")
+      + minimum("--host-workspace-min-rem") + gap
+    && bounds.height >= minimum("--host-two-column-min-block-rem");
+  const layout = fits ? "two" : "compact";
+  if (root.dataset.hostColumns !== layout) root.dataset.hostColumns = layout;
+  return layout;
+}
+
 function narrowHostViewport() {
-  return typeof window !== "undefined"
-    && Boolean(window.matchMedia?.("(max-width: 1179px)")?.matches);
+  return syncHostColumnAdmission() === "compact";
 }
 
 function syncNarrowToolLayout() {
@@ -5242,7 +5390,7 @@ function closeOrdinaryPopoverForEscape() {
 }
 
 function stageControlsAreInline() {
-  return elements.appShell?.dataset.stageControlsLayout === "inline";
+  return elements.appShell?.dataset.stageControlsLayout?.startsWith("inline") === true;
 }
 
 function measureStageControlTrayNaturalSize(width, { layout = "", density = "" } = {}) {
@@ -5290,9 +5438,11 @@ function measureStageControlTrayNaturalSize(width, { layout = "", density = "" }
     .every((panel) => {
       const copy = panel.querySelector(".av-sync-copy")?.getBoundingClientRect?.();
       const controls = panel.querySelector(".av-sync-controls")?.getBoundingClientRect?.();
-      return copy && controls
-        && controls.left >= copy.right - 1
-        && Math.min(copy.bottom, controls.bottom) - Math.max(copy.top, controls.top) > 0;
+      return copy && controls && (
+        (controls.left >= copy.right - 1
+          && Math.min(copy.bottom, controls.bottom) - Math.max(copy.top, controls.top) > 0)
+        || (controls.top >= copy.bottom - 1 && controls.left >= panel.getBoundingClientRect().left - 1)
+      );
     });
   const labelledButtonsFit = [...tray.querySelectorAll("button")]
     .filter((button) => !button.hidden && (button.offsetWidth || button.offsetHeight))
@@ -5527,6 +5677,7 @@ function measurePersistentStage() {
   if (!elements.appShell || !elements.leftColumn || !elements.playerPanel) {
     return "compact";
   }
+  const columns = syncHostColumnAdmission();
   const titleNode = elements.currentTitle;
   titleNode?.classList.remove("is-two-line", "is-scrolling");
   titleNode?.style.removeProperty("--host-current-title-marquee-offset");
@@ -5548,10 +5699,24 @@ function measurePersistentStage() {
       setStageControlTrayOpen(true, {moveFocus: false});
     }
     syncAudioVariantOverflow();
+    const groups = Array.from(elements.stageExtendedControls?.children || [])
+      .filter(group => !group.hidden && group.offsetHeight);
+    const lastGroup = groups[groups.length - 1];
+    if (lastGroup && elements.stageControlTray) {
+      const end = lastGroup.getBoundingClientRect();
+      const controls = elements.stageExtendedControls.getBoundingClientRect();
+      const trayStyle = getComputedStyle(elements.stageControlTray);
+      const scrollInsets = (parseFloat(trayStyle.paddingTop)||0) + (parseFloat(trayStyle.paddingBottom)||0);
+      const minimum = `${Math.ceil(end.height + Math.max(0, controls.bottom - end.bottom) + scrollInsets)}px`;
+      if (elements.stageControlTray.style.getPropertyValue("--stage-controls-min-block-size") !== minimum) {
+        elements.stageControlTray.style.setProperty("--stage-controls-min-block-size", minimum);
+      }
+    }
     return "portrait";
   }
-  const narrowShell = Boolean(window.matchMedia?.("(max-width: 1179px)")?.matches);
-  const presentationActive = presentationCompositionActive();
+  elements.stageControlTray?.style.removeProperty("--stage-controls-min-block-size");
+  const narrowShell = columns !== "two";
+  const presentationActive = presentationCompositionActive() || networkOutputOwnsPlayback();
   const presentationContextChanged = state.stageMeasuredPresentationActive !== presentationActive;
   state.stageMeasuredPresentationActive = presentationActive;
   const panelStyle = window.getComputedStyle(elements.playerPanel);
@@ -5608,7 +5773,13 @@ function measurePersistentStage() {
     && inlineHeightSlack >= -1;
   const previousLayout = elements.appShell.dataset.stageControlsLayout;
   const fitHysteresis = 16;
-  const inlineControls = narrowShell
+  const minimumControlHeight = Math.min(trayHeight, 112 * (parseFloat(window.getComputedStyle(document.documentElement).fontSize) || 16) / 16);
+  const availableInlineHeight = innerHeight - headerHeight - variantHeight
+    - presentationControlsHeight - desiredInlineFrameHeight - (panelGap * persistentRowGapCount);
+  const scrollableControlsFit = !narrowShell && inlineWidthSlack >= -1
+    && inlineTraySize.contentFits && trayHeight > 0
+    && availableInlineHeight >= minimumControlHeight;
+  const inlineControls = scrollableControlsFit || (narrowShell
     ? fullFrameWithInlineControlsFits
     : presentationContextChanged
       ? fullFrameWithInlineControlsFits
@@ -5616,8 +5787,9 @@ function measurePersistentStage() {
         ? fullFrameWithInlineControlsFits || inlineFitSlack >= -fitHysteresis
         : previousLayout === "popup"
           ? fullFrameWithInlineControlsFits && inlineFitSlack >= fitHysteresis
-          : fullFrameWithInlineControlsFits;
-  const controlLayout = inlineControls ? "inline" : "popup";
+          : fullFrameWithInlineControlsFits);
+  const controlLayout = !inlineControls ? "popup" : narrowShell ? "inline"
+    : fullFrameWithInlineControlsFits ? "inline-natural" : "inline-scrollable";
   const popupHeightSlack = innerHeight - (
     headerHeight
       + variantHeight
@@ -5626,7 +5798,9 @@ function measurePersistentStage() {
       + toggleHeight
       + (panelGap * persistentRowGapCount)
   );
-  const titleHeightSlack = inlineControls ? inlineHeightSlack : popupHeightSlack;
+  const titleHeightSlack = scrollableControlsFit
+    ? availableInlineHeight - minimumControlHeight
+    : inlineControls ? inlineHeightSlack : popupHeightSlack;
   const titleCanUseTwoLines = measureCurrentTitle({allowTwoLines: !narrowShell, titleHeightSlack});
   if (titleCanUseTwoLines) {
     headerHeight = elements.playerPanel.querySelector(".panel-head")?.getBoundingClientRect().height || headerHeight;
@@ -5635,9 +5809,13 @@ function measurePersistentStage() {
     ? inlineFit
     : findStageControlFit(Math.min(860, Math.max(280, window.innerWidth - 24)), { layout: "popup" });
   const controlDensity = popupFit.density;
+  const controlRegionHeight = controlLayout === "inline-scrollable"
+    ? Math.max(minimumControlHeight, innerHeight - headerHeight - variantHeight
+      - presentationControlsHeight - desiredInlineFrameHeight - (panelGap * persistentRowGapCount))
+    : trayHeight;
   const reservedControlsHeight = inlineControls
     ? headerHeight + variantHeight + presentationControlsHeight
-      + trayHeight + (panelGap * persistentRowGapCount)
+      + controlRegionHeight + (panelGap * persistentRowGapCount)
     : headerHeight + variantHeight + presentationControlsHeight
       + toggleHeight + (panelGap * persistentRowGapCount);
   const frameHeight = Math.max(0, Math.min(fullFrameHeight, innerHeight - reservedControlsHeight));
@@ -5653,6 +5831,7 @@ function measurePersistentStage() {
   elements.appShell.dataset.stageControlDensity = controlDensity;
   elements.playerPanel.style.setProperty("--stage-frame-inline-size", `${Math.floor(frameWidth)}px`);
   elements.playerPanel.style.setProperty("--stage-frame-block-size", `${Math.floor(frameHeight)}px`);
+  elements.playerPanel.style.setProperty("--stage-control-region-block-size", `${Math.floor(controlRegionHeight)}px`);
   if (previousLayout !== controlLayout) {
     if (inlineControls) {
       state.stageControlInlineCollapsed = false;
@@ -5687,10 +5866,24 @@ function initializePersistentStageFitting() {
     if (elements.audioVariantAnchor) {
       state.stageResizeObserver.observe(elements.audioVariantAnchor);
     }
+    Array.from(elements.stageExtendedControls?.children || []).forEach(group => state.stageResizeObserver.observe(group));
     state.queueScrollResizeObserver?.disconnect?.();
-    state.queueScrollResizeObserver = new ResizeObserver(scheduleQueueScrollOwnershipSync);
+    queueRowHeights.clear();
+    queueCapacityDirty = true;
+    state.queueScrollResizeObserver = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        if (!entry.target.classList.contains("song-item") || entry.target.parentElement !== elements.playlist) continue;
+        const box = Array.isArray(entry.borderBoxSize) ? entry.borderBoxSize[0] : entry.borderBoxSize;
+        const height = box?.blockSize || entry.target.offsetHeight;
+        if (height > 0) queueRowHeights.set(entry.target, height);
+      }
+      queueCapacityDirty = true;
+      scheduleQueueScrollOwnershipSync();
+    });
     state.queueScrollResizeObserver.observe(elements.listStage);
     state.queueScrollResizeObserver.observe(elements.playlist);
+    state.queueScrollResizeObserver.observe(elements.queueCurrent);
+    elements.playlist.querySelectorAll(".song-item").forEach(node => state.queueScrollResizeObserver.observe(node));
   }
   schedulePersistentStageMeasurement();
   scheduleQueueScrollOwnershipSync();
@@ -6791,13 +6984,6 @@ async function fetchState({signal = null} = {}) {
     // The Rust checkpoint is authoritative after startup. Browser preferences
     // are a defensive display cache and must never overwrite a restored room.
     state.localPreferencesHydrated = true;
-    if (rememberedVolume !== serverVolume || rememberedMute !== serverMuted) {
-      await apiPostStateSnapshot("/api/player/volume", {
-        volume_percent: rememberedVolume,
-        is_muted: rememberedMute,
-      });
-      syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
-    }
   }
   scheduleFavlistBrowseReloadFromState(previousData, state.data);
   const renderSignature = renderSignatureForData(state.data);
@@ -8036,7 +8222,14 @@ function androidBrowseFrame(container, renderPage) {
     container.before(frame); frame.append(container);
     record = {frame, renderPage};
     record.pager = window.BilikaraResultPager.create(container, {
-      footer: frame, translate: t, reportError: message => setAppMessage(message, true),
+      footer: frame, fit:true,
+      minimumRows:() => document.documentElement.dataset.hostLayout === "portrait" && container.classList.contains("search-results") ? 3 : 1,
+      translate: t, reportError: message => setAppMessage(message, true),
+      retainPages:true,
+      onCommit:(items, target) => {
+        const origin = requestDetailOriginForContainer(container);
+        target.querySelectorAll(".search-result-item").forEach((row, index) => applyRequestResultSelection(row, items[index], origin));
+      },
       renderItems: (items, message, target = container) => record.renderPage(items, message, target),
     });
     androidBrowsePages.set(container, record);
@@ -8051,7 +8244,7 @@ function hideAndroidBrowsePages(container) {
 }
 function androidBrowseOptions(container, items, emptyText) {
   const owner = requestDetailOriginForContainer(container)?.key;
-  let data = {}, key = owner, loading = false, load = null;
+  let data = {}, key = owner, loading = false, load = null, positionKey;
   if (owner === "shared" || owner === "local") {
     const mode = state.searchModeState[owner];
     data = mode.pageData || {}; loading = mode.loading;
@@ -8077,13 +8270,15 @@ function androidBrowseOptions(container, items, emptyText) {
     const selected = favorites ? state.favlistBrowseSelectedFolderId : state.followBrowseSelectedUid;
     const query = String(data.query || ""); loading = favorites ? state.favlistBrowseLoading : state.followBrowseLoading;
     key = JSON.stringify([owner, selected, query, favorites ? state.favlistBrowseSeq : state.followBrowseSeq]);
+    positionKey = JSON.stringify([owner, selected, query]);
     if (typeof data.has_more === "boolean") load = page => (favorites ? fetchGatchaFavlistBrowse : fetchGatchaBrowse)(selected, query, page);
   }
   const limited = !load;
   const total = !limited && Number.isSafeInteger(data.matched_count) && data.matched_count >= 0
     ? data.matched_count : limited || data.has_more === false ? items.length : null;
-  return {key, items, emptyText, total, hasMore:Boolean(data.has_more), limited, load, loading, language:state.language,
-    readSize:["shared","local"].includes(owner) ? 72 : undefined};
+  return {key, positionKey, items, emptyText, total, hasMore:Boolean(data.has_more), limited, load, loading, language:state.language,
+    readSize:["shared","local"].includes(owner) ? 72 : undefined,
+    readAhead:load ? 2 : 0, prefetch:Boolean(load)};
 }
 function androidGridPages(container, items, key, renderPage, {loading = false, emptyText = ""} = {}) {
   const record = androidBrowseFrame(container, renderPage);
@@ -8106,22 +8301,18 @@ function renderSearchResultPage(container, items, emptyText, originContainer = c
   if (!container) {
     return;
   }
-  container.innerHTML = "";
   container.classList.remove("hidden");
 
   if (!items.length) {
     const empty = document.createElement("div");
     empty.className = "search-empty";
     empty.textContent = emptyText;
-    container.appendChild(empty);
+    container.replaceChildren(empty);
     return;
   }
 
   const requestOrigin = requestDetailOriginForContainer(originContainer);
-  items.forEach((item) => {
-    const row = createSearchResultItem(item, { requestOrigin });
-    container.appendChild(row);
-  });
+  container.replaceChildren(...items.map(item => createSearchResultItem(item, {requestOrigin})));
 }
 
 function appendSearchResultItems(container, items) {
@@ -9333,6 +9524,7 @@ async function loadCategoryBrowse({ categoryId = state.categoryBrowseSelectedId,
     state.categoryBrowseItems = [];
     state.categoryBrowseOffset = 0;
     state.categoryBrowseHasMore = true;
+    state.categoryBrowseMatchedCount = null;
     state.categoryBrowseLoaded = false;
     state.categoryBrowseScrollPositions.detail = 0;
   }
@@ -9350,6 +9542,7 @@ async function loadCategoryBrowse({ categoryId = state.categoryBrowseSelectedId,
       return;
     }
     const nextItems = Array.isArray(data.items) ? data.items : [];
+    state.categoryBrowseMatchedCount = Number.isSafeInteger(data.matched_count) && data.matched_count >= 0 ? data.matched_count : null;
     state.categoryBrowseItems = append ? mergeCategoryBrowseItems(state.categoryBrowseItems, nextItems) : mergeCategoryBrowseItems([], nextItems);
     state.categoryBrowseHasMore = Boolean(data.has_more);
     state.categoryBrowseOffset = Number(data.next_offset ?? (append ? state.categoryBrowseOffset + nextItems.length : nextItems.length)) || state.categoryBrowseItems.length;
@@ -9493,7 +9686,8 @@ function renderHostSourceCardPage(container, rows, emptyText, source, editor) {
       avatar.src = entry.avatar_url; button.append(avatar);
     }
     window.BilikaraSourceStatus?.syncCard(button, state.data?.gatcha, t);
-    button.dataset.contentSignature = JSON.stringify([entry, state.language,
+    button.dataset.contentSignature = JSON.stringify([entry.id, entry.title, entry.placeholder,
+      entry.avatar_url, count.textContent, state.language,
       window.BilikaraSourceStatus.sourceState(state.data?.gatcha, favorites ? {folderId:entry.id} : {uid:entry.id})]);
     nodes.push(editor?.card(button, entry) || button);
   }
@@ -9531,6 +9725,7 @@ function renderFollowBrowse() {
   const owners = Array.isArray(state.followBrowseData?.owners) ? state.followBrowseData.owners : [];
   const items = Array.isArray(state.followBrowseData?.items) ? state.followBrowseData.items : [];
   const hasSelectedUid = Boolean(state.followBrowseSelectedUid);
+  elements.modalFollowUidForm?.closest(".source-action-row")?.classList.toggle("hidden", hasSelectedUid);
   const placeholders = window.BilikaraSourceStatus?.queuedSources?.(state.data?.gatcha, "uids",
     owners.map((owner) => owner?.uid)) || [];
   elements.sourcesFollowedScroll?.classList.toggle("is-detail-view", hasSelectedUid);
@@ -9646,6 +9841,7 @@ function renderFavlistBrowse() {
   const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
   const items = Array.isArray(state.favlistBrowseData?.items) ? state.favlistBrowseData.items : [];
   elements.sourcesFavoritesScroll?.classList.toggle("is-detail-view", Boolean(state.favlistBrowseSelectedFolderId));
+  elements.modalFavlistPullForm?.closest(".source-action-row")?.classList.toggle("hidden", Boolean(state.favlistBrowseSelectedFolderId));
   const placeholders = window.BilikaraSourceStatus?.queuedSources?.(state.data?.gatcha, "favorites",
     folders.map((folder) => folder?.folder_id || folder?.id)) || [];
   const signature = JSON.stringify({
@@ -11544,6 +11740,23 @@ function syncAndroidLoginLabel() {
     : "service.notLoggedIn"));
 }
 
+function resetMobileLogoutConfirmation() {
+  if (!["android", "ios"].includes(document.documentElement.dataset.hostPlatform)) return;
+  if (!elements.bbdownLoginButton?.hasAttribute("data-logout-armed")) return;
+  delete elements.bbdownLoginButton.dataset.logoutArmed;
+  syncAndroidLoginLabel();
+}
+for (const eventName of ["pointerdown", "click", "focusin"]) {
+  document.addEventListener(eventName, event => {
+    if (!elements.bbdownLoginButton?.contains(event.target)) resetMobileLogoutConfirmation();
+  }, true);
+}
+window.addEventListener("bilikara:ios-dock-select", resetMobileLogoutConfirmation);
+document.addEventListener("keydown", event => { if (event.key === "Escape") resetMobileLogoutConfirmation(); });
+window.addEventListener("popstate", resetMobileLogoutConfirmation);
+window.addEventListener("pagehide", resetMobileLogoutConfirmation);
+window.addEventListener("blur", resetMobileLogoutConfirmation);
+
 function maybeStartBBDownLogin(login, options = {}) {
   // The settings view can render before the restored session is resolved.
   // Defer login side effects until Rust admits them; ordinary LAN QR rendering
@@ -11837,6 +12050,8 @@ function renderCachePolicyControls(cachePolicy) {
     elements.cacheDownloadSourceSelect.value = currentDownloadSource;
     elements.cacheDownloadSourceSelect.disabled = state.cachePolicySaving || state.downloadSourcePreparing;
   }
+
+  for (const select of [elements.cacheQualitySelect,elements.cacheDownloadSourceSelect]) window.BilikaraRuntimeSelect?.sync(select);
 
   if (elements.cacheHiresCheckbox) {
     elements.cacheHiresCheckbox.checked = audioHires;
@@ -12160,7 +12375,11 @@ function syncCachePanelVisibility(options = {}) {
   if (elements.cacheSettingsToggle.getAttribute("aria-expanded") !== expanded) {
     elements.cacheSettingsToggle.setAttribute("aria-expanded", expanded);
   }
-  setClassToggle(elements.cachePanel, "hidden", !state.cacheSettingsOpen);
+  // In a phone page this is resident content, not the desktop popover. Its
+  // ancestor owns visibility, including while Settings reveals My on return.
+  const phoneEmbedded = globalThis.BilikaraHostLayout?.isPortrait?.()
+    && elements.cachePanel.closest("#android-settings-slot");
+  setClassToggle(elements.cachePanel, "hidden", !state.cacheSettingsOpen && !phoneEmbedded);
   maybeStartBBDownLogin(state.data?.bbdown?.login, {
     force: Boolean(options.forceLoginRefresh),
     reopen: Boolean(options.reopen),
@@ -17479,6 +17698,9 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
     const hint = document.createElement("p");
     hint.textContent = state.data?.current_item ? t("list.emptyWithCurrentHint") : t("list.emptyHint");
     emptyNode.append(title, hint);
+    for (const node of queueRowHeights.keys()) state.queueScrollResizeObserver?.unobserve(node);
+    queueRowHeights.clear();
+    queueCapacityDirty = true;
     elements.playlist.replaceChildren(emptyNode);
     scheduleQueueScrollOwnershipSync();
     return;
@@ -17498,6 +17720,8 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
     if (!node) {
       node = elements.playlistTemplate.content.firstElementChild.cloneNode(true);
       applyStaticI18n(node);
+      state.queueScrollResizeObserver?.observe(node);
+      queueCapacityDirty = true;
     }
     if (node.dataset.id !== item.id) {
       node.dataset.id = item.id;
@@ -17593,6 +17817,9 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
     if (node.contains(state.openRowMenuTrigger)) {
       closeOpenMenus({ restoreFocus: false });
     }
+    state.queueScrollResizeObserver?.unobserve(node);
+    queueRowHeights.delete(node);
+    queueCapacityDirty = true;
     node.remove();
   });
   scheduleQueueScrollOwnershipSync();
@@ -17620,11 +17847,49 @@ function observeHostScrollInsets(element) {
   schedule();
 }
 
+const queueRowHeights = new Map();
+let queueCapacityDirty = true;
+
 function syncQueueScrollOwnership() {
   state.queueScrollMeasureFrame = null;
   const playlist = elements.playlist;
   if (!playlist || playlist.clientHeight <= 0) {
     return false;
+  }
+  const stage = elements.listStage;
+  // ResizeObserver and row insertion/removal own capacity measurements.
+  // Ordinary progress snapshots retain the existing scroll owner.
+  if (queueCapacityDirty) {
+    queueCapacityDirty = false;
+    const currentHeight = elements.queueCurrent.offsetHeight;
+    const gap = parseFloat(getComputedStyle(stage).rowGap) || 0;
+    const style = getComputedStyle(playlist);
+    const stageStyle = getComputedStyle(stage);
+    const padding = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0)
+      + (parseFloat(stageStyle.paddingTop) || 0) + (parseFloat(stageStyle.paddingBottom) || 0);
+    let rowHeight = 0;
+    for (const height of queueRowHeights.values()) rowHeight = Math.max(rowHeight, height);
+    const whole = Boolean(globalThis.BilikaraHostLayout?.isPortrait?.())
+      && stage.clientHeight - currentHeight - gap - padding < rowHeight;
+    const previousWhole = stage.classList.contains("is-whole-list-scrollable");
+    if (whole !== previousWhole) {
+      const offset = previousWhole ? stage.scrollTop : playlist.scrollTop;
+      stage.classList.toggle("is-whole-list-scrollable", whole);
+      if (whole) {
+        stage.tabIndex = 0;
+        stage.scrollTop = offset > 0 ? currentHeight + gap + offset : 0;
+      } else {
+        stage.removeAttribute("tabindex");
+        stage.removeAttribute("role");
+        stage.removeAttribute("aria-label");
+        playlist.scrollTop = Math.max(0, offset - currentHeight - gap);
+        stage.scrollTop = 0;
+      }
+    }
+  }
+  if (stage.classList.contains("is-whole-list-scrollable")) {
+    stage.setAttribute("role", "region");
+    stage.setAttribute("aria-label", t("list.title"));
   }
   const scrollable = playlist.scrollHeight > playlist.clientHeight + 1;
   playlist.classList.toggle("is-scrollable", scrollable);
@@ -18199,7 +18464,41 @@ function dismissBackupBanner() {
   updateBackupDismissButton();
 }
 
+let mobileExportModalLease = null;
+let mobileExportReturnFocus = null;
+function syncMobileExportModal(active) {
+  const backdrop = elements.confirmExportBackdrop;
+  elements.confirmPopover.setAttribute("aria-modal", String(active));
+  if (!active) {
+    backdrop?.classList.add("hidden");
+    backdrop?.classList.remove("closing");
+    if (mobileExportModalLease) {
+      const {shell, inert, overflow, priority} = mobileExportModalLease;
+      if (shell) shell.inert = inert;
+      if (overflow) document.body.style.setProperty("overflow", overflow, priority);
+      else document.body.style.removeProperty("overflow");
+      mobileExportModalLease = null;
+      const target = mobileExportReturnFocus;
+      mobileExportReturnFocus = null;
+      if (target?.isConnected && typeof target.focus === "function") target.focus({preventScroll:true});
+    }
+    return;
+  }
+  if (!mobileExportModalLease) {
+    const shell = document.querySelector(".app-shell");
+    mobileExportModalLease = {shell, inert: Boolean(shell?.inert),
+      overflow: document.body.style.getPropertyValue("overflow"), priority: document.body.style.getPropertyPriority("overflow")};
+    if (shell) shell.inert = true;
+    document.body.style.overflow = "hidden";
+    window.requestAnimationFrame(() => {
+      if (mobileExportModalLease && state.confirmIntent?.type === "export-history") elements.confirmClose?.focus({preventScroll:true});
+    });
+  }
+  backdrop?.classList.remove("hidden", "closing");
+}
+
 function openConfirm(intent) {
+  mobileExportReturnFocus = null;
   state.confirmIntent = {
     ...intent,
     focusElement: intent?.focusElement || document.activeElement,
@@ -18211,11 +18510,13 @@ function closeConfirm({ restoreFocus = true } = {}) {
   closeCacheAdvancedInfo();
   const focusElement = state.confirmIntent?.focusElement;
   const sourceEditor = state.confirmIntent?.sourceEditor;
+  const modal = Boolean(mobileExportModalLease);
+  if (modal) mobileExportReturnFocus = restoreFocus ? focusElement : null;
   state.confirmIntent = null;
   if (sourceEditor) sourceEditor.confirmation = null;
   state.confirmPopoverRenderSignature = "";
   renderConfirmPopover();
-  if (restoreFocus && focusElement?.isConnected && typeof focusElement.focus === "function") {
+  if (!modal && restoreFocus && focusElement?.isConnected && typeof focusElement.focus === "function") {
     focusElement.focus({ preventScroll: true });
   }
 }
@@ -18262,7 +18563,30 @@ function confirmPopoverRenderSignature(intent) {
   });
 }
 
+function exportDialogBounds() {
+  const root = document.documentElement;
+  const styles = getComputedStyle(root);
+  const inset = side => Math.max(0, parseFloat(styles.getPropertyValue(`--ios-safe-${side}`)) || 0);
+  const viewport = window.visualViewport;
+  const x = viewport?.offsetLeft || 0, y = viewport?.offsetTop || 0;
+  const width = viewport?.width || window.innerWidth, height = viewport?.height || window.innerHeight;
+  const dock = document.getElementById("android-host-dock");
+  const dockTop = root.dataset.hostLayout === "portrait" && dock?.getClientRects().length
+    ? dock.getBoundingClientRect().top : window.innerHeight;
+  return {
+    left: Math.max(x, inset("left")) + 12,
+    right: Math.min(x + width, window.innerWidth - inset("right")) - 12,
+    top: Math.max(y, inset("top")) + 12,
+    bottom: Math.min(y + height, dockTop, window.innerHeight - inset("bottom")) - 12,
+  };
+}
+
 function confirmPopoverPlacement(intent, width, popoverHeight) {
+  if (intent.type === "export-history") {
+    const bounds = exportDialogBounds();
+    return {left: bounds.left + Math.max(0, (bounds.right - bounds.left - width) / 2),
+      top: bounds.top + Math.max(0, (bounds.bottom - bounds.top - popoverHeight) / 2)};
+  }
   const margin = 12;
   const anchorRect = confirmPopoverAnchorRect(intent);
   const maxLeft = Math.max(margin, window.innerWidth - width - margin);
@@ -18311,13 +18635,16 @@ function renderConfirmPopover() {
       const closing = popover.__bilikaraCloseSequence = (popover.__bilikaraCloseSequence || 0) + 1;
       popover.classList.add("closing");
       popover.inert = true;
-      Promise.allSettled((popover.getAnimations?.() || []).map(animation => animation.finished)).then(() => {
+      if (mobileExportModalLease) elements.confirmExportBackdrop?.classList.add("closing");
+      const animations = [...(popover.getAnimations?.() || []), ...(elements.confirmExportBackdrop?.getAnimations?.() || [])];
+      Promise.allSettled(animations.map(animation => animation.finished)).then(() => {
         if (state.confirmIntent || popover.__bilikaraCloseSequence !== closing) return;
         popover.classList.add("hidden");
         popover.classList.remove("closing");
         popover.inert = false;
+        syncMobileExportModal(false);
       });
-    }
+    } else if (popover.classList.contains("hidden")) syncMobileExportModal(false);
     return;
   }
 
@@ -18339,6 +18666,7 @@ function renderConfirmPopover() {
   const hasPageSizeSelect = Boolean(intent.pageSizeSelect);
   const hideMessage = Boolean(intent.hideMessage);
   const isExport = intent.type === "export-history";
+  syncMobileExportModal(isExport && ["android", "ios"].includes(document.documentElement.dataset.hostPlatform));
   const title = isExport ? t("history.exportTitle")
     : intent.type === "install-app-update" ? t("service.appUpdate")
       : intent.type === "remove-sources" ? t("sources.removeSelected") : "";
@@ -18408,6 +18736,14 @@ function renderConfirmPopover() {
     elements.confirmSecondary.classList.toggle("hidden", !hasSecondaryAction);
   }
   elements.confirmPopover.classList.toggle("confirm-popover-wide", hasSourceSelect || hasPageSizeSelect);
+  if (isExport) {
+    const bounds = exportDialogBounds();
+    elements.confirmPopover.style.maxWidth = `${Math.max(0, bounds.right - bounds.left)}px`;
+    elements.confirmPopover.style.maxHeight = `${Math.max(0, bounds.bottom - bounds.top)}px`;
+  } else {
+    elements.confirmPopover.style.removeProperty("max-width");
+    elements.confirmPopover.style.removeProperty("max-height");
+  }
   elements.confirmPopover.style.left = "0px";
   elements.confirmPopover.style.top = "0px";
   elements.confirmPopover.style.visibility = "hidden";
@@ -20581,7 +20917,6 @@ async function performAvDelayAction(action) {
     setAppMessage(error.message, true);
     render();
   } finally {
-    state.avOffsetSaving = false;
     activeElement?.removeAttribute?.("aria-busy");
     renderAvSyncControls(frontendPlaybackMode(state.data?.playback_mode), state.data?.player_settings);
   }
@@ -20828,6 +21163,7 @@ function initSearchDetailController() {
   const container = elements.requestWorkspace;
   searchDetailController = window.BilikaraSongDetail.createSongDetailController({
     container,
+    resolveContainer: () => ["android", "ios"].includes(document.documentElement.dataset.hostPlatform) ? document.body : container,
     t,
     requestButtonClass: "next-button",
     nextButtonClass: "toolbar-button",
@@ -22172,6 +22508,20 @@ elements.confirmPageSize?.addEventListener("change", () => {
   updateConfirmHistoryExportPageSize();
 });
 
+elements.confirmExportBackdrop?.addEventListener("pointerdown", event => {
+  if (!mobileExportModalLease) return;
+  event.stopPropagation();
+  closeConfirm();
+});
+elements.confirmPopover?.addEventListener("keydown", event => {
+  if (!mobileExportModalLease || event.key !== "Tab") return;
+  const controls = [...elements.confirmPopover.querySelectorAll('button:not([disabled]), select:not([disabled]), input:not([disabled]), [tabindex="0"]')]
+    .filter(node => node.getClientRects().length && getComputedStyle(node).visibility !== "hidden");
+  const first = controls[0], last = controls[controls.length - 1];
+  if (event.shiftKey && document.activeElement === first) {event.preventDefault();last?.focus();}
+  else if (!event.shiftKey && document.activeElement === last) {event.preventDefault();first?.focus();}
+});
+
 elements.confirmSecondary?.addEventListener("click", async () => {
   const intent = state.confirmIntent;
   if (!intent) {
@@ -22576,10 +22926,10 @@ document.addEventListener("click", (event) => {
     const wrap = toggle.closest(".song-actions-wrap, .history-actions-wrap");
     const menu = wrap?.querySelector(".menu-content");
     if (menu) {
-      const isHidden = menu.classList.contains("hidden");
+      const isHidden = toggle.getAttribute("aria-expanded") !== "true";
       closeOpenMenus({ restoreFocus: false });
       if (isHidden) {
-        menu.classList.remove("hidden");
+        setRowMenuVisible(menu, true);
         toggle.setAttribute("aria-expanded", "true");
         state.openRowMenuTrigger = toggle;
         menu.querySelector("button:not(:disabled)")?.focus({ preventScroll: true });
@@ -23718,6 +24068,7 @@ window.visualViewport?.addEventListener?.("resize", scheduleRowMenuGeometry);
 window.visualViewport?.addEventListener?.("scroll", scheduleRowMenuGeometry);
 document.fonts?.addEventListener?.("loadingdone", scheduleRowMenuGeometry);
 window.addEventListener("resize", () => {
+  scheduleRowMenuGeometry();
   scheduleConfirmPopoverPositionSync();
   renderHostWorkspaceSelection();
   schedulePersistentStageMeasurement();
@@ -23726,6 +24077,7 @@ window.addEventListener("resize", () => {
   syncAudioVariantOverflow();
 });
 window.addEventListener("scroll", () => {
+  scheduleRowMenuGeometry();
   scheduleConfirmPopoverPositionSync();
   schedulePlaybackContextualTooltipPositionSync();
 }, true);

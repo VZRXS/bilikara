@@ -118,6 +118,7 @@ const container = {
   children: [],
   set innerHTML(value) { this._innerHTML = value; this.children = []; },
   appendChild(child) { this.children.push(child); },
+  replaceChildren(...children) { this.children = children; },
 };
 function createSearchResultRow(item, options) {
   const row = { id: item.id, eagerCover: options.eagerCover };

@@ -56,6 +56,10 @@ class FakeElement {
   getBoundingClientRect() { return { left: 640, top: 100, width: 360, height: 600 }; }
 }
 function getComputedStyle(node) { return { opacity: "1", display: node.hidden ? "none" : "grid" }; }
+const document = {documentElement: {dataset: {}}};
+const window = {getComputedStyle: () => ({fontSize:'16px',getPropertyValue:name=>({
+  '--host-stage-min-rem':'28','--host-workspace-min-rem':'25','--host-two-column-min-block-rem':'25','--host-shell-gap':'12px',
+}[name] || '')})};
 const workspaces = ["queue", "history", "request", "random", "users", "settings"];
 const buttons = workspaces.map((workspace) => new FakeElement(workspace));
 const panels = workspaces.map((workspace) => new FakeElement(workspace, true));
@@ -63,6 +67,7 @@ const queueButton = buttons[0];
 const historyButton = buttons[1];
 const elements = {
   appShell: new FakeElement(),
+  hostContentRegion: {getBoundingClientRect:()=>({width:1200,height:700})},
   hostWorkspaceRegion: new FakeElement(),
   hostWorkspaceButtons: buttons,
   hostWorkspacePanels: panels,
@@ -244,7 +249,7 @@ assert.deepEqual(this.i18n[language][key], expected);
 async test_all_tools_and_request_subviews_share_one_width_per_shell_state() {
 assert.ok(!contains("--host-workspace-width", this.styles));
 assert.ok(!contains("data-request-subview", this.styles));
-assert.ok(contains("--host-tool-card-width: minmax(380px, 1fr)", this.styles));
+assert.ok(contains("--host-tool-card-width: minmax(calc(var(--host-workspace-min-rem) * 1rem), 1fr)", this.styles));
 assert.ok(!contains("--host-tool-card-width: 500px", this.styles));
 assert.ok(contains("--host-rail-width", this.styles));
 },

@@ -2,16 +2,17 @@
 (function (root) {
   "use strict";
   const pageSize = 6;
+  const measurements = [];
   const maximumPage = Math.floor(100000 / pageSize) + 1;
   const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
 
   // Bounded native panels fit complete rows. A hidden/unmeasured panel keeps
   // its existing page; very short panels use one row and internal scrolling.
-  function fittedPageSize({columns, height, itemHeight, gap = 0, padding = 0}) {
+  function fittedPageSize({columns, height, itemHeight, gap = 0, padding = 0, minimumRows = 1}) {
     if (![columns,height,itemHeight,gap,padding].every(Number.isFinite)
       || columns < 1 || height <= 0 || itemHeight <= 0 || gap < 0 || padding < 0) return null;
     const cols = Math.min(48, Math.floor(columns));
-    const rows = Math.max(1, Math.floor((height - padding + gap + .5) / (itemHeight + gap)));
+    const rows = Math.max(Math.max(1, Math.min(48, Math.floor(minimumRows) || 1)), Math.floor((height - padding + gap + .5) / (itemHeight + gap)));
     return cols * Math.min(rows, Math.floor(48 / cols));
   }
 
@@ -35,8 +36,9 @@
   }
 
   class Pages {
-    constructor(onChange = () => {}) {
+    constructor(onChange = () => {}, onError = () => {}) {
       this.onChange = onChange;
+      this.onError = onError;
       this.version = 0;
       this.cache = new Map();
       this.page = 1;
@@ -46,12 +48,27 @@
       this.externalBusy = false;
       this.total = null;
       this.pageSize = pageSize;
+      this.anchorIndex = 0;
+      this.anchorKey = undefined;
     }
 
     update(options) {
       const size = Number.isSafeInteger(options.pageSize) && options.pageSize >= 1 && options.pageSize <= 48 ? options.pageSize : pageSize;
       const sameSource = this.sourceKey === options.key && this.initialItems === options.items;
-      const firstItem = (this.page - 1) * this.pageSize;
+      // A refreshed read has a new generation (old requests must retire), but
+      // it need not be a new browsing destination. Retain only an explicit,
+      // matching UP/folder/query identity; never reuse its old page cache.
+      const samePosition = options.positionKey !== undefined && options.positionKey === this.positionKey;
+      // Capacity changes keep the original record, even when an intermediate
+      // wider page starts before it. Only deliberate navigation moves it.
+      let firstItem = sameSource || samePosition ? this.anchorIndex : 0;
+      if ((sameSource || samePosition) && options.itemKey && this.anchorKey !== undefined) {
+        const index = options.items.findIndex(item => options.itemKey(item) === this.anchorKey);
+        if (index >= 0) firstItem = index;
+      }
+      const total = count(options.total);
+      if (total !== null) firstItem = Math.min(firstItem, Math.max(0, total - 1));
+      const previousItems = this.items;
       const changed = !sameSource || this.pageSize !== size;
       this.pageSize = size;
       this.load = options.load;
@@ -60,11 +77,15 @@
       this.limited = Boolean(options.limited);
       this.prefetchEnabled = Boolean(options.prefetch);
       this.shouldPrefetch = options.shouldPrefetch;
+      this.itemKey = options.itemKey;
+      this.anchorIndex = firstItem;
+      this.anchorKey = this.itemKey && options.items[firstItem] ? this.itemKey(options.items[firstItem]) : undefined;
       if (changed || (options.loading && !this.externalBusy)) {
         this.version += 1;
         this.busy = false;
         this.prefetchPending = null;
         this.prefetchAttempt = null;
+        this.reloadAttempted = false;
       }
       this.externalBusy = Boolean(options.loading);
       if (changed) {
@@ -73,9 +94,13 @@
         this.total = count(options.total);
         this.hasMore = Boolean(options.hasMore);
         this.initialHasMore = this.hasMore;
-        this.page = sameSource ? Math.floor(firstItem / size) + 1 : 1;
+        this.page = sameSource || samePosition ? Math.floor(firstItem / size) + 1 : 1;
+        this.page = Math.min(this.page, this.lastPage);
         this.direction = 1;
-        this.items = options.items.slice((this.page - 1) * size, this.page * size);
+        const start = (this.page - 1) * size;
+        const needsRead = this.page > 1 && typeof this.load === "function"
+          && (start >= options.items.length || (start + size > options.items.length && this.hasMore));
+        this.items = needsRead ? previousItems : options.items.slice(start, start + size);
         this.cache.clear();
         for (let start = 0; start < options.items.length; start += size) {
           const items = options.items.slice(start, start + size);
@@ -84,18 +109,28 @@
           }
         }
         // The first page stays available even when a provider returns a short page.
-        this.remember(this.page, this.items);
+        if (!needsRead) this.remember(this.page, this.items);
       }
+      this.positionKey = options.positionKey;
       this.onChange();
-      void this.prefetch();
+      if (!this.loading && !this.cache.has(this.page) && !this.reloadAttempted) {
+        this.reloadAttempted = true;
+        void this.goTo(this.page, {preserveAnchor:true}).catch(error => this.onError(error));
+      } else void this.prefetch();
     }
 
     remember(page, items) {
       this.cache.delete(page);
       this.cache.set(page, items);
       while (this.cache.size > 12) {
-        const oldest = Array.from(this.cache.keys()).find(key => key !== this.page);
-        this.cache.delete(oldest);
+        // A full speculative batch must not evict the adjacent page it just
+        // fetched. Keep the nearest navigation window; equal-distance entries
+        // retain their insertion order, so the older one is discarded first.
+        const keys = Array.from(this.cache.keys());
+        const discard = this.prefetchEnabled ? keys.reduce((victim, key) =>
+          Math.abs(key - this.page) > Math.abs(victim - this.page) ? key : victim)
+          : keys.find(key => key !== this.page);
+        this.cache.delete(discard);
       }
     }
 
@@ -175,9 +210,9 @@
       await pending.promise;
     }
 
-    async goTo(page) {
+    async goTo(page, {preserveAnchor = false} = {}) {
       const pageSize = this.pageSize;
-      if (this.loading || page === this.page) return false;
+      if (this.loading || (page === this.page && this.cache.has(page))) return false;
       if (!Number.isSafeInteger(page) || page < 1 || page > this.lastPage) {
         throw new RangeError("page_out_of_range");
       }
@@ -199,6 +234,10 @@
       if (this.cache.has(page)) {
         this.page = page;
         this.items = this.cache.get(page);
+        if (!preserveAnchor) {
+          this.anchorIndex = start;
+          this.anchorKey = this.itemKey && this.items[0] ? this.itemKey(this.items[0]) : undefined;
+        }
         this.onChange();
         void this.prefetch();
         return true;
@@ -220,6 +259,10 @@
         this.hasMore = Boolean(data.has_more);
         this.page = page;
         this.items = data.items.slice(0, pageSize);
+        if (!preserveAnchor) {
+          this.anchorIndex = offset;
+          this.anchorKey = this.itemKey && this.items[0] ? this.itemKey(this.items[0]) : undefined;
+        }
         for (let start = pageSize; start < data.items.length; start += pageSize) {
           const items = data.items.slice(start, start + pageSize);
           if (items.length === pageSize || !this.hasMore) this.remember(page + start / pageSize, items);
@@ -257,11 +300,12 @@
     return Array.from({ length }, (_, index) => start + index);
   }
 
-  function create(container, { translate, renderItems, reportError, rows = 0, ignoreSwipe = "", footer = null, fit = null }) {
+  function create(container, { translate, renderItems, reportError, rows = 0, ignoreSwipe = "", footer = null, fit = null, minimumRows = 1, retainPages = false, onCommit = () => {} }) {
     const viewport = document.createElement("div");
     viewport.className = "result-page-viewport";
     container.before(viewport);
     viewport.append(container);
+    if (fit === true) fit = viewport;
     const pager = document.createElement("nav");
     pager.className = "result-pager";
     pager.tabIndex = 0;
@@ -301,7 +345,70 @@
     let navigationVersion = 0;
     let inputDraft = false;
     let viewportWidth = 0;
-    let layoutFrame = null;
+    let layoutFrame = null, observedItem = null, fittedGeometry = null;
+    // Three rendered pages at most, in addition to the existing bounded data
+    // cache. Detached cards keep decoded images and their pending-action nodes.
+    const paintedPages = new Map();
+    let paintTicket = 0, paintBusy = false, deferPaint = false, livePaint = null;
+    let paintPromise = Promise.resolve(), paintSize = 0;
+
+    function discardPaint(entry) {
+      for (const node of entry.nodes) if (!node.isConnected) {
+        for (const image of node.querySelectorAll?.("img") || []) image.removeAttribute("src");
+      }
+    }
+    function retirePaint(clear = false) {
+      paintTicket += 1;
+      paintBusy = false; deferPaint = false;
+      for (const [items, entry] of paintedPages) if (clear || !entry.ready || entry !== livePaint) {
+        discardPaint(entry); paintedPages.delete(items);
+      }
+    }
+    function preparedPage(items, message) {
+      let entry = paintedPages.get(items);
+      if (entry && (entry.language !== options.language || entry.message !== message)) {
+        discardPaint(entry); paintedPages.delete(items); entry = null;
+      }
+      if (!entry) {
+        const target = container.cloneNode(false);
+        target.removeAttribute("id");
+        renderItems(items, message, target);
+        entry = {items,nodes:Array.from(target.childNodes), language:options.language, message, ready:false};
+        const images = Array.from(target.querySelectorAll("img"));
+        for (const image of images) { image.loading = "eager"; image.decoding = "async"; }
+        entry.promise = Promise.allSettled(images.map(image => image.decode?.())).then(() => { entry.ready = true; return entry; });
+        if (!images.length || images.every(image => image.complete)) entry.ready = true;
+      }
+      paintedPages.delete(items); paintedPages.set(items, entry);
+      while (paintedPages.size > 3) {
+        const oldest = Array.from(paintedPages.keys()).find(key => key !== items && paintedPages.get(key) !== livePaint);
+        discardPaint(paintedPages.get(oldest)); paintedPages.delete(oldest);
+      }
+      return entry;
+    }
+    function commitPaint(entry) {
+      if (livePaint !== entry || entry.nodes.some(node => node.parentNode !== container)) container.replaceChildren(...entry.nodes);
+      livePaint = entry;
+      container.classList.remove("hidden");
+      pager.dataset.page = String(model.page);
+      pager.dataset.pageSize = String(model.pageSize);
+      onCommit(model.items, container);
+      scheduleLayout();
+    }
+    function prepareModelPaint() {
+      const ticket = ++paintTicket, items = model.items, language = options.language;
+      if (paintSize !== model.pageSize) { for (const entry of paintedPages.values()) discardPaint(entry); paintedPages.clear(); paintSize = model.pageSize; }
+      const entry = preparedPage(items, options.emptyText);
+      paintBusy = !entry.ready || deferPaint;
+      if (!deferPaint && (entry.ready || !container.childNodes.length)) commitPaint(entry);
+      paintPromise = entry.promise.then(() => {
+        if (ticket !== paintTicket || items !== model.items || language !== options.language) return;
+        if (!deferPaint) {
+          commitPaint(entry); paintBusy = false; model.onChange();
+        }
+        return entry;
+      });
+    }
     const ignoresSwipe = target => typeof ignoreSwipe === "function"
       ? ignoreSwipe(target) : Boolean(ignoreSwipe && target.closest(ignoreSwipe));
 
@@ -316,17 +423,35 @@
         viewportWidth = viewport.clientWidth;
         viewport.style.minHeight = "";
       }
-      if (fit && !model.loading) {
+      if (fit && !model.loading && !paintBusy) {
         const item = container.firstElementChild;
         if (!item || item.classList.contains("search-empty")) return;
         const style = getComputedStyle(container);
-        const size = fittedPageSize({
-          columns:style.gridTemplateColumns.split(" ").length,
-          height:fit.clientHeight,
-          itemHeight:item.getBoundingClientRect().height,
+        if (observedItem !== item) {
+          if (observedItem) resizeObserver.unobserve(observedItem);
+          observedItem = item; resizeObserver.observe(item);
+        }
+        // Use layout dimensions; animated transforms affect painted bounds
+        // without changing how many complete grid rows the panel can hold.
+        const itemStyle = getComputedStyle(item);
+        const borderBox = parseFloat(itemStyle.height) + (itemStyle.boxSizing === 'border-box' ? 0
+          : (parseFloat(itemStyle.paddingTop)||0)+(parseFloat(itemStyle.paddingBottom)||0)
+            +(parseFloat(itemStyle.borderTopWidth)||0)+(parseFloat(itemStyle.borderBottomWidth)||0));
+        // Capacity belongs to the grid geometry, never to the first song on
+        // each page. Titles and last-page contents must not invalidate caches.
+        const geometryKey = JSON.stringify([container.clientWidth, style.gridTemplateColumns,
+          style.rowGap, itemStyle.fontFamily, itemStyle.fontSize, itemStyle.lineHeight]);
+        if (fittedGeometry?.key !== geometryKey) fittedGeometry = {key:geometryKey, itemHeight:borderBox};
+        const geometry = {columns:style.gridTemplateColumns.split(" ").length,
+          height:fit.clientHeight, itemHeight:fittedGeometry.itemHeight,
+          minimumRows:typeof minimumRows === "function" ? minimumRows() : minimumRows,
           gap:parseFloat(style.rowGap) || 0,
-          padding:(parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0),
-        });
+          padding:(parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0)};
+        const size = fittedPageSize(geometry);
+        const measurement = {...geometry, size, width:fit.clientWidth};
+        if (JSON.stringify(measurements.at(-1)) !== JSON.stringify(measurement)) {
+          measurements.push(measurement); if (measurements.length > 24) measurements.shift();
+        }
         if (size !== null && model.pageSize !== size) {
           cancelNavigation();
           viewport.style.minHeight = "";
@@ -348,7 +473,7 @@
       resizeObserver.observe(fit);
       resizeObserver.observe(container);
       document.fonts?.ready.then(scheduleLayout);
-      document.fonts?.addEventListener("loadingdone", scheduleLayout);
+      document.fonts?.addEventListener("loadingdone", () => {fittedGeometry = null;scheduleLayout();});
     }
 
     function animate(element, frames, duration = 220) {
@@ -439,23 +564,42 @@
       element.title = exact;
     }
 
+    const pageErrorMessage = error => error instanceof RangeError
+      ? translate("pagination.invalidPage")
+      : error.message === "invalid_result_page" ? translate("pagination.invalidResponse") : error.message;
     const model = new Pages(() => {
+      if (renderedItems !== model.items || renderedLanguage !== options.language || renderedEmpty !== options.emptyText) {
+        renderedItems = model.items;
+        renderedLanguage = options.language;
+        renderedEmpty = options.emptyText;
+        if (retainPages) prepareModelPaint();
+        else renderItems(model.items, options.emptyText);
+      }
+      const busy = model.loading || paintBusy;
       pager.setAttribute("aria-label", translate("pagination.label"));
-      pager.setAttribute("aria-busy", String(model.loading));
-      container.setAttribute("aria-busy", String(model.loading));
-      container.inert = model.loading;
-      pager.dataset.page = String(model.page);
+      pager.setAttribute("aria-busy", String(busy));
+      container.setAttribute("aria-busy", String(busy));
+      container.inert = busy;
+      if(!retainPages){pager.dataset.page = String(model.page);pager.dataset.pageSize = String(model.pageSize);}
       input.setAttribute("aria-label", translate("pagination.pageInput"));
       submit.setAttribute("aria-label", translate("pagination.go"));
       for (const button of pager.querySelectorAll("[data-page-action]")) {
         const action = button.dataset.pageAction;
         button.setAttribute("aria-label", translate(`pagination.${action}`));
         button.title = translate(`pagination.${action}`);
-        button.disabled = model.loading || !model.items.length || (
+        button.disabled = busy || !model.items.length || (
           action === "first" || action === "previous" ? model.page === 1
             : action === "last" ? model.pageCount === null || model.page === model.lastPage : !model.canNext);
       }
+      // Keep the page number/range paired with the readable outgoing cards
+      // until the prepared replacement and any swipe settle commit together.
+      if(retainPages&&paintBusy&&livePaint&&livePaint.items!==model.items){
+        for(const control of [input,submit]){control.disabled=true;control.setAttribute("aria-busy","true");}
+        return;
+      }
       const pages = compactCount(model.pageCount, options.language);
+      totalLabel.hidden = model.pageCount === null;
+      itemTotal.hidden = model.total === null;
       setCountLabel(totalLabel, `/ ${pages}`, translate("pagination.totalPages", { count: model.pageCount ?? "?" }));
       editor.style.setProperty("--page-total-width", `${pages.length + 3}ch`);
       if (!inputDraft || model.loading) {
@@ -474,18 +618,14 @@
         translate(countKey, { count: model.total }));
       drawDots();
       for (const control of [input, submit]) {
-        control.disabled = model.loading || !model.items.length;
-        if (model.loading) control.setAttribute("aria-busy", "true");
+        control.disabled = busy || !model.items.length;
+        if (busy) control.setAttribute("aria-busy", "true");
         else control.removeAttribute("aria-busy");
-      }
-      if (renderedItems !== model.items || renderedLanguage !== options.language || renderedEmpty !== options.emptyText) {
-        renderedItems = model.items;
-        renderedLanguage = options.language;
-        renderedEmpty = options.emptyText;
-        renderItems(model.items, options.emptyText);
       }
       pager.hidden = container.classList.contains("hidden") || !model.items.length;
       scheduleLayout();
+    }, error => {
+      if (pager.getClientRects().length) reportError(pageErrorMessage(error));
     });
 
     function clearSwipe() {
@@ -499,6 +639,7 @@
 
     function cancelNavigation() {
       navigationVersion += 1;
+      deferPaint = false;
       drag = null;
       settling = false;
       clearSwipe();
@@ -509,8 +650,7 @@
       return container.clientWidth + gap;
     }
 
-    function dragPreview(direction, distance) {
-      const next = model.page + direction;
+    function dragPreview(direction, distance, next = model.page + direction) {
       if (!preview || Number(preview.dataset.previewPage) !== next) {
         preview?.remove();
         preview = container.cloneNode(false);
@@ -521,16 +661,24 @@
         preview.inert = true;
         preview.setAttribute("aria-hidden", "true");
         const items = model.peek(next);
-        renderItems(items || [], items ? options.emptyText : translate("search.browseLoading"), preview);
+        const cached = retainPages && items ? preparedPage(items, options.emptyText) : null;
+        if (cached?.ready && cached !== livePaint) preview.replaceChildren(...cached.nodes);
+        else if (cached) {
+          renderItems([], translate("search.browseLoading"), preview);
+          const pending = preview;
+          void cached.promise.then(() => {
+            if (preview === pending && pending.isConnected && paintedPages.get(items) === cached && cached !== livePaint) pending.replaceChildren(...cached.nodes);
+          });
+        } else renderItems(items || [], items ? options.emptyText : translate("search.browseLoading"), preview);
         viewport.append(preview);
       }
       preview.style.transform = `translateX(${direction * pageStride() + distance}px)`;
     }
 
-    async function settleSwipe(distance, target, ticket) {
+    async function settleSwipe(distance, target, ticket, incomingDirection = null) {
       const animations = [animate(container, [{transform:`translateX(${distance}px)`}, {transform:`translateX(${target}px)`}], 180)];
       if (preview) {
-        const offset = Math.sign(Number(preview.dataset.previewPage) - model.page) * pageStride();
+        const offset = (incomingDirection ?? Math.sign(Number(preview.dataset.previewPage) - model.page)) * pageStride();
         animations.push(animate(preview, [{transform:`translateX(${offset + distance}px)`}, {transform:`translateX(${offset + target}px)`}], 180));
       }
       swipeAnimations = animations.filter(Boolean);
@@ -538,42 +686,57 @@
       if (ticket !== navigationVersion) return false;
       swipeAnimations = [];
       container.style.transform = `translateX(${target}px)`;
-      if (preview) preview.style.transform = `translateX(${Math.sign(Number(preview.dataset.previewPage) - model.page) * pageStride() + target}px)`;
+      if (preview) preview.style.transform = `translateX(${(incomingDirection ?? Math.sign(Number(preview.dataset.previewPage) - model.page)) * pageStride() + target}px)`;
       return true;
     }
 
     async function navigate(page, distance = null) {
-      if (settling || model.loading || page === model.page) return;
+      if (settling || model.loading || paintBusy || page === model.page) return;
       settling = true;
+      deferPaint = retainPages && distance !== null;
       closeEditor();
       const ticket = ++navigationVersion;
       const direction = Math.sign(page - model.page);
-      showDots();
+      if (distance !== null) showDots();
+      else {
+        clearTimeout(idleTimer);
+        pager.classList.remove("is-interacting");
+      }
       try {
-        if (distance !== null && !await settleSwipe(distance, -direction * pageStride(), ticket)) return;
+        if (!retainPages && distance !== null && !await settleSwipe(distance, -direction * pageStride(), ticket)) return;
         if (!container.getClientRects().length) return;
         // Preserve document height on shorter pages, including the last page.
-        viewport.style.minHeight = `${viewport.getBoundingClientRect().height}px`;
+        if (!fit) viewport.style.minHeight = `${viewport.getBoundingClientRect().height}px`;
         if (await model.goTo(page) && ticket === navigationVersion) {
+          if (retainPages) {
+            const entry = await paintPromise;
+            if (ticket !== navigationVersion || !entry) return;
+            if (distance !== null) {
+              if (!preview) dragPreview(direction, distance, model.page);
+              preview.replaceChildren(...entry.nodes);
+              preview.style.transform = `translateX(${direction * pageStride() + distance}px)`;
+              if (!await settleSwipe(distance, -direction * pageStride(), ticket, direction)) return;
+              commitPaint(entry);
+            }
+          }
           clearSwipe();
           if (!pager.getClientRects().length) return;
-          if (distance === null) animate(container, [{ opacity: .5, transform: `translateX(${direction * 16}px)` },
-            { opacity: 1, transform: "translateX(0)" }]);
+          // IOS-09-11: button/number turns commit the rendered target page in
+          // place: no container-wide dim or slide, hence no half-transparent or
+          // partly uncovered frame. Swipes keep their own settle motion above.
           announcement.textContent = translate("pagination.changed", { page: model.page });
         }
       } catch (error) {
         if (ticket !== navigationVersion) return;
         input.value = String(model.page);
         if (!pager.getClientRects().length) return;
-        const message = error instanceof RangeError
-          ? translate("pagination.invalidPage")
-          : error.message === "invalid_result_page"
-            ? translate("pagination.invalidResponse") : error.message;
-        reportError(message);
+        reportError(pageErrorMessage(error));
       } finally {
         if (ticket === navigationVersion) {
+          deferPaint = false; paintBusy = false;
           clearSwipe();
           settling = false;
+          if (retainPages) model.onChange();
           rest();
         }
       }
@@ -621,6 +784,7 @@
         if (ticket === navigationVersion) {
           clearSwipe();
           settling = false;
+          rest();
         }
       }
     }
@@ -731,6 +895,7 @@
       update(value) {
         if (options.key !== value.key || options.items !== value.items) {
           cancelNavigation();
+          if (retainPages) retirePaint(true);
           viewport.style.minHeight = "";
           clearTimeout(idleTimer);
           pager.classList.remove("is-interacting");
@@ -746,11 +911,17 @@
         options.language = language;
         if (!pager.hidden) model.onChange();
       },
+      resources() {
+        return {pages:paintedPages.size, limit:3, preparing:paintBusy,
+          nodes:Array.from(paintedPages.values()).reduce((sum, entry) => sum + entry.nodes.length, 0)};
+      },
       hide() {
         if (layoutFrame !== null) { cancelAnimationFrame(layoutFrame); layoutFrame = null; }
         model.version += 1;
         cancelNavigation();
+        if (retainPages) retirePaint();
         model.busy = false;
+        model.reloadAttempted = false;
         renderedItems = null;
         clearTimeout(idleTimer);
         pager.classList.remove("is-interacting");
@@ -762,7 +933,7 @@
     };
   }
 
-  const api = { Pages, pageSize, maximumPage, compactCount, swipeDirection, dotWindow, fittedPageSize, create };
+  const api = { diagnostics: () => measurements.map(value => ({...value})), Pages, pageSize, maximumPage, compactCount, swipeDirection, dotWindow, fittedPageSize, create };
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.BilikaraResultPager = api;
 })(typeof window === "undefined" ? null : window);

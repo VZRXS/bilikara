@@ -79,7 +79,7 @@ test('actual shared Android layout releases desktop popup coordinates and keeps 
   assert.deepEqual(errors, []);
 });
 
-test('Android headings precede tabs and tools keep their compact roles across page and layout switches', {
+test('Android semantic headings retain no visual track and tools keep their roles across page and layout switches', {
   skip: process.platform !== 'linux' && 'Browser layout fixture; actual Android evidence is recorded separately',
   timeout: 90000,
 }, async t => {
@@ -121,18 +121,19 @@ test('Android headings precede tabs and tools keep their compact roles across pa
     await page.setViewportSize({ width, height: 850 });
     for (const [route, tab] of [['queue', 'android-queue-tabs'], ['request', 'android-request-tabs']]) {
       await page.locator('[data-android-page="' + route + '"]').click();
-      assert.equal(await page.locator('#android-page-heading h2').isVisible(), true);
+      assert.ok(await page.locator('#android-page-heading h2').textContent());
+      assert.ok((await page.locator('#android-page-heading > .host-peer-heading').boundingBox()).height>=24);
       const heading = await page.locator('#android-page-heading').boundingBox();
       const tabs = await page.locator('#' + tab).boundingBox();
-      assert.ok(heading.y + heading.height <= tabs.y + 1, 'Shared title must precede segmented navigation');
+      assert.ok(heading.y + heading.height <= tabs.y + 1, 'Only page actions reserve space before segmented navigation');
       if (route === 'request') {
         assert.equal(await page.locator('.request-workspace-head').isVisible(), false,
           'Moving the heading and tabs must not leave an empty title row or separator');
         const footer = await page.locator('.native-alpha-notice').boundingBox();
         const panel = await page.locator('#request-quick-panel').boundingBox();
         const form = await page.locator('#add-form').boundingBox();
-        assert.ok(Math.abs(panel.x + panel.width - footer.x - footer.width - 14) < 1 &&
-          Math.abs(panel.y + panel.height - footer.y - footer.height - 14) < 1 &&
+        assert.ok(Math.abs(panel.x + panel.width - footer.x - footer.width) < 1 &&
+          Math.abs(panel.y + panel.height - footer.y - footer.height) < 1 &&
           footer.y >= form.y + form.height, 'Preview badge stays at the bottom right, clear of the form');
         assert.deepEqual(await page.evaluate(() => {
           const label = document.querySelector('.native-alpha-notice > [data-i18n]');
@@ -148,14 +149,14 @@ test('Android headings precede tabs and tools keep their compact roles across pa
     }
     await page.locator('[data-android-page="queue"]').click();
     await page.locator('[data-android-workspace="history"]').click();
-    assert.equal(await page.locator('#android-page-heading #workspace-history-heading').isVisible(), true);
+    assert.ok(await page.locator('#android-page-heading #workspace-history-heading').textContent());
     assert.equal(await page.locator('#android-page-heading #history-export-button').isVisible(), true);
     const headerAlignment = await page.evaluate(() => {
       const head = document.getElementById('android-page-heading');
       const actions = head.querySelector('.queue-toolbar').getBoundingClientRect(), row = head.getBoundingClientRect();
-      return {right: row.right - actions.right, top: Math.abs(row.y - actions.y)};
+      return {right: row.right - actions.right, top: Math.abs(row.y+row.height/2-actions.y-actions.height/2)};
     });
-    assert.ok(headerAlignment.right < 1 && headerAlignment.top < 1, 'History actions align with the whole bilingual heading at its top-right edge');
+    assert.ok(headerAlignment.right < 1 && headerAlignment.top < 1, 'History actions align with the whole bilingual heading at its right edge and vertical center');
     await page.locator('[data-android-page="users"]').click();
     assert.equal(await page.locator('.session-user-prerequisite').textContent(), await page.evaluate(() => t('session.empty')));
     assert.equal(await page.locator('.session-user-guidance').textContent(), await page.evaluate(() => t('session.help')));
@@ -196,12 +197,16 @@ test('Android headings precede tabs and tools keep their compact roles across pa
         await Promise.allSettled(node.getAnimations({ subtree: true }).map(animation => animation.finished));
       });
       const colors = await page.evaluate(() => {
-        const current = getComputedStyle(document.querySelector('#android-host-dock [aria-current]'), '::before');
+        const button = document.querySelector('#android-host-dock [aria-current]');
+        const current = getComputedStyle(button);
         const sample = document.createElement('span'); sample.style.backgroundColor = 'var(--accent)'; document.body.append(sample);
         const accent = getComputedStyle(sample).backgroundColor; sample.remove();
-        return { background: current.backgroundColor, accent };
+        return { color: current.color, background: getComputedStyle(button, '::before').backgroundColor,
+          weight:current.fontWeight, height:button.getBoundingClientRect().height, accent };
       });
-      assert.equal(colors.background, colors.accent, theme + ' selected navigation uses theme accent');
+      assert.equal(colors.color, colors.accent, theme + ' selected icon/text uses theme accent');
+      assert.equal(colors.background, 'rgba(0, 0, 0, 0)', 'selection has no filled tile');
+      assert.equal(colors.weight, '700'); assert.ok(colors.height >= 44);
     }
     await page.locator('#android-open-settings').click();
     for (const id of ['diagnostic-copy-button']) {

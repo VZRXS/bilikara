@@ -10,6 +10,12 @@ import { HttpClient, RunningHost, isolatedEnvironment } from './native_host_supp
 
 const evidence = process.env.BILIKARA_TEST_SCREENSHOT_DIR;
 if (evidence) mkdirSync(evidence, { recursive: true });
+// Cold compiler work has the artifact helper's bounded preparation deadline;
+// each test's 120 seconds cover the actual Host/session/browser behavior.
+const nativeHost = process.platform === 'linux'
+  ? process.env.BILIKARA_TEST_NATIVE_HOST_BINARY || await buildNativeHost() : null;
+const nativeAlpha = process.platform === 'linux'
+  ? process.env.BILIKARA_TEST_NATIVE_ALPHA_BINARY || await buildNativeAlpha() : null;
 
 async function appearance(button) {
   return button.evaluate(node => {
@@ -37,9 +43,7 @@ for (const android of [false, true]) test(`pending native session keeps settings
   writeFileSync(path.join(data, '.bilikara-desktop-rust-preview'), 'desktop-rust-preview-v1\n');
   writeFileSync(path.join(data, 'native-library-defaults.json'), '{"schema_version":1}');
   writeFileSync(path.join(data, 'gatcha_uids.json'), '{"schema_version":2,"uids":[],"profiles":{}}');
-  const executable = android
-    ? process.env.BILIKARA_TEST_NATIVE_ALPHA_BINARY || await buildNativeAlpha()
-    : process.env.BILIKARA_TEST_NATIVE_HOST_BINARY || await buildNativeHost();
+  const executable = android ? nativeAlpha : nativeHost;
   const args = android ? [data, path.join(root, 'static')]
     : ['--headless', '--port', '0', '--data-dir', data, '--static-dir', path.join(root, 'static')];
   let host, browser, context, page, passed = false, holdChoice, releaseChoice;

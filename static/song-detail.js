@@ -1,5 +1,6 @@
 (function initializeSongDetail(global) {
   "use strict";
+  let nextDetailId = 0;
 
   function stringValue(value) {
     return String(value ?? "").trim();
@@ -54,7 +55,21 @@
 
   function canonicalBilibiliUrl(item) {
     const bvid = normalizedBvid(item);
-    return bvid ? `https://www.bilibili.com/video/${bvid}` : "";
+    if (!/^BV[0-9a-z]{10}$/i.test(bvid)) return "";
+    let page = item?.page;
+    if (page == null) {
+      for (const key of ['resolved_url', 'original_url', 'url']) {
+        try {
+          const url = new URL(stringValue(item?.[key]));
+          if (bvidFromBilibiliUrl(url.href) === bvid && url.searchParams.getAll('p').length === 1) {
+            page = url.searchParams.get('p'); break;
+          }
+        } catch {}
+      }
+    }
+    const validPage = (typeof page === 'number' || typeof page === 'string')
+      && /^[1-9]\d{0,9}$/.test(String(page)) && Number.isSafeInteger(Number(page)) && Number(page) <= 2147483647;
+    return `https://www.bilibili.com/video/${bvid}${validPage ? `?p=${Number(page)}` : ''}`;
   }
 
   function renderBilibiliMetadata(elements, item, translate) {
@@ -62,8 +77,8 @@
     const bilibiliUrl = canonicalBilibiliUrl(item);
     elements.bvid.textContent = bvid;
     elements.bvid.classList.toggle("hidden", !bvid);
-    elements.bilibiliLink.textContent = bvid ? translate("search.openOnBilibili") : "";
-    elements.bilibiliLink.classList.toggle("hidden", !bvid);
+    elements.bilibiliLink.textContent = bilibiliUrl ? translate("search.openOnBilibili") : "";
+    elements.bilibiliLink.classList.toggle("hidden", !bilibiliUrl);
     if (bilibiliUrl) {
       elements.bilibiliLink.href = bilibiliUrl;
       elements.bilibiliLink.removeAttribute("aria-disabled");
@@ -198,6 +213,9 @@
     const root = document.createElement("section");
     root.className = "song-detail-view hidden";
     root.setAttribute("aria-hidden", "true");
+    root.setAttribute("role", "dialog");
+    const titleId = `song-detail-title-${++nextDetailId}`;
+    root.setAttribute("aria-labelledby", titleId);
     root.innerHTML = `
       <div class="song-detail-backdrop"></div>
       <div class="song-detail-surface">
@@ -251,6 +269,7 @@
     requestButtonClass.split(/\s+/).filter(Boolean).forEach((className) => elements.request.classList.add(className));
     nextButtonClass.split(/\s+/).filter(Boolean).forEach((className) => elements.next.classList.add(className));
 
+    elements.title.id = titleId;
     elements.close.dataset.i18nAriaLabel = "common.close";
     elements.playsLabel.dataset.i18n = "search.playCountLabel";
     elements.ratingLabel.dataset.i18n = "search.detailRating";
@@ -314,6 +333,10 @@
       if (!itemUrl) {
         return false;
       }
+      const destination = options.resolveContainer?.() || container;
+      if (root.parentElement !== destination) destination.appendChild(root);
+      root.classList.toggle("is-page-modal", destination === document.body);
+      root.setAttribute("aria-modal", String(destination === document.body || document.documentElement?.dataset?.uiClient === "remote"));
       generation += 1;
       activeItem = { ...(item || {}) };
       activeUrl = itemUrl;
@@ -396,12 +419,19 @@
       }
       if (onOpenExternal) {
         event.preventDefault();
-        onOpenExternal(activeBilibiliUrl);
+        onOpenExternal(activeBilibiliUrl, elements.bilibiliLink);
       }
     });
     elements.request.addEventListener("click", () => request("tail"));
     elements.next.addEventListener("click", () => request("next"));
     root.addEventListener("keydown", (event) => {
+      if (event.key === "Tab" && root.getAttribute("aria-modal") === "true") {
+        const nodes = [...root.querySelectorAll('button,a[href],input,select,textarea,[tabindex]')]
+          .filter(node => !node.disabled && node.tabIndex >= 0 && node.getClientRects().length);
+        const first = nodes[0], last = nodes[nodes.length - 1];
+        if (event.shiftKey && document.activeElement === first) {event.preventDefault();last?.focus();}
+        else if (!event.shiftKey && document.activeElement === last) {event.preventDefault();first?.focus();}
+      }
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();

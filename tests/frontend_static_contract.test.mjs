@@ -1,3 +1,4 @@
+import {desktopWorkflow, mobileWorkflow} from './ci_workflow_support.mjs';
 import { readSourceText as readFileSync } from './frontend_contract_support.mjs';
 // Static source contracts remain source contracts; these do not qualify native GUI.
 import assert from 'node:assert/strict';
@@ -47,7 +48,7 @@ test('shared desktop layout stays responsive and Android follows system rotation
 test('Android pages/languages/visibility reuse native desktop source defaults and keep Remote separate', () => {
   includes(host, ['/android-host.js', '/host-layout.css', '/host-layout.js', '/native-session.js']); excludes(remote, ['/android-host.js']);
   for (const page of ['playback', 'queue', 'request', 'users', 'my']) assert.equal(host.split(`data-android-page="${page}"`).length - 1, 1);
-  for (const locale of ['zh', 'ja', 'en']) for (const key of ['navigation', 'playback', 'queue', 'me', 'backToMe', 'settingsHint', 'downloadSettings', 'betaLabel', 'betaNotice']) assert.ok(translations[locale][`mobile.${key}`]);
+  for (const locale of ['zh', 'ja', 'en']) for (const key of ['navigation', 'playback', 'queue', 'me', 'backToMe', 'settingsHint', 'downloadSettings', 'androidLabel', 'iosLabel', 'androidBetaLabel', 'iosBetaLabel', 'betaNotice']) assert.ok(translations[locale][`mobile.${key}`]);
   excludes(host, ['android-login-hint', 'android-login-persistence']);
   assert.ok(host.indexOf('/app.js') < host.indexOf('/android-playback.js')); assert.ok(host.indexOf('/android-playback.js') < host.indexOf('/android-host.js'));
   const expected = ['3145040', '671767', '33091201', '3494356589742209', '44627483', '8474818', '10077309', '74089392', '1879151', '87101327', '99061404', '602998', '1159885664', '215040', '31624333', '21129450', '2625848', '29955371', '3014315', '80148988', '464873', '41924655', '356716', '174980119', '1326466', '13775191', '524220885'];
@@ -87,12 +88,20 @@ test('caption locale/icon updates and native pointer regions preserve authorizat
 });
 
 test('Linux/macOS caption controls and shared palette stay native', () => {
-  includes(read('src-tauri/src/platform.rs'), ['gtk::HeaderBar::new()', 'header.set_show_close_button(true)', 'gtk_window.is_realized()']); const window = JSON.parse(read('src-tauri/tauri.macos.conf.json')).app.windows[0]; assert.equal(window.decorations, true); assert.equal(window.titleBarStyle, 'Overlay'); includes(app, ['getPropertyValue("--bg-middle")', 'getPropertyValue("--ink")']);
+  includes(read('src-tauri/src/platform.rs'), ['gtk::HeaderBar::new()', 'header.set_show_close_button(true)', 'gtk_window.is_realized()']);
+  const window = JSON.parse(read('src-tauri/tauri.macos.conf.json')).app.windows[0];
+  assert.equal(window.decorations, true);
+  assert.equal(window.hiddenTitle, true);
+  assert.equal(window.titleBarStyle, 'Transparent');
+  includes(app, ['getPropertyValue("--bg-middle")', 'getPropertyValue("--ink")']);
 });
 
 test('manual bundle labels do not authorize publication/mirroring', () => {
-  const workflow = read('.github/workflows/ci-bundle.yml') + read('.github/workflows/desktop.yml'); includes(workflow, ['bundle_version:', "BILIKARA_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.bundle_version || '' }}", "github.ref_name || inputs.bundle_version || ''", "-preview\\.[0-9]+)?$'"]);
-  const release = workflow.slice(workflow.indexOf('- name: Upload bundle to GitHub Release')); assert.ok(release.split('\n')[1].includes("if: startsWith(github.ref, 'refs/tags/v')")); assert.ok(workflow.slice(workflow.indexOf('  mirror-release-r2:'), workflow.indexOf('  mirror-release-r2:') + 400).includes("if: startsWith(github.ref, 'refs/tags/v')"));
+  const workflow = read('.github/workflows/release.yml') + read('.github/workflows/bundle.yml'); includes(workflow, ['workflow_dispatch:', 'default: All', 'BILIKARA_EXPECT_RELEASE_VERSION:']); assert.ok(!workflow.includes('bundle_version'));
+  const release = read('.github/workflows/release.yml');
+  includes(release, ['needs: [checks, packages]', 'collectRelease', 'prepareDraft', 'publishDraft', "if: startsWith(github.ref, 'refs/tags/v')"]);
+  assert.ok(!desktopWorkflow.includes('action-gh-release'));
+  assert.ok(!mobileWorkflow.includes('action-gh-release'));
 });
 
 test('all real Cargo/Node application manifests and lock roots preserve the release version and shell boundary', async () => {

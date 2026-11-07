@@ -1,6 +1,10 @@
 /* Shared panel surfaces; Remote modal backgrounds provide extra separation. */
 /* Remote queue numbering and presentation previews share one badge surface. */
 :root {
+  color-scheme: light;
+  /* Controls retain app pressed/focus feedback instead of WebKit's tap tint. */
+  -webkit-tap-highlight-color: transparent;
+  --settings-group-bg: #ffffff;
   --queue-order-bg: rgba(255, 255, 255, 0.96);
   --queue-order-border: 1.4px solid rgba(109, 98, 88, 0.18);
   --queue-order-color: rgba(91, 78, 69, 0.92);
@@ -9,6 +13,8 @@
   --queue-ready-shadow: 0 0 0 3px rgba(43, 123, 96, 0.07);
 }
 :root[data-theme="dark"] {
+  color-scheme: dark;
+  --settings-group-bg: #302925;
   --queue-order-bg: rgba(30, 26, 23, 0.96);
   --queue-order-border: 1.4px solid rgba(246, 241, 235, 0.15);
   --queue-order-color: var(--ink);
@@ -17,12 +23,21 @@
   --queue-ready-shadow: 0 0 0 3px rgba(45, 212, 191, 0.1);
 }
 :root[data-theme="blue"] {
+  color-scheme: dark;
+  --settings-group-bg: #1e293b;
   --queue-order-bg: rgba(8, 18, 32, 0.96);
   --queue-order-border: 1.4px solid rgba(148, 202, 233, 0.18);
   --queue-order-color: var(--ink);
   --queue-order-shadow: 0 8px 18px rgba(2, 8, 23, 0.28);
   --queue-ready-border-color: rgba(52, 211, 153, 0.42);
   --queue-ready-shadow: 0 0 0 3px rgba(52, 211, 153, 0.1);
+}
+/* Mobile fields may sit flush against bounded scrollports. Paint focus inside
+   the field or its owning pill; keep desktop Host's existing outer halos. */
+:root:is([data-host-platform="android"], [data-host-platform="ios"], [data-ui-client="remote"]) {
+  --field-focus-outline: 2px solid var(--accent);
+  --field-focus-outline-offset: -2px;
+  --field-focus-shadow: 0 0 0 0 transparent;
 }
 .queue-order {
   box-sizing: border-box;
@@ -222,6 +237,111 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
 }
 :root .selection-modal-head.host-peer-head > :not(.host-peer-heading) { align-self: start; }
 :root .pool-config-head-actions { align-items: start; }
+/* Source bulk selection is a compact settings tool on every client. Keep
+   titles readable; wrap the action group as a unit when translation needs it. */
+:root .pool-config-list-head {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+:root .pool-config-list-head > h3 {
+  flex: 1 1 100px;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 24px;
+}
+:root .pool-config-bulk-actions {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  margin-inline-start: auto;
+}
+:root .pool-config-bulk-actions > :is(.toolbar-button, .ghost-button) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+:root .pool-config-list-head + :is(.selection-option-list, .pool-config-option-list) { margin-top: 0; }
+@media (max-width: 600px) {
+  :root .selection-modal-grid.pool-config-source-list {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+}
+/* Respect the modal container's gutters instead of overflowing its grid track. */
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) .selection-modal {
+  grid-template-columns: minmax(0, 1fr);
+}
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) .selection-modal-card {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Android keeps the Host dialog shell, with Remote's unframed pool sections. */
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) .gatcha-pool-config-card {
+  display: flex;
+  flex-direction: column;
+}
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) .gatcha-pool-config-card > :not(.pool-config-source-list) {
+  flex: 0 0 auto;
+}
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) .pool-config-weight-row { margin-top: 18px; }
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) .selection-modal-grid.pool-config-source-list {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
+  margin-top: 18px;
+  padding-right: 0;
+}
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) .pool-config-column {
+  grid-template-rows: auto auto;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+:root:is([data-host-platform="android"], [data-host-platform="ios"], [data-ui-client="remote"])
+  :is(#gatcha-pool-uid-options, #gatcha-pool-favlist-options) {
+  max-height: clamp(130px, 22vh, 230px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+}
+:root:is([data-host-platform="android"], [data-host-platform="ios"], [data-ui-client="remote"]) .pool-config-option {
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(67, 53, 41, 0.08);
+}
+:root:is([data-host-platform="android"], [data-host-platform="ios"], [data-ui-client="remote"]):is([data-theme="dark"], [data-theme="blue"]) .pool-config-option {
+  background: var(--dark-control-bg);
+  border-color: var(--dark-surface-border-color);
+}
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) .pool-config-option .selection-option-title {
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.35;
+}
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) #gatcha-pool-config-message:empty { display: none; }
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) .gatcha-pool-config-card .selection-modal-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 18px;
+  padding-top: 14px;
+}
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) .gatcha-pool-config-card .selection-modal-actions > button {
+  height: 44px;
+  min-height: 44px;
+  font-size: 16px;
+}
+
 /* Header pills and close controls reuse ordinary secondary-button colors.
    Center 32px controls on the title's 24px first line, while
    preserving the header's flow height and its horizontal insets. */
@@ -322,8 +442,95 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   font-size: 16px;
 }
 
+/* Native WebKit painting needs an outer clip to retain the runtime pill. */
+:root .runtime-settings-select-shell {
+  display: block;
+  min-width: 0;
+  height: 34px;
+  border-radius: 999px;
+  overflow: hidden;
+}
+:root .runtime-settings-select-shell:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: var(--field-focus-outline-offset, 2px);
+}
+/* Keep the native select popup; paint its closed macOS field as the shared
+   pill rather than an AppKit bezel that ignores the CSS corner radius. */
+:root[data-tauri-platform="macos"] .runtime-settings-select-shell { overflow: visible; position: relative; }
+:root[data-tauri-platform="macos"] .runtime-settings-select-shell::after,
+.runtime-settings-select-shell.has-runtime-select::after {
+  content: "";
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  width: 6px;
+  height: 6px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+/* Keep the two runtime settings on one row when their translated labels fit.
+   host-layout.js measures content, size and font changes for every Host. */
+:root #cache-source-row {
+  --cache-source-control-width: 160px;
+  --cache-source-inline-gap: 12px;
+  display: grid;
+  grid-template-columns: minmax(var(--cache-source-control-width), 1fr) max-content;
+  gap: var(--cache-source-inline-gap);
+  align-items: start;
+}
+:root #cache-source-row > label { min-width: 0; width: 100%; grid-template-rows: auto 34px; align-items: center; }
+:root #cache-source-row .cache-panel-label { white-space: nowrap; }
+:root #cache-source-row[data-layout="stacked"] { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+:root #cache-source-row[data-layout="stacked"] > label {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+}
+:root #cache-source-row[data-layout="stacked"] .cache-panel-label { white-space: normal; justify-self: start; text-align: start; }
+:root #cache-source-row[data-layout="stacked"] .runtime-settings-select-shell { width: var(--cache-source-control-width); max-width: 100%; }
+/* Inline runtime choices retain the Preview 2 native dropdown treatment. */
+:root :is(.cache-quality-select, .runtime-settings-select) {
+  appearance: auto;
+  -webkit-appearance: auto;
+  width: 100%;
+  height: 34px;
+  min-height: 34px;
+  min-width: 0;
+  border: 0;
+  border-radius: 999px;
+  padding: 0 30px 0 12px;
+  background: var(--quality-select-bg, var(--input-bg));
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: normal;
+  box-shadow: var(--quality-select-shadow, inset 0 0 0 1px var(--line));
+  cursor: pointer;
+}
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) :is(.cache-quality-select, .runtime-settings-select) {
+  border: 1px solid var(--line);
+  box-shadow: none;
+}
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) :is(.cache-quality-select, .runtime-settings-select):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: var(--field-focus-outline-offset, 2px);
+}
+:root[data-tauri-platform="macos"] :is(.cache-quality-select, .runtime-settings-select) {
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+/* Experimental markers share one quiet inline label on both clients. */
+:root .experimental-label { color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.2; white-space: nowrap; }
+
 /* Small playback setting headings share one quiet label treatment. */
-:root :is(.av-sync-copy .section-tag, .volume-copy .section-tag,
+:root :is(.media-output-heading, .av-sync-copy .section-tag, .volume-copy .section-tag,
   .remote-setting-header .panel-tag, .automatic-volume-row [data-auto-label]) {
   color: var(--muted);
   font-size: 12px;
@@ -428,7 +635,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   .session-user-rename-panel, .confirm-popover, .selection-modal-card, .app-shell .song-detail-card,
   .song-detail-card, .rating-card, .volume-adjust-popover, .audio-variant-popover,
   .remote-access-card, .remote-identity-card, .binding-sheet-panel, .history-export-dialog,
-  .playback-sheet-panel, .remote-menu-panel, .menu-content, .topbar .cache-panel,
+  .playback-sheet-panel, .remote-menu-panel, .menu-content, .runtime-select-menu, .topbar .cache-panel,
   .presentation-feedback-card,
   .app-shell[data-stage-controls-layout="popup"] .stage-control-tray) {
   background: var(--modal-card-bg);
@@ -468,7 +675,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   gap: 4px;
 }
 :root .playback-restart-popover {
-  position: absolute;
+  position: fixed;
   inset: auto;
   margin: 0;
   z-index: 1;
@@ -553,8 +760,13 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
 :root:not([data-remote-input-modality="pointer"]) .playback-song-actions.is-expanded .playback-restart-action:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 :root .playback-restart-popover svg,
 :root .playback-song-actions .playback-restart-action svg { width: 26px; height: 26px; }
-/* Playback gestures must not select button labels or SVG text. Keep editable
-   fields outside this rule so numbers and ranges retain their native behavior. */
+/* Action labels are not selectable prose. Keep real inputs, text, and links
+   outside this rule so editing/copying retains its native behavior. */
+:root :is(button, button *, .session-user-badge, .session-user-name,
+  .source-frame-footer, .source-tools, .source-tools *,
+  .session-user-tools, .session-user-tools *,
+  .session-user-order-number, .session-user-number, .result-pager-count, .result-pager-dot,
+  .result-pager-total, .result-pager-total *, .result-pager-items-total, .result-pager-items-total *),
 :root :is(
   .playback-sheet,
   .presentation-host-controls,
@@ -568,6 +780,12 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
+}
+/* The source footer also contains an editable page number. */
+:root .result-pager input {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
 }
 :root .playback-restart-popover.is-hint {
   pointer-events: auto;
@@ -670,7 +888,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
-/* Host and small anchored controls keep invisible click-away targets. */
+/* Desktop Host and small anchored controls keep invisible click-away targets. */
 :root, :root[data-theme] { --modal-backdrop-bg: transparent; }
 :root :is(.selection-modal-backdrop, .rating-modal-backdrop, .binding-sheet-backdrop,
   .remote-identity-backdrop, .song-detail-backdrop, .playback-sheet-backdrop,
@@ -686,17 +904,17 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
 .song-detail-surface { position: relative; z-index: 1; pointer-events: none; }
 .song-detail-card { pointer-events: auto; }
 
-/* Dim the stacked Remote page behind large panels; anchored controls keep shadow only. */
-:root[data-ui-client="remote"] {
-  --remote-modal-backdrop-bg: rgba(29, 26, 24, 0.24);
+/* Remote and Android share dimming behind large panels and the panel shadow above. */
+:root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) {
+  --modal-dim-bg: rgba(29, 26, 24, 0.24);
 }
-:root[data-ui-client="remote"][data-theme="blue"] {
-  --remote-modal-backdrop-bg: rgba(2, 6, 23, 0.38);
+:root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"])[data-theme="blue"] {
+  --modal-dim-bg: rgba(2, 6, 23, 0.38);
 }
-:root[data-ui-client="remote"] :is(.remote-identity-backdrop, .song-detail-backdrop,
+:root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) :is(.selection-modal-backdrop, .remote-identity-backdrop, .song-detail-backdrop,
   .rating-modal-backdrop, .binding-sheet-backdrop, .playback-sheet-backdrop),
-:root[data-ui-client="remote"] .history-export-dialog::backdrop {
-  background: var(--remote-modal-backdrop-bg);
+:root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) .history-export-dialog::backdrop {
+  background: var(--modal-dim-bg);
 }
 @media (orientation: portrait) and (max-width: 699px) {
   :root[data-ui-client="remote"] .playback-sheet .playback-sheet-panel {
@@ -704,8 +922,13 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   }
 }
 
-/* Fade the Remote backdrop independently of panel motion.
-   Host backgrounds stay transparent. */
+.confirm-export-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--host-layer-confirm) - 1);
+}
+
+/* Fade mobile backdrops independently of panel motion. */
 @keyframes remote-backdrop-in {
   from { opacity: 0; }
   to { opacity: 1; }
@@ -714,22 +937,23 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   from { opacity: 1; }
   to { opacity: 0; }
 }
-:root[data-ui-client="remote"] :is(.remote-identity-backdrop, .song-detail-backdrop, .rating-modal-backdrop),
-:root[data-ui-client="remote"] .history-export-dialog[open]::backdrop {
+:root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) :is(.selection-modal-backdrop, .remote-identity-backdrop, .song-detail-backdrop, .rating-modal-backdrop),
+:root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) .history-export-dialog[open]::backdrop {
   animation: remote-backdrop-in 200ms ease-out both;
 }
-:root[data-ui-client="remote"] .closing :is(.remote-identity-backdrop, .song-detail-backdrop, .rating-modal-backdrop),
-:root[data-ui-client="remote"] .history-export-dialog.closing::backdrop {
+:root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) .confirm-export-backdrop.closing,
+:root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) .closing :is(.selection-modal-backdrop, .remote-identity-backdrop, .song-detail-backdrop, .rating-modal-backdrop),
+:root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) .history-export-dialog.closing::backdrop {
   animation: remote-backdrop-out 200ms ease-out forwards;
 }
-:root[data-ui-client="remote"] .song-detail-view { animation: none; }
+:root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) .song-detail-view { animation: none; }
 :root[data-ui-client="remote"] :is(.binding-sheet-backdrop, .playback-sheet-backdrop) {
   transition-property: opacity;
 }
 @media (prefers-reduced-motion: reduce) {
-  :root[data-ui-client="remote"] :is(.remote-identity-backdrop, .song-detail-backdrop,
+  :root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) :is(.selection-modal-backdrop, .remote-identity-backdrop, .song-detail-backdrop,
     .rating-modal-backdrop, .binding-sheet-backdrop, .playback-sheet-backdrop),
-  :root[data-ui-client="remote"] .history-export-dialog::backdrop {
+  :root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) .history-export-dialog::backdrop {
     animation-duration: 1ms !important;
     transition-duration: 1ms !important;
   }
@@ -1142,3 +1366,176 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
 }
 :root:not([data-ui-client="remote"]) .browse-search-bar:is(:has(> .category-browser-tabs), :where([data-legacy-has~="r3"])) { --browse-track-inset: 2px; }
 :root:not([data-ui-client="remote"]) .category-browser-tabs { padding-top: 2px; }
+
+/* Shared QR acquisition stage. The gallery belongs to the scanner itself. */
+.ktv-scan-view {position:relative;isolation:isolate;box-sizing:border-box;width:100%;min-width:0;min-height:160px;aspect-ratio:1;overflow:hidden;border-radius:var(--ktv-scanner-radius,14px);background:#171717;color:#fff;}
+.ktv-scan-view [hidden] {display:none!important;}
+.ktv-scan-view video {position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;transition:none;transform:none;}
+:root .ktv-scan-capture {position:absolute;top:calc(50% - 30px);left:calc(50% - 30px);display:grid;place-items:center;width:60px;min-width:60px;height:60px;padding:10px;border:0;border-radius:14px;background:transparent;color:#fff;}
+.ktv-scan-view video:not([hidden]) ~ .ktv-scan-capture {display:none;}
+.ktv-scan-capture svg {width:40px;height:40px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;}
+:root .ktv-scan-gallery {position:absolute;right:12px;bottom:12px;display:flex;align-items:center;justify-content:center;gap:0;width:44px;min-width:44px;max-width:44px;min-height:44px;height:44px;padding:0;border:1px solid rgba(255,255,255,.4);border-radius:14px;background:#fff;color:#242424;font-family:inherit;font-size:16px;font-weight:400;line-height:1.2;box-shadow:none;}
+.ktv-scan-gallery svg {width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.6;}
+.ktv-scan-view button:focus-visible {outline:2px solid var(--accent);outline-offset:2px;}
+.ktv-scan-view button:disabled {opacity:.5;}
+@media (max-height:480px) {.ktv-scan-view {min-height:140px;max-height:45vh;aspect-ratio:auto;}}
+
+/* A part-selection dialog is a child of the still-open song detail modal. */
+:root #binding-modal { z-index: var(--host-layer-modal-content); }
+
+/* Mobile Host detail views escape workspace clipping; desktop stays contextual. */
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) .song-detail-view.is-page-modal {
+  position:fixed;inset:0;z-index:var(--host-layer-modal, 1000);box-sizing:border-box;
+  padding:max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  overscroll-behavior:contain;
+}
+:root {--anchored-menu-shadow:0 4px 12px rgba(35,26,20,.16);}
+:root:is([data-theme="dark"], [data-theme="blue"]) {--anchored-menu-shadow:0 4px 12px rgba(0,0,0,.3);}
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) :is(.song-actions, .history-actions).menu-content {box-shadow:var(--anchored-menu-shadow);}
+
+/* One compact row-menu role; command count may change wrapping, not its shell. */
+:root {
+  --row-menu-gap: 8px;
+  --row-menu-padding: 6px;
+  --row-menu-action-size: 36px;
+  --row-menu-font-size: 13px;
+  --row-menu-anchor-gap: 8px;
+  --row-menu-inset: 12px;
+}
+:root[data-host-layout="portrait"] :is(.song-actions, .history-actions).menu-content {
+  gap: var(--row-menu-gap);
+  padding: var(--row-menu-padding);
+  border-radius: var(--floating-panel-radius, 18px);
+  animation: none;
+}
+:root[data-host-layout="portrait"] :is(.song-actions, .history-actions).menu-content button {
+  position: relative;
+  grid-area: auto;
+  width: auto;
+  flex: 0 0 auto;
+  min-width: 44px;
+  height: var(--row-menu-action-size);
+  min-height: var(--row-menu-action-size);
+  padding: 0 8px;
+  font-size: var(--row-menu-font-size);
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+:root[data-host-layout="portrait"] :is(.song-actions, .history-actions).menu-content button::before {content:"";position:absolute;inset:-4px 0;}
+:root[data-host-layout="portrait"] :is(.song-actions, .history-actions).menu-content :is(.icon-button, .queue-move-button) {
+  width: var(--row-menu-action-size);
+  min-width: var(--row-menu-action-size);
+  max-width: var(--row-menu-action-size);
+  flex: 0 0 var(--row-menu-action-size);
+  padding: 0;
+}
+:root[data-host-layout="portrait"] :is(.song-actions, .history-actions).menu-content :is(.icon-button, .queue-move-button)::before {inset:-4px;}
+
+/* Host and Remote toast text may grow to three quarters of the viewport. */
+/* Shared toast appearance; client sheets own only their stacking-layer role. */
+.app-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  padding: 11px 16px;
+  border-radius: 999px;
+  background: var(--toast-bg);
+  border: var(--toast-border);
+  box-shadow: var(--toast-shadow);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: center;
+  backdrop-filter: blur(14px);
+}
+.app-toast.is-error {
+  color: var(--red);
+  border-color: var(--toast-error-border, rgba(177, 69, 69, 0.22));
+}
+:root .app-toast {box-sizing:border-box;width:max-content;max-width:min(75vw, calc(100vw - 32px));overflow-wrap:anywhere;}
+
+/* Preserve each part label; progress is an independent paint layer. */
+:root .audio-variant-button {position:relative;isolation:isolate;overflow:hidden;}
+:root .audio-variant-button[data-bound="true"] {border:1px solid var(--line);}
+:root .audio-variant-button.active[data-bound="true"] {border-color:var(--accent);}
+:root .audio-variant-button-label {position:relative;z-index:1;}
+.audio-part-progress {display:none;position:absolute;inset:0 auto 0 0;width:var(--audio-cache-progress,0%);background:var(--accent);opacity:.22;pointer-events:none;transition:width 1s linear;}
+:root .audio-variant-button[aria-busy="true"]:disabled {opacity:1;}
+[data-audio-cache="pending"] > .audio-part-progress {display:block;}
+:root .audio-variant-button[data-audio-cache="failed"] {border-color:var(--danger-btn-color, var(--red));}
+:root .audio-variant-button[data-audio-cache="failed"]::after {
+  content:"!";display:inline-grid;place-items:center;box-sizing:border-box;
+  width:16px;height:16px;margin-left:6px;border:1px solid currentColor;border-radius:999px;
+  color:var(--danger-btn-color, var(--red));font-size:12px;font-weight:700;
+}
+.is-cache-indeterminate > .audio-part-progress {width:35%;animation:audio-part-cache-sweep 1.4s ease-in-out infinite;}
+@keyframes audio-part-cache-sweep {from{transform:translateX(-100%);}to{transform:translateX(300%);}}
+@media (prefers-reduced-motion:reduce) {.audio-part-progress {transition:none;}.is-cache-indeterminate > .audio-part-progress {animation:none;opacity:.65;}}
+
+/* Hidden source controls must not be restored by the action row's grid rule. */
+:root .source-action-row.hidden {display:none;}
+html[data-host-layout="portrait"] .category-browser-tab {
+  height:44px;border-radius:14px;box-shadow:none;background:var(--btn-secondary-bg);
+}
+html[data-host-layout="portrait"] .category-browser-tab-name {font-size:16px;font-weight:400;}
+html[data-host-layout="portrait"] .category-browser-tab.active {box-shadow:none;}
+html[data-host-layout="portrait"] .category-browser-tab.active .category-browser-tab-name {font-weight:700;}
+html:is([data-host-platform="android"], [data-host-platform="ios"]) .request-mode-panel:is(:has(.android-result-frame:not([hidden]) .host-result-pager:not([hidden])), :where([data-legacy-has~="r29"])) {padding-bottom:4px;}
+
+/* Fixed labels in the owned mobile document are not selectable prose.
+   Declare descendants too: WebKit's auto value does not inherit this property. */
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) body,
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) body * {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) body :is(
+  a[href], a[href] *, input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]), textarea,
+  [contenteditable="true"], [contenteditable="true"] *, [data-copyable], [data-copyable] *,
+  .copyable-text, .copyable-text *, .diagnostic-details, .diagnostic-details *, .error-details, .error-details *,
+  .song-title, .song-title *, .queue-current-title, .queue-current-title *, .history-title, .history-title *,
+  .search-result-title, .search-result-title *, .song-detail-title, .song-detail-title *, .song-detail-bvid) {
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-touch-callout: default;
+}
+
+/* V7 fixed UI chrome is not document prose. Copyable data keeps native editing. */
+:root :is([role="tab"], [role="button"], .host-peer-heading, .section-tag,
+  .cache-panel-label, .volume-copy, .av-sync-copy, .runtime-settings-label,
+  .native-alpha-notice > [data-mobile-build-label], .status-badge, .fixed-ui-text) {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+:root :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]), textarea, [contenteditable="true"], [data-copyable], .copyable-text,
+  .diagnostic-details, .error-details) {
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-touch-callout: default;
+}
+
+/* One iOS runtime-select adapter for quality and downloader. Both use the
+   shared ordinary CSS surface; UIKit owns only the actual native dock. */
+.runtime-settings-select-shell.has-runtime-select { position:relative;overflow:visible; }
+.runtime-settings-select-shell > .runtime-select-trigger {
+  position:relative;box-sizing:border-box;width:100%;height:34px;min-height:34px;
+  padding:0 32px 0 12px;border:1px solid var(--line);border-radius:999px;
+  background:var(--quality-select-bg,var(--input-bg));color:var(--ink);line-height:1.2;
+  font-family:inherit;font-size:13px;font-weight:700;text-align:left;
+}
+.runtime-select-trigger::before {content:"";position:absolute;inset:-6px 0;}
+.runtime-select-trigger:focus-visible {outline:var(--field-focus-outline);outline-offset:var(--field-focus-outline-offset);}
+.runtime-select-menu {
+  position:fixed;box-sizing:border-box;inset:auto;margin:0;padding:8px;
+  border:1px solid var(--line);color:var(--ink);overflow-y:auto;overscroll-behavior:contain;
+}
+.runtime-select-menu:not(:popover-open) {display:none;}
+.runtime-select-option {box-sizing:border-box;display:block;width:100%;min-height:44px;padding:8px 12px;border:0;
+  border-radius:10px;background:transparent;color:inherit;text-align:left;font:inherit;}
+.runtime-select-option[aria-selected="true"] {background:var(--btn-secondary-bg);color:var(--accent-deep);font-weight:700;}
+.runtime-select-option:focus-visible {outline:2px solid var(--accent);outline-offset:-2px;}

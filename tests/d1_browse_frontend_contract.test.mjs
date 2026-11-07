@@ -84,6 +84,7 @@ async run_category_fetch(relative_path) {
 let completed, fetch_source, script, source;
 source = readFileSync(path.join(ROOT, relative_path), "utf8");
 fetch_source = source.slice(sourceIndex(source, "function uniqueD1BrowseTags("), sourceIndex(source, "async function fetchGatchaBrowse("));
+if (relative_path === "static/app.js") fetch_source = source.slice(sourceIndex(source, "async function fetchHostApi("), sourceIndex(source, "async function apiPost(")) + fetch_source;
 script = (`
 const requests = [];
 function categoryBrowseUsesFullFieldSearch() { return false; }

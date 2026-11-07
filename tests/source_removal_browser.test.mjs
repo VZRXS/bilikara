@@ -6,7 +6,9 @@ import http from 'node:http';
 import nativeTest, {before} from 'node:test';
 function test(name,options,run){return nativeTest(name,options,async t=>{try{await run(t);}catch(error){console.error(name,error.stack);throw error;}});}
 test.after=nativeTest.after;
-import {chromium} from 'playwright';
+import {chromium,webkit} from 'playwright';
+assert.ok(!process.env.BILIKARA_SOURCE_TEST_ENGINE||['chromium','webkit'].includes(process.env.BILIKARA_SOURCE_TEST_ENGINE));
+const sourceEngine=process.env.BILIKARA_SOURCE_TEST_ENGINE==='webkit'?webkit:chromium;
 import {root} from './desktop_construction_support.mjs';
 import {buildNativeHost, buildNativeAlpha} from './native_runtime_artifacts.mjs';
 import {RunningHost, HttpClient, isolatedEnvironment, waitFor} from './native_host_support.mjs';
@@ -63,8 +65,8 @@ async function screenshot(page, name) {
   const file=path.join(output,name+'.png'); await page.screenshot({path:file});
   snapshots.push(file);
 }
-async function browser(t, host, {android=false, remote=false, origin=host.base, hasTouch=android||remote, mobileBrowser=false} = {}) {
-  const instance=await chromium.launch({headless:process.env.BILIKARA_SOURCE_TEST_HEADED!=='1',args:['--disable-background-networking','--disable-features=WebRtcHideLocalIpsWithMdns'],...(process.platform==='win32'?{channel:'msedge'}:{})});
+async function browser(t, host, {android=false, remote=false, origin=host.base, hasTouch=android||remote, mobileBrowser=false, engine=sourceEngine} = {}) {
+  const instance=await engine.launch({headless:process.env.BILIKARA_SOURCE_TEST_HEADED!=='1',...(engine===chromium?{args:['--disable-background-networking','--disable-features=WebRtcHideLocalIpsWithMdns'],...(process.platform==='win32'?{channel:'msedge'}:{})}:{})});
   cleanup(t,async()=>{if(!completed.has(t)&&process.env.BILIKARA_TEST_SCREENSHOT_DIR){for(const [i,p] of instance.contexts().flatMap(c=>c.pages()).entries())if(!p.isClosed())await screenshot(p,`failure-${t.name.includes('touch')?'touch':t.name.includes('public')?'public':'desktop'}-${i}`).catch(()=>{});}await instance.close();});
   const context=await instance.newContext({viewport:android||remote?{width:390,height:844}:{width:700,height:650},hasTouch,isMobile:mobileBrowser,reducedMotion:'reduce',locale:'zh-CN'});
   if(!remote)await context.addCookies([...host.cookies].map(([name,value])=>({name,value,url:origin})));
@@ -118,6 +120,9 @@ async function sources(page, android=false, remote=false) {
   if(!remote)await settleSourceFit(page);
 }
 async function settleSourceFit(page,source='uid') {
+  // Resize/font delivery also determines the shared desktop column layout.
+  // Loaded records alone can still describe the previous viewport's frame.
+  await page.evaluate(async()=>{await document.fonts.ready;await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
   await page.waitForFunction(source=>{
     const editor=sourceRemovalEditors.get(source);if(!editor?.active||editor.loading||editor.pending)return false;
     const grid=editor.grid,card=grid.firstElementChild,style=getComputedStyle(grid),pager=editor.panel.querySelector('.source-frame-footer > .host-result-pager');
@@ -306,6 +311,15 @@ async function sourceLayout(page, label) {
   });
   sourceLayouts.push({label,...value});return value;
 }
+async function expectedSourceCapacity(page) {
+  return page.evaluate(()=>{
+    const grid=document.querySelector('#follow-up-grid'),scroll=grid.closest('.source-browse-scroll');
+    const style=getComputedStyle(grid),columns=style.gridTemplateColumns.split(' ').length;
+    const padding=parseFloat(style.paddingTop)+parseFloat(style.paddingBottom),gap=parseFloat(style.rowGap);
+    const height=grid.firstElementChild.getBoundingClientRect().height;
+    return columns*Math.min(Math.max(1,Math.floor((scroll.clientHeight-padding+gap+.5)/(height+gap))),Math.floor(48/columns));
+  });
+}
 async function assertFullSourceCapacity(page) {
   const value=await page.evaluate(()=>{
     const editor=sourceRemovalEditors.get('uid'),grid=editor.grid,style=getComputedStyle(grid);
@@ -366,7 +380,11 @@ for(const android of [false,true])test(`${android?'phone':'desktop'} resident So
     const spacing=await footerSpacing(page,false,`${width}x${height}`);
     assert.equal(spacing.listToTools,8,'Sources share Session Users list-to-footer spacing');
     if(android){assert.equal(spacing.toolsToPager,4);assert.equal(spacing.buttonToPagerTargets,8,'the trash slot inset and frame gap supply the full control gap');assert.equal(spacing.pagerToPanelBottom,4);}
-    else assert.equal(spacing.buttonToPanelBottom,14,'the narrow desktop shares Session Users block inset');
+    else {
+      const columns=await page.evaluate(()=>document.documentElement.dataset.hostColumns);
+      assert.ok(['compact','two'].includes(columns));
+      assert.equal(spacing.buttonToPanelBottom,columns==='compact'?14:20,'Sources retain the Session Users inset for the actual shared column layout');
+    }
     await screenshot(page,`resident-${android?'phone':'desktop'}-${width}x${height}-normal`);
     await toggle.click();await page.locator('#follow-up-grid .source-checkbox').first().check();
     await page.locator('#follow-up-grid .follow-up-button').first().evaluate(async node=>{
@@ -388,6 +406,13 @@ for(const android of [false,true])test(`${android?'phone':'desktop'} resident So
     await screenshot(page,`resident-${android?'phone':'desktop'}-${width}x${height}-selected`);
     await toggle.click();await page.mouse.move(1,1);assert.equal(await footer.isVisible(),true);assert.equal(await trash.getAttribute('aria-disabled'),'true');
     assert.deepEqual(await toggle.boundingBox(),before);await assertMedia(page);
+  }
+  if(!android){
+    const rail=page.locator('[data-host-workspace="request"]'),panel=page.locator('#host-workspace-request');
+    await rail.click();await panel.waitFor({state:'hidden'});
+    await page.setViewportSize({width:1000,height:900});await panel.waitFor({state:'visible'});
+    await page.setViewportSize({width:700,height:600});await panel.waitFor({state:'hidden'});
+    await rail.click();await panel.waitFor({state:'visible'});await assertNativeSourceFrame(page);await assertMedia(page);
   }
   assert.equal(requests.mutations.length,0);assert.equal(requests.blocked,0);assert.deepEqual(errors,[]);assert.deepEqual(consoleLogs,[]);completed.add(t);
 });
@@ -616,7 +641,7 @@ test('mobile Host long press selects without moving its resident footer; swipe, 
   assert.equal(await page.locator('#follow-up-grid').evaluate(grid=>getComputedStyle(grid).gridTemplateColumns.split(' ').length),3,'overlay keeps all three original columns');
   const wideLayoutDuring=await sourceLayout(page,'390-selection');
   for(const key of ['columns','items','page','panel','scroll','grid','pager','clientHeight'])assert.deepEqual(wideLayoutDuring[key],wideLayoutBefore[key],`full pages retain ${key} when tools appear`);
-  assert.equal(wideLayoutDuring.items,15);assert.equal(wideLayoutDuring.page,'1');assert.equal(wideLayoutDuring.paddingBottom,0,'resident tools need no extra scroll reach');
+  assert.equal(wideLayoutDuring.items,Math.min(18,await expectedSourceCapacity(page)));await assertFullSourceCapacity(page);assert.equal(wideLayoutDuring.page,'1');assert.equal(wideLayoutDuring.paddingBottom,0,'resident tools need no extra scroll reach');
   assert.equal(wideLayoutDuring.scrollHeight,wideLayoutDuring.clientHeight,'selection keeps the fitted page free of extra scrolling');
   const checkbox=page.locator('#follow-up-grid [data-source-id="43"] .source-checkbox'),checkboxBox=await checkbox.boundingBox();
   await start({x:checkboxBox.x+checkboxBox.width/2,y:checkboxBox.y+checkboxBox.height/2});
@@ -629,7 +654,7 @@ test('mobile Host long press selects without moving its resident footer; swipe, 
   await page.setViewportSize({width:320,height:640});
   await settleSourceFit(page);
   const narrowLayoutBefore=await sourceLayout(page,'320-normal');await screenshot(page,'host-touch-320-normal');
-  assert.equal(narrowLayoutBefore.items,6);assert.equal(narrowLayoutBefore.columns,2);assert.equal(narrowLayoutBefore.page,'1');
+  assert.equal(narrowLayoutBefore.items,Math.min(18,await expectedSourceCapacity(page)));await assertFullSourceCapacity(page);assert.equal(narrowLayoutBefore.columns,2);assert.equal(narrowLayoutBefore.page,'1');
   assert.equal(narrowLayoutBefore.paddingBottom,0);assert.equal(narrowLayoutBefore.scrollHeight,narrowLayoutBefore.clientHeight,'a shorter native window chooses fewer complete rows');
   p=await point();await start(p);
   for(let step=1;step<=4;step++){await session.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:p.x,y:p.y-step*20}]});await page.waitForTimeout(20);}
@@ -641,7 +666,7 @@ test('mobile Host long press selects without moving its resident footer; swipe, 
   await page.waitForTimeout(750);await assertNoSourceTextSelection(page);const during=await snapshot();
   for(const name of Object.keys(before))for(const key of Object.keys(before[name]))assert.ok(Math.abs(before[name][key]-during[name][key])<=1,`${name}.${key} stays fixed when the overlay appears`);
   assert.equal(await card.getAttribute('aria-pressed'),'true');
-  const narrowLayoutDuring=await sourceLayout(page,'320-selection');assert.equal(narrowLayoutDuring.columns,2);assert.equal(narrowLayoutDuring.items,6);assert.equal(narrowLayoutDuring.page,'1');
+  const narrowLayoutDuring=await sourceLayout(page,'320-selection');assert.equal(narrowLayoutDuring.columns,2);assert.equal(narrowLayoutDuring.items,narrowLayoutBefore.items);assert.equal(narrowLayoutDuring.page,'1');
   assert.equal(narrowLayoutDuring.paddingBottom,0);assert.equal(narrowLayoutDuring.scrollHeight,narrowLayoutBefore.scrollHeight,'selection does not add a scroll track');
   assert.deepEqual(narrowLayoutDuring.scroll,narrowLayoutBefore.scroll,'the resident footer keeps the viewport fixed');
   await footerBounds(page);await screenshot(page,'host-touch-long-press-overlay');
@@ -817,13 +842,13 @@ for(const android of [false,true])test(`${android?'mobile':'desktop'} native Sou
     await screenshot(page,'host-desktop-scroll-source-frame');
     assert.deepEqual(errors,[]);assert.equal(requests.mutations.length,0);await assertMedia(page);completed.add(t);return;
   }
-  if(android)assert.equal(baseline.items,15);
+  if(android)assert.equal(baseline.items,await expectedSourceCapacity(page));
   const sizes=android?[[320,844,10],[320,640,6],[390,844,15]]:[[700,600],[1000,900],[700,650]];
   for(const [width,height,count] of sizes){
     await page.setViewportSize({width,height});await settleSourceFit(page);
     const layout=await sourceLayout(page,`${android?'mobile':'desktop'}-frame-${width}x${height}`);
     await assertNativeSourceFrame(page);await assertFullSourceCapacity(page);await footerBounds(page);
-    if(count)assert.equal(layout.items,count);
+    if(count)assert.equal(layout.items,await expectedSourceCapacity(page));
     if(!android&&width===1000)assert.ok(layout.items>baseline.items,'a larger desktop frame admits more complete rows');
     assert.equal(await page.locator('#modal-follow-uid-input').inputValue(),'123456','size changes preserve the UID draft');
     assert.equal(await page.evaluate(()=>document.documentElement.dataset.hostPlatform==='android'),android,'input capability and viewport do not change the Host platform');
@@ -915,7 +940,7 @@ test('mobile Host fits 360px and 320px Source frames through 640–1000px height
   for(const [width,height,count] of [[390,844,15],[320,844,10],[390,870,15],[390,880,15],[390,950,18],[390,1024,21]]){
     await page.setViewportSize({width,height});await settleSourceFit(page);
     const layout=await sourceLayout(page,`capacity-${width}x${height}`);
-    assert.equal(layout.items,count,`${width}x${height} displays every available complete row`);
+    assert.equal(layout.items,await expectedSourceCapacity(page),`${width}x${height} displays every available complete row`);
     await assertNativeSourceFrame(page);await assertFullSourceCapacity(page);await footerBounds(page);
   }
   await page.locator('#modal-follow-uid-input').fill('123456');
@@ -924,7 +949,7 @@ test('mobile Host fits 360px and 320px Source frames through 640–1000px height
     for(const [width,height,count] of [[360,640,6],[360,800,8],[360,1000,14],[320,640,6],[320,800,8],[320,1000,14],[390,844,15],[390,1000,21]]){
       await page.setViewportSize({width,height});await settleSourceFit(page);
       const normal=await sourceLayout(page,`${language}-capacity-${width}x${height}`);
-      assert.equal(normal.items,count);
+      assert.equal(normal.items,await expectedSourceCapacity(page));
       await assertNativeSourceFrame(page);await assertFullSourceCapacity(page);await footerBounds(page);
       const first=page.locator('#follow-up-grid .source-removal-card').first(),cardBounds=await first.boundingBox();
       if(language==='zh'&&width!==390)await screenshot(page,`host-mobile-${width}x${height}`);
@@ -1360,18 +1385,39 @@ test('selection cards share pointer roles, group ordering, drag previews and an 
   assert.deepEqual(errors,[]);await assertMedia(page);completed.add(t);
 });
 
-async function controlledSources(t) {
+async function controlledSources(t, {freshUid=false} = {}) {
   let release;const gate=new Promise(resolve=>{release=resolve;});
   const provider=await videoFixture(async target=>{
     const u=new URL(target,'https://api.bilibili.com'),uid=u.searchParams.get('mid')||'42';
     if(u.pathname.endsWith('/nav'))return {code:0,data:{isLogin:true,wbi_img:{img_url:`https://i0.hdslb.com/${'a'.repeat(32)}.png`,sub_url:`https://i0.hdslb.com/${'b'.repeat(32)}.png`}}};
     if(u.pathname.endsWith('/acc/info'))return {code:0,data:{mid:Number(uid),name:`本地 UP ${Number(uid)-41}`,face:''}};
-    if(u.pathname.endsWith('/arc/search')){await gate;return {code:0,data:{list:{vlist:[{bvid,title:'Refreshed song',length:'1:30',author:'本地 UP 1'}]}}};}
+    if(u.pathname.endsWith('/arc/search')){await gate;return {code:0,data:{list:{vlist:[...(freshUid?[{bvid:'BV17x411w7KC',title:'Refreshed song 伴奏',length:'1:30',author:'本地 UP 1'}]:[]),{bvid,title:'Refreshed song',length:'1:30',author:'本地 UP 1'}]}}};}
     if(u.pathname.endsWith('/list-all'))return {code:0,data:{list:[{id:10,title:'我的本地收藏',attr:0,media_count:1},{id:11,title:'独立收藏夹',attr:0,media_count:1},{id:12,title:'正在拉取的收藏夹',attr:0,media_count:1},{id:13,title:'等待拉取的收藏夹',attr:0,media_count:1}]}};
     if(u.pathname.endsWith('/resource/list')){await gate;return {code:0,data:{medias:[{bvid,title:'Refreshed favorite',duration:90,upper:{mid:42,name:'本地 UP 1'}}],has_more:false}};}
     return {code:0,data:{}};
   });cleanup(t,()=>provider.close());return {provider,release};
 }
+
+for(const kind of ['uid','favlist'])for(const detail of [false,true])test(`WebKit Remote ${kind} pull refreshes its open ${detail?'detail':'source list'} without a manual reload`,{timeout:45000},async t=>{
+  const {provider,release}=await controlledSources(t,{freshUid:true});
+  const {host}=await fixture(t,{size:3,environment:{...provider.environment,BILIKARA_CF_API_URL:provider.base},prepare:data=>writeFileSync(path.join(data,'BBDown.data'),'SESSDATA=fixture; bili_jct=fixture')});cleanup(t,release);
+  const {page,errors}=await browser(t,host,{remote:true,engine:webkit});await sources(page,false,true);
+  if(kind==='favlist')await page.locator('[data-remote-sources-mode="favorites"]').click();
+  await page.waitForFunction(()=>!state.followBrowseLoading&&!state.favlistBrowseLoading);
+  if(detail){
+    await page.locator(kind==='uid'?'#sources-follow-grid button[data-uid="42"]':'#favlist-grid button[data-folder-id="42:10"]').click();
+    await page.waitForFunction(()=>!state.followBrowseLoading&&!state.favlistBrowseLoading);
+  }
+  let reads=0;const browsePath=kind==='uid'?'/api/gatcha/browse':'/api/gatcha/favlist/browse';
+  page.on('request',request=>{if(new URL(request.url()).pathname===browsePath)reads++;});
+  await host.api(kind==='uid'?'/api/gatcha/uids/add':'/api/gatcha/favlist',kind==='uid'?{uid:'42',queue:true}:{uid:'42',folder_ids:['10'],folder_titles:{10:'我的本地收藏'},queue:true});
+  await waitFor(async()=>Boolean((await host.api('/api/state')).gatcha.source_queue.active),'actual native source pull started');release();
+  await page.waitForFunction(kind=>Number(state.data.gatcha.source_queue.completed[kind==='uid'?'uids':'favorites'])>0,kind);
+  await waitFor(()=>reads>0,'source completion initiated a fresh Remote read');
+  await page.waitForFunction(()=>!state.followBrowseLoading&&!state.favlistBrowseLoading);
+  if(detail)assert.match(await page.locator(kind==='uid'?'#sources-follow-results':'#favlist-song-results').innerText(),kind==='uid'?/Refreshed song/:/Refreshed favorite/);
+  assert.deepEqual(errors,[]);completed.add(t);
+});
 
 test('queued favorite folders remain browsable on Host and Remote during actual native pulls',{timeout:45000},async t=>{
   const {provider,release}=await controlledSources(t),{host}=await fixture(t,{size:3,environment:{...provider.environment,BILIKARA_CF_API_URL:provider.base},prepare:data=>writeFileSync(path.join(data,'BBDown.data'),'SESSDATA=fixture; bili_jct=fixture')});cleanup(t,release);
@@ -1444,7 +1490,7 @@ test('editing tooltips share geometry and switching workspaces or source tabs ex
   assert.deepEqual(errors,[]);completed.add(t);
 });
 
-for(const [android,width] of [[false,700],[true,360],[true,320]])test(`${android?'Android':'desktop'} ${width}px UP and favorites detail hover and scroll remain below their fixed header`,{timeout:45000},async t=>{
+for(const [android,width] of [[false,700],[true,360],[true,320]])test(`${android?'Android':'desktop'} ${width}px UP and favorites detail hover and ${android?'paging':'scroll'} remain below their fixed header`,{timeout:45000},async t=>{
   const songs=Array.from({length:40},(_,i)=>({bvid:`BV1z84y1p7A${'123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'[i]}`,title:`本地歌曲 ${i+1}`}));
   const {host}=await fixture(t,{android,size:3,prepare:data=>{
     const cache=read(data,'gatcha_cache.json');cache.uids['42']=songs;save(data,'gatcha_cache.json',cache);
@@ -1462,8 +1508,31 @@ for(const [android,width] of [[false,700],[true,360],[true,320]])test(`${android
       const b=await control.boundingBox(),p=await outer.boundingBox();assert.ok(b.y>=p.y,JSON.stringify({b,p}));
       assert.equal(await control.evaluate(n=>{const b=n.getBoundingClientRect();return n.contains(document.elementFromPoint(b.x+b.width/2,b.y+1));}),true);
     }
-    await page.mouse.move(1,1);const header=await back.boundingBox();await results.hover();await page.mouse.wheel(0,600);
-    await page.waitForFunction(id=>document.getElementById(id).scrollTop>0,favorite?'favlist-song-results':'follow-song-results');
+    await page.mouse.move(1,1);const header=await back.boundingBox();
+    if(android) {
+      const first=await results.locator('.search-result-title').first().textContent();
+      const pager=results.locator('..').locator('..').locator('.result-pager');
+      await pager.locator('[data-page-action="next"]').click();
+      await page.waitForFunction(({id,first})=>document.getElementById(id).querySelector('.search-result-title')?.textContent!==first,{id:favorite?'favlist-song-results':'follow-song-results',first});
+      assert.equal(await pager.locator('[data-page-input]').inputValue(),'2');
+      assert.notEqual(await results.locator('.search-result-title').first().textContent(),first);
+      const viewport=results.locator('..');
+      const geometry=await results.evaluate(n=>{const p=n.parentElement,v=p.getBoundingClientRect();return {top:v.top,bottom:v.bottom,height:p.clientHeight,
+        scrollHeight:p.scrollHeight,overflow:getComputedStyle(p).overflowY,cards:[...n.querySelectorAll('.search-result-item')].map(c=>{const r=c.getBoundingClientRect();return {top:r.top,bottom:r.bottom};})};});
+      assert.ok(new Set(geometry.cards.map(card=>Math.round(card.top))).size>=3,'phone song pages retain the minimum three rows');
+      assert.ok(geometry.cards.every(card=>card.top>=geometry.top-1),'paged cards begin below the fixed header');
+      if(geometry.cards.some(card=>card.bottom>geometry.bottom+1)) {
+        assert.ok(geometry.scrollHeight>geometry.height);assert.match(geometry.overflow,/auto|scroll/);
+        assert.equal(await viewport.evaluate(n=>{const r=n.getBoundingClientRect();return n.contains(document.elementFromPoint(r.x+r.width/2,r.bottom+2));}),false,'offscreen cards cannot paint or receive hits over the pager');
+        await viewport.evaluate(n=>{n.scrollTop=n.scrollHeight;});
+        const last=await results.locator('.search-result-item').last().boundingBox();
+        assert.ok(last.y>=geometry.top-1&&last.y+last.height<=geometry.bottom+1,'the last row is reachable above the footer');
+        await viewport.evaluate(n=>{n.scrollTop=0;});
+      } else assert.ok(geometry.cards.every(card=>card.bottom<=geometry.bottom+1),'fitted cards stay above their footer');
+    } else {
+      await results.hover();await page.mouse.wheel(0,600);
+      await page.waitForFunction(id=>document.getElementById(id).scrollTop>0,favorite?'favlist-song-results':'follow-song-results');
+    }
     assert.equal(await outer.evaluate(n=>n.scrollTop),0);assert.deepEqual(await back.boundingBox(),header);
     await screenshot(page,`${android?'android':'desktop'}-${width}-${favorite?'favorite':'up'}-detail-scroll`);await back.click();
   }assert.deepEqual(errors,[]);completed.add(t);

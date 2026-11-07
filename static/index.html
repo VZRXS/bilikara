@@ -3,7 +3,7 @@
 
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>bilikara host</title>
   <link rel="icon" href="/pic/icon.png" />
   <script src="/webview-compat.js"></script>
@@ -402,7 +402,7 @@
             <div class="cache-panel-row cache-policy-row" id="cache-quality-row">
               <label class="cache-quality-field" for="cache-quality-select" title="下一个下载生效" data-i18n-title="service.nextDownloadEffect">
                 <span class="cache-panel-label" data-i18n="service.defaultQuality">默认清晰度</span>
-                <select id="cache-quality-select" class="cache-quality-select"></select>
+                <span class="runtime-settings-select-shell"><select id="cache-quality-select" class="cache-quality-select"></select></span>
               </label>
               <label class="cache-hires-field" for="cache-hires-checkbox" title="下一个下载生效" data-i18n-title="service.nextDownloadEffect">
                 <span class="cache-panel-label" data-i18n="service.hires">优先 Hi-Res</span>
@@ -415,7 +415,7 @@
             <div class="cache-panel-row cache-policy-row" id="cache-source-row">
               <label class="cache-quality-field" for="cache-download-source-select" title="选择下载器（Downkyi需登录哔哩哔哩账号）" data-i18n-title="service.downloadSourceHint">
                 <span class="cache-panel-label" data-i18n="service.downloadSource">下载器</span>
-                <select id="cache-download-source-select" class="cache-quality-select"></select>
+                <span class="runtime-settings-select-shell"><select id="cache-download-source-select" class="cache-quality-select"></select></span>
               </label>
               <label class="cache-hires-field" for="reset-offset-checkbox" title="更换曲目时自动重置音画延迟" data-i18n-title="service.resetOffsetHint">
                 <span class="cache-panel-label" data-i18n="service.resetOffset">自动重置音画延迟</span>
@@ -1116,7 +1116,7 @@
                 <p class="help-text message-surface message-inline" id="form-message" role="status" aria-live="polite"></p>
               </form>
               <div class="native-alpha-notice">
-                <span data-i18n="mobile.betaLabel">Android 测试版</span>
+                <span data-mobile-build-label data-i18n="mobile.androidLabel">Android</span>
                 <span data-i18n="mobile.betaNotice">请保持应用在前台播放。</span>
               </div>
             </section>
@@ -1455,9 +1455,9 @@
           <div class="queue-toolbar">
             <div class="queue-subview-actions">
               <button type="button" id="resort-playlist-button" class="toolbar-button ghost"
-                data-i18n="request.resort">重新排序</button>
+                aria-label="重新排序" data-i18n-aria-label="request.resort" data-i18n="request.resort">重新排序</button>
               <button type="button" id="clear-playlist-button" class="toolbar-button ghost"
-                data-i18n="common.clear">清空</button>
+                aria-label="清空" data-i18n-aria-label="common.clear" data-i18n="common.clear">清空</button>
             </div>
           </div>
         </div>
@@ -1530,9 +1530,9 @@
           <div class="queue-toolbar">
             <div class="queue-subview-actions">
               <button type="button" id="history-export-button" class="toolbar-button ghost" title="导出歌单"
-                data-i18n-title="history.exportTitle"><span data-i18n="history.export">导出</span></button>
+                aria-label="导出歌单" data-i18n-aria-label="history.exportTitle" data-i18n-title="history.exportTitle"><span data-i18n="history.export">导出</span></button>
               <button type="button" id="clear-history-button" class="toolbar-button ghost hidden"
-                data-i18n="common.clear">清空</button>
+                aria-label="清空" data-i18n-aria-label="common.clear" data-i18n="common.clear">清空</button>
             </div>
           </div>
         </div>
@@ -1720,6 +1720,7 @@
     </article>
   </template>
 
+  <div class="selection-modal-backdrop confirm-export-backdrop hidden" id="confirm-export-backdrop" aria-hidden="true"></div>
   <div class="confirm-popover hidden" id="confirm-popover" role="dialog" aria-modal="false">
     <h2 id="confirm-title" class="hidden">导出歌单</h2>
     <button type="button" id="confirm-close" class="banner-close" aria-label="关闭" data-i18n-aria-label="common.close"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
@@ -2019,6 +2020,7 @@
   <script src="/export-guard.js" defer></script>
   <script src="/source-status.js" defer></script>
   <script src="/result-pagination.js" defer></script>
+  <script src="/subtab-swipe.js" defer></script>
   <script src="/source-removal.js" defer></script>
   <script src="/browse-search.js" defer></script>
   <script src="/export-download.js" defer></script>
@@ -2043,6 +2045,7 @@
   <script src="/host-updates.js" defer></script>
   <script src="/media-output.js" defer></script>
   <script src="/native-output.js" defer></script>
+  <script src="/runtime-select.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/purek-room.js" defer></script>
   <script src="/android-export.js" defer></script>
@@ -2052,6 +2055,7 @@
   <script src="/host-layout-preferences.js" defer></script>
   <script src="/android-layout.js" defer></script>
   <script src="/host-layout.js" defer></script>
+  <script src="/host-subtab-swipe.js" defer></script>
   <script src="/ios-host.js" defer></script>
   <script src="/android-host.js" defer></script>
 </body>

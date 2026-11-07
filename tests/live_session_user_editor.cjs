@@ -33,12 +33,15 @@ const [exe, directory, executablePath] = process.argv.slice(2);
       remoteContexts.push(context);
       const page=await context.newPage();page.on("pageerror",error=>errors.push(error.message));
       await page.goto(new URL("/remote",bootstrap).href);
-      await page.waitForFunction(()=>state.data?.session_user_entries?.length);
+      await page.waitForFunction(()=>typeof state!=="undefined" && state.data?.session_user_entries?.length);
       await page.evaluate(async()=>applyRemoteIdentity(await apiPost("/api/remote-identity/register",{name:"Alice",claim:true})));
       return page;
     }
     await host.goto(bootstrap);
-    await host.waitForFunction(()=>state.data?.session_user_edit_version===1);
+    // Bootstrap first commits the Strict cookie on an entry document, then
+    // refreshes to Host. Its load event alone does not mean app.js has run.
+    await host.waitForURL(url=>url.origin===new URL(bootstrap).origin && url.pathname==="/" && !url.search);
+    await host.waitForFunction(()=>typeof state!=="undefined" && state.data?.session_user_edit_version===1);
     assert.match(await host.title(),/bilikara/i);
     await host.evaluate(()=>setLanguage("zh"));
     await host.locator("#work-rail-users").click();
@@ -184,7 +187,7 @@ const [exe, directory, executablePath] = process.argv.slice(2);
     const touch=await touchContext.newPage();
     touch.on('pageerror',error=>errors.push(error.message));
     await touch.goto(new URL('/',bootstrap).href);
-    await touch.waitForFunction(()=>state.data?.session_user_edit_version===1);
+    await touch.waitForFunction(()=>typeof state!=="undefined" && state.data?.session_user_edit_version===1);
     await touch.locator('#work-rail-users').tap();
     await touch.locator('[data-mode="select"]').tap();
     await touch.locator('#session-user-list .session-user-checkbox').nth(0).tap();
@@ -214,9 +217,68 @@ const [exe, directory, executablePath] = process.argv.slice(2);
     await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:cancelStart.x+8,y:cancelStart.y+cancelStart.height/2+8}]});
     await touch.waitForFunction(()=>!!state.sessionUserEditor.drag);
     await cdp.send('Input.dispatchTouchEvent',{type:'touchCancel',touchPoints:[]});
+    await touch.waitForFunction(()=>!state.sessionUserEditor.drag);
     assert.equal(await touch.evaluate(()=>!!state.sessionUserEditor.drag),false);
     assert.equal(await touch.locator('.is-pointer-drag-preview').count(),0,'Interrupted drag removes its preview');
     assert.deepEqual(await touch.evaluate(()=>state.data.session_user_entries.map(user=>user.id)),reordered);
+    // Normal mode uses the whole 36px pill, with an independent 44px hit
+    // region. A short scroll must never arm the long-press drag.
+    await touch.locator('[data-mode="select"]').tap();
+    assert.equal(await touch.locator('.android-user-actions').count(),0);
+    const pill=touch.locator('#session-user-list .session-user-badge').first();
+    assert.equal(await pill.evaluate(node=>node.getBoundingClientRect().height),originalHeight);
+    assert.equal(await pill.evaluate(node=>getComputedStyle(node,'::before').height),'44px');
+    const normal=await pill.locator('.session-user-name').boundingBox();
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[point(normal)]});
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:normal.x+8,y:normal.y+30}]});
+    await touch.waitForTimeout(400);
+    assert.equal(await touch.evaluate(()=>!!state.sessionUserEditor.drag),false);
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+    await touch.locator('#session-user-list').evaluate(node=>node.scrollTop=0);
+    const hold=await pill.locator('.session-user-name').boundingBox();
+    const longIds=await touch.evaluate(()=>state.data.session_user_entries.map(user=>user.id));
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[point(hold)]});
+    await touch.waitForFunction(()=>!!state.sessionUserEditor.drag);
+    assert.deepEqual(await touch.evaluate(()=>state.sessionUserEditor.drag.ids),[longIds[0]]);
+    const destination=await touch.locator('#session-user-list .session-user-badge').nth(3).boundingBox();
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[point(destination)]});
+    await touch.screenshot({path:path.join(directory,'users-touch-hold.png')});
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+    await touch.waitForFunction(id=>state.data.session_user_entries[0].id!==id,longIds[0]);
+    const heldOrder=await touch.evaluate(()=>state.data.session_user_entries.map(user=>user.id));
+    // A roster revision during the hold cancels before its timer can arm.
+    const revised=await touch.locator('#session-user-list .session-user-name').first().boundingBox();
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[point(revised)]});
+    await touch.evaluate(()=>apiPost('/api/session-users/edit',{
+      expected_version:state.data.session_users_version,
+      edit:{action:'rename',user_id:state.data.session_user_entries.at(-1).id,name:'Renamed during hold'},
+    }));
+    await touch.waitForFunction(()=>state.data.session_users.includes('Renamed during hold'));
+    await touch.waitForTimeout(400);
+    assert.equal(await touch.evaluate(()=>!!state.sessionUserEditor.drag),false);
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+    assert.deepEqual(await touch.evaluate(()=>state.data.session_user_entries.map(user=>user.id)),heldOrder);
+    // Keyboard users retain an explicit reorder path after menu removal.
+    await touch.locator('#session-user-list .session-user-name').first().focus();
+    await touch.keyboard.press('Alt+ArrowDown');
+    await touch.waitForFunction(id=>state.data.session_user_entries[1].id===id,heldOrder[0]);
+    const beforeDelete=await touch.evaluate(()=>state.data.session_user_entries.map(user=>user.id));
+    const deleteStart=await touch.locator('#session-user-list .session-user-name').first().boundingBox();
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[point(deleteStart)]});
+    await touch.waitForFunction(()=>!!state.sessionUserEditor.drag);
+    const trashBox=await touch.locator('.session-user-trash-slot').boundingBox();
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:trashBox.x+trashBox.width/2,y:trashBox.y+trashBox.height/2}]});
+    await touch.waitForFunction(()=>state.sessionUserEditor.pointer?.overTrash);
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+    await touch.waitForFunction(id=>!state.data.session_user_entries.some(user=>user.id===id),beforeDelete[0]);
+    assert.deepEqual(await touch.evaluate(()=>state.data.session_user_entries.map(user=>user.id)),beforeDelete.slice(1));
+    const rotationStart=await touch.locator('#session-user-list .session-user-name').first().boundingBox();
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[point(rotationStart)]});
+    await touch.setViewportSize({width:1200,height:800});
+    await touch.waitForTimeout(400);
+    assert.equal(await touch.evaluate(()=>!!state.sessionUserEditor.drag),false);
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchCancel',touchPoints:[]});
+    assert.equal(await touch.locator('.is-pointer-drag-preview').count(),0);
     await touchContext.close();
     checks.push('touch checkbox selection, immediate group drag, and interrupted gesture cancellation');
     assert.deepEqual(errors,[]);

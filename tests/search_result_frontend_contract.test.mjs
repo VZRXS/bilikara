@@ -184,14 +184,14 @@ const cases = {
   foreignUrl: normalizedBvid({ url: "https://example.com/video/BVfake" }),
   unrelatedId: normalizedBvid({ id: "BVwrong", aid: "BVwrong2", mid: "BVwrong3" }),
   shortValid: normalizedBvid({ bvid: "BV1" }),
-  canonical: canonicalBilibiliUrl({ bvid: "bvAb12" }),
+  canonical: canonicalBilibiliUrl({ bvid: "bv1yyjzzCEQn" }),
   unavailable: canonicalBilibiliUrl({ url: "https://example.com/video/BVfake" }),
 };
 console.log(JSON.stringify(cases));
 `);
 completed = (await runNative("node", ["-e", script], process.env, 5 * 1000, root));
 assert.deepEqual(completed.status, 0, completed.stderr);
-assert.deepEqual(JSON.parse(completed.stdout), {["direct"]: "BVAb12", ["url"]: "BVUrl123", ["resolved"]: "BV9x", ["original"]: "BV7Y", ["invalidDirectDoesNotFallThrough"]: "", ["foreignUrl"]: "", ["unrelatedId"]: "", ["shortValid"]: "BV1", ["canonical"]: "https://www.bilibili.com/video/BVAb12", ["unavailable"]: ""});
+assert.deepEqual(JSON.parse(completed.stdout), {["direct"]: "BVAb12", ["url"]: "BVUrl123", ["resolved"]: "BV9x", ["original"]: "BV7Y", ["invalidDirectDoesNotFallThrough"]: "", ["foreignUrl"]: "", ["unrelatedId"]: "", ["shortValid"]: "BV1", ["canonical"]: "https://www.bilibili.com/video/BV1yyjzzCEQn", ["unavailable"]: ""});
 },
 async test_detail_bilibili_state_is_hidden_and_cleared_without_a_bvid() {
 let close_source, completed, helper_source, script, source;
@@ -218,7 +218,7 @@ const elements = { bvid: element(), bilibiliLink: element() };
 const translate = (key) => ({
   "search.openOnBilibili": "Open on Bilibili",
 })[key];
-const firstUrl = renderBilibiliMetadata(elements, { bvid: "bvFirst" }, translate);
+const firstUrl = renderBilibiliMetadata(elements, { bvid: "bv1yyjzzCEQn" }, translate);
 const before = {
   bvidText: elements.bvid.textContent,
   bvidHidden: elements.bvid.classList.contains("hidden"),
@@ -240,7 +240,7 @@ console.log(JSON.stringify({ firstUrl, secondUrl, before, after }));
 `);
 completed = (await runNative("node", ["-e", script], process.env, 5 * 1000, root));
 assert.deepEqual(completed.status, 0, completed.stderr);
-assert.deepEqual(JSON.parse(completed.stdout), {["firstUrl"]: "https://www.bilibili.com/video/BVFirst", ["secondUrl"]: "", ["before"]: {["bvidText"]: "BVFirst", ["bvidHidden"]: false, ["linkText"]: "Open on Bilibili", ["linkHidden"]: false, ["href"]: "https://www.bilibili.com/video/BVFirst"}, ["after"]: {["bvidText"]: "", ["bvidHidden"]: true, ["linkText"]: "", ["linkHidden"]: true, ["href"]: "", ["ariaDisabled"]: "true", ["tabindex"]: "-1"}});
+assert.deepEqual(JSON.parse(completed.stdout), {["firstUrl"]: "https://www.bilibili.com/video/BV1yyjzzCEQn", ["secondUrl"]: "", ["before"]: {["bvidText"]: "BV1yyjzzCEQn", ["bvidHidden"]: false, ["linkText"]: "Open on Bilibili", ["linkHidden"]: false, ["href"]: "https://www.bilibili.com/video/BV1yyjzzCEQn"}, ["after"]: {["bvidText"]: "", ["bvidHidden"]: true, ["linkText"]: "", ["linkHidden"]: true, ["href"]: "", ["ariaDisabled"]: "true", ["tabindex"]: "-1"}});
 close_source = (await this.function_source(source, "close", "request"));
 assert.ok(contains("activeBilibiliUrl = \"\";", close_source));
 assert.ok(contains("renderBilibiliMetadata(elements, null, translate);", close_source));
@@ -254,11 +254,11 @@ host_init_start = sourceIndex(host, "function initSearchDetailController");
 host_init = host.slice(host_init_start, sourceIndex(host, `
 elements.searchResults.addEventListener`, host_init_start));
 remote_init = (await this.function_source(remote, "initSearchDetailController", "selectedFollowOwner"));
-assert.ok(contains("onOpenExternal: openExternalUrl,", host_init));
+assert.ok(contains("onOpenExternal: openBilibiliVideo,", host_init));
 assert.ok(!contains("onOpenExternal", remote_init));
 assert.ok(!contains("/api/", remote_init));
 assert.ok(contains(`event.preventDefault();
-        onOpenExternal(activeBilibiliUrl);`, detail));
+        onOpenExternal(activeBilibiliUrl, elements.bilibiliLink);`, detail));
 },
 async test_detail_bilibili_link_translation_exists_in_all_languages() {
 let expected, language, translations, value;

@@ -13,6 +13,7 @@ const ratingDialog = require('./browser/remote_rating_dialog.cjs');
 let alpha, desktop;
 before(async () => {
   if (process.platform !== 'linux') return;
+  mkdirSync(path.join(root, '.tmp'), { recursive: true });
   alpha = process.env.BILIKARA_TEST_NATIVE_ALPHA_BINARY || await buildNativeAlpha();
   desktop = process.env.BILIKARA_TEST_NATIVE_HOST_BINARY || await buildNativeHost();
 }, { timeout: 300000 });
@@ -220,6 +221,8 @@ for (const [name, engine] of [['Chromium', chromium], ['WebKit', webkit]]) {
       await page.screenshot({ path: path.join(screenshots, `${name}-feedback-detail.png`), clip });
     }
     await page.evaluate(() => setLocalPlayerVolumeAndMuted(.85, false));
+    // Reopening an expired category becomes visible on the next animation frame.
+    await page.waitForFunction(() => document.querySelector('#presentation-feedback [data-feedback-category="volume"].is-visible .presentation-feedback-value')?.textContent === '85%', null, { timeout: 1500 });
     assert.deepEqual(await popup.locator('.presentation-feedback-card.is-visible').evaluateAll(nodes => nodes.map(node => ({
       category: node.dataset.feedbackCategory, top: node.getBoundingClientRect().top,
     })).sort((a, b) => a.top - b.top).map(card => card.category)), ['volume', 'delay'],
@@ -612,17 +615,18 @@ for (const [name, engine] of [['Chromium', chromium], ['WebKit', webkit]]) {
         const [first, second] = editor.list.querySelectorAll('.session-user-badge');
         if (mode === 'select') { editor.selected.add(second.dataset.userId); editor.sync(); }
         const rect = first.getBoundingClientRect(), bounds = editor.list.getBoundingClientRect();
+        const hitHeight = Number.parseFloat(getComputedStyle(first, '::before').height);
         let prevent = false;
         if (mode === 'rename') editor.dragStart({target: second, preventDefault() { prevent = true; }});
         else { editor.beginDrag(second); editor.chooseDrop(rect.left, rect.top + rect.height / 2); }
         const after = first.getBoundingClientRect(), marker = getComputedStyle(first, '::before');
-        const result = { coarse: editor.coarse, height: rect.height, inset: rect.left - bounds.left,
+        const result = { coarse: editor.coarse, height: rect.height, hitHeight, inset: rect.left - bounds.left,
           same: rect.width === after.width && rect.height === after.height,
           marked: first.classList.contains('drop-before') && rect.left + Number.parseFloat(marker.left) >= bounds.left,
           renameRejected: prevent, drag: Boolean(editor.drag) };
         editor.finishDrag(); return result;
       }, mode);
-      assert.equal(result.coarse, true); assert.equal(result.height, 44);
+      assert.equal(result.coarse, true); assert.equal(result.height, 36); assert.equal(result.hitHeight, 44);
       assert.ok(result.inset >= 7 && result.same, JSON.stringify(result));
       if (mode === 'rename') assert.ok(result.renameRejected && !result.drag, 'Rename retains its deliberate exclusion of reordering');
       else assert.equal(result.marked, true);
@@ -775,6 +779,10 @@ for (const [name, engine] of [['Chromium', chromium], ['WebKit', webkit]]) {
         await button.click();
         await bubble.evaluate(node => Promise.allSettled(node.getAnimations().map(animation => animation.finished)));
         const bounds = await bubble.boundingBox();
+        assert.ok(bounds, JSON.stringify({role,language,width,height, help:await bubble.evaluate(node => ({
+          open:node.matches(':popover-open'), class:node.parentElement.className,
+          expanded:node.parentElement.querySelector('button')?.getAttribute('aria-expanded'),
+          focused:document.activeElement?.id, visibility:getComputedStyle(node).visibility}))}));
         assert.ok(bounds.x >= 7 && bounds.y >= 7 && bounds.x + bounds.width <= width - 7
           && bounds.y + bounds.height <= height - 7, `${role} ${language} ${width}x${height}: ${JSON.stringify(bounds)}`);
         await page.keyboard.press('Escape');
@@ -1387,4 +1395,52 @@ test('actual local-library HTTP search counts and renders unique videos across o
   await page.waitForFunction(() => state.searchModeState.local.items.length === 3 && !state.searchModeState.local.loading);
   assert.deepEqual(await page.evaluate(() => state.searchModeState.local.items.map(item => item.bvid)), ['BV1xx411c7mD', 'BV1z84y1p7oS', 'BV0000000001']);
   assert.equal(await page.locator('#search-results .search-result-item').count(), 3);
+});
+
+for(const [name,engine] of Object.entries({chromium,webkit}))test(`${name} desktop runtime source settings fit translated labels before wrapping into aligned rows`,{
+  skip:nativeLimit,timeout:60000,
+},async t=>{
+  const {page}=await open(t,engine,'host',{},true);
+  for(const width of [700,1024]) {
+    await page.setViewportSize({width,height:800});
+    for(const [language,layout] of [['en','stacked'],['zh','inline'],['ja','stacked']]) {
+      await page.evaluate(language=>setLanguage(language),language);
+      if(await page.locator('#cache-settings-toggle').getAttribute('aria-expanded')!=='true')await page.locator('#cache-settings-toggle').click();
+      await page.waitForFunction(layout=>document.getElementById('cache-source-row').dataset.layout===layout,layout);
+      const bounds=await page.locator('#cache-source-row').evaluate(row=>{
+        const outer=row.getBoundingClientRect(),labels=[...row.children].map(n=>n.getBoundingClientRect()),
+          select=row.querySelector('select').getBoundingClientRect(),toggle=row.querySelector('.cache-hires-switch').getBoundingClientRect();
+        const text=[...row.querySelectorAll('.cache-panel-label')].map(n=>{
+          const range=document.createRange();range.selectNodeContents(n);return range.getBoundingClientRect();
+        });
+        return {inside:labels.every(r=>r.left>=outer.left-1&&r.right<=outer.right+1)
+          &&select.right<=outer.right+1&&toggle.right<=outer.right+1,
+          aligned:Math.abs(text[0].left-text[1].left)<1&&Math.abs(select.right-toggle.right)<1,
+          sameRow:Math.abs(labels[0].top-labels[1].top)<1,
+          separateRows:labels[1].top>=labels[0].bottom};
+      });
+      assert.equal(bounds.inside,true,JSON.stringify({width,language,bounds}));
+      if(layout==='stacked')assert.ok(bounds.aligned&&bounds.separateRows,JSON.stringify({width,language,bounds}));
+      else assert.equal(bounds.sameRow,true);
+      await page.keyboard.press('Escape');
+    }
+  }
+});
+
+for(const engine of [chromium,webkit])for(const role of ['host','remote'])test(`${engine.name()} ${role} toast grows to 75 percent without overflowing`,{skip:nativeLimit,timeout:90000},async t=>{
+  const {page}=await open(t,engine,role,{},role==='host');
+  const toast=page.locator('#app-toast');
+  for(const width of role==='host'?[700,1920]:[320,393,1100])for(const language of ['zh','en','ja']){
+    await page.setViewportSize({width,height:900});await page.evaluate(language=>{setLanguage(language);setAppMessage(t('common.back').repeat(200));},language);
+    await toast.waitFor({state:'visible'});
+    const geometry=await toast.boundingBox();
+    assert.ok(geometry.width>=width*.74&&geometry.width<=width*.75+1,JSON.stringify(geometry));
+    assert.ok(geometry.x>=0&&geometry.x+geometry.width<=width,JSON.stringify(geometry));
+  }
+  const evidence=process.env.BILIKARA_UI_BATCH_EVIDENCE;
+  if(evidence){mkdirSync(evidence,{recursive:true});await page.setViewportSize({width:role==='host'?700:393,height:900});
+    await page.evaluate(()=>{setLanguage('zh');setAppMessage('这是一条用于检查提示宽度的测试消息。较长内容会自然换行，并且不会遮住全部页面。');});
+    await page.screenshot({path:path.join(evidence,`toast-${role}-${engine.name()}.png`)});}
+  await page.evaluate(()=>setAppMessage('完成'));
+  assert.ok((await toast.boundingBox()).width<150,'short notices retain their natural width');
 });

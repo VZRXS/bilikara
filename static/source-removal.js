@@ -143,7 +143,7 @@
     }
     get blocked() { return this.pending || this.loading || !this.available || !this.active; }
     get interacting() { return Boolean(this.pointer || this.hold); }
-    get mobile() { return document.documentElement.dataset.hostPlatform === 'android'; }
+    get mobile() { return ['android','ios'].includes(document.documentElement.dataset.hostPlatform); }
     activateMode(button) {
       if (button !== this.toggle || (this.editing ? this.pending : this.blocked)) return false;
       this.setEditing(!this.editing); return true;
@@ -191,7 +191,8 @@
       const rows = records.map(row => Object.assign(previous.get(row.id) || {}, row));
       if (sameIds) this.records.splice(0,this.records.length,...rows); else this.records = rows;
       if (this.pager) {
-        this.pager.update({key:this.source + ':' + filter,items:this.records,total:records.length,pageSize:12,
+        this.pager.update({key:this.source + ':' + filter,positionKey:this.source + ':' + filter,itemKey:row=>row.id,
+          items:this.records,total:records.length,pageSize:12,
           limited:true,hasMore:false,loading:loading || this.pending,language,emptyText});
         if (!active) this.pager.hide();
       } else this.pageRecords = this.records;

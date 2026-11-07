@@ -74,7 +74,8 @@ assert.ok(!contains("playback-sheet-progress-block", sheet));
 settings = sheet.match(new RegExp("<div class=\"playback-sheet-settings-card\">.*?</div>\\s*</section>\\s*</div>","s"))[0];
 assert.ok(contains("class=\"playback-sheet-secondary\" aria-label=\"设置\" data-i18n-aria-label=\"settings.title\"", sheet));
 assert.ok(!contains("playback-sheet-settings-title", sheet));
-assert.deepEqual(countOccurrences(settings, "class=\"remote-setting-panel\""), 3);
+assert.deepEqual(countOccurrences(settings, "class=\"remote-setting-panel\""), 4);
+assert.ok(sourceIndex(settings, 'data-media-output="remote"') < sourceIndex(settings, 'id="remote-av-sync-panel"'), 'network output belongs to the same settings group before AV delay');
 for (const panel_id of iterableValues(["remote-av-sync-panel", "remote-volume-panel", "remote-key-shift-panel"])) {
 assert.ok(contains(("id=\"" + String(panel_id) + "\""), settings));
 }

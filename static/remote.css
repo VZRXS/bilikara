@@ -22,7 +22,6 @@
   --danger-btn-hover-bg: rgba(177, 69, 69, 0.14);
   --toast-error-border: rgba(177, 69, 69, 0.22);
   --shadow: 0 18px 40px rgba(79, 56, 39, 0.12);
-  --font-sans: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
   --bg-glow: rgba(255, 255, 255, 0.9);
   --bg-top: #f7f2ea;
   --bg-bottom: #ead8c4;
@@ -1340,6 +1339,8 @@ h1 {
 }
 
 .remote-input-wrap input[type="number"] {
+  /* The surrounding pill owns focus, not a second rectangle in its child. */
+  --field-focus-outline: none;
   width: 96px;
   border: none;
   background: transparent;
@@ -1351,7 +1352,9 @@ h1 {
 
 .remote-input-wrap:focus-within {
   border-color: var(--remote-focus-border-color);
-  box-shadow: var(--remote-focus-ring-shadow);
+  outline: var(--field-focus-outline, none);
+  outline-offset: var(--field-focus-outline-offset, 0px);
+  box-shadow: var(--field-focus-shadow, var(--remote-focus-ring-shadow));
 }
 
 .remote-input-wrap input:focus {
@@ -1893,11 +1896,7 @@ button[data-control-action="next-track"] {
   border: 1px dashed rgba(202, 91, 60, 0.28);
 }
 
-.audio-variant-button.pending-bind::after {
-  content: "+";
-  margin-left: 6px;
-  font-weight: 700;
-}
+
 
 .audio-variant-button.active {
   background: var(--accent);
@@ -2273,13 +2272,19 @@ input {
   outline: none;
 }
 
-/* input:not([type="range"]):focus {
-  border-color: var(--remote-focus-border-color);
-  box-shadow: var(--remote-focus-ring-shadow);
-} */
+input:not([type]):focus,
+input[type="text"]:focus,
+input[type="url"]:focus,
+input[type="search"]:focus,
+input[type="email"]:focus,
+input[type="tel"]:focus,
+input[type="password"]:focus,
+input[type="number"]:focus,
 textarea:focus {
   border-color: var(--remote-focus-border-color);
-  box-shadow: var(--remote-focus-ring-shadow);
+  outline: var(--field-focus-outline, none);
+  outline-offset: var(--field-focus-outline-offset, 0px);
+  box-shadow: var(--field-focus-shadow, var(--remote-focus-ring-shadow));
 }
 
 select {
@@ -2294,7 +2299,9 @@ select {
 
 select:focus {
   border-color: var(--remote-focus-border-color);
-  box-shadow: var(--remote-focus-ring-shadow);
+  outline: var(--field-focus-outline, none);
+  outline-offset: var(--field-focus-outline-offset, 0px);
+  box-shadow: var(--field-focus-shadow, var(--remote-focus-ring-shadow));
 }
 
 select:disabled {
@@ -2432,27 +2439,7 @@ select:disabled {
 }
 
 .app-toast {
-  position: fixed;
-  left: 50%;
-  bottom: 22px;
   z-index: var(--remote-layer-toast);
-  max-width: min(520px, calc(100vw - 32px));
-  padding: 11px 16px;
-  border: var(--toast-border);
-  border-radius: 999px;
-  background: var(--toast-bg);
-  box-shadow: var(--toast-shadow);
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.4;
-  text-align: center;
-  transform: translateX(-50%);
-  backdrop-filter: blur(14px);
-}
-
-.app-toast.is-error {
-  border-color: var(--toast-error-border, rgba(177, 69, 69, 0.22));
-  color: var(--red);
 }
 
 .queue-state {
@@ -4764,7 +4751,7 @@ body.remote-identity-modal-open {
   background: transparent;
 }
 
-.playback-sheet-secondary .remote-setting-panel + .remote-setting-panel {
+.playback-sheet-secondary .remote-setting-panel:not([hidden]):not(.hidden) ~ .remote-setting-panel:not([hidden]):not(.hidden) {
   border-top: 1px solid var(--line);
 }
 

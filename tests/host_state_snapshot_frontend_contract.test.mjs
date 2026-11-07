@@ -792,7 +792,7 @@ assert.deepEqual(result["transitions"], [["song-a", "song-b"]]);
 async test_polling_rejects_before_any_snapshot_side_effect() {
 let completed, fetch_state, guard, remote_access_failure, result, script;
 guard = (await this.source_slice("function isSafeHostSnapshotInteger", "function syncCachePanelVisibility"));
-fetch_state = (await this.source_slice("async function fetchState", "function renderSignatureForData"));
+fetch_state = (await this.source_slice("async function fetchHostApi", "async function apiPost")) + (await this.source_slice("async function fetchState", "function renderSignatureForData"));
 remote_access_failure = (await this.source_slice("function updateRemoteAccessFailure", "function localRemoteAccessView"));
 script = (`
 (async () => {

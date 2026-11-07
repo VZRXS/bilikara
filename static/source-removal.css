@@ -2,12 +2,12 @@
 .source-mode-panel { position: relative; display: flex; flex-direction: column; row-gap: 8px; }
 /* Android keeps the frame's controls 8px apart. The grid needs 2px of paint room
    at each edge; old browse padding must not cost a complete extra row. */
-:root[data-host-platform="android"] .source-mode-panel:is(:has(> .source-frame-footer > .host-result-pager:not([hidden])), :where([data-legacy-has~="r26"])) .follow-up-grid.has-result-pages { padding-block: 2px; }
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) .source-mode-panel:is(:has(> .source-frame-footer > .host-result-pager:not([hidden])), :where([data-legacy-has~="r26"])) .follow-up-grid.has-result-pages { padding-block: 2px; }
 /* The phone page footer uses Remote's 4px outer inset. Other views retain
    the platform panel padding, including the Session User tool row. */
-:root[data-host-platform="android"] .source-mode-panel:is(:has(> .source-frame-footer > .host-result-pager:not([hidden])), :where([data-legacy-has~="r26"])) { padding-bottom: 4px; }
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) .source-mode-panel:is(:has(> .source-frame-footer > .host-result-pager:not([hidden])), :where([data-legacy-has~="r26"])) { padding-bottom: 4px; }
 .source-frame-footer { display: flex; flex-direction: column; flex: 0 0 auto; min-width: 0; gap: 0; }
-:root[data-host-platform="android"] .source-frame-footer:is(:has(> .host-result-pager:not([hidden])), :where([data-legacy-has~="r27"])) { gap: 4px; }
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) .source-frame-footer:is(:has(> .host-result-pager:not([hidden])), :where([data-legacy-has~="r27"])) { gap: 4px; }
 .source-frame-footer[hidden] { display: none; }
 .source-tools {
   flex: 0 0 52px;
@@ -96,4 +96,4 @@
 }
 
 .source-removal-card.is-draggable > .follow-up-button { touch-action: none; }
-:root[data-host-platform="android"] .source-removal-card.is-draggable > .follow-up-button { touch-action: pan-y pinch-zoom; }
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) .source-removal-card.is-draggable > .follow-up-button { touch-action: pan-y pinch-zoom; }

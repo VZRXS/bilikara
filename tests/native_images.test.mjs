@@ -8,6 +8,9 @@ import { RunningHost, HttpClient, isolatedEnvironment } from './native_host_supp
 import { zipEntries, csvRows } from './native_export_support.mjs';
 
 const binary = await buildNativeImages();
+// Compiler preparation has its own bounded build guard. Keep the HTTP/export
+// deadline for application behavior instead of a queued cold Cargo build.
+const hostBinary = await buildNativeHost();
 const homeFor = t => { const home = mkdtempSync(path.join(root, '.tmp/native images 中文 & ')); t.after(() => rmSync(home, { recursive: true, force: true })); return home; };
 async function checked(args, env, cwd) { const result = await runNative(binary, args, env, 90000, cwd); assert.equal(result.status, 0, result.stdout + result.stderr); assert.match(result.stdout, /[1-9]\d* passed; 0 failed/); }
 
@@ -35,7 +38,7 @@ test('real Host and Remote image/history aliases and specific archived sessions 
   writeFileSync(path.join(legacyData, 'played_sessions/played-2024-06-12_00-00.json'), JSON.stringify({ session_started_at:1718000300, items:[row('Current only',0)] }));
   writeFileSync(path.join(legacyData, 'playlist_backup.json'), JSON.stringify({ current_item: null, playlist: [], played_session: { file: 'played-2024-06-12_00-00.json', session_started_at:1718000300 }, updated_at:1718000400 }));
   const originals = new Map(sessions.map(([name]) => [name, readFileSync(path.join(legacyData, 'played_sessions', name))]));
-  const executable = await buildNativeHost();
+  const executable = hostBinary;
   let host;
   const decode = async (bytes, count) => { const file = path.join(home, 'actual image 中文.png'); writeFileSync(file, bytes); await checked(['--ignored', '--exact', 'isolated_export_file'], { ...isolatedEnvironment(home), BILIKARA_TEST_EXPORT_FILE: file, BILIKARA_TEST_EXPORT_ROWS: String(count) }, home); };
   try {

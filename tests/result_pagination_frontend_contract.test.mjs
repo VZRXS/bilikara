@@ -74,6 +74,23 @@ await pages.goTo(84);
 assert.equal(calls.length, 1);
 `));
 },
+async test_full_prefetch_batches_keep_adjacent_turns_cached_at_the_twelve_page_limit() {
+(await this.run_case(`
+const calls = [], pages = new Pages();
+pages.update(initial({items:items(0,72),pageSize:6,readSize:72,readAhead:2,prefetch:true,
+  load:async range=>{calls.push(range);return {items:items(range.offset,range.limit),
+    offset:range.offset,matched_count:612,has_more:true,next_offset:range.offset+range.limit};}}));
+const settle = async()=>{while(pages.prefetchPending)await pages.prefetchPending.promise;};
+await pages.goTo(40);await settle();
+for(const page of [41,42,43,42,41,40,41,42,43,44]) {
+  assert.notEqual(pages.peek(page),null,'an adjacent turn stays cached after the full speculative batch');
+  await pages.goTo(page);await settle();
+  assert.equal(pages.items[0].id,(page-1)*6);
+  assert.ok(pages.cache.size<=12,'the cache remains bounded');
+}
+assert.equal(calls.filter(range=>range.offset===246).length,0,'page 42 is never re-read after its batch was prefetched');
+`));
+},
 async test_small_cards_use_six_rows_and_preserve_the_visible_range_on_resize() {
 (await this.run_case(`
 const pages = new Pages();
@@ -478,6 +495,7 @@ assert.equal(legacy.load,null);
 };
 test("ResultPaginationFrontendTest.test_compact_totals_use_local_units_and_carry_rounding_at_boundaries", async () => { const instance = Object.create(ResultPaginationFrontendTest); await instance.setUpClass(); await instance.test_compact_totals_use_local_units_and_carry_rounding_at_boundaries(); });
 test("ResultPaginationFrontendTest.test_direct_jump_fetches_beyond_initial_hundred_and_returns_to_cached_page", async () => { const instance = Object.create(ResultPaginationFrontendTest); await instance.setUpClass(); await instance.test_direct_jump_fetches_beyond_initial_hundred_and_returns_to_cached_page(); });
+test("ResultPaginationFrontendTest.test_full_prefetch_batches_keep_adjacent_turns_cached_at_the_twelve_page_limit", async () => { const instance = Object.create(ResultPaginationFrontendTest); await instance.setUpClass(); await instance.test_full_prefetch_batches_keep_adjacent_turns_cached_at_the_twelve_page_limit(); });
 test("ResultPaginationFrontendTest.test_small_cards_use_six_rows_and_preserve_the_visible_range_on_resize", async () => { const instance = Object.create(ResultPaginationFrontendTest); await instance.setUpClass(); await instance.test_small_cards_use_six_rows_and_preserve_the_visible_range_on_resize(); });
 test("ResultPaginationFrontendTest.test_three_row_grids_support_odd_column_counts_without_resetting_pages", async () => { const instance = Object.create(ResultPaginationFrontendTest); await instance.setUpClass(); await instance.test_three_row_grids_support_odd_column_counts_without_resetting_pages(); });
 test("ResultPaginationFrontendTest.test_native_panels_fit_complete_rows_and_bound_extreme_or_unmeasured_sizes", async () => { const instance = Object.create(ResultPaginationFrontendTest); await instance.setUpClass(); await instance.test_native_panels_fit_complete_rows_and_bound_extreme_or_unmeasured_sizes(); });
@@ -497,3 +515,76 @@ test("ResultPaginationFrontendTest.test_last_page_warms_backward_search_window_w
 test("ResultPaginationFrontendTest.test_jump_during_prefetch_still_warms_the_new_neighbors", async () => { const instance = Object.create(ResultPaginationFrontendTest); await instance.setUpClass(); await instance.test_jump_during_prefetch_still_warms_the_new_neighbors(); });
 test("ResultPaginationFrontendTest.test_prefetch_failure_is_quiet_bounded_and_stale_results_are_discarded", async () => { const instance = Object.create(ResultPaginationFrontendTest); await instance.setUpClass(); await instance.test_prefetch_failure_is_quiet_bounded_and_stale_results_are_discarded(); });
 test("ResultPaginationFrontendTest.test_real_remote_adapter_preserves_source_filters_counts_and_legacy_limits", async () => { const instance = Object.create(ResultPaginationFrontendTest); await instance.setUpClass(); await instance.test_real_remote_adapter_preserves_source_filters_counts_and_legacy_limits(); });
+
+test('source refresh retains a distant page, invalidates its cache and rejects retired reads', async () => {
+  const instance=Object.create(ResultPaginationFrontendTest);await instance.setUpClass();await instance.run_case(`
+const calls=[],errors=[];let release;
+const load=async range=>{calls.push(range);return {items:items(range.offset,range.limit),offset:range.offset,matched_count:612,has_more:true,next_offset:range.offset+range.limit};};
+const pages=new Pages(()=>{},error=>errors.push(error.message));
+const options=initial({positionKey:'uids:42:query',key:'read-1',load});
+pages.update(options);await pages.goTo(35);
+const oldItems=pages.items;
+pages.update({...options,key:'read-2',loading:true});
+assert.equal(pages.page,35);assert.equal(pages.loading,true);assert.equal(pages.items,oldItems);
+pages.update({...options,key:'read-2',items:items(0,100),load:range=>new Promise(resolve=>{release=()=>resolve({items:items(range.offset,range.limit).map(item=>({...item,fresh:true})),offset:range.offset,matched_count:612,has_more:true,next_offset:range.offset+range.limit});})});
+assert.equal(pages.page,35);assert.equal(pages.loading,true);assert.equal(pages.cache.has(35),false);
+release();await new Promise(resolve=>setImmediate(resolve));
+assert.equal(pages.items[0].id,204);assert.equal(pages.items[0].fresh,true);assert.equal(pages.loading,false);
+pages.update({...options,key:'read-3',items:items(0,100),load:()=>new Promise(resolve=>{release=resolve;})});
+pages.update({...options,key:'new-query',positionKey:'uids:42:other-query',items:items(0,100)});
+release({items:items(204,6),offset:204,matched_count:612,has_more:true,next_offset:210});
+await new Promise(resolve=>setImmediate(resolve));
+assert.equal(pages.page,1);assert.equal(pages.items[0].id,0);assert.deepEqual(errors,[]);
+`);
+});
+
+test('source refresh clamps a shorter list and a failed retained-page read never loops on renders', async () => {
+  const instance=Object.create(ResultPaginationFrontendTest);await instance.setUpClass();await instance.run_case(`
+const errors=[];let reads=0;
+const load=async range=>({items:items(range.offset,range.limit),offset:range.offset,matched_count:612,has_more:true,next_offset:range.offset+range.limit});
+const pages=new Pages(()=>{},error=>errors.push(error.message));
+const options=initial({positionKey:'uids:42',key:1,load});pages.update(options);await pages.goTo(35);
+const failed={...options,key:2,items:items(0,100),load:async()=>{reads++;throw new Error('offline');}};
+pages.update(failed);await new Promise(resolve=>setImmediate(resolve));
+for(let i=0;i<10;i++)pages.update(failed);
+assert.equal(reads,1);assert.equal(pages.page,35);assert.equal(pages.loading,false);assert.deepEqual(errors,['offline']);
+pages.update({...options,key:3,items:items(0,12),total:12,hasMore:false});
+assert.equal(pages.page,2);assert.equal(pages.items[0].id,6);assert.equal(pages.items.length,6);
+`);
+});
+
+test('button page turns never dim or slide the live result container (IOS-09-11)', () => {
+  const source=readFileSync(path.join(ROOT,'static/result-pagination.js'));
+  const start=source.indexOf('async function navigate(page, distance = null) {');
+  const end=source.indexOf('input.addEventListener("focus", openEditor);', start);
+  assert.ok(start>=0&&end>start,'navigate() must stay locatable');
+  const navigate=source.slice(start,end);
+  // No half-transparent frame: no opacity keyframes and no container animation
+  // for button/number navigation; only the swipe settle path may move content.
+  assert.doesNotMatch(navigate,/opacity/);
+  assert.doesNotMatch(navigate,/animate\(\s*container/);
+  assert.match(navigate,/settleSwipe\(distance, -direction \* pageStride\(\), ticket\)/);
+  // Every remaining motion goes through animate(), which yields to reduced motion.
+  assert.match(source,/function animate\(element, frames, duration = 220\) \{\n\s+if \(reducedMotion\.matches\) return null;/);
+  assert.doesNotMatch(source,/opacity:\s*\.5\b|opacity:\s*0\.5\b/);
+});
+
+test('repeated capacity changes and source reordering retain the same record [IOS-09-10]', async () => {
+  const instance=Object.create(ResultPaginationFrontendTest);await instance.setUpClass();await instance.run_case(`
+const pages=new Pages();
+const source=items(0,60),options=initial({items:source,total:60,hasMore:false,pageSize:12,positionKey:'owners',itemKey:item=>item.id});
+pages.update(options);await pages.goTo(3);
+for(const size of [48,3,30,6,18,12]) {
+  pages.update({...options,pageSize:size});
+  assert.ok(pages.items.some(item=>item.id===24),'capacity cycles retain the original record');
+}
+const reordered=[...source].reverse();
+pages.update({...options,items:reordered});
+assert.ok(pages.items.some(item=>item.id===24),'sorting retains record identity');
+await pages.goTo(1);
+pages.update({...options,items:reordered,pageSize:3});
+assert.ok(pages.items.some(item=>item.id===59),'explicit navigation chooses a new anchor');
+pages.update({...options,key:'other',positionKey:'other',items:items(100,60),pageSize:3});
+assert.equal(pages.items[0].id,100,'changing the source resets its anchor');
+`);
+});

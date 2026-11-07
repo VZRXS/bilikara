@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { chromium } from 'playwright';
@@ -23,4 +23,10 @@ test('actual Host and two Remotes preserve stable identities through roster edit
   assert.equal(evidence.passed.length, 10);
   assert.ok(evidence.passed.includes('atomic batch deletion revokes both devices'));
   assert.ok(evidence.passed.includes('touch checkbox selection, immediate group drag, and interrupted gesture cancellation'));
+  if (process.env.BILIKARA_SESSION_USERS_EVIDENCE) {
+    mkdirSync(process.env.BILIKARA_SESSION_USERS_EVIDENCE, { recursive: true });
+    for (const file of readdirSync(directory).filter(file => file.endsWith('.png'))) {
+      copyFileSync(path.join(directory, file), path.join(process.env.BILIKARA_SESSION_USERS_EVIDENCE, file));
+    }
+  }
 });
