@@ -54,6 +54,9 @@ pub fn start_diagnosed(directory: &Path, assets: AssetSource) -> Result<NativeHo
     let response = initialize_native_host(
         directory,
         AppStateSeed {
+            last_playback_generation: 0,
+            queue_departures: Vec::new(),
+            stable_cycle_cursor: None,
             automatic_volume: Default::default(),
             session_user_ids: Default::default(),
             requester_user_ids: Default::default(),

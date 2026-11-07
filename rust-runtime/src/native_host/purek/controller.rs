@@ -249,7 +249,17 @@ fn control(app: &mut AppState, c: &mut Controller, instant: Instant) -> Result<(
         return Ok(());
     };
     let facts = app.native_output_audio_facts()?;
-    if command["playback_generation"] != facts.source.3 || command["item_id"] != facts.source.0 {
+    if command["playback_generation"] != facts.source.3
+        || command["item_id"] != facts.source.0
+        || (command["action"] == "next-track"
+            && command
+                .get("expected_queue_version")
+                .and_then(Value::as_str)
+                .is_some_and(|version| {
+                    app.native_core_snapshot()
+                        .is_ok_and(|snapshot| version != snapshot.queue_version)
+                }))
+    {
         app.native_execute(AppStateRequest::AckPlayerControl {
             schema_version: 1,
             seq: command["seq"].as_u64().unwrap_or(0),
@@ -317,6 +327,7 @@ fn advance(
     let delay = facts.settings.song_advance_delay_seconds.max(0) as u64;
     let reset_av_delay = app.native().cache_policy.reset_offset_on_next;
     app.native_execute(AppStateRequest::AdvanceToNext {
+        expected_queue_version: None,
         schema_version: 1,
         expected_playback_generation: facts.source.3,
         reset_av_delay,
@@ -515,6 +526,7 @@ pub(crate) fn maintain(context: Arc<HostContext>) {
                             app.native_execute(AppStateRequest::IssuePlayerControl {
                                 schema_version: 1,
                                 control: crate::app_state::PlayerControlInput {
+                                    expected_queue_version: None,
                                     action: action["action"].as_str().unwrap().into(),
                                     playback_generation: f.source.3,
                                     item_id: f.source.0.clone(),

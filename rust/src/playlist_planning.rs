@@ -34,6 +34,9 @@ pub struct PlaylistOrderItem {
 pub struct PlaylistOrderRequest {
     pub operation: PlaylistOrderOperation,
     pub session_users: Vec<String>,
+    /// Rotation anchor; Runtime supplies its stable last ordinary singer ID.
+    /// The wire name is retained for version-1 compatibility, not an instruction
+    /// to derive the anchor from whichever priority/manual item is playing.
     pub current_requester: Option<String>,
     pub items: Vec<PlaylistOrderItem>,
     pub candidate: Option<PlaylistOrderItem>,

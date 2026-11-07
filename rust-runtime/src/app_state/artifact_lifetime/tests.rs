@@ -97,6 +97,8 @@ impl Fixture {
         assert!(
             self.app
                 .execute(AppStateRequest::RemoveItem {
+                    reset_av_delay: false,
+                    expected_queue_version: None,
                     schema_version: 1,
                     item_id: id.into(),
                     now: 4.0

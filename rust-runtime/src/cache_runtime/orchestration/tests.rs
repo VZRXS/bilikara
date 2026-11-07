@@ -592,6 +592,8 @@ fn failed_stays_failed_until_retry_and_stale_retry_cannot_replace_incarnation() 
     let new = f.state.jobs["a"].cache_attempt_token;
     assert!(new > job.cache_attempt_token);
     f.app.execute(AppStateRequest::RemoveItem {
+        reset_av_delay: false,
+        expected_queue_version: None,
         schema_version: 1,
         item_id: "a".into(),
         now: 6.0,
@@ -774,6 +776,8 @@ fn captured_reuse_cannot_override_replacement_and_stop_wins_late_admission() {
     let reuse = Reuse::inspect(&f.app.cache_items().unwrap(), &[], &f.facts);
     let thread = thread::spawn(move || {
         f.app.execute(AppStateRequest::RemoveItem {
+            reset_av_delay: false,
+            expected_queue_version: None,
             schema_version: 1,
             item_id: "a".into(),
             now: 6.0,
@@ -921,6 +925,8 @@ fn stale_retry_cannot_reopen_a_cleared_window() {
     let mut f = Fixture::new();
     let old = f.add("same");
     f.app.execute(AppStateRequest::RemoveItem {
+        reset_av_delay: false,
+        expected_queue_version: None,
         schema_version: 1,
         item_id: "same".into(),
         now: 5.0,

@@ -20,11 +20,13 @@ use std::sync::{Mutex, OnceLock};
 pub(crate) mod automatic_volume;
 mod native_persistence;
 pub use automatic_volume::{AutomaticVolumePreference, AutomaticVolumeSnapshot};
+mod queue_diagnostics;
 #[cfg(test)]
 mod session_user_tests;
 mod session_users;
 #[cfg(feature = "native-host")]
 pub(crate) use native_persistence::prepare_import;
+pub use queue_diagnostics::{QueueActor, QueueDeparture};
 pub use session_users::{SessionUserEdit, SessionUserEntry};
 pub(crate) mod artifact_lifetime;
 mod player_control;
@@ -249,9 +251,19 @@ pub struct SessionArchiveSeed {
     pub items: Vec<SessionPlayedEntry>,
 }
 
+/// None on the enclosing field means a legacy checkpoint. An initialized
+/// cursor with no singer starts at the first seat, including after Play Now.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct StableCycleCursor {
+    pub last_user_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct BackupSeed {
+    #[serde(default)]
+    pub stable_cycle_cursor: Option<StableCycleCursor>,
     #[serde(default)]
     pub current_item: Option<PlaylistItem>,
     #[serde(default)]
@@ -297,6 +309,12 @@ impl Default for PlayerSettingsSeed {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct AppStateSeed {
+    #[serde(default)]
+    pub last_playback_generation: u64,
+    #[serde(default)]
+    pub queue_departures: Vec<QueueDeparture>,
+    #[serde(default)]
+    pub stable_cycle_cursor: Option<StableCycleCursor>,
     #[serde(default, deserialize_with = "automatic_volume::read_preference")]
     pub automatic_volume: AutomaticVolumePreference,
     #[serde(default = "default_playback_mode")]
@@ -465,12 +483,18 @@ pub enum AppStateRequest {
         now: f64,
     },
     RemoveItem {
+        #[serde(default)]
+        reset_av_delay: bool,
         schema_version: u32,
+        #[serde(default)]
+        expected_queue_version: Option<String>,
         item_id: String,
         now: f64,
     },
     ClearPlaylist {
         schema_version: u32,
+        #[serde(default)]
+        expected_queue_version: Option<String>,
         now: f64,
     },
     ClearHistory {
@@ -484,6 +508,8 @@ pub enum AppStateRequest {
     },
     AdvanceToNext {
         schema_version: u32,
+        #[serde(default)]
+        expected_queue_version: Option<String>,
         expected_playback_generation: u64,
         #[serde(default)]
         reset_av_delay: bool,
@@ -491,12 +517,16 @@ pub enum AppStateRequest {
     },
     MoveItem {
         schema_version: u32,
+        #[serde(default)]
+        expected_queue_version: Option<String>,
         item_id: String,
         direction: String,
         now: f64,
     },
     MoveToNext {
         schema_version: u32,
+        #[serde(default)]
+        expected_queue_version: Option<String>,
         item_id: String,
         now: f64,
     },
@@ -522,10 +552,14 @@ pub enum AppStateRequest {
     },
     ResortPlaylistByCycle {
         schema_version: u32,
+        #[serde(default)]
+        expected_queue_version: Option<String>,
         now: f64,
     },
     MoveToFront {
         schema_version: u32,
+        #[serde(default)]
+        expected_queue_version: Option<String>,
         item_id: String,
         #[serde(default)]
         reset_av_delay: bool,
@@ -533,6 +567,8 @@ pub enum AppStateRequest {
     },
     SetCurrentItem {
         schema_version: u32,
+        #[serde(default)]
+        expected_queue_version: Option<String>,
         #[serde(default)]
         item_id: Option<String>,
         #[serde(default)]
@@ -767,6 +803,48 @@ pub enum AppStateRequest {
 }
 
 impl AppStateRequest {
+    fn expected_queue_version(&self) -> Option<&str> {
+        match self {
+            Self::RemoveItem {
+                expected_queue_version,
+                ..
+            }
+            | Self::ClearPlaylist {
+                expected_queue_version,
+                ..
+            }
+            | Self::AdvanceToNext {
+                expected_queue_version,
+                ..
+            }
+            | Self::MoveItem {
+                expected_queue_version,
+                ..
+            }
+            | Self::MoveToNext {
+                expected_queue_version,
+                ..
+            }
+            | Self::ResortPlaylistByCycle {
+                expected_queue_version,
+                ..
+            }
+            | Self::MoveToFront {
+                expected_queue_version,
+                ..
+            }
+            | Self::SetCurrentItem {
+                expected_queue_version,
+                ..
+            }
+            | Self::MoveItemToIndex {
+                expected_queue_version,
+                ..
+            } => expected_queue_version.as_deref(),
+            _ => None,
+        }
+    }
+
     fn schema_version(&self) -> u32 {
         match self {
             Self::Initialize { schema_version, .. }
@@ -945,6 +1023,7 @@ pub struct PlaybackProgram {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct AppSnapshot {
+    pub queue_mutation_version: u32,
     pub audio_supplements: HashMap<String, audio_supplement::AudioSupplement>,
     pub automatic_volume: AutomaticVolumeSnapshot,
     pub schema_version: u32,
@@ -972,6 +1051,9 @@ pub struct AppSnapshot {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct PersistenceSnapshot {
+    last_playback_generation: u64,
+    queue_departures: Vec<QueueDeparture>,
+    stable_cycle_cursor: Option<StableCycleCursor>,
     automatic_volume: AutomaticVolumePreference,
     playback_mode: String,
     player_settings: PlayerSettingsSeed,
@@ -1056,6 +1138,8 @@ impl AppStateResponse {
 
 #[derive(Debug, Clone, PartialEq)]
 struct AppStateData {
+    queue_departures: Vec<QueueDeparture>,
+    stable_cycle_cursor: Option<StableCycleCursor>,
     audio_supplements: HashMap<String, audio_supplement::AudioSupplement>,
     automatic_volume: AutomaticVolumePreference,
     automatic_playback: automatic_volume::AutomaticPlayback,
@@ -1088,6 +1172,7 @@ struct AppStateData {
 
 #[derive(Debug)]
 pub struct AppState {
+    queue_actor: QueueActor,
     #[cfg(feature = "native-host")]
     analysis_signal: Option<automatic_volume::AnalysisSignal>,
     #[cfg(feature = "native-host")]
@@ -1142,6 +1227,7 @@ impl Default for AppState {
                 }
             });
         Self {
+            queue_actor: QueueActor::default(),
             data: None,
             #[cfg(feature = "native-host")]
             analysis_signal: None,
@@ -1843,8 +1929,23 @@ fn validate_item_collection(
     Ok(())
 }
 
+fn validate_cycle_cursor(cursor: &Option<StableCycleCursor>) -> Result<(), ExecuteError> {
+    if cursor
+        .as_ref()
+        .and_then(|c| c.last_user_id.as_ref())
+        .is_some_and(|id| id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        return Err(rejected(
+            "invalid_initial_state",
+            "invalid stable cycle cursor",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_backup(backup: &BackupSeed) -> Result<(), ExecuteError> {
     validate_time(backup.updated_at, "backup updated_at")?;
+    validate_cycle_cursor(&backup.stable_cycle_cursor)?;
     validate_item_collection(backup.current_item.as_ref(), &backup.playlist)?;
     if let Some(archive) = &backup.played_session {
         validate_archive(archive)?;
@@ -1853,6 +1954,12 @@ fn validate_backup(backup: &BackupSeed) -> Result<(), ExecuteError> {
 }
 
 fn validate_seed(seed: &AppStateSeed) -> Result<(), ExecuteError> {
+    if seed.last_playback_generation >= MAX_SAFE_JSON_INTEGER {
+        return Err(rejected(
+            "invalid_initial_state",
+            "playback generation exhausted",
+        ));
+    }
     session_users::validate_user_ids(seed)?;
     if seed.remote_identities.iter().any(|(digest, name)| {
         digest.len() != 64
@@ -1911,6 +2018,8 @@ fn validate_seed(seed: &AppStateSeed) -> Result<(), ExecuteError> {
             "AV delay state is out of range",
         ));
     }
+    queue_diagnostics::validate(&seed.queue_departures)?;
+    validate_cycle_cursor(&seed.stable_cycle_cursor)?;
     validate_item_collection(seed.current_item.as_ref(), &seed.playlist)?;
     for entry in seed.history.iter().chain(seed.session_history.iter()) {
         validate_history_entry(entry)?;
@@ -1951,7 +2060,14 @@ impl AppStateData {
             assign_new_item_incarnation(item, namespace, next_item_incarnation_id)?;
         }
         validate_seed(&seed)?;
+        let playback_generation = seed
+            .last_playback_generation
+            .checked_add(1)
+            .filter(|value| *value <= MAX_SAFE_JSON_INTEGER)
+            .ok_or_else(|| rejected("invalid_initial_state", "playback generation exhausted"))?;
         let mut data = Self {
+            queue_departures: seed.queue_departures,
+            stable_cycle_cursor: seed.stable_cycle_cursor,
             automatic_volume: seed.automatic_volume,
             automatic_playback: automatic_volume::AutomaticPlayback {
                 manual_override: seed.current_item.is_some(),
@@ -1960,7 +2076,7 @@ impl AppStateData {
             revision: 1,
             native_session_choice_pending: false,
             session_generation: 1,
-            playback_generation: 1,
+            playback_generation,
             playback_mode: seed.playback_mode,
             player_settings: seed.player_settings,
             current_item: seed.current_item,
@@ -1990,7 +2106,51 @@ impl AppStateData {
         };
         data.sync_user_ids(namespace);
         data.restore_requester_ids();
+        if data.stable_cycle_cursor.is_none() {
+            // Old saves have no transition origin. Use only an ordinary current
+            // as a one-time baseline, never a priority/manual interruption.
+            data.stable_cycle_cursor = Some(StableCycleCursor {
+                last_user_id: data
+                    .current_item
+                    .as_ref()
+                    .filter(|item| item.queue_slot_type == "cycle")
+                    .and_then(|item| data.requester_user_ids.get(&item.id).cloned()),
+            });
+        }
+        data.normalize_cycle_cursor();
         Ok(data)
+    }
+
+    fn normalize_cycle_cursor(&mut self) {
+        let last = self
+            .stable_cycle_cursor
+            .as_ref()
+            .and_then(|cursor| cursor.last_user_id.clone());
+        self.stable_cycle_cursor = Some(StableCycleCursor {
+            last_user_id: last.filter(|id| self.user_name_for_id(id).is_some()),
+        });
+    }
+
+    fn select_cycle_item(&mut self, item: &PlaylistItem) {
+        if item.queue_slot_type == "cycle" {
+            self.stable_cycle_cursor = Some(StableCycleCursor {
+                last_user_id: self
+                    .requester_user_ids
+                    .get(&item.id)
+                    .cloned()
+                    .filter(|id| self.user_name_for_id(id).is_some()),
+            });
+        }
+    }
+
+    fn promote_waiting_head(&mut self) {
+        self.current_item = if self.playlist.is_empty() {
+            None
+        } else {
+            let item = self.playlist.remove(0);
+            self.select_cycle_item(&item);
+            Some(item)
+        };
     }
 
     fn current_identity(&self) -> Option<&str> {
@@ -2087,6 +2247,7 @@ impl AppStateData {
     ) -> AppSnapshot {
         let av_delay = self.av_snapshot();
         AppSnapshot {
+            queue_mutation_version: 1,
             audio_supplements: self.audio_supplements.clone(),
             automatic_volume: self.automatic_snapshot(),
             schema_version: SCHEMA_VERSION,
@@ -2136,6 +2297,12 @@ impl AppStateData {
             digest.update(value.as_bytes());
         };
         field(&self.session_generation.to_string());
+        field(
+            self.stable_cycle_cursor
+                .as_ref()
+                .and_then(|c| c.last_user_id.as_deref())
+                .unwrap_or(""),
+        );
         field(&self.session_users.len().to_string());
         for name in &self.session_users {
             field(&self.session_user_ids[name]);
@@ -2156,6 +2323,9 @@ impl AppStateData {
 
     fn persistence_snapshot(&self) -> PersistenceSnapshot {
         PersistenceSnapshot {
+            last_playback_generation: self.playback_generation,
+            queue_departures: self.queue_departures.clone(),
+            stable_cycle_cursor: self.stable_cycle_cursor.clone(),
             automatic_volume: self.automatic_volume.clone(),
             playback_mode: self.playback_mode.clone(),
             player_settings: self.player_settings.clone(),
@@ -2256,6 +2426,7 @@ fn rebuild_playlist_order(
     data: &mut AppStateData,
     candidate: Option<PlaylistItem>,
 ) -> Result<(), ExecuteError> {
+    data.normalize_cycle_cursor();
     let operation = if candidate.is_some() {
         PlaylistOrderOperation::InsertCycle
     } else {
@@ -2292,10 +2463,12 @@ fn rebuild_playlist_order(
             .into_iter()
             .map(|user| user.id)
             .collect(),
+        // The pure planner's existing wire field accepts a rotation anchor.
+        // Keep that ABI while supplying the independent stable singer ID.
         current_requester: data
-            .current_item
+            .stable_cycle_cursor
             .as_ref()
-            .map(|item| data.requester_order_key(item)),
+            .and_then(|cursor| cursor.last_user_id.clone()),
         items,
         candidate: candidate_descriptor,
     })
@@ -2506,6 +2679,7 @@ fn update_backup_from_state(data: &mut AppStateData) {
         return;
     }
     data.backup = Some(BackupSeed {
+        stable_cycle_cursor: data.stable_cycle_cursor.clone(),
         current_item: data.current_item.clone().map(sanitize_backup_item),
         playlist: data
             .playlist
@@ -2626,6 +2800,7 @@ fn replace_session_archive(data: &mut AppStateData, archive: &SessionArchiveSeed
 }
 
 fn reset_current_identity(data: &mut AppStateData) {
+    data.stable_cycle_cursor = Some(StableCycleCursor::default());
     data.current_item = None;
     data.current_item_started = false;
     data.playlist.clear();
@@ -3055,7 +3230,18 @@ fn apply_mutation(
             } else {
                 "cycle".to_owned()
             };
+            if data.current_item.is_none() && !data.playlist.is_empty() {
+                data.promote_waiting_head();
+                data.current_item_started = false;
+                data.player_settings.key_shift = 0;
+                if reset_av_delay {
+                    reset_local_av_delay(data);
+                }
+            }
             if data.current_item.is_none() {
+                if item.queue_slot_type == "cycle" {
+                    data.select_cycle_item(&item);
+                }
                 data.previous_session = None;
                 if reset_av_delay {
                     reset_local_av_delay(data);
@@ -3089,16 +3275,24 @@ fn apply_mutation(
                 persist_backup,
             ))
         }
-        AppStateRequest::RemoveItem { item_id, now, .. } => {
+        AppStateRequest::RemoveItem {
+            item_id,
+            now,
+            reset_av_delay,
+            ..
+        } => {
             if data
                 .current_item
                 .as_ref()
                 .is_some_and(|item| item.id == item_id)
             {
                 archive_current(data, now)?;
-                data.current_item = None;
+                data.promote_waiting_head();
                 data.current_item_started = false;
-                rebuild_playlist_order(data, None)?;
+                data.player_settings.key_shift = 0;
+                if data.current_item.is_some() && reset_av_delay {
+                    reset_local_av_delay(data);
+                }
                 return Ok(MutationResult::changed(mutation_value(true), true));
             }
             let Some(index) = data.playlist.iter().position(|item| item.id == item_id) else {
@@ -3108,7 +3302,6 @@ fn apply_mutation(
                 ));
             };
             data.playlist.remove(index);
-            rebuild_playlist_order(data, None)?;
             Ok(MutationResult::changed(mutation_value(true), true))
         }
         AppStateRequest::ClearPlaylist { .. } => {
@@ -3173,17 +3366,12 @@ fn apply_mutation(
                 return Ok(MutationResult::unchanged(mutation_value(false)));
             }
             archive_current(data, now)?;
-            data.current_item = if data.playlist.is_empty() {
-                None
-            } else {
-                Some(data.playlist.remove(0))
-            };
+            data.promote_waiting_head();
             data.current_item_started = false;
             data.player_settings.key_shift = 0;
             if data.current_item.is_some() && reset_av_delay {
                 reset_local_av_delay(data);
             }
-            rebuild_playlist_order(data, None)?;
             Ok(MutationResult::changed(mutation_value(true), true))
         }
         AppStateRequest::DeferCurrentItem {
@@ -3224,8 +3412,7 @@ fn apply_mutation(
             // This is a suspended request, not a completed/removed request. End
             // its playback segment without inflating the history request count.
             mark_session_played_ended(data, &deferred.id, now);
-            let next = data.playlist.remove(0);
-            data.current_item = Some(next);
+            data.promote_waiting_head();
             data.current_item_started = false;
             data.player_settings.key_shift = 0;
             if reset_av_delay {
@@ -3234,8 +3421,8 @@ fn apply_mutation(
             deferred.queue_slot_type = "manual".to_owned();
             data.playlist.insert(target_index, deferred);
             // Keep the user's explicit order, including all other manual slots.
-            // The normal fair-order rebuild on subsequent Next preserves A's
-            // manual position. Item/cache identities are deliberately unchanged.
+            // Later Next consumes the head without rebuilding any waiting slots.
+            // Item/cache identities are deliberately unchanged.
             Ok(MutationResult::changed(mutation_value(true), true))
         }
         AppStateRequest::MoveItem {
@@ -3263,7 +3450,6 @@ fn apply_mutation(
             };
             data.playlist[index].queue_slot_type = "manual".to_owned();
             data.playlist.swap(index, target);
-            rebuild_playlist_order(data, None)?;
             Ok(MutationResult::changed(mutation_value(true), true))
         }
         AppStateRequest::MoveToNext { item_id, .. } => {
@@ -3273,10 +3459,12 @@ fn apply_mutation(
                     "歌曲已离开等待队列，请刷新后重试",
                 ));
             };
+            if index == 0 && data.playlist[index].queue_slot_type == "priority" {
+                return Ok(MutationResult::unchanged(mutation_value(false)));
+            }
             let mut item = data.playlist.remove(index);
             item.queue_slot_type = "priority".to_owned();
             data.playlist.insert(0, item);
-            rebuild_playlist_order(data, None)?;
             Ok(MutationResult::changed(mutation_value(true), true))
         }
         AppStateRequest::MoveItemToIndex {
@@ -3286,7 +3474,7 @@ fn apply_mutation(
             ..
         } => {
             if expected_queue_version.is_some_and(|version| version != data.queue_version()) {
-                return Err(rejected("queue_changed", "队列已更新，请重新拖动"));
+                return Err(rejected("queue_changed", "队列已更新，请刷新后重试"));
             }
             let Some(index) = data.playlist.iter().position(|item| item.id == item_id) else {
                 return Err(rejected(
@@ -3303,7 +3491,6 @@ fn apply_mutation(
             let mut item = data.playlist.remove(index);
             item.queue_slot_type = "manual".to_owned();
             data.playlist.insert(target, item);
-            rebuild_playlist_order(data, None)?;
             Ok(MutationResult::changed(mutation_value(true), true))
         }
         AppStateRequest::ResortPlaylistByCycle { .. } => {
@@ -3340,7 +3527,6 @@ fn apply_mutation(
             }
             data.current_item = Some(item);
             data.current_item_started = false;
-            rebuild_playlist_order(data, None)?;
             Ok(MutationResult::changed(mutation_value(true), true))
         }
         AppStateRequest::SetCurrentItem {
@@ -3367,7 +3553,6 @@ fn apply_mutation(
                 }
                 data.current_item = Some(item);
                 data.current_item_started = false;
-                rebuild_playlist_order(data, None)?;
                 Ok(MutationResult::changed(
                     json!({"changed": true, "found": true}),
                     true,
@@ -3696,6 +3881,15 @@ fn apply_mutation(
             if backup.current_item.is_none() && backup.playlist.is_empty() {
                 return Ok(MutationResult::unchanged(mutation_value(false)));
             }
+            data.stable_cycle_cursor = backup.stable_cycle_cursor.clone().or_else(|| {
+                Some(StableCycleCursor {
+                    last_user_id: backup
+                        .current_item
+                        .as_ref()
+                        .filter(|item| item.queue_slot_type == "cycle")
+                        .and_then(|item| data.requester_user_ids.get(&item.id).cloned()),
+                })
+            });
             data.current_item = backup.current_item.map(sanitize_backup_item);
             data.playlist = backup
                 .playlist
@@ -3719,7 +3913,7 @@ fn apply_mutation(
             }
             data.previous_session = None;
             increment_session_generation(data)?;
-            rebuild_playlist_order(data, None)?;
+            data.normalize_cycle_cursor();
             Ok(MutationResult::changed(mutation_value(true), false))
         }
         AppStateRequest::DiscardBackup { new_session, .. } => {
@@ -4154,12 +4348,20 @@ impl AppState {
                 true,
             );
             if let AppStateResponse::Success(success) = &mut response {
-                let (code, message) =
-                    if matches!(validation.request, RemoteRequestV1::PlaylistMove { .. }) {
-                        ("queue_changed", "队列已更新，请重新拖动")
-                    } else {
-                        ("stale_command", "操作对应的状态已更新，请刷新后重试")
-                    };
+                let (code, message) = if validation.stale_revision
+                    && matches!(
+                        validation.request,
+                        RemoteRequestV1::PlaylistMove { .. }
+                            | RemoteRequestV1::PlaylistMoveNext { .. }
+                            | RemoteRequestV1::PlaylistRemove { .. }
+                            | RemoteRequestV1::PlaylistPlayNow { .. }
+                            | RemoteRequestV1::PlaylistResort { .. }
+                            | RemoteRequestV1::PlaybackNext { .. }
+                    ) {
+                    ("queue_changed", "队列已更新，请刷新后重试")
+                } else {
+                    ("stale_command", "操作对应的状态已更新，请刷新后重试")
+                };
                 success.result["code"] = json!(code);
                 success.result["error"] = json!(message);
             }
@@ -4473,8 +4675,14 @@ impl AppState {
                     false,
                 );
             }
-            RemoteRequestV1::PlaylistRemove { item_id, .. } => (
+            RemoteRequestV1::PlaylistRemove {
+                item_id,
+                expected_queue_version,
+                ..
+            } => (
                 AppStateRequest::RemoveItem {
+                    reset_av_delay,
+                    expected_queue_version,
                     schema_version: SCHEMA_VERSION,
                     item_id,
                     now,
@@ -4498,16 +4706,25 @@ impl AppState {
                 Some(json!({"kind": "sync_cache"})),
                 None,
             ),
-            RemoteRequestV1::PlaylistResort { .. } => (
+            RemoteRequestV1::PlaylistResort {
+                expected_queue_version,
+                ..
+            } => (
                 AppStateRequest::ResortPlaylistByCycle {
+                    expected_queue_version,
                     schema_version: SCHEMA_VERSION,
                     now,
                 },
                 Some(json!({"kind": "sync_cache"})),
                 None,
             ),
-            RemoteRequestV1::PlaylistMoveNext { item_id, .. } => (
+            RemoteRequestV1::PlaylistMoveNext {
+                item_id,
+                expected_queue_version,
+                ..
+            } => (
                 AppStateRequest::MoveToNext {
+                    expected_queue_version,
                     schema_version: SCHEMA_VERSION,
                     item_id,
                     now,
@@ -4515,8 +4732,13 @@ impl AppState {
                 Some(json!({"kind": "sync_cache"})),
                 None,
             ),
-            RemoteRequestV1::PlaylistPlayNow { item_id, .. } => (
+            RemoteRequestV1::PlaylistPlayNow {
+                item_id,
+                expected_queue_version,
+                ..
+            } => (
                 AppStateRequest::MoveToFront {
+                    expected_queue_version,
                     schema_version: SCHEMA_VERSION,
                     item_id,
                     reset_av_delay,
@@ -4531,6 +4753,13 @@ impl AppState {
             | RemoteRequestV1::PlaybackSeekRelative { .. }
             | RemoteRequestV1::PlaybackSeekAbsolute { .. }
             | RemoteRequestV1::PlaybackNext { .. } => {
+                let expected_queue_version = match &request {
+                    RemoteRequestV1::PlaybackNext {
+                        expected_queue_version,
+                        ..
+                    } => expected_queue_version.clone(),
+                    _ => None,
+                };
                 let (action, item_id, playback_generation, delta_seconds, target_seconds) =
                     match request {
                         RemoteRequestV1::PlaybackPlay {
@@ -4569,6 +4798,7 @@ impl AppState {
                         ),
                         RemoteRequestV1::PlaybackNext {
                             playback_generation,
+                            ..
                         } => (
                             "next-track",
                             snapshot
@@ -4588,6 +4818,7 @@ impl AppState {
                     json!(project_remote_state(&snapshot)),
                     Some(json!({
                         "kind": "player_control",
+                        "expected_queue_version": expected_queue_version,
                         "action": action,
                         "playback_generation": playback_generation,
                         "item_id": item_id,
@@ -4910,6 +5141,17 @@ impl AppState {
         )
     }
 
+    pub fn execute_from(
+        &mut self,
+        request: AppStateRequest,
+        actor: QueueActor,
+    ) -> AppStateResponse {
+        let previous = std::mem::replace(&mut self.queue_actor, actor);
+        let response = self.execute(request);
+        self.queue_actor = previous;
+        response
+    }
+
     pub fn execute(&mut self, request: AppStateRequest) -> AppStateResponse {
         if request.schema_version() != SCHEMA_VERSION {
             return invalid_request_response(
@@ -4986,7 +5228,7 @@ impl AppState {
 
     fn execute_inner(&mut self, request: AppStateRequest) -> AppStateResponse {
         match request {
-            AppStateRequest::Initialize { state, .. } => {
+            AppStateRequest::Initialize { mut state, .. } => {
                 if self.artifact_drain_pending() {
                     return execute_error_response(rejected(
                         "artifact_drain_pending",
@@ -5004,8 +5246,23 @@ impl AppState {
                     Err(message) => return internal_error_response(message),
                 };
                 let mut next_item_incarnation_id = self.next_item_incarnation_id;
+                state.last_playback_generation = state.last_playback_generation.max(
+                    self.data
+                        .as_ref()
+                        .map_or(0, |data| data.playback_generation),
+                );
                 match AppStateData::from_seed(*state, &namespace, &mut next_item_incarnation_id) {
-                    Ok(data) => {
+                    Ok(mut data) => {
+                        if let Some(before) = self.data.as_ref() {
+                            let timestamp = data.updated_at;
+                            queue_diagnostics::record(
+                                before,
+                                &mut data,
+                                "initialization_replace",
+                                self.queue_actor,
+                                timestamp,
+                            );
+                        }
                         let snapshot = match data.snapshot() {
                             Ok(snapshot) => snapshot,
                             Err(error) => return execute_error_response(error),
@@ -5130,7 +5387,18 @@ impl AppState {
                 reset_av_delay,
                 now,
                 ..
-            } => self.execute_internet_remote_message(peer_id, lane, message, reset_av_delay, now),
+            } => {
+                let actor = std::mem::replace(&mut self.queue_actor, QueueActor::PublicRemote);
+                let response = self.execute_internet_remote_message(
+                    peer_id,
+                    lane,
+                    message,
+                    reset_av_delay,
+                    now,
+                );
+                self.queue_actor = actor;
+                response
+            }
             AppStateRequest::CompleteInternetRemotePlaylistAdd {
                 peer_id,
                 request_id,
@@ -5354,6 +5622,16 @@ impl AppState {
                 let Some(current) = self.data.as_ref() else {
                     return uninitialized_response();
                 };
+                if request
+                    .expected_queue_version()
+                    .is_some_and(|version| version != current.queue_version())
+                {
+                    return execute_error_response(rejected_with_details(
+                        "queue_changed",
+                        "队列已更新，请刷新后重试",
+                        json!({"snapshot": current.snapshot().ok(), "actual_queue_version": current.queue_version()}),
+                    ));
+                }
                 let mut next = current.clone();
                 let namespace = match &self.identity_namespace {
                     Ok(namespace) => *namespace,
@@ -5365,6 +5643,7 @@ impl AppState {
                     Err(error) => return execute_error_response(error),
                 };
                 let now = request.now();
+                let queue_operation = queue_diagnostics::operation(&request);
                 #[cfg(feature = "native-host")]
                 let output_audio_selection =
                     matches!(&request, AppStateRequest::SetAudioVariant { .. });
@@ -5441,6 +5720,7 @@ impl AppState {
                         next.updated_at = now;
                     }
                     let mut effects = mutation.effects;
+                    effects.write_core |= current.playback_generation != next.playback_generation;
                     // A boost belongs to this song, not to the next item's playback.
                     // Incarnations also distinguish replacements that reuse an item ID.
                     let song_changed = current
@@ -5474,6 +5754,14 @@ impl AppState {
                         .collect();
                     next.requester_user_ids
                         .retain(|id, _| live_ids.contains(id));
+                    next.normalize_cycle_cursor();
+                    queue_diagnostics::record(
+                        current,
+                        &mut next,
+                        queue_operation,
+                        self.queue_actor,
+                        now.unwrap_or(current.updated_at),
+                    );
                     let snapshot = next.snapshot_with_playback_program(after_program);
                     let persistence = next.persistence_snapshot();
                     let clears_controls = current.playback_generation != next.playback_generation;
@@ -5858,12 +6146,16 @@ impl AppStateResponse {
 }
 
 pub fn execute_app_state(request: AppStateRequest) -> AppStateResponse {
+    execute_app_state_from(request, QueueActor::Runtime)
+}
+
+fn execute_app_state_from(request: AppStateRequest, actor: QueueActor) -> AppStateResponse {
     let shutdown = matches!(request, AppStateRequest::Shutdown { .. });
     let state = APP_STATE.get_or_init(|| Mutex::new(AppState::default()));
     let Ok(mut state) = state.lock() else {
         return internal_error_response("Rust AppState lock is poisoned");
     };
-    let response = state.execute(request);
+    let response = state.execute_from(request, actor);
     drop(state);
     if shutdown {
         let _ = artifact_lifetime::collect_artifacts(None);
@@ -5949,7 +6241,7 @@ pub(crate) fn authorize_cache_publication_for_runtime(
 
 pub fn execute_app_state_json(request_json: &str) -> String {
     let response = match serde_json::from_str::<AppStateRequest>(request_json) {
-        Ok(request) => execute_app_state(request),
+        Ok(request) => execute_app_state_from(request, QueueActor::PythonHost),
         Err(error) => invalid_request_response(
             "invalid_json_request",
             &format!("invalid AppState request: {error}"),
@@ -6076,6 +6368,9 @@ mod tests {
 
     fn seed() -> AppStateSeed {
         AppStateSeed {
+            last_playback_generation: 0,
+            queue_departures: Vec::new(),
+            stable_cycle_cursor: None,
             automatic_volume: Default::default(),
             session_user_ids: std::collections::HashMap::new(),
             requester_user_ids: std::collections::HashMap::new(),
@@ -6179,6 +6474,7 @@ mod tests {
             let mut snapshot = after;
             for _ in 0..=index {
                 snapshot = success(state.execute(AppStateRequest::AdvanceToNext {
+                    expected_queue_version: None,
                     schema_version: 1,
                     expected_playback_generation: snapshot.playback_generation,
                     reset_av_delay: false,
@@ -6195,6 +6491,7 @@ mod tests {
                 now: 22.0,
             }));
             let ended = success(state.execute(AppStateRequest::AdvanceToNext {
+                expected_queue_version: None,
                 schema_version: 1,
                 expected_playback_generation: snapshot.playback_generation,
                 reset_av_delay: false,
@@ -6601,6 +6898,7 @@ mod tests {
         });
         assert!(rejected.error().is_some());
         let after = success(state.execute(AppStateRequest::AdvanceToNext {
+            expected_queue_version: None,
             schema_version: 1,
             expected_playback_generation: tuned.playback_generation,
             reset_av_delay: false,
@@ -6772,6 +7070,7 @@ mod tests {
         }));
 
         let program_b = success(state.execute(AppStateRequest::MoveToFront {
+            expected_queue_version: None,
             schema_version: 1,
             item_id: "b".to_owned(),
             reset_av_delay: false,
@@ -6827,6 +7126,8 @@ mod tests {
             .item_incarnation_id
             .clone();
         success(state.execute(AppStateRequest::RemoveItem {
+            reset_av_delay: false,
+            expected_queue_version: None,
             schema_version: 1,
             item_id: "b".to_owned(),
             now: 13.0,
@@ -7500,6 +7801,7 @@ mod tests {
             now: 11.0,
         }));
         let next = success(state.execute(AppStateRequest::AdvanceToNext {
+            expected_queue_version: None,
             schema_version: 1,
             expected_playback_generation: first.playback_generation,
             reset_av_delay: false,
@@ -7568,6 +7870,7 @@ mod tests {
             .unwrap();
             assert_eq!(restarted.player_settings.volume_percent, volume);
             let rejected = failure(state.execute(AppStateRequest::AdvanceToNext {
+                expected_queue_version: None,
                 schema_version: 1,
                 expected_playback_generation: snapshot.playback_generation,
                 reset_av_delay: false,
@@ -7575,6 +7878,7 @@ mod tests {
             }));
             assert_eq!(rejected.error.kind, "playback_generation_mismatch");
             let advanced = success(state.execute(AppStateRequest::AdvanceToNext {
+                expected_queue_version: None,
                 schema_version: 1,
                 expected_playback_generation: restarted.playback_generation,
                 reset_av_delay: false,
@@ -8099,6 +8403,7 @@ mod tests {
             now: 12.0,
         });
         assert_no_program_bump!(AppStateRequest::MoveItem {
+            expected_queue_version: None,
             schema_version: 1,
             item_id: "b".to_owned(),
             direction: "down".to_owned(),
@@ -8253,7 +8558,13 @@ mod tests {
             pending.playback_generation + 1
         );
         assert_eq!(pending_reset_snapshot.revision, pending.revision + 1);
-        assert_eq!(pending_reset.effects, PersistenceEffects::default());
+        assert_eq!(
+            pending_reset.effects,
+            PersistenceEffects {
+                write_core: true,
+                ..PersistenceEffects::default()
+            }
+        );
 
         let second_reset = success(state.execute(AppStateRequest::ResetPlayer {
             schema_version: 1,
@@ -8270,7 +8581,13 @@ mod tests {
             second_reset_snapshot.revision,
             pending_reset_snapshot.revision + 1
         );
-        assert_eq!(second_reset.effects, PersistenceEffects::default());
+        assert_eq!(
+            second_reset.effects,
+            PersistenceEffects {
+                write_core: true,
+                ..PersistenceEffects::default()
+            }
+        );
 
         success(state.execute(AppStateRequest::SetVolume {
             schema_version: 1,
@@ -8345,7 +8662,13 @@ mod tests {
             mounted_reset_snapshot.playback_generation,
             mounted.playback_generation + 1
         );
-        assert_eq!(mounted_reset.effects, PersistenceEffects::default());
+        assert_eq!(
+            mounted_reset.effects,
+            PersistenceEffects {
+                write_core: true,
+                ..PersistenceEffects::default()
+            }
+        );
     }
 
     #[test]
@@ -8439,7 +8762,13 @@ mod tests {
         let restarted =
             success(state.execute(AppStateRequest::RestartPlaybackProgram { schema_version: 1 }));
         assert!(restarted.committed);
-        assert_eq!(restarted.effects, PersistenceEffects::default());
+        assert_eq!(
+            restarted.effects,
+            PersistenceEffects {
+                write_core: true,
+                ..PersistenceEffects::default()
+            }
+        );
         assert_eq!(restarted.result, mutation_value(true));
         let after = restarted.snapshot.expect("restart snapshot");
         assert_eq!(after.revision, before.revision + 1);
@@ -8498,6 +8827,7 @@ mod tests {
         let mut initial = seed();
         initial.current_item = Some(item("a", "BV-live", "Alice"));
         initial.backup = Some(BackupSeed {
+            stable_cycle_cursor: None,
             current_item: Some(item("a", "BV-restored", "Alice")),
             playlist: Vec::new(),
             played_session: None,
@@ -8725,6 +9055,7 @@ mod tests {
             initial.playlist = vec![waiting];
             initialize(&mut state, initial);
             let reordered = success(state.execute(AppStateRequest::ResortPlaylistByCycle {
+                expected_queue_version: None,
                 schema_version: 1,
                 now: 11.0,
             }));
@@ -8823,6 +9154,7 @@ mod tests {
             now: 13.0,
         }));
         let advanced = success(state.execute(AppStateRequest::AdvanceToNext {
+            expected_queue_version: None,
             schema_version: 1,
             expected_playback_generation: snapshot.playback_generation,
             reset_av_delay: false,
@@ -8863,6 +9195,7 @@ mod tests {
             .snapshot
             .expect("program A snapshot");
         let program_b = success(state.execute(AppStateRequest::MoveToFront {
+            expected_queue_version: None,
             schema_version: 1,
             item_id: "b".to_owned(),
             reset_av_delay: false,
@@ -8891,6 +9224,7 @@ mod tests {
 
         let before_stale = state.data.clone();
         let stale = failure(state.execute(AppStateRequest::AdvanceToNext {
+            expected_queue_version: None,
             schema_version: 1,
             expected_playback_generation: program_a.playback_generation,
             reset_av_delay: false,
@@ -8907,6 +9241,7 @@ mod tests {
         assert_eq!(state.data, before_stale);
 
         let advanced = success(state.execute(AppStateRequest::AdvanceToNext {
+            expected_queue_version: None,
             schema_version: 1,
             expected_playback_generation: program_b.playback_generation,
             reset_av_delay: false,
@@ -8949,6 +9284,7 @@ mod tests {
                     now: 20.0,
                 },
                 "next" => AppStateRequest::AdvanceToNext {
+                    expected_queue_version: None,
                     schema_version: 1,
                     expected_playback_generation: mounted.playback_generation,
                     reset_av_delay: false,
@@ -8965,12 +9301,14 @@ mod tests {
                     now: 20.0,
                 },
                 "front" => AppStateRequest::MoveToFront {
+                    expected_queue_version: None,
                     schema_version: 1,
                     item_id: "b".into(),
                     reset_av_delay: false,
                     now: 20.0,
                 },
                 _ => AppStateRequest::SetCurrentItem {
+                    expected_queue_version: None,
                     schema_version: 1,
                     item_id: Some("b".into()),
                     reset_av_delay: false,
@@ -9060,6 +9398,7 @@ mod tests {
         initial.playlist = vec![item("a", "BV-a", "Alice"), item("b", "BV-b", "Bob")];
         let mounted = initialize(&mut state, initial);
         let selected = success(state.execute(AppStateRequest::AdvanceToNext {
+            expected_queue_version: None,
             schema_version: 1,
             expected_playback_generation: mounted.playback_generation,
             reset_av_delay: false,
@@ -9068,6 +9407,7 @@ mod tests {
         .snapshot
         .unwrap();
         let skipped = success(state.execute(AppStateRequest::AdvanceToNext {
+            expected_queue_version: None,
             schema_version: 1,
             expected_playback_generation: selected.playback_generation,
             reset_av_delay: false,
@@ -9233,6 +9573,8 @@ mod tests {
             .item_incarnation_id;
 
         success(state.execute(AppStateRequest::RemoveItem {
+            reset_av_delay: false,
+            expected_queue_version: None,
             schema_version: 1,
             item_id: "a".to_owned(),
             now: 11.0,
@@ -9293,6 +9635,7 @@ mod tests {
             items: vec![played("previous", "Alice")],
         });
         initial.backup = Some(BackupSeed {
+            stable_cycle_cursor: None,
             current_item: Some(item("restored", "BV-restored", "Alice")),
             playlist: vec![item("queued", "BV-queued", "Bob")],
             played_session: Some(SessionArchiveSeed {
@@ -9421,6 +9764,8 @@ mod tests {
             .item_incarnation_id
             .clone();
         success(state.execute(AppStateRequest::RemoveItem {
+            reset_av_delay: false,
+            expected_queue_version: None,
             schema_version: 1,
             item_id: "a".to_owned(),
             now: 11.0,
@@ -9464,6 +9809,8 @@ mod tests {
             .item_incarnation_id;
 
         success(state.execute(AppStateRequest::RemoveItem {
+            reset_av_delay: false,
+            expected_queue_version: None,
             schema_version: 1,
             item_id: "a".to_owned(),
             now: 11.0,
@@ -9817,6 +10164,8 @@ mod tests {
         let (old, old_response) = begin_cache_attempt(&mut state, "a");
         let old_reservation = cache_reservation(&old_response);
         success(state.execute(AppStateRequest::RemoveItem {
+            reset_av_delay: false,
+            expected_queue_version: None,
             schema_version: 1,
             item_id: "a".to_owned(),
             now: 11.0,
@@ -9893,6 +10242,7 @@ mod tests {
         let (queued_token, _) = begin_cache_attempt(&mut state, "b");
 
         success(state.execute(AppStateRequest::ClearPlaylist {
+            expected_queue_version: None,
             schema_version: 1,
             now: 11.0,
         }));

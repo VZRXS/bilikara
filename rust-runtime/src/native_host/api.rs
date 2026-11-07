@@ -534,7 +534,7 @@ pub(super) fn dispatch(
             "/api/player/next" => {
                 if app.native().purek.controller.owns_playback {
                     let facts = app.native_output_audio_facts()?;
-                    app.native_control(identity,&json!({"action":"next-track","item_id":facts.source.0,"playback_generation":body["playback_generation"]}),now)?;
+                    app.native_control(identity,&json!({"action":"next-track","item_id":facts.source.0,"playback_generation":body["playback_generation"],"expected_queue_version":body["expected_queue_version"]}),now)?;
                     return app.native_snapshot(host);
                 }
                 command["command"] = json!("advance_to_next");
@@ -624,9 +624,34 @@ pub(super) fn dispatch(
             }
             _ => return Err(unavailable()),
         }
+        if matches!(
+            path,
+            "/api/playlist/remove"
+                | "/api/playlist/play-now"
+                | "/api/playlist/move-next"
+                | "/api/playlist/resort"
+                | "/api/playlist/clear"
+                | "/api/player/next"
+        ) {
+            command["expected_queue_version"] = body["expected_queue_version"].clone();
+        }
         let request: AppStateRequest = serde_json::from_value(command)
             .map_err(|_| ApiError::invalid("操作参数不完整或格式无效"))?;
-        let result = app.native_execute(request)?;
+        let result = app
+            .native_execute_from(
+                request,
+                if host {
+                    crate::app_state::QueueActor::Host
+                } else {
+                    crate::app_state::QueueActor::LanRemote
+                },
+            )
+            .map_err(|mut failure| {
+                if failure.code == "queue_changed" {
+                    failure.extra["data"] = app.native_snapshot(host).unwrap_or(Value::Null);
+                }
+                failure
+            })?;
         if path == "/api/player/audio-variant" && result["found"] != true {
             return Err(ApiError::invalid("音轨无效"));
         }

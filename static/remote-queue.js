@@ -335,6 +335,10 @@
       return;
     }
 
+    if (action !== "retry-cache" && state.data?.queue_mutation_version >= 1) {
+      target.payload.expected_queue_version = renderedQueueVersion || state.data.queue_version;
+    }
+
     const actionKey = queueActionKey(action, itemId);
     if (pendingQueueActions.has(actionKey) || button?.getAttribute("aria-busy") === "true") {
       return;

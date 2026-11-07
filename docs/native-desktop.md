@@ -1357,16 +1357,19 @@ reconstructing or removing requests.
 
 | Action | Waiting-queue behavior | Current program |
 | --- | --- | --- |
-| Ordinary request (`点歌`) | Insert a `cycle` item into the singer rotation, leaving existing items in relative order. | Starts the item only when there is no current program. |
-| Queue next (`顶歌`) | Move the selected ID to index 0 as `priority`. Multiple queue-next actions put the most recently committed action first. Repeating an action on the same ID does not duplicate it. | Unchanged. |
-| Drag / move to position | Move the selected ID to the requested final zero-based index (clamped to the current queue bounds), mark it `manual`, then rebuild the remaining cycle slots. Moving to its existing index leaves its slot type unchanged. | Unchanged. |
+| Ordinary request (`点歌`) | Insert a `cycle` item into the singer rotation, leaving existing items in relative order. | Starts the item only when both current and waiting are empty; a previously accepted waiting head takes precedence. |
+| Queue next (`顶歌`) | Move the selected ID to index 0 as `priority`. Multiple queue-next actions put the most recently committed action first. All other items retain their exact relative order and payloads. Repeating Top on an already-first priority is an exact no-op. | Unchanged. |
+| Drag / move to position | Move the selected ID to the requested final zero-based index (clamped to the current queue bounds), mark it `manual`, and leave all other IDs in relative order. Moving to its existing index leaves its slot type unchanged. | Unchanged. |
 | Default sort (`重新排序`) | Clear every `priority` / `manual` marker, including a queue with just one waiting song, and rebuild singer rotation. Within each singer, preserve the songs' **current** relative order, not their original request order. | Unchanged. |
-| Next song | Take waiting index 0 as the new current program, then rotate the remaining cycle slots from that singer. Stale or repeated playback-generation commands are rejected. | Finishes the previous program. |
+| Next song | Consume committed waiting index 0 without reshuffling any remaining item. Only selection of a `cycle` item advances the ordinary cursor. Stale or repeated playback-generation commands are rejected. | Finishes the previous program. |
 | Play now (`立即播放`) | Remove the selected waiting ID and make it the current program immediately. | Finishes and replaces the previous program. This is a different action from queue next. |
 
-Singer rotation follows the session seating order, starting after the current
-program's singer and wrapping around. For singers A/B/C with A currently singing,
-ordinary waiting songs alternate B/C/A, skipping singers with no waiting song.
+Singer rotation follows the session seating order, starting after the last
+ordinary (`cycle`) selection and wrapping around. A persisted
+`stable_cycle_cursor.last_user_id` stores that stable singer identity independently
+of the current song. Priority/manual playback and explicit Play Now never consume
+or reset it; no additional fairness counter or turn debt is maintained. For singers A/B/C with A last selected ordinarily,
+new ordinary requests follow B/C/A, skipping singers with no waiting song.
 Only registered singers' `cycle` items participate. During a cycle rebuild,
 `priority`, `manual`, and unregistered-singer items keep their occupied slots;
 explicit moves, insertions ahead of them, and playback can still shift their
@@ -1380,8 +1383,28 @@ with no waiting songs can return after several empty rounds without accumulating
 an old turn count. Readding a deleted name creates a new stable identity: retained songs keep their
 old owner and do not silently join the new singer's rotation. Renaming preserves
 the identity, bound devices and queue ownership; existing request/history labels
-remain the names recorded at request time. Changing seating rebuilds cycle slots
-without releasing existing priority/manual markers.
+remain the names recorded at request time. Changing seating explicitly rebuilds cycle slots
+without releasing existing priority/manual markers. Renaming retains the cursor ID;
+removing its singer resets the anchor to the first remaining seat, without credits.
+Selecting an orphaned cycle song has the same deterministic empty anchor.
+
+The cursor cannot be reconstructed from current/queue alone: ordinary Next to
+a cycle head and explicit Play Now of that same head leave identical current,
+waiting items and slot markers, but only the former consumes an ordinary turn.
+One saved stable ID (including an initialized-empty sentinel) distinguishes these
+states without a play-count ledger, turn debt or a second scheduling authority.
+
+The nullable cursor field is additive to the version-1 seed/checkpoint/backup.
+Absent/null means a legacy save: migrate once from an ordinary current singer,
+otherwise initialize at the first seat. An initialized object with a null singer
+is distinct from legacy absence, so an explicit Play Now cannot acquire a turn
+after restart. Native checkpoints and the retained Python file adapter carry the
+Rust cursor unchanged. Backup restore preserves exact waiting order and markers;
+restart/restore still creates fresh media incarnations and invalidates old playback.
+The private additive `last_playback_generation` also makes reopened programs newer
+than the saved process, so its late EOS cannot name the replacement program.
+A legacy priority save cannot recover its unknown historical ordinary singer;
+the deterministic first-seat migration changes only future insertion, never saved order.
 
 For example, with A singing and A1/A2/B1/B2 waiting, topping A2 and then default
 sorting yields B1/A2/B2/A1. Default sort restores alternating singers, but keeps
@@ -1390,10 +1413,18 @@ is no priority quota or automatic timeout.
 
 Concurrency boundaries to keep in mind when interpreting feedback:
 
-- Host, LAN and public Remote bind a drag confirmation to the displayed queue's
-  `queue_version`, including item incarnations, singer seats and slot types. Rust
+- Host, LAN and public Remote bind Top, drag, Resort, removal, Play Now and Next
+  to the displayed queue's `queue_version`, including item incarnations, singer seats and slot types. Rust
   checks it under the mutation lock. A changed queue rejects the old destination;
-  cache progress, metadata and player settings do not invalidate it. Identical
+  cache progress, metadata and player settings do not invalidate it. Version-1
+  unversioned callers remain accepted for compatibility; they cannot detect a
+  queue they did not identify. Updated clients send the observed token when the Host advertises
+  `queue_mutation_version >= 1`; older Host parsers retain their original fields.
+  Next additionally validates the playback generation; queued player Next controls
+  carry their original queue token through delivery, rather than adopting a new one.
+  Natural EOS is a trusted completion of its exact playback generation, not a
+  user-selected waiting order; it consumes the then-committed head without a
+  queue token, so a simultaneous admission or Top cannot strand a finished song. Identical
   ordering policy and item incarnations have the same content token.
 - Top, positional moves and Play now reject a no-longer-waiting ID with
   `queue_item_missing`; removing an absent ID also fails. A valid move to the
@@ -1413,10 +1444,22 @@ Concurrency boundaries to keep in mind when interpreting feedback:
   limits and archive/session exports are unchanged.
 - Finished programs have session-play ledger entries. A program that never
   started can be absent from the eligible history list after Next/Play now, even
-  though sorting itself never removed it. Duplicate-request checks cover active
+  though sorting itself never removed it. Removing the current item atomically
+  promotes the waiting head with one new playback generation. There is no empty
+  current window in which a new admission can overtake accepted songs. Duplicate-request checks cover active
   songs and started songs in this session's history, across all singers. An
   unstarted skipped song can be requested again; repeating an active/recorded
   song requires the explicit repeat confirmation.
+
+Committed item transitions also enter a private 256-event diagnostic ring,
+exported by Host diagnostics and persisted across restart. Each entry contains
+item ID/incarnation, from/to, reason, operation, actor channel, queue token,
+playback generation, started flag and timestamp; never song titles, URLs,
+requester names or credentials. Unstarted skips use `skipped_unstarted` plus the
+actual operation; they do not fabricate played history. Delete, Next, Play Now,
+deferral, queue clear, backup replacement and session/reset actions remain distinct.
+Failed/conflicting mutations publish neither departures nor new state. The ring
+is recent evidence, not an unlimited history or proof of a specific field incident.
 
 Regression coverage in `rust-runtime/tests/native_playlist_stress.rs` checks singleton
 marker resets, repeated priority actions, per-singer relative order, concurrent
@@ -1426,8 +1469,10 @@ seating changes, additions/removals/renames, returning singers, concurrent roste
 changes and admissions, empty/full rosters, duplicate/repeat rules, invalid
 targets and stale playback commands. `tests/native_host_business.test.mjs` checks
 the real persisted roster/queue and fresh incarnations across process restart.
-Every successful admission must remain in
-the active queue/current program or have an ended session-play ledger entry.
+In the stress scenarios that start each selected program and perform no explicit
+deletions or session replacement, every successful admission must remain active
+or have an ended session-play ledger entry. Other intentional departures must
+have the exact authorized ID delta and the appropriate private diagnostic reason.
 Expected waiting IDs and ended IDs are accounted for from the submitted action,
 so an unexpected removal cannot pass merely by being recorded as ended.
 
@@ -1436,6 +1481,13 @@ items. Both ordinary and priority admissions enforce this bound under the state
 lock, including when the current slot is empty. Desktop Host is exempt from
 Native Beta's separate 200-waiting-song HTTP limit. Rejected admissions do not
 evict an older song or write an unrestorable oversized backup.
+
+Run `cargo test --manifest-path rust-runtime/Cargo.toml --locked --test queue_ordering_r7`
+for the R7 golden/concurrency/departure cases. The same source is exercised through
+real Native Host/LAN HTTP by `npm run test:native-host`, retained Python Host HTTP
+by `python -m unittest tests.test_queue_ordering_r7`, and Chromium/WebKit by
+`node --test tests/queue_ordering_browser.test.mjs`. These Linux checks do not
+qualify physical iOS/Android, AirPlay, DLNA receivers or packaged platform products.
 
 Replay the larger deterministic run (100 random sessions × 500 steps, plus eight
 concurrent sessions with eight callers × 96 steps each):

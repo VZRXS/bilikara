@@ -93,6 +93,8 @@ fn scanner_qualification_requires_real_current_audio_and_preserves_manual_intent
     let (mut app, host) = app();
     let root = unique_directory("qualification");
     app.execute(AppStateRequest::RemoveItem {
+        reset_av_delay: false,
+        expected_queue_version: None,
         schema_version: 1,
         item_id: "first".into(),
         now: 9.0,
@@ -362,6 +364,7 @@ fn manual_override_survives_seek_restart_and_rendition_then_new_song_is_absolute
     assert!(response.error().is_none());
     assert_eq!(percent(&app), 350);
     app.execute(AppStateRequest::AdvanceToNext {
+        expected_queue_version: None,
         schema_version: 1,
         expected_playback_generation: app.data.as_ref().unwrap().playback_generation,
         reset_av_delay: false,
@@ -518,12 +521,16 @@ fn no_song_and_queue_edits_cannot_create_or_drift_target() {
     let saved = app.data.as_ref().unwrap().automatic_volume.clone();
     add(&mut app, "second");
     app.execute(AppStateRequest::RemoveItem {
+        reset_av_delay: false,
+        expected_queue_version: None,
         schema_version: 1,
         item_id: "first".into(),
         now: 10.0,
     });
     assert_eq!(app.data.as_ref().unwrap().automatic_volume, saved);
     app.execute(AppStateRequest::RemoveItem {
+        reset_av_delay: false,
+        expected_queue_version: None,
         schema_version: 1,
         item_id: "second".into(),
         now: 11.0,
@@ -535,6 +542,8 @@ fn no_song_and_queue_edits_cannot_create_or_drift_target() {
     assert!(action(&mut app, &host, "reference").is_err());
     let (mut fresh, host) = self::app();
     fresh.execute(AppStateRequest::RemoveItem {
+        reset_av_delay: false,
+        expected_queue_version: None,
         schema_version: 1,
         item_id: "first".into(),
         now: 12.0,
@@ -572,6 +581,7 @@ fn unmeasured_transition_is_safe_and_mute_and_reset_keep_their_roles() {
     add(&mut app, "second");
     add(&mut app, "third");
     app.execute(AppStateRequest::AdvanceToNext {
+        expected_queue_version: None,
         schema_version: 1,
         expected_playback_generation: app.data.as_ref().unwrap().playback_generation,
         reset_av_delay: false,
@@ -595,6 +605,7 @@ fn unmeasured_transition_is_safe_and_mute_and_reset_keep_their_roles() {
         now: 10.0,
     });
     app.execute(AppStateRequest::AdvanceToNext {
+        expected_queue_version: None,
         schema_version: 1,
         expected_playback_generation: app.data.as_ref().unwrap().playback_generation,
         reset_av_delay: false,
@@ -707,6 +718,8 @@ fn analysis_leases_release_after_disable_eviction_and_shutdown() {
     let root = unique_directory("lease");
     let (mut app, host) = app();
     app.execute(AppStateRequest::RemoveItem {
+        reset_av_delay: false,
+        expected_queue_version: None,
         schema_version: 1,
         item_id: "first".into(),
         now: 9.0,
@@ -731,6 +744,8 @@ fn analysis_leases_release_after_disable_eviction_and_shutdown() {
     enable(&mut app, &host, true);
     let job = app.take_analysis_job().unwrap();
     app.execute(AppStateRequest::RemoveItem {
+        reset_av_delay: false,
+        expected_queue_version: None,
         schema_version: 1,
         item_id: "owned".into(),
         now: 10.0,

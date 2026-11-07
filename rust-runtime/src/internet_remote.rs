@@ -325,7 +325,27 @@ fn validation_result(
 ) -> InternetRemoteValidation {
     let expected_revision = expected_revision(&decoded.request);
     let stale_revision = match &decoded.request {
-        RemoteRequestV1::PlaylistMove {
+        RemoteRequestV1::PlaylistRemove {
+            expected_queue_version: Some(version),
+            ..
+        }
+        | RemoteRequestV1::PlaylistResort {
+            expected_queue_version: Some(version),
+            ..
+        }
+        | RemoteRequestV1::PlaylistMoveNext {
+            expected_queue_version: Some(version),
+            ..
+        }
+        | RemoteRequestV1::PlaylistPlayNow {
+            expected_queue_version: Some(version),
+            ..
+        }
+        | RemoteRequestV1::PlaylistMove {
+            expected_queue_version: Some(version),
+            ..
+        }
+        | RemoteRequestV1::PlaybackNext {
             expected_queue_version: Some(version),
             ..
         } => version != &snapshot.queue_version,
@@ -395,6 +415,7 @@ fn stale_request_target(request: &RemoteRequestV1, snapshot: &AppSnapshot) -> bo
         } => !current_matches(item_id, *playback_generation),
         RemoteRequestV1::PlaybackNext {
             playback_generation,
+            ..
         } => *playback_generation != snapshot.playback_generation,
         RemoteRequestV1::PlayerSetAudioVariant {
             item_id,
@@ -418,7 +439,9 @@ fn expected_revision(request: &RemoteRequestV1) -> Option<u64> {
         | RemoteRequestV1::PlaylistMove {
             expected_revision, ..
         }
-        | RemoteRequestV1::PlaylistResort { expected_revision }
+        | RemoteRequestV1::PlaylistResort {
+            expected_revision, ..
+        }
         | RemoteRequestV1::PlaylistMoveNext {
             expected_revision, ..
         }
@@ -437,6 +460,7 @@ fn expected_revision(request: &RemoteRequestV1) -> Option<u64> {
 
 pub(crate) fn project_remote_state(snapshot: &AppSnapshot) -> RemoteStateV1 {
     RemoteStateV1 {
+        queue_mutation_version: snapshot.queue_mutation_version,
         audio_supplements: snapshot
             .audio_supplements
             .iter()
@@ -749,6 +773,9 @@ mod tests {
         let response = state.execute(AppStateRequest::Initialize {
             schema_version: 1,
             state: Box::new(AppStateSeed {
+                last_playback_generation: 0,
+                queue_departures: Vec::new(),
+                stable_cycle_cursor: None,
                 automatic_volume: Default::default(),
                 session_user_ids: std::collections::HashMap::new(),
                 requester_user_ids: std::collections::HashMap::new(),

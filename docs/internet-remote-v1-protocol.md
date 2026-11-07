@@ -363,3 +363,22 @@ permission. Return verifies current connection state; continuing, requesting
 Host-approved recovery and checking the receiver are explicit user actions.
 See [Pure K assistance](purek-media-output.md) for LAN consent, plaintext
 transport limits, intentionally unsupported cross-disconnect recovery and hardware gates.
+
+### Queue mutation concurrency
+
+Version-1 `playlist.remove`, `playlist.move`, `playlist.move_next`,
+`playlist.play_now`, `playlist.resort` and `playback.next` accept the additive
+optional `expected_queue_version` (64 hexadecimal characters). Updated clients
+send the version of the displayed queue when state advertises
+`queue_mutation_version >= 1`. An absent marker means an older Host, so the
+updated shared UI omits the new fields for operations whose old parser rejects
+them; the pre-existing drag token remains supported independently. Runtime validates it under the queue
+mutation lock; cache progress and unrelated metadata do not invalidate it.
+Legacy callers without this field retain revision/generation checks. A stale
+operation returns refreshed state and never silently reapplies itself. Queued Next
+controls retain this queue version through Host delivery as well as their playback
+generation. Top is LIFO, moves only its selected ID and never restarts ordinary
+rotation; manual moves and Next likewise preserve all remaining waiting order.
+The stable rotation cursor and bounded departure audit are private persistence,
+not Remote state or SSE content. Public byte-limit prefixes retain original totals
+and queue versions and never mutate the authoritative queue.

@@ -322,11 +322,16 @@ class PlaylistStore:
     def normalize_session_user_name(cls, name: str) -> str:
         return " ".join(str(name or "").strip().split())[:MAX_SESSION_USER_NAME_LENGTH]
 
-    def remove_item(self, item_id: str) -> bool:
-        return self._changed(self._request("remove_item", item_id=str(item_id)))
+    def queue_departure_diagnostics(self) -> list[dict[str, Any]]:
+        # Private read-only Rust projection; never add this to public SSE state.
+        with self.lock:
+            return copy.deepcopy(self._persistence.get("queue_departures", []))
 
-    def clear_playlist(self) -> None:
-        self._request("clear_playlist")
+    def remove_item(self, item_id: str, *, expected_queue_version: str | None = None, reset_av_delay: bool = False) -> bool:
+        return self._changed(self._request("remove_item", expected_queue_version=expected_queue_version, item_id=str(item_id), reset_av_delay=reset_av_delay))
+
+    def clear_playlist(self, *, expected_queue_version: str | None = None) -> None:
+        self._request("clear_playlist", expected_queue_version=expected_queue_version)
 
     def clear_history(self) -> None:
         self._request("clear_history")
@@ -339,25 +344,26 @@ class PlaylistStore:
         *,
         expected_playback_generation: int,
         reset_av_delay: bool = False,
+        expected_queue_version: str | None = None,
     ) -> bool:
         return self._changed(
             self._request(
-                "advance_to_next",
+                "advance_to_next", expected_queue_version=expected_queue_version,
                 expected_playback_generation=expected_playback_generation,
                 reset_av_delay=bool(reset_av_delay),
             )
         )
 
-    def move_item(self, item_id: str, direction: str) -> bool:
+    def move_item(self, item_id: str, direction: str, *, expected_queue_version: str | None = None) -> bool:
         return self._changed_or_found(
             self._request(
-                "move_item", item_id=str(item_id), direction=str(direction)
+                "move_item", item_id=str(item_id), direction=str(direction), expected_queue_version=expected_queue_version
             )
         )
 
-    def move_to_next(self, item_id: str) -> bool:
+    def move_to_next(self, item_id: str, *, expected_queue_version: str | None = None) -> bool:
         return self._changed_or_found(
-            self._request("move_to_next", item_id=str(item_id))
+            self._request("move_to_next", expected_queue_version=expected_queue_version, item_id=str(item_id))
         )
 
     def move_item_to_index(
@@ -372,8 +378,8 @@ class PlaylistStore:
             )
         )
 
-    def resort_playlist_by_cycle(self) -> bool:
-        return self._changed(self._request("resort_playlist_by_cycle"))
+    def resort_playlist_by_cycle(self, *, expected_queue_version: str | None = None) -> bool:
+        return self._changed(self._request("resort_playlist_by_cycle", expected_queue_version=expected_queue_version))
 
     def defer_current_item(
         self, item_id: str, *, expected_item_incarnation_id: str,
@@ -389,10 +395,10 @@ class PlaylistStore:
             target_index=target_index, reset_av_delay=bool(reset_av_delay),
         ))
 
-    def move_to_front(self, item_id: str, *, reset_av_delay: bool = False) -> bool:
+    def move_to_front(self, item_id: str, *, reset_av_delay: bool = False, expected_queue_version: str | None = None) -> bool:
         return self._changed(
             self._request(
-                "move_to_front",
+                "move_to_front", expected_queue_version=expected_queue_version,
                 item_id=str(item_id),
                 reset_av_delay=bool(reset_av_delay),
             )
@@ -1215,6 +1221,9 @@ class PlaylistStore:
                     "session_users": list(persistence["session_users"]),
                     "session_user_ids": copy.deepcopy(persistence.get("session_user_ids", {})),
                     "requester_user_ids": copy.deepcopy(persistence.get("requester_user_ids", {})),
+                    "stable_cycle_cursor": copy.deepcopy(persistence.get("stable_cycle_cursor")),
+                    "queue_departures": copy.deepcopy(persistence.get("queue_departures", [])),
+                    "last_playback_generation": persistence.get("last_playback_generation", 0),
                     "updated_at": persistence["updated_at"],
                 },
             )
@@ -1242,6 +1251,7 @@ class PlaylistStore:
                 self._write_json_payload_unlocked(
                     self.backup_file,
                     {
+                        "stable_cycle_cursor": copy.deepcopy(backup.get("stable_cycle_cursor")),
                         "current_item": copy.deepcopy(backup.get("current_item")),
                         "playlist": copy.deepcopy(backup.get("playlist") or []),
                         "played_session": (
@@ -1323,6 +1333,9 @@ class PlaylistStore:
             "session_users": users,
             "session_user_ids": copy.deepcopy(users_payload.get("session_user_ids", {})),
             "requester_user_ids": copy.deepcopy(users_payload.get("requester_user_ids", {})),
+            "stable_cycle_cursor": copy.deepcopy(users_payload.get("stable_cycle_cursor")),
+            "queue_departures": copy.deepcopy(users_payload.get("queue_departures", [])),
+            "last_playback_generation": users_payload.get("last_playback_generation", 0),
             "session_started_at": now,
             "session_played_file": session_file.name,
             "session_played": [],
@@ -1355,6 +1368,7 @@ class PlaylistStore:
                     self.session_archive_dir / name
                 )
         return {
+            "stable_cycle_cursor": copy.deepcopy(payload.get("stable_cycle_cursor")),
             "current_item": current,
             "playlist": playlist,
             "played_session": played_seed,

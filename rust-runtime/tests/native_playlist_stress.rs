@@ -20,13 +20,35 @@ impl Session {
     fn wire(&self, request: Value) -> Value {
         let request: AppStateRequest = serde_json::from_value(request.clone())
             .unwrap_or_else(|error| panic!("invalid test request {request}: {error}"));
-        let mut response = serde_json::to_value(self.0.lock().unwrap().execute(request)).unwrap();
+        let mut state = self.0.lock().unwrap();
+        // Read-only snapshots need no second snapshot. Mutation callers retain
+        // an exact before-image under the very same lock for concurrency checks.
+        let previous = if matches!(
+            &request,
+            AppStateRequest::Snapshot { .. } | AppStateRequest::Initialize { .. }
+        ) {
+            Value::Null
+        } else {
+            serde_json::to_value(state.execute(
+                serde_json::from_value(json!({"schema_version":1,"command":"snapshot"})).unwrap(),
+            ))
+            .unwrap()
+        };
+        let mut response = serde_json::to_value(state.execute(request)).unwrap();
         // Ownership is persisted privately, rather than exposed by the public snapshot.
         // Attach that actual persistence projection only inside this test harness.
         let owners = response["persistence"]["requester_user_ids"].clone();
+        let response_cursor = response["persistence"]["stable_cycle_cursor"].clone();
         if let Some(snapshot) = response.get_mut("snapshot").and_then(Value::as_object_mut) {
             snapshot.insert("requester_user_ids".to_owned(), owners);
+            snapshot.insert("stable_cycle_cursor".to_owned(), response_cursor.clone());
         }
+        let mut before = previous["snapshot"].clone();
+        if before.is_object() {
+            before["requester_user_ids"] = previous["persistence"]["requester_user_ids"].clone();
+            before["stable_cycle_cursor"] = previous["persistence"]["stable_cycle_cursor"].clone();
+        }
+        response["test_before"] = before;
         response
     }
 
@@ -113,7 +135,7 @@ fn cycle_schedule(snapshot: &Value, candidate: Option<&Value>) -> Vec<String> {
         .collect();
     if let Some(index) = seats
         .iter()
-        .position(|&u| owner(snapshot, &snapshot["current_item"]) == Some(u))
+        .position(|&u| snapshot["stable_cycle_cursor"]["last_user_id"].as_str() == Some(u))
     {
         let count = seats.len();
         seats.rotate_left((index + 1) % count);
@@ -198,6 +220,53 @@ fn assert_conserved(snapshot: &Value, admitted: &BTreeMap<String, Value>) {
             canonical(admitted[entry["id"].as_str().unwrap()].clone())
         );
     }
+}
+
+fn assert_order_delta(before: &Value, after: &Value, command: &str, fields: &Value) {
+    let old = ids(&before["playlist"]);
+    let actual = ids(&after["playlist"]);
+    let selected = fields["item_id"].as_str().unwrap_or("");
+    let mut expected = old.clone();
+    match command {
+        "move_to_next" | "move_item_to_index" => {
+            let from = expected.iter().position(|id| id == selected).unwrap();
+            let target = if command == "move_to_next" {
+                0
+            } else {
+                fields["target_index"]
+                    .as_i64()
+                    .unwrap()
+                    .clamp(0, expected.len() as i64 - 1) as usize
+            };
+            let id = expected.remove(from);
+            expected.insert(target, id);
+        }
+        "advance_to_next" => {
+            if !expected.is_empty() {
+                expected.remove(0);
+            }
+        }
+        "move_to_front" => expected.retain(|id| id != selected),
+        "add_item" => {
+            let candidate = fields["item"]["id"].as_str().unwrap();
+            assert_eq!(
+                actual
+                    .iter()
+                    .filter(|id| id.as_str() != candidate)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                old
+            );
+            return;
+        }
+        "rename_session_user" => {}
+        "add_session_user"
+        | "remove_session_user"
+        | "move_session_user_to_index"
+        | "resort_playlist_by_cycle" => return,
+        _ => {}
+    }
+    assert_eq!(actual, expected, "local order delta for {command}");
 }
 
 // Test-only deterministic stimulus; it does not model any application policy.
@@ -332,7 +401,7 @@ fn lifecycle(seeds: usize, steps: usize) {
             let before = session.snapshot();
             let queue = rows(&before["playlist"]);
             let users = rows(&before["session_users"]);
-            let choice = random.pick(15);
+            let choice = random.pick(17);
             let mut error = None;
             let mut requested = None;
             let (command, fields) = match choice {
@@ -415,6 +484,32 @@ fn lifecycle(seeds: usize, steps: usize) {
                     (
                         "advance_to_next",
                         json!({"expected_playback_generation":if old {generation-1}else{generation},"reset_av_delay":false}),
+                    )
+                }
+                15 if !active(&before).is_empty() => {
+                    let entries = active(&before);
+                    let selected = &entries[random.pick(entries.len())];
+                    let reservation=session.wire(json!({"schema_version":1,"command":"begin_cache_attempt",
+                        "item_id":selected["id"],"expected_item_incarnation_id":selected["item_incarnation_id"]}));
+                    assert_eq!(reservation["status"], "completed");
+                    let event = match random.pick(3) {
+                        0 => json!({"kind":"failed","message":"stress_failure"}),
+                        1 => {
+                            json!({"kind":"progress","progress":random.pick(101),"message":"stress_progress"})
+                        }
+                        _ => json!({"kind":"evicted","message":"stress_evicted"}),
+                    };
+                    (
+                        "apply_cache_event",
+                        json!({"item_id":selected["id"],"cache_attempt_token":reservation["result"]["cache_attempt_token"],"event":event}),
+                    )
+                }
+                16 if !active(&before).is_empty() => {
+                    let entries = active(&before);
+                    let selected = &entries[random.pick(entries.len())];
+                    (
+                        "update_item",
+                        json!({"item_id":selected["id"],"changes":{"title":format!("metadata-{step}")}}),
                     )
                 }
                 12 if !active(&before).is_empty() && !users.is_empty() => {
@@ -519,11 +614,43 @@ fn lifecycle(seeds: usize, steps: usize) {
                 assert_eq!(after["playlist"], before["playlist"]);
                 assert_eq!(after["requester_user_ids"], before["requester_user_ids"]);
             }
+            // Account only for the exact authorized patch, never copy the
+            // production result into the oracle's expected payload ledger.
+            if command == "update_item" {
+                admitted
+                    .get_mut(fields["item_id"].as_str().unwrap())
+                    .unwrap()["title"] = fields["changes"]["title"].clone();
+            }
+            if command == "apply_cache_event" {
+                let expected = admitted
+                    .get_mut(fields["item_id"].as_str().unwrap())
+                    .unwrap();
+                let event = &fields["event"];
+                expected["cache_activity_at"] = json!(1000.0);
+                expected["cache_message"] = event["message"].clone();
+                match event["kind"].as_str().unwrap() {
+                    "failed" => expected["cache_status"] = json!("failed"),
+                    "progress" => {
+                        expected["cache_status"] = json!("downloading");
+                        expected["cache_progress"] = json!(event["progress"].as_f64().unwrap());
+                    }
+                    "evicted" => {
+                        expected["cache_status"] = json!("pending");
+                        expected["cache_progress"] = json!(0.0);
+                    }
+                    _ => unreachable!(),
+                }
+            }
             assert_conserved(after, &admitted);
             if !["advance_to_next", "move_to_front", "add_item"].contains(&command) {
-                for key in ["current_item", "playback_generation"] {
-                    assert_eq!(after[key], before[key]);
+                assert_eq!(after["playback_generation"], before["playback_generation"]);
+                let patches_current = ["apply_cache_event", "update_item"].contains(&command)
+                    && fields["item_id"] == before["current_item"]["id"];
+                if !patches_current {
+                    assert_eq!(after["current_item"], before["current_item"]);
                 }
+                // assert_conserved above checks the complete current payload
+                // against only the explicitly authorized patch when selected.
             }
             if command == "resort_playlist_by_cycle" {
                 assert!(
@@ -566,8 +693,15 @@ fn lifecycle(seeds: usize, steps: usize) {
                 );
                 assert_eq!(rows(&after["session_users"]), expected);
             }
+            assert_order_delta(&before, after, command, &fields);
             if response["committed"] == true
-                && !["add_item", "rename_session_user"].contains(&command)
+                && [
+                    "add_session_user",
+                    "remove_session_user",
+                    "move_session_user_to_index",
+                    "resort_playlist_by_cycle",
+                ]
+                .contains(&command)
             {
                 assert_cycle(after);
             }
@@ -602,6 +736,8 @@ fn lifecycle(seeds: usize, steps: usize) {
         "rename_session_user",
         "advance_to_next",
         "move_to_front",
+        "apply_cache_event",
+        "update_item",
     ] {
         assert!(counts[name] > 0);
     }
@@ -659,10 +795,11 @@ fn concurrent_lifecycle(seed: u64) {
                 // retire this explicitly started song; stale Next still fails.
                 session.call("mark_current_item_started",json!({"item_id":id}));
             }
-            let response=session.attempt(command,fields);
+            let response=session.attempt(command,fields.clone());
             if response["status"]!="completed"{assert!(["duplicate_session_user","too_many_session_users","session_user_required","session_user_not_found","playback_generation_mismatch","queue_item_missing"].iter().any(|kind|response["error"]["kind"]==*kind),"{response}");continue;}
             if choice==6{successes.insert(id);}
-            let snapshot=&response["snapshot"];let entries=active(snapshot);let ids:BTreeSet<_>=entries.iter().map(|e|e["id"].as_str().unwrap().to_owned()).collect();assert_eq!(entries.len(),ids.len());assert!(ids.is_disjoint(&ended(snapshot)));if response["committed"]==true&&choice!=6{assert_cycle(snapshot);}
+            let snapshot=&response["snapshot"];let entries=active(snapshot);let ids:BTreeSet<_>=entries.iter().map(|e|e["id"].as_str().unwrap().to_owned()).collect();assert_eq!(entries.len(),ids.len());assert!(ids.is_disjoint(&ended(snapshot)));assert_order_delta(&response["test_before"], snapshot, command, &fields);
+            if response["committed"]==true && [0,1,2,5].contains(&choice){assert_cycle(snapshot);}
         }
         successes
     })}).collect();

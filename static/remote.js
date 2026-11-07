@@ -632,7 +632,7 @@ function localizedApiMessage(message) {
   if (!raw) {
     return "";
   }
-  if (raw === "队列已更新，请重新拖动") return t("remote.queueChanged");
+  if (["队列已更新，请重新拖动", "队列已更新，请刷新后重试"].includes(raw)) return t("remote.queueChanged");
   if (raw === "歌曲已离开等待队列，请刷新后重试") return t("remote.queueItemMissing");
   if (raw === "Invalid YouTube video link") return t("request.youtubeInvalid");
   if (raw === "Multiple YouTube videos found; paste one video link") return t("request.youtubeMultiple");
@@ -1782,6 +1782,11 @@ function duplicateConfirmMessage(duplicateItem, sessionEntry, activeItem) {
 }
 
 async function apiPost(url, payload = {}, options = {}) {
+  if (["/api/playlist/remove", "/api/playlist/move-next", "/api/playlist/play-now",
+    "/api/playlist/resort", "/api/playlist/clear", "/api/player/next"].includes(url)
+    && payload.expected_queue_version === undefined && state.data?.queue_mutation_version >= 1 && state.data?.queue_version) {
+    payload = { ...payload, expected_queue_version: state.data.queue_version };
+  }
   const timeoutMs = Math.max(0, Number(options.timeoutMs || 0));
   const returnEnvelope = options.returnEnvelope === true;
   const controller = timeoutMs > 0 && typeof AbortController === "function"
@@ -1800,6 +1805,7 @@ async function apiPost(url, payload = {}, options = {}) {
     });
     const data = await response.json();
     if (!response.ok || !data.ok) {
+      if (data.code === "queue_changed" && data.data) applyStateSnapshot(data.data);
       const error = new Error(localizedApiMessage(data.error) || t("error.requestFailed"));
       error.status = response.status;
       error.code = data.code || "";

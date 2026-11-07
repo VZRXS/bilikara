@@ -669,6 +669,7 @@ fn defer_current_keeps_ready_artifacts_but_revokes_old_playhead_and_controls() {
     assert!(app.native_snapshot(false).unwrap()["player_status"].is_null());
     let next = app.native_core_snapshot().unwrap();
     app.native_execute(AppStateRequest::AdvanceToNext {
+        expected_queue_version: None,
         schema_version: 1,
         expected_playback_generation: next.playback_generation,
         reset_av_delay: false,
@@ -776,6 +777,7 @@ fn missing_duration_accepts_status_and_playback_commands_without_history() {
         .unwrap();
     }
     app.native_execute(AppStateRequest::AdvanceToNext {
+        expected_queue_version: None,
         schema_version: 1,
         expected_playback_generation: generation,
         reset_av_delay: false,
@@ -896,6 +898,7 @@ fn native_and_ffi_controls_share_one_fifo_and_host_only_ack() {
     app.native_execute(AppStateRequest::IssuePlayerControl {
         schema_version: 1,
         control: PlayerControlInput {
+            expected_queue_version: None,
             action: "seek-relative".into(),
             playback_generation: generation,
             item_id: "first".into(),
@@ -957,6 +960,8 @@ fn cache_retirement_waits_for_queue_player_and_all_media_readers() {
     let second = app.native_pin_media(&item.video_media_url).unwrap();
     app.native_claim(&host, &claim, false).unwrap();
     app.native_execute(AppStateRequest::RemoveItem {
+        reset_av_delay: false,
+        expected_queue_version: None,
         schema_version: 1,
         item_id: item.id.clone(),
         now: 5.0,
@@ -989,6 +994,8 @@ fn cache_retirement_preserves_inflight_publication_reservations() {
     assert_ne!(artifact, item.artifact_set_id);
     assert!(!app.can_retire_artifact(&item.item_incarnation_id, artifact));
     app.native_execute(AppStateRequest::RemoveItem {
+        reset_av_delay: false,
+        expected_queue_version: None,
         schema_version: 1,
         item_id: item.id.clone(),
         now: 5.0,
@@ -1191,6 +1198,7 @@ fn desktop_next_consumes_reset_preference_without_resetting_global_delay() {
         app.native().cache_policy.reset_offset_on_next = reset;
         let generation = app.native_core_snapshot().unwrap().playback_generation;
         app.native_execute(AppStateRequest::AdvanceToNext {
+            expected_queue_version: None,
             schema_version: 1,
             expected_playback_generation: generation,
             reset_av_delay: !reset,

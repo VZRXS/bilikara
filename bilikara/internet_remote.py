@@ -201,6 +201,8 @@ def _run_host_effect(
             "item_id": str(effect.get("item_id") or ""),
             "delta_seconds": int(effect.get("delta_seconds") or 0),
         }
+        if effect.get("expected_queue_version") is not None:
+            player_control["expected_queue_version"] = effect["expected_queue_version"]
         if effect.get("target_seconds") is not None:
             player_control["target_seconds"] = float(effect["target_seconds"])
         context.issue_player_control(

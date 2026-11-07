@@ -6,6 +6,8 @@ use std::collections::VecDeque;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlayerControlInput {
+    #[serde(default)]
+    pub expected_queue_version: Option<String>,
     pub action: String,
     pub playback_generation: u64,
     pub item_id: String,
@@ -59,6 +61,18 @@ impl AppState {
             .data
             .as_ref()
             .ok_or_else(|| rejected("uninitialized", "AppState is unavailable"))?;
+        if control.action == "next-track"
+            && control
+                .expected_queue_version
+                .as_ref()
+                .is_some_and(|v| v != &data.queue_version())
+        {
+            return Err(rejected_with_details(
+                "queue_changed",
+                "队列已更新，请刷新后重试",
+                json!({"snapshot":data.snapshot().ok()}),
+            ));
+        }
         if control.playback_generation != data.playback_generation
             || data.current_item.as_ref().map(|item| item.id.as_str()) != Some(&control.item_id)
         {
@@ -97,6 +111,14 @@ impl AppState {
         let command = json!({"seq":sequence,"action":control.action,
             "playback_generation":control.playback_generation,"item_id":control.item_id,
             "delta_seconds":control.delta_seconds,"target_seconds":control.target_seconds,"issued_at":now});
+        let mut command = command;
+        if control.action == "next-track" {
+            command["expected_queue_version"] = json!(
+                control
+                    .expected_queue_version
+                    .unwrap_or_else(|| data.queue_version())
+            );
+        }
         queue.sequence = sequence;
         queue.commands.push_back(command.clone());
         queue.revision = queue.revision.saturating_add(1);

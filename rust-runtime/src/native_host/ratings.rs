@@ -495,6 +495,7 @@ mod tests {
     fn skip(app: &mut AppState) {
         let generation = app.native_core_snapshot().unwrap().playback_generation;
         app.native_execute(crate::AppStateRequest::AdvanceToNext {
+            expected_queue_version: None,
             schema_version: 1,
             expected_playback_generation: generation,
             reset_av_delay: false,

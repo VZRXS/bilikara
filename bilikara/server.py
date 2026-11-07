@@ -607,6 +607,7 @@ class AppContext:
             "gatcha_task": gatcha_task_snapshot(),
             "app_update": self.app_update_snapshot(),
             "player_diagnostics": self.player_diagnostic_snapshot(),
+            "queue_departures": self.store.queue_departure_diagnostics(),
             "state_revision": self._state_revision,
         }
         metrics = self.cache_manager.cache_metrics()
@@ -719,19 +720,20 @@ class AppContext:
     ) -> dict[str, object]:
         return dispatch_internet_remote(self, peer_id, lane, message)
 
-    def advance_to_next(self, expected_playback_generation: int) -> None:
-        self.store.advance_to_next(
+    def advance_to_next(self, expected_playback_generation: int, *, expected_queue_version: str | None = None) -> None:
+        self.store.advance_to_next(expected_queue_version=expected_queue_version,
             expected_playback_generation=expected_playback_generation,
             reset_av_delay=self.cache_manager.reset_offset_on_next
         )
         self.cache_manager.sync_with_playlist()
 
-    def remove_item(self, item_id: str) -> None:
-        self.store.remove_item(item_id)
+    def remove_item(self, item_id: str, *, expected_queue_version: str | None = None) -> None:
+        self.store.remove_item(item_id, expected_queue_version=expected_queue_version,
+                               reset_av_delay=self.cache_manager.reset_offset_on_next)
         self.cache_manager.sync_with_playlist()
 
-    def clear_playlist(self) -> None:
-        self.store.clear_playlist()
+    def clear_playlist(self, *, expected_queue_version: str | None = None) -> None:
+        self.store.clear_playlist(expected_queue_version=expected_queue_version)
         self.cache_manager.sync_with_playlist()
 
     def clear_history(self) -> None:
@@ -759,8 +761,8 @@ class AppContext:
         )
         self.cache_manager.sync_with_playlist()
 
-    def resort_playlist_by_cycle(self) -> None:
-        self.store.resort_playlist_by_cycle()
+    def resort_playlist_by_cycle(self, *, expected_queue_version: str | None = None) -> None:
+        self.store.resort_playlist_by_cycle(expected_queue_version=expected_queue_version)
         self.cache_manager.sync_with_playlist()
 
     def defer_current_item(self, body: dict) -> None:
@@ -774,13 +776,13 @@ class AppContext:
         )
         self.cache_manager.sync_with_playlist()
 
-    def move_to_next(self, item_id: str) -> None:
-        self.store.move_to_next(item_id)
+    def move_to_next(self, item_id: str, *, expected_queue_version: str | None = None) -> None:
+        self.store.move_to_next(item_id, expected_queue_version=expected_queue_version)
         self.cache_manager.sync_with_playlist()
 
-    def move_to_front(self, item_id: str) -> None:
-        self.store.move_to_front(
-            item_id, reset_av_delay=self.cache_manager.reset_offset_on_next
+    def move_to_front(self, item_id: str, *, expected_queue_version: str | None = None) -> None:
+        self.store.move_to_front(item_id, expected_queue_version=expected_queue_version,
+            reset_av_delay=self.cache_manager.reset_offset_on_next
         )
         self.cache_manager.sync_with_playlist()
 
@@ -964,8 +966,10 @@ class AppContext:
         item_id: str = "",
         delta_seconds: int = 0,
         target_seconds: float | None = None,
+        expected_queue_version: str | None = None,
     ) -> dict[str, object]:
         command = self.store.issue_player_control(
+            expected_queue_version=expected_queue_version,
             action=action,
             playback_generation=playback_generation,
             item_id=item_id,
@@ -1976,7 +1980,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 ):
                     raise ValueError("invalid playback_generation")
                 try:
-                    CONTEXT.advance_to_next(expected_playback_generation)
+                    CONTEXT.advance_to_next(expected_playback_generation, expected_queue_version=body.get("expected_queue_version"))
                 except PlaylistStoreCommandError as exc:
                     if exc.kind != "playback_generation_mismatch":
                         raise
@@ -1988,11 +1992,11 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 return
             if route == "/api/playlist/remove":
                 self._require_id(body)
-                CONTEXT.remove_item(body["item_id"])
+                CONTEXT.remove_item(body["item_id"], expected_queue_version=body.get("expected_queue_version"))
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/playlist/clear":
-                CONTEXT.clear_playlist()
+                CONTEXT.clear_playlist(expected_queue_version=body.get("expected_queue_version"))
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/history/clear":
@@ -2291,17 +2295,17 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/playlist/resort":
-                CONTEXT.resort_playlist_by_cycle()
+                CONTEXT.resort_playlist_by_cycle(expected_queue_version=body.get("expected_queue_version"))
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/playlist/move-next":
                 self._require_id(body)
-                CONTEXT.move_to_next(body["item_id"])
+                CONTEXT.move_to_next(body["item_id"], expected_queue_version=body.get("expected_queue_version"))
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/playlist/play-now":
                 self._require_id(body)
-                CONTEXT.move_to_front(body["item_id"])
+                CONTEXT.move_to_front(body["item_id"], expected_queue_version=body.get("expected_queue_version"))
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/mode":
@@ -2544,6 +2548,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     item_id=item_id,
                     delta_seconds=delta_seconds,
                     target_seconds=target_seconds,
+                    expected_queue_version=body.get("expected_queue_version"),
                 )
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
@@ -2857,7 +2862,8 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 "queue_changed": HTTPStatus.CONFLICT,
                 "queue_item_missing": HTTPStatus.CONFLICT,
             }.get(exc.kind, HTTPStatus.BAD_REQUEST)
-            self._write_json({"ok": False, "error": str(exc), "code": exc.kind}, status=status)
+            self._write_json({"ok": False, "error": str(exc), "code": exc.kind,
+                              **({"data": CONTEXT.snapshot()} if exc.kind == "queue_changed" else {})}, status=status)
         except ValueError as exc:
             self._write_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:  # noqa: BLE001

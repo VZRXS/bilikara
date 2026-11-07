@@ -59,6 +59,9 @@ pub(crate) fn prepare_import(mut seed: AppStateSeed) -> Result<AppStateSeed, Str
 impl AppStateData {
     pub(super) fn native_checkpoint(&self) -> AppStateSeed {
         let mut seed = AppStateSeed {
+            last_playback_generation: self.playback_generation,
+            queue_departures: self.queue_departures.clone(),
+            stable_cycle_cursor: self.stable_cycle_cursor.clone(),
             automatic_volume: self.automatic_volume.clone(),
             playback_mode: self.playback_mode.clone(),
             player_settings: self.player_settings.clone(),
@@ -629,6 +632,7 @@ mod tests {
         initial.current_item = Some(queued.clone());
         initial.playlist = vec![queued.clone()];
         initial.backup = Some(BackupSeed {
+            stable_cycle_cursor: None,
             current_item: Some(queued.clone()),
             playlist: vec![queued],
             played_session: None,
@@ -666,6 +670,7 @@ mod tests {
         let mut state = AppState::default();
         let mut initial = seed();
         initial.backup = Some(BackupSeed {
+            stable_cycle_cursor: None,
             current_item: Some(item("backup")),
             playlist: vec![],
             played_session: None,
@@ -736,6 +741,7 @@ mod tests {
             items: initial.session_played.clone(),
         });
         initial.backup = Some(BackupSeed {
+            stable_cycle_cursor: None,
             current_item: initial.current_item.clone(),
             playlist: initial.playlist.clone(),
             played_session: initial.previous_session.clone(),
@@ -1096,6 +1102,7 @@ mod tests {
         entry.item_id = "playing".into();
         initial.session_played = vec![entry];
         initial.backup = Some(BackupSeed {
+            stable_cycle_cursor: None,
             current_item: Some(item("backup")),
             playlist: vec![],
             played_session: None,
@@ -1152,5 +1159,78 @@ mod tests {
         assert!(after.playlist.is_empty());
         assert!(after.session_users.is_empty());
         assert!(reopened.data.as_ref().unwrap().backup.is_none());
+    }
+    #[test]
+    fn r7_priority_restart_preserves_cursor_order_and_private_departure_ring() {
+        let directory = TestDirectory::new();
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.session_users = vec!["Alice".into(), "Bob".into(), "Carol".into()];
+        let mut a = item("a");
+        a.requester_name = "Alice".into();
+        let mut b = item("b");
+        b.requester_name = "Bob".into();
+        let mut c = item("c");
+        c.requester_name = "Carol".into();
+        initial.current_item = Some(a);
+        initial.playlist = vec![b, c];
+        snapshot(state.initialize_native(&directory.0, initial));
+        for request in [
+            json!({"schema_version":1,"command":"move_to_next","item_id":"c","now":20}),
+            json!({"schema_version":1,"command":"advance_to_next","expected_playback_generation":1,"now":21}),
+        ] {
+            snapshot(state.execute(serde_json::from_value(request).unwrap()));
+        }
+        let before = saved(&directory);
+        let old_incarnation = before
+            .current_item
+            .as_ref()
+            .unwrap()
+            .item_incarnation_id
+            .clone();
+        let old_cursor = before.stable_cycle_cursor.clone();
+        let events = before.queue_departures.clone();
+        assert_eq!(before.current_item.as_ref().unwrap().id, "c");
+        assert_eq!(
+            before
+                .playlist
+                .iter()
+                .map(|i| i.id.as_str())
+                .collect::<Vec<_>>(),
+            ["b"]
+        );
+        drop(state);
+        let mut reopened = AppState::default();
+        let after = snapshot(reopened.initialize_native(&directory.0, seed()));
+        let restored = saved(&directory);
+        assert_eq!(restored.stable_cycle_cursor, old_cursor);
+        assert_eq!(restored.queue_departures, events);
+        assert!(after.playback_generation > before.last_playback_generation);
+        let rejected = reopened.execute(
+            serde_json::from_value(json!({"schema_version":1,"command":"advance_to_next",
+            "expected_playback_generation":before.last_playback_generation,"now":30}))
+            .unwrap(),
+        );
+        assert_eq!(
+            rejected.error().unwrap().kind,
+            "playback_generation_mismatch"
+        );
+        assert_eq!(after.current_item.as_ref().unwrap().id, "c");
+        assert_ne!(
+            after.current_item.as_ref().unwrap().item_incarnation_id,
+            old_incarnation
+        );
+        assert_eq!(
+            after
+                .playlist
+                .iter()
+                .map(|i| i.id.as_str())
+                .collect::<Vec<_>>(),
+            ["b"]
+        );
+        assert_eq!(
+            after.current_item.as_ref().unwrap().queue_slot_type,
+            "priority"
+        );
     }
 }

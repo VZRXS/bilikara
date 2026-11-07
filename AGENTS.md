@@ -137,6 +137,23 @@ responses. The renderer and prewarm share Rust font resources; there is no
 Pillow renderer or Python semantic fallback. All other frozen references and
 public-interface retention decisions remain unchanged.
 
+### Queue ordering authority (R7)
+
+Top and manual moves are local selected-ID moves; Next consumes the committed
+waiting head. None implicitly rebuilds other waiting items. Only genuine ordinary
+cycle selection advances the stable singer-ID cursor; priority/manual and explicit
+Play Now do not. Ordinary insertion preserves all existing relative order and
+fixed boundaries, with no missed-turn debt. Explicit Resort still clears waiting
+markers and rebuilds by seating/current per-singer order. Current removal promotes
+the waiting head atomically; all transitions preserve identity, cache ownership,
+generation and history rules. Keep cursor/markers across restart and backup;
+legacy migration is deterministic and never reorders saved waiting songs.
+Order-changing UI requests carry `expected_queue_version`; Rust checks it under
+the same commit lock, with playback-generation validation for Next. Keep the
+bounded private departure audit out of public snapshots and credential/song data.
+The independent stress oracle must check exact local order deltas, stable-cursor
+insertion and conservation, not assert a global rebuild after every operation.
+
 ## 5. UI Rules
 
 ### 5.1 Behavior baseline and shared ownership

@@ -620,7 +620,21 @@ class RustAppStateStoreTest(unittest.TestCase):
                         store._accept_response_unlocked(malformed)
                 self.assertEqual(store.authoritative_snapshot(), before)
 
-    def test_reset_player_accepts_rust_generation_without_runtime_only_persistence(self):
+    def assert_generation_checkpoint_only(self, store, before, after, snapshot):
+        self.assertEqual(set(after), set(before))
+        core = {path.relative_to(self.root) for path in (
+            store.player_state_file, store.history_state_file, store.session_users_state_file)}
+        for path, content in before.items():
+            if path not in core:
+                self.assertEqual(after[path], content)
+                continue
+            expected = json.loads(content)
+            expected["updated_at"] = snapshot["updated_at"]
+            if path == store.session_users_state_file.relative_to(self.root):
+                expected["last_playback_generation"] = snapshot["playback_generation"]
+            self.assertEqual(json.loads(after[path]), expected)
+
+    def test_reset_player_durably_records_generation_without_changing_preferences(self):
         store = self.store()
         store.add_session_user("Alice")
         store.add_item(item("a"), requester_name="Alice")
@@ -651,14 +665,17 @@ class RustAppStateStoreTest(unittest.TestCase):
         )
         self.assertEqual(after, rust_responses[0]["snapshot"])
         self.assertTrue(rust_responses[0]["committed"])
-        self.assertFalse(any(rust_responses[0]["effects"].values()))
+        self.assertEqual(rust_responses[0]["effects"], {
+            "write_core": True, "write_session_played": False, "write_backup": False,
+            "delete_backup": False, "delete_runtime_files": False,
+        })
         persisted_after = {
             path.relative_to(self.root): path.read_bytes()
             for path in self.root.rglob("*.json")
         }
-        self.assertEqual(persisted_after, persisted_before)
+        self.assert_generation_checkpoint_only(store, persisted_before, persisted_after, after)
 
-    def test_restart_playback_program_preserves_settings_without_persistence(self):
+    def test_restart_playback_program_preserves_settings_and_persists_generation(self):
         store = self.store()
         store.add_session_user("Alice")
         store.add_item(item("a"), requester_name="Alice")
@@ -686,7 +703,7 @@ class RustAppStateStoreTest(unittest.TestCase):
             path.relative_to(self.root): path.read_bytes()
             for path in self.root.rglob("*.json")
         }
-        self.assertEqual(persisted_after, persisted_before)
+        self.assert_generation_checkpoint_only(store, persisted_before, persisted_after, after)
 
     def test_concurrent_ffi_callers_are_serialized_by_rust_revision(self):
         store = self.store()

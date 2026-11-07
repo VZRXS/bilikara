@@ -11,6 +11,8 @@ import { HttpClient, isolatedEnvironment, RunningHost, waitFor } from './native_
 import { localServer, videoFixture } from './video_service_fixture.mjs';
 import { csvRows, zipEntries } from './native_export_support.mjs';
 
+import {writeR7Seed} from './queue_r7_support.mjs';
+
 const executable = process.env.BILIKARA_TEST_NATIVE_PACKAGE || process.env.BILIKARA_TEST_NATIVE_HOST_BINARY || await buildNativeHost();
 assert.ok(path.isAbsolute(executable) && existsSync(executable), 'declared native Host must exist');
 const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -202,4 +204,41 @@ test('v1 storage/preferences migrate losslessly; Host/Remote paginated exports a
   function privateFiles(directory) { for (const entry of readdirSync(directory, { withFileTypes: true })) { const file = path.join(directory, entry.name); if (entry.isDirectory()) privateFiles(file); else if (entry.isFile()) assert.ok(!readFileSync(file).includes(Buffer.from(remoteToken)), 'Remote token persisted'); } } privateFiles(data);
   host = await launch(); remote.base = host.base;
   try { assert.notEqual((await host.api('/api/state')).state_epoch, epoch); assert.equal((await host.api('/api/state')).cache_policy.max_cache_items, 2); assert.equal((await host.api('/api/gatcha/pool-config')).uid_weight, 17); await remote.request('/remote'); assert.equal((await remote.api('/api/remote-identity')).name, 'Migration singer'); } finally { await host.close(); }
+});
+
+test('R7 actual Host and LAN Remote reject stale queue mutations and atomically promote after delete', async t => {
+  const directory=home(t);writeR7Seed(directory);const host=await start(directory);
+  try {
+    await host.api('/api/session/startup-choice',{choice:'continue'});
+    const initial=await host.api('/api/state');
+    const remote=new HttpClient(host.base);await remote.request('/remote');
+    await remote.api('/api/remote-identity/register',{name:'A',claim:true});
+    const topped=await remote.api('/api/playlist/move-next',{item_id:'C1',expected_queue_version:initial.queue_version});
+    assert.deepEqual(topped.playlist.map(i=>i.id),['C1','B1','A1','B2','C2','A2']);
+    for(const client of [host,remote])for(const [route,body] of [
+      ['/api/playlist/move-next',{item_id:'B2'}],['/api/playlist/remove',{item_id:'B1'}],
+      ['/api/playlist/play-now',{item_id:'B1'}],['/api/playlist/resort',{}],
+      ['/api/playlist/reorder',{item_id:'B1',index:3}],
+      ['/api/player/next',{playback_generation:topped.playback_generation}],
+    ]) {
+      const response=await client.request(route,{...body,expected_queue_version:initial.queue_version});
+      const data=JSON.parse(response.body);assert.equal(response.status,409,route);assert.equal(data.code,'queue_changed');
+      assert.equal(data.data.queue_version,topped.queue_version);assert.deepEqual(data.data.playlist.map(i=>i.id),topped.playlist.map(i=>i.id));
+    }
+    const next=await host.api('/api/player/next',{playback_generation:topped.playback_generation,expected_queue_version:topped.queue_version});
+    assert.equal(next.current_item.id,'C1');assert.deepEqual(next.playlist.map(i=>i.id),['B1','A1','B2','C2','A2']);
+    await host.api('/api/player/av-delay-action',{type:'adjust',delta_ms:150});
+    const removed=await remote.api('/api/playlist/remove',{item_id:'C1',expected_queue_version:next.queue_version});
+    assert.equal(removed.player_settings.av_offset_ms,0);
+    assert.equal(removed.current_item.id,'B1');assert.deepEqual(removed.playlist.map(i=>i.id),['A1','B2','C2','A2']);
+    const diagnostics=await host.api('/api/diagnostics/native');
+    assert.ok(diagnostics.queue_departures.some(e=>e.item_id==='A0'&&e.reason==='skipped_unstarted'&&e.actor_channel==='host'));
+    assert.ok(diagnostics.queue_departures.some(e=>e.item_id==='C1'&&e.operation==='explicit_delete'&&e.actor_channel==='lan_remote'));
+    const exported=await host.request('/api/diagnostics/package',{});assert.equal(exported.status,200);
+    const runtime=JSON.parse(zipEntries(exported.body).get('runtime-state.json'));
+    assert.ok(runtime.diagnostics.queue_departures.some(e=>e.item_id==='C1'&&e.operation==='explicit_delete'));
+
+    const denied=await remote.request('/api/diagnostics/native');assert.equal(denied.status,501);assert.equal(denied.body.includes(Buffer.from('queue_departures')),false);
+    assert.equal('queue_departures' in await remote.api('/api/state'),false);
+  } finally {await host.close();}
 });

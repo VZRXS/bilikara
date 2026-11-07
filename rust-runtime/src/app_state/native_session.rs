@@ -682,6 +682,17 @@ impl AppState {
         })
     }
 
+    pub(crate) fn native_execute_from(
+        &mut self,
+        command: AppStateRequest,
+        actor: QueueActor,
+    ) -> Result<Value, ApiError> {
+        let previous = std::mem::replace(&mut self.queue_actor, actor);
+        let result = self.native_execute(command);
+        self.queue_actor = previous;
+        result
+    }
+
     pub(crate) fn native_execute(
         &mut self,
         mut command: AppStateRequest,
@@ -700,6 +711,7 @@ impl AppState {
         if self.native_session.desktop {
             match &mut command {
                 AppStateRequest::AdvanceToNext { reset_av_delay, .. }
+                | AppStateRequest::RemoveItem { reset_av_delay, .. }
                 | AppStateRequest::DeferCurrentItem { reset_av_delay, .. }
                 | AppStateRequest::MoveToFront { reset_av_delay, .. }
                 | AppStateRequest::SetCurrentItem { reset_av_delay, .. } => {
@@ -1170,6 +1182,10 @@ impl AppState {
         self.native_execute(AppStateRequest::IssuePlayerControl {
             schema_version: 1,
             control: PlayerControlInput {
+                expected_queue_version: body
+                    .get("expected_queue_version")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
                 action,
                 playback_generation: generation,
                 item_id,
@@ -1320,7 +1336,7 @@ impl AppState {
     }
 
     pub(crate) fn native_diagnostics(&self) -> Value {
-        json!({"backend":"rust","events":self.native_session.diagnostics,
+        json!({"backend":"rust","queue_departures":self.data.as_ref().map(|data| &data.queue_departures),"events":self.native_session.diagnostics,
             "playback_delivery": {
                 "head": self.player_control_head(),
                 "claim_generation": self.native_session.claim.as_ref().map(|claim| claim.generation),

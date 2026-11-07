@@ -311,6 +311,8 @@ pub enum RemoteRequestV1 {
     },
     #[serde(rename = "playlist.remove")]
     PlaylistRemove {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_queue_version: Option<String>,
         item_id: String,
         expected_revision: u64,
     },
@@ -324,15 +326,21 @@ pub enum RemoteRequestV1 {
     },
     #[serde(rename = "playlist.resort")]
     PlaylistResort {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_queue_version: Option<String>,
         expected_revision: u64,
     },
     #[serde(rename = "playlist.move_next")]
     PlaylistMoveNext {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_queue_version: Option<String>,
         item_id: String,
         expected_revision: u64,
     },
     #[serde(rename = "playlist.play_now")]
     PlaylistPlayNow {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_queue_version: Option<String>,
         item_id: String,
         expected_revision: u64,
     },
@@ -365,6 +373,8 @@ pub enum RemoteRequestV1 {
     },
     #[serde(rename = "playback.next")]
     PlaybackNext {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_queue_version: Option<String>,
         playback_generation: u64,
     },
     #[serde(rename = "player.set_volume")]
@@ -650,6 +660,8 @@ struct CatalogMutationBody {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ItemMutationBody {
+    #[serde(default)]
+    expected_queue_version: Option<String>,
     item_id: String,
     expected_revision: u64,
 }
@@ -679,6 +691,8 @@ struct MoveItemBody {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RevisionBody {
+    #[serde(default)]
+    expected_queue_version: Option<String>,
     expected_revision: u64,
 }
 
@@ -708,6 +722,8 @@ struct PlaybackItemBody {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PlaybackGenerationBody {
+    #[serde(default)]
+    expected_queue_version: Option<String>,
     playback_generation: u64,
 }
 
@@ -980,17 +996,24 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
                 && valid_expected(*expected_revision)
         }
         RemoteRequestV1::PlaylistRemove {
+            expected_queue_version,
             item_id,
             expected_revision,
         }
         | RemoteRequestV1::PlaylistMoveNext {
+            expected_queue_version,
             item_id,
             expected_revision,
         }
         | RemoteRequestV1::PlaylistPlayNow {
+            expected_queue_version,
             item_id,
             expected_revision,
-        } => valid_item(item_id) && valid_expected(*expected_revision),
+        } => {
+            valid_item(item_id)
+                && valid_expected(*expected_revision)
+                && valid_queue_version(expected_queue_version)
+        }
         RemoteRequestV1::PlaylistMove {
             item_id,
             target_index,
@@ -1004,7 +1027,10 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
                 })
                 && valid_expected(*expected_revision)
         }
-        RemoteRequestV1::PlaylistResort { expected_revision } => valid_expected(*expected_revision),
+        RemoteRequestV1::PlaylistResort {
+            expected_revision,
+            expected_queue_version,
+        } => valid_expected(*expected_revision) && valid_queue_version(expected_queue_version),
         RemoteRequestV1::PlaybackPlay {
             item_id,
             playback_generation,
@@ -1034,7 +1060,11 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
         } => valid_item(item_id) && valid_playback_generation(*playback_generation),
         RemoteRequestV1::PlaybackNext {
             playback_generation,
-        } => valid_playback_generation(*playback_generation),
+            expected_queue_version,
+        } => {
+            valid_playback_generation(*playback_generation)
+                && valid_queue_version(expected_queue_version)
+        }
         RemoteRequestV1::PlayerSetVolume {
             volume_percent,
             expected_item_incarnation_id,
@@ -1294,14 +1324,17 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
             let body: ItemMutationBody = body(value)?;
             match kind {
                 "playlist.remove" => RemoteRequestV1::PlaylistRemove {
+                    expected_queue_version: body.expected_queue_version,
                     item_id: body.item_id,
                     expected_revision: body.expected_revision,
                 },
                 "playlist.move_next" => RemoteRequestV1::PlaylistMoveNext {
+                    expected_queue_version: body.expected_queue_version,
                     item_id: body.item_id,
                     expected_revision: body.expected_revision,
                 },
                 "playlist.play_now" => RemoteRequestV1::PlaylistPlayNow {
+                    expected_queue_version: body.expected_queue_version,
                     item_id: body.item_id,
                     expected_revision: body.expected_revision,
                 },
@@ -1330,6 +1363,7 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
         "playlist.resort" => {
             let body: RevisionBody = body(value)?;
             RemoteRequestV1::PlaylistResort {
+                expected_queue_version: body.expected_queue_version,
                 expected_revision: body.expected_revision,
             }
         }
@@ -1369,6 +1403,7 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
         "playback.next" => {
             let body: PlaybackGenerationBody = body(value)?;
             RemoteRequestV1::PlaybackNext {
+                expected_queue_version: body.expected_queue_version,
                 playback_generation: body.playback_generation,
             }
         }
@@ -1656,6 +1691,8 @@ pub struct RemoteAudioSupplementV1 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteStateV1 {
+    #[serde(default)]
+    pub queue_mutation_version: u32,
     #[serde(default)]
     pub audio_supplements: std::collections::BTreeMap<String, RemoteAudioSupplementV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2149,6 +2186,7 @@ mod tests {
         assert!(matches!(
             next.request,
             RemoteRequestV1::PlaybackNext {
+                expected_queue_version: None,
                 playback_generation: 7,
             }
         ));
@@ -2546,6 +2584,7 @@ mod tests {
     #[test]
     fn remote_state_shape_has_no_local_paths_urls_or_maintenance_state() {
         let state = RemoteStateV1 {
+            queue_mutation_version: 1,
             audio_supplements: Default::default(),
             automatic_volume: None,
             queue_version: "version".to_owned(),
@@ -2619,4 +2658,10 @@ mod tests {
             assert!(!encoded.contains(forbidden), "forbidden field {forbidden}");
         }
     }
+}
+
+fn valid_queue_version(value: &Option<String>) -> bool {
+    value
+        .as_ref()
+        .is_none_or(|value| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()))
 }

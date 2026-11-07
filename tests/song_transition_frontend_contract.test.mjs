@@ -117,7 +117,7 @@ assert.deepEqual(result["renders"], 1);
 assert.ok(hasContent(result["inFlight"]));
 assert.deepEqual(result["holdItem"], "next");
 assert.ok(!hasContent(result["shouldPlay"]));
-assert.deepEqual(result["nextPayload"], {["playback_generation"]: 9});
+assert.deepEqual(result["nextPayload"], {["playback_generation"]: 9, expected_queue_version: null});
 },
 async test_manual_next_zero_delay_mutates_once_without_hold() {
 let advance_functions, hold_functions, result;
@@ -126,7 +126,7 @@ advance_functions = (await this.source_slice("async function advanceLocalPlayerN
 result = (await this.run_node((`
 const nextItem = { id: "next" };
 const state = {
-  data: { playback_generation: 12, current_item: { id: "old" }, playlist: [nextItem] },
+  data: { queue_version: "a".repeat(64), playback_generation: 12, current_item: { id: "old" }, playlist: [nextItem] },
   localShouldBePlaying: true, localAdvanceInFlight: false,
   pendingSongTransitionOverlayData: null, pendingSongTransitionGeneration: 0,
   localAdvanceDelayDeadline: 0, localAdvanceDelayItemId: "",
@@ -162,7 +162,7 @@ console.log(JSON.stringify({
   shouldPlay: state.localShouldBePlaying, nextPayload,
 }));
 `)));
-assert.deepEqual(result, {["apiCalls"]: 1, ["inFlight"]: false, ["generation"]: 0, ["shouldPlay"]: true, ["nextPayload"]: {["playback_generation"]: 12}});
+assert.deepEqual(result, {["apiCalls"]: 1, ["inFlight"]: false, ["generation"]: 0, ["shouldPlay"]: true, ["nextPayload"]: {["playback_generation"]: 12, expected_queue_version: "a".repeat(64)}});
 },
 async test_stale_next_releases_only_its_transition_after_program_replacement() {
 let advance_functions, clear_delay, expected, hold_functions, maybe_transition, result;
@@ -1267,7 +1267,7 @@ assert.ok(contains("requestNextTrack().catch(() => {})", media_session));
 assert.ok(contains("case \"nextTrack\"", controller));
 assert.ok(contains("await requestNextTrack(expectedPlaybackGeneration)", controller));
 assert.ok(contains("action === \"next-track\"", remote_control));
-assert.ok(contains("requestNextTrack(expectedPlaybackGeneration).catch(() => {})", remote_control));
+assert.ok(contains("requestNextTrack(expectedPlaybackGeneration, command.expected_queue_version ?? null).catch(() => {})", remote_control));
 assert.ok(contains("state.data.playback_generation", remote_next));
 assert.ok(contains("playback_generation: expectedPlaybackGeneration", remote_next));
 }

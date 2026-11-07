@@ -1519,7 +1519,7 @@ class AppContextPlayerDiagnosticTest(unittest.TestCase):
             }
         )
         context.record_player_diagnostic(event)
-        context.store = SimpleNamespace(
+        context.store = SimpleNamespace(queue_departure_diagnostics=lambda: [],
             snapshot=lambda: {"current_item": None, "playlist": [], "session_users": []}
         )
         context.cache_manager = SimpleNamespace(
@@ -1567,7 +1567,7 @@ class AppContextPlayerDiagnosticTest(unittest.TestCase):
             context.remote_identities = RemoteIdentityStore(root / "remote_identities.json")
             self.assertFalse(hasattr(context.remote_identities, "registered_user_names"))
 
-            context.store = SimpleNamespace(
+            context.store = SimpleNamespace(queue_departure_diagnostics=lambda: [],
                 snapshot=lambda: {
                     "current_item": None,
                     "playlist": [],
@@ -3340,7 +3340,7 @@ class PlayerNextRouteTest(unittest.TestCase):
         calls: list[int | None] = []
         current_generation = authoritative_generation
 
-        def advance_to_next(playback_generation=None):
+        def advance_to_next(playback_generation=None, *, expected_queue_version=None):
             nonlocal current_generation
             calls.append(playback_generation)
             if playback_generation is not None and playback_generation != authoritative_generation:
@@ -4111,7 +4111,7 @@ class PlaylistResortRouteTest(unittest.TestCase):
         writes: list[dict] = []
         context = SimpleNamespace(
             touch_client=lambda client_id, is_host=True: None,
-            resort_playlist_by_cycle=lambda: writes.append({"resorted": True}),
+            resort_playlist_by_cycle=lambda **fields: writes.append({"resorted": True}),
             snapshot=lambda: {"playlist": ["b", "c", "a"]},
         )
 

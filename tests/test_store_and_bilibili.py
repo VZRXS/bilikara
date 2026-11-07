@@ -1175,7 +1175,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.add_item("a-new", requester_name="Singer A")
         self.assertEqual(next(item.requester_name for item in self.store.playlist if item.id == "a-new"), "Singer A")
 
-    def test_play_now_rebuilds_cycle_queue_for_new_current_requester(self):
+    def test_play_now_preserves_remaining_queue_and_ordinary_cursor(self):
         self.add_item("a1", requester_name="A")
         self.add_item("b1", requester_name="B")
         self.add_item("c1", requester_name="C")
@@ -1185,9 +1185,9 @@ class PlaylistStoreTest(unittest.TestCase):
         self.store.move_to_front("c1")
 
         self.assertEqual(self.store.current_item.id, "c1")
-        self.assertEqual([item.id for item in self.store.playlist], ["a2", "b1"])
+        self.assertEqual([item.id for item in self.store.playlist], ["b1", "a2"])
 
-    def test_advance_to_priority_item_rebuilds_cycle_queue(self):
+    def test_advance_to_priority_item_preserves_remaining_queue(self):
         self.add_item("a1", requester_name="A")
         self.add_item("b1", requester_name="B")
         self.add_item("c1", requester_name="C")
@@ -1197,7 +1197,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.advance_to_next()
 
         self.assertEqual(self.store.current_item.id, "c1")
-        self.assertEqual([item.id for item in self.store.playlist], ["a2", "b1"])
+        self.assertEqual([item.id for item in self.store.playlist], ["b1", "a2"])
 
     def test_reordering_session_users_keeps_priority_next_and_rebuilds_cycle_tail(self):
         self.add_item("a1", requester_name="A")

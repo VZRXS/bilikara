@@ -324,6 +324,8 @@ mod tests {
             let response = runtime.block_on(media(&context, &route, &headers, mode == "head"));
             assert!(
                 execute_app_state(AppStateRequest::RemoveItem {
+                    reset_av_delay: false,
+                    expected_queue_version: None,
                     schema_version: 1,
                     item_id: mode.into(),
                     now: 4.0

@@ -6180,7 +6180,7 @@ function localizedApiMessage(message) {
   if (!raw) {
     return "";
   }
-  if (raw === "队列已更新，请重新拖动") return t("remote.queueChanged");
+  if (["队列已更新，请重新拖动", "队列已更新，请刷新后重试"].includes(raw)) return t("remote.queueChanged");
   if (raw === "歌曲已离开等待队列，请刷新后重试") return t("remote.queueItemMissing");
   if (raw === "Invalid YouTube video link") return t("request.youtubeInvalid");
   if (raw === "Multiple YouTube videos found; paste one video link") return t("request.youtubeMultiple");
@@ -6280,6 +6280,11 @@ async function fetchHostApi(url, options = {}) {
 }
 
 async function apiPost(url, payload = {}, options = {}) {
+  if (["/api/playlist/remove", "/api/playlist/move-next", "/api/playlist/play-now",
+    "/api/playlist/resort", "/api/playlist/clear", "/api/player/next"].includes(url)
+    && payload.expected_queue_version === undefined && state.data?.queue_mutation_version >= 1 && state.data?.queue_version) {
+    payload = { ...payload, expected_queue_version: state.data.queue_version };
+  }
   const timeoutMs = Math.max(0, Number(options.timeoutMs || 0));
   const returnEnvelope = options.returnEnvelope === true;
   const controller = timeoutMs > 0 && typeof AbortController === "function"
@@ -6297,6 +6302,7 @@ async function apiPost(url, payload = {}, options = {}) {
     });
     const data = await parseApiResponse(response, url);
     if (!response.ok || !data.ok) {
+      if (data.code === "queue_changed" && data.data && acceptHostStateSnapshot(data.data)) render();
       const error = new Error(localizedApiMessage(data.error) || t("error.requestFailed"));
       error.status = response.status;
       error.code = data.code || "";
@@ -17379,7 +17385,7 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
     && (!commandItemId || commandItemId === currentItem.id)
   ) {
     if (action === "next-track") {
-      requestNextTrack(expectedPlaybackGeneration).catch(() => {});
+      requestNextTrack(expectedPlaybackGeneration, command.expected_queue_version ?? null).catch(() => {});
     } else {
       const video = elements.playerFrame.querySelector("video");
       const audio = elements.playerFrame.querySelector('audio[data-player-role="audio"]');
@@ -19654,9 +19660,9 @@ async function continuePreviousSession() {
   }
 }
 
-async function clearPlaylist() {
+async function clearPlaylist(queueVersion) {
   try {
-    await apiPostStateSnapshot("/api/playlist/clear");
+    await apiPostStateSnapshot("/api/playlist/clear", queueVersion ? { expected_queue_version: queueVersion } : {});
     closeConfirm();
     setAppMessage(t("list.cleared"));
     render();
@@ -20401,6 +20407,7 @@ async function advanceLocalPlayerNow({
   showTransition = true,
   session = null,
   expectedPlaybackGeneration: issuedPlaybackGeneration = null,
+  expectedQueueVersion = null,
 } = {}) {
   if (
     session
@@ -20467,6 +20474,9 @@ async function advanceLocalPlayerNow({
     const previousData = state.data;
     const outcome = await apiPostExactStateCommand("/api/player/next", {
       playback_generation: expectedPlaybackGeneration,
+      // EOS binds the completed program, not a user-chosen waiting order.
+      // Explicit manual/Remote Next passes its captured token through this path.
+      expected_queue_version: expectedQueueVersion,
     });
     if (!outcome.commandApplied) {
       releaseOwnedLocalAdvance();
@@ -20509,10 +20519,11 @@ async function advanceLocalPlayerNow({
   }
 }
 
-async function requestNextTrack(expectedPlaybackGeneration = null) {
+async function requestNextTrack(expectedPlaybackGeneration = null, expectedQueueVersion = null) {
+  expectedQueueVersion = expectedQueueVersion ?? state.data?.queue_version ?? null;
   if(networkOutputOwnsPlayback()) {
     const item=state.data?.current_item;if(!item)return false;
-    const next=await apiPost("/api/player/control",{action:"next-track",item_id:item.id,playback_generation:state.data.playback_generation});
+    const next=await apiPost("/api/player/control",{action:"next-track",item_id:item.id,playback_generation:state.data.playback_generation,expected_queue_version:expectedQueueVersion ?? state.data.queue_version});
     if(acceptHostStateSnapshot(next))render();return true;
   }
   if (
@@ -20534,6 +20545,7 @@ async function requestNextTrack(expectedPlaybackGeneration = null) {
     "manual-next",
     capturedSession,
     expectedPlaybackGeneration,
+    expectedQueueVersion,
   );
   if (advanced) showPresentationOperationFeedback({ kind: "next", value: "" });
   return advanced;
@@ -20543,6 +20555,7 @@ async function handleLocalPlaybackEnded(
   reason = "media-ended",
   session = null,
   expectedPlaybackGeneration = null,
+  expectedQueueVersion = null,
 ) {
   if (
     session
@@ -20559,12 +20572,14 @@ async function handleLocalPlaybackEnded(
       showTransition: false,
       session,
       expectedPlaybackGeneration,
+      expectedQueueVersion,
     });
   }
   return advanceLocalPlayerNow({
     showTransition: true,
     session,
     expectedPlaybackGeneration,
+    expectedQueueVersion,
   });
 }
 
@@ -20950,6 +20965,9 @@ async function handlePlaylistAction(button) {
   const target = actionMap[action];
   if (!target) {
     return;
+  }
+  if (action !== "retry-cache" && state.data?.queue_mutation_version >= 1) {
+    target[1].expected_queue_version = state.renderedQueue?.version || state.data.queue_version;
   }
   if (
     action === "play-now"
@@ -22037,6 +22055,7 @@ elements.clearPlaylistButton.addEventListener("click", (event) => {
   const point = anchorPointForEvent(event, elements.clearPlaylistButton);
   openConfirm({
     type: "clear-playlist",
+    queueVersion: state.data?.queue_mutation_version >= 1 ? state.data.queue_version : undefined,
     message: t("list.clearConfirm"),
     x: point.x,
     y: point.y,
@@ -22438,6 +22457,7 @@ elements.playlist.addEventListener("click", async (event) => {
     closeOpenMenus({ restoreFocus: false });
     openConfirm({
       type: "remove-item",
+      queueVersion: state.data?.queue_mutation_version >= 1 ? (state.renderedQueue?.version || state.data.queue_version) : undefined,
       itemId: button.dataset.id,
       message: t("list.removeConfirm"),
       x: point.x,
@@ -22754,7 +22774,7 @@ elements.confirmOk.addEventListener("click", async () => {
       return;
     }
     if (intent.type === "clear-playlist") {
-      await clearPlaylist();
+      await clearPlaylist(intent.queueVersion);
       return;
     }
     if (intent.type === "clear-history") {
@@ -22796,7 +22816,9 @@ elements.confirmOk.addEventListener("click", async () => {
       return;
     }
     if (intent.type === "remove-item" && intent.itemId) {
-      await apiPostStateSnapshot("/api/playlist/remove", { item_id: intent.itemId });
+      await apiPostStateSnapshot("/api/playlist/remove", { item_id: intent.itemId,
+        ...(intent.queueVersion ? { expected_queue_version: intent.queueVersion } : {}),
+      });
       closeConfirm();
       setAppMessage(t("list.removedSong"));
       render();

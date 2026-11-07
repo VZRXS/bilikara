@@ -768,6 +768,7 @@
       state_epoch: typeof remoteState.state_epoch === "string" ? remoteState.state_epoch : "",
       state_revision: Number(remoteState.state_revision ?? remoteState.revision ?? 0),
       queue_version: String(remoteState.queue_version || ""),
+      queue_mutation_version: Number(remoteState.queue_mutation_version || 0),
       session_generation: Number(remoteState.session_generation || 0),
       playback_generation: Number(remoteState.playback_generation || 0),
       playback_mode: remoteState.playback_mode || "local",
@@ -1116,14 +1117,14 @@
       } else if (method === "POST" && url.pathname === "/api/playlist/reorder") {
         response = await request("playlist.move", { item_id: String(body.item_id || ""), target_index: Number(body.index || 0), expected_queue_version: body.expected_queue_version, expected_revision: expectedRevision() });
       } else if (method === "POST" && url.pathname === "/api/playlist/resort") {
-        response = await request("playlist.resort", { expected_revision: expectedRevision() });
+        response = await request("playlist.resort", { expected_queue_version: body.expected_queue_version, expected_revision: expectedRevision() });
       } else if (method === "POST" && ["/api/playlist/remove", "/api/playlist/move-next", "/api/playlist/play-now"].includes(url.pathname)) {
         const kinds = {
           "/api/playlist/remove": "playlist.remove",
           "/api/playlist/move-next": "playlist.move_next",
           "/api/playlist/play-now": "playlist.play_now",
         };
-        response = await request(kinds[url.pathname], { item_id: String(body.item_id || ""), expected_revision: expectedRevision() });
+        response = await request(kinds[url.pathname], { item_id: String(body.item_id || ""), expected_queue_version: body.expected_queue_version, expected_revision: expectedRevision() });
       } else if (method === "POST" && url.pathname === "/api/cache/retry") {
         response = await request("cache.retry", {
           force: Boolean(body.force),
@@ -1153,6 +1154,7 @@
         response = await request(kinds[action] || "playback.toggle", payload);
       } else if (method === "POST" && url.pathname === "/api/player/next") {
         response = await request("playback.next", {
+          expected_queue_version: body.expected_queue_version,
           playback_generation: Number(body.playback_generation),
         });
       } else if (method === "POST" && url.pathname === "/api/player/output") {
