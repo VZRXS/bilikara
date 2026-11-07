@@ -6,6 +6,18 @@ import path from 'node:path';
 import { root, runNative } from './desktop_construction_support.mjs';
 const ROOT = root;
 import { contains, hasContent, splitOnce, sourceIndex, firstMatch, iterableValues, concatenate, countOccurrences } from './frontend_contract_support.mjs';
+test('audio supplement transport executes typed page handling without falling back to full retry',async()=>{
+  const source=readFileSync(path.join(ROOT,'static/remote-transport-client.js'),'utf8');
+  const marker='method === "POST" && url.pathname === "/api/cache/audio") {';
+  const start=sourceIndex(source,marker)+marker.length,end=sourceIndex(source,'      } else if',start);
+  const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
+  const send=new AsyncFunction('body','request','expectedRevision','let response;'+source.slice(start,end)+';return response;');
+  const calls=[];const request=async(kind,body)=>{calls.push({kind,body});return {accepted:true};};
+  await send({item_id:'song',expected_item_incarnation_id:'incarnation',page:2},request,()=>12);
+  assert.deepEqual(calls,[{kind:'cache.retry',body:{audio_page:2,force:false,item_id:'song',expected_item_incarnation_id:'incarnation',expected_revision:12}}]);
+  for(const page of [undefined,null,0,-1,1.5,true,'2',4294967296])await assert.rejects(()=>send({page},request,()=>12),/Invalid audio page/);
+  assert.equal(calls.length,1);
+});
 async function checked(program, args, cwd) { const result = await runNative(program, args, process.env, 120000, cwd); assert.equal(result.status, 0, result.stdout + result.stderr); return result; }
 const InternetRemoteFrontendTest = {
 async setUpClass() {

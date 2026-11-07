@@ -100,6 +100,7 @@ pub enum RemoteOperation {
     PlayerSetVolume,
     PlayerSetMuted,
     PlayerSetKeyShift,
+    OutputSetOffsetMode,
     PlayerSetAudioVariant,
     PlayerSetAvDelay,
     SessionSetIdentity,
@@ -139,6 +140,7 @@ impl RemoteOperation {
             Self::PlayerSetVolume
             | Self::PlayerSetMuted
             | Self::PlayerSetKeyShift
+            | Self::OutputSetOffsetMode
             | Self::PlayerSetAudioVariant
             | Self::PlayerSetAvDelay => RemoteCapability::PlayerSettingsWrite,
             Self::SessionSetIdentity | Self::SessionRename | Self::SessionResume => {
@@ -207,7 +209,9 @@ pub enum RemoteRequestV1 {
     #[serde(rename = "connection.health")]
     ConnectionHealth,
     #[serde(rename = "state.get")]
-    StateGet { since_revision: Option<u64> },
+    StateGet {
+        since_revision: Option<u64>,
+    },
     #[serde(rename = "catalog.search")]
     CatalogSearch {
         query: String,
@@ -235,7 +239,9 @@ pub enum RemoteRequestV1 {
         limit: u16,
     },
     #[serde(rename = "catalog.song_detail")]
-    SongDetail { catalog_item_id: String },
+    SongDetail {
+        catalog_item_id: String,
+    },
     #[serde(rename = "gatcha.search")]
     GatchaSearch {
         query: String,
@@ -269,15 +275,24 @@ pub enum RemoteRequestV1 {
         excluded_favlist_folders: Vec<String>,
     },
     #[serde(rename = "gatcha.uid_preview")]
-    GatchaUidPreview { uid: String },
+    GatchaUidPreview {
+        uid: String,
+    },
     #[serde(rename = "gatcha.uid_add")]
-    GatchaUidAdd { uid: String },
+    GatchaUidAdd {
+        uid: String,
+    },
     #[serde(rename = "gatcha.source_remove")]
-    GatchaSourceRemove { source: String, id: String },
+    GatchaSourceRemove {
+        source: String,
+        id: String,
+    },
     #[serde(rename = "gatcha.refresh")]
     GatchaRefresh,
     #[serde(rename = "gatcha.favlist_preview")]
-    GatchaFavlistPreview { uid: String },
+    GatchaFavlistPreview {
+        uid: String,
+    },
     #[serde(rename = "gatcha.favlist_refresh")]
     GatchaFavlistRefresh {
         uid: String,
@@ -308,7 +323,9 @@ pub enum RemoteRequestV1 {
         expected_revision: u64,
     },
     #[serde(rename = "playlist.resort")]
-    PlaylistResort { expected_revision: u64 },
+    PlaylistResort {
+        expected_revision: u64,
+    },
     #[serde(rename = "playlist.move_next")]
     PlaylistMoveNext {
         item_id: String,
@@ -347,7 +364,9 @@ pub enum RemoteRequestV1 {
         target_seconds: u32,
     },
     #[serde(rename = "playback.next")]
-    PlaybackNext { playback_generation: u64 },
+    PlaybackNext {
+        playback_generation: u64,
+    },
     #[serde(rename = "player.set_volume")]
     PlayerSetVolume {
         volume_percent: u16,
@@ -355,9 +374,17 @@ pub enum RemoteRequestV1 {
         expected_item_incarnation_id: Option<String>,
     },
     #[serde(rename = "player.set_muted")]
-    PlayerSetMuted { is_muted: bool },
+    PlayerSetMuted {
+        is_muted: bool,
+    },
     #[serde(rename = "player.set_key_shift")]
-    PlayerSetKeyShift { key_shift: i8 },
+    PlayerSetKeyShift {
+        key_shift: i8,
+    },
+    #[serde(rename = "output.set_offset_mode")]
+    OutputSetOffsetMode {
+        offset_mode: String,
+    },
     #[serde(rename = "player.set_audio_variant")]
     PlayerSetAudioVariant {
         item_id: String,
@@ -366,11 +393,15 @@ pub enum RemoteRequestV1 {
         expected_revision: u64,
     },
     #[serde(rename = "player.set_av_delay")]
-    PlayerSetAvDelay { effective_delay_ms: i32 },
+    PlayerSetAvDelay {
+        effective_delay_ms: i32,
+    },
     #[serde(rename = "player.av_delay_action")]
     PlayerAvDelayAction(RemoteAvDelayActionV1),
     #[serde(rename = "session.set_identity")]
-    SessionSetIdentity { name: String },
+    SessionSetIdentity {
+        name: String,
+    },
     #[serde(rename = "session.rename")]
     SessionRename {
         name: String,
@@ -378,11 +409,18 @@ pub enum RemoteRequestV1 {
         expected_name: String,
     },
     #[serde(rename = "session.resume")]
-    SessionResume { user_id: String },
+    SessionResume {
+        user_id: String,
+    },
     #[serde(rename = "rating.submit")]
-    RatingSubmit { play_id: String, score: u8 },
+    RatingSubmit {
+        play_id: String,
+        score: u8,
+    },
     #[serde(rename = "cache.retry")]
     CacheRetry {
+        #[serde(default)]
+        audio_page: Option<u32>,
         #[serde(default)]
         force: bool,
         item_id: String,
@@ -429,6 +467,7 @@ impl RemoteRequestV1 {
             Self::PlayerSetVolume { .. } => RemoteOperation::PlayerSetVolume,
             Self::PlayerSetMuted { .. } => RemoteOperation::PlayerSetMuted,
             Self::PlayerSetKeyShift { .. } => RemoteOperation::PlayerSetKeyShift,
+            Self::OutputSetOffsetMode { .. } => RemoteOperation::OutputSetOffsetMode,
             Self::PlayerSetAudioVariant { .. } => RemoteOperation::PlayerSetAudioVariant,
             Self::PlayerSetAvDelay { .. } => RemoteOperation::PlayerSetAvDelay,
             Self::PlayerAvDelayAction(_) => RemoteOperation::PlayerSetAvDelay,
@@ -619,6 +658,8 @@ struct ItemMutationBody {
 #[serde(deny_unknown_fields)]
 struct IncarnationMutationBody {
     #[serde(default)]
+    audio_page: Option<u32>,
+    #[serde(default)]
     force: bool,
     item_id: String,
     expected_item_incarnation_id: String,
@@ -682,6 +723,12 @@ struct VolumeBody {
 #[serde(deny_unknown_fields)]
 struct MutedBody {
     is_muted: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OutputModeBody {
+    offset_mode: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -999,6 +1046,9 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
         }
         RemoteRequestV1::PlayerSetMuted { .. } => true,
         RemoteRequestV1::PlayerSetKeyShift { key_shift } => (-6..=6).contains(key_shift),
+        RemoteRequestV1::OutputSetOffsetMode { offset_mode } => {
+            matches!(offset_mode.as_str(), "splice" | "gradual")
+        }
         RemoteRequestV1::PlayerSetAudioVariant {
             item_id,
             variant_id,
@@ -1048,11 +1098,13 @@ fn validate_request(request: &RemoteRequestV1) -> Result<(), RemoteProtocolError
         }
         RemoteRequestV1::CacheRetry {
             item_id,
+            audio_page,
             expected_item_incarnation_id,
             expected_revision,
             ..
         } => {
             valid_item(item_id)
+                && audio_page.is_none_or(|page| page > 0)
                 && valid_item_incarnation_id(expected_item_incarnation_id)
                 && valid_expected(*expected_revision)
         }
@@ -1259,6 +1311,7 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
         "cache.retry" => {
             let body: IncarnationMutationBody = body(value)?;
             RemoteRequestV1::CacheRetry {
+                audio_page: body.audio_page,
                 force: body.force,
                 item_id: body.item_id,
                 expected_item_incarnation_id: body.expected_item_incarnation_id,
@@ -1330,6 +1383,12 @@ fn parse_request(kind: &str, value: Value) -> Result<RemoteRequestV1, RemoteProt
             let body: MutedBody = body(value)?;
             RemoteRequestV1::PlayerSetMuted {
                 is_muted: body.is_muted,
+            }
+        }
+        "output.set_offset_mode" => {
+            let body: OutputModeBody = body(value)?;
+            RemoteRequestV1::OutputSetOffsetMode {
+                offset_mode: body.offset_mode,
             }
         }
         "player.set_key_shift" => {
@@ -2151,6 +2210,40 @@ mod tests {
             assert_eq!(
                 decode_remote_request_v1(&request(kind, body), context(RemoteProfile::Controller)),
                 Err(RemoteProtocolError::InvalidRequestBody),
+            );
+        }
+    }
+
+    #[test]
+    fn cache_audio_page_is_positive_and_requires_controller_permission() {
+        let mut value = json!({"item_id":"item-1","expected_item_incarnation_id":"i-0123456789abcdef0123456789abcdef-0000000000000001","expected_revision":4,"audio_page":2});
+        assert!(matches!(
+            decode_remote_request_v1(
+                &request("cache.retry", value.clone()),
+                context(RemoteProfile::Controller)
+            )
+            .unwrap()
+            .request,
+            RemoteRequestV1::CacheRetry {
+                audio_page: Some(2),
+                ..
+            }
+        ));
+        assert!(
+            decode_remote_request_v1(
+                &request("cache.retry", value.clone()),
+                context(RemoteProfile::Viewer)
+            )
+            .is_err()
+        );
+        for bad in [json!(0), json!(-1), json!(1.5), json!("2")] {
+            value["audio_page"] = bad;
+            assert!(
+                decode_remote_request_v1(
+                    &request("cache.retry", value.clone()),
+                    context(RemoteProfile::Controller)
+                )
+                .is_err()
             );
         }
     }

@@ -55,11 +55,23 @@ Host 的「设置 → 导出诊断信息」包含有界连接事件。需要查�
 
 ## 管理员可选 TURN 配置
 
+独立 Worker 的可复制开发任务见 [Worker TURN 接入 prompt](internet-remote-worker-turn-prompt.md)，
+包含 Cloudflare provider、既有 `ice.config` 合同、配置/凭据期限、部署前准备与验收要求。
+
 未启用配置时保留现有 STUN / direct 路径。配置采用标准
 `RTCPeerConnection` 的 `iceTransportPolicy: "all"`，浏览器选择可行候选；
 `relay` policy 仅用于受控诊断。无需新增播放器、Runtime 或应用命令通道。
 [WebRTC 的 TURN 说明](https://webrtc.org/getting-started/turn-server)
 说明了 `iceServers` 与鉴权配置。
+
+“自动选择 STUN 或 TURN”由 ICE 连通性检查完成，不需要用户手动开关，
+也不先根据 Wi-Fi 名称或一次局域网 HTTP 失败判定 AP 隔离。信令服务提供
+有效的 TURN 配置后，浏览器同时检查直连、反射和中继候选，根据可达性和
+候选优先级选择路径；直连不可用时可自动选择实际可达的中继。只有 STUN 的
+服务无法凭客户端探测生成 TURN 服务或凭据。AP 隔离场地仍需管理员配置
+可从两端访问的 TURN；UDP 不通时需提供 TCP / TLS 入口并验证场地实际
+允许这些协议。配置未签发、凭据无效和中继不可达应分别排查，不能通过
+强制 `relay`、更换公共 STUN 或增加连接超时替代服务端中继配置。
 
 TURN 地址必须来自受信任信令服务的管理员配置。房间链接的 query /
 fragment、Remote 普通请求、localStorage 和 peer 消息不能选择服务器或

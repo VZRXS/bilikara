@@ -273,6 +273,7 @@ globalThis.clearTimeout = window.clearTimeout;
 
 const state = {
   clientId: "remote-test",
+  remoteIdentity: {registered:true},
   data: null,
   dataRenderSignature: "",
   renderDebounceTimer: null,
@@ -479,6 +480,36 @@ assert.ok(hasContent(result["healthy"]));
 assert.deepEqual(result["closed"], 1);
 assert.ok(contains("invalid_state", result["diagnostics"]));
 assert.ok(contains("stale", result["diagnostics"]));
+},
+async test_native_diagnostics_wait_for_registration_and_keep_authenticated_events() {
+const normalized = this.source.slice(sourceIndex(this.source, "function normalizedRemoteIdentity"), sourceIndex(this.source, "function renderRemoteIdentity"));
+const apply = this.source.slice(sourceIndex(this.source, "function applyRemoteIdentity"), sourceIndex(this.source, "async function fetchRemoteIdentity"));
+const result = await this.run_node(normalized + apply + `
+const state={remoteIdentity:{registered:false},data:{capabilities:{event_heartbeat:true}},eventStreamHealthy:false};
+const document={visibilityState:'visible'};
+const events=[],counts=[];
+const window={};
+function currentStateRevision(){return 1;}
+function clientHeaders(){return {};}
+function renderRemoteIdentity(){}
+function fetch(url,options){events.push(JSON.parse(options.body).event);return Promise.resolve({ok:true});}
+// SSE can arrive before registration; an idle stream cannot be reported as connected.
+reportNativeRemoteConnection('connected');counts.push(events.length);
+applyRemoteIdentity({registered:true,name:'Tester'});counts.push(events.length);
+state.eventStreamHealthy=true;
+reportNativeRemoteConnection('connected');counts.push(events.length);
+applyRemoteIdentity({registered:true,name:'Renamed'});counts.push(events.length);
+// Session expiry suppresses telemetry until a new registration, then reports
+// an already healthy connection once without reconnecting the transport.
+applyRemoteIdentity({registered:false});
+reportNativeRemoteConnection('stale');counts.push(events.length);
+applyRemoteIdentity({registered:true,name:'Tester'});counts.push(events.length);
+reportNativeRemoteConnection('invalid_state');counts.push(events.length);
+state.data.capabilities.event_heartbeat=false;
+reportNativeRemoteConnection('stale');counts.push(events.length);
+console.log(JSON.stringify({counts,events}));
+`);
+assert.deepEqual(result,{counts:[0,0,1,1,1,2,3,3],events:['connected','connected','invalid_state']});
 },
 async test_event_source_unsupported_uses_one_bounded_fallback_timer() {
 let result;
@@ -1539,6 +1570,7 @@ test("RemoteSseFrontendTest.test_scheduler_jitters_each_attempt_but_doubles_only
 test("RemoteSseFrontendTest.test_cache_polling_uses_the_revision_guard", async () => { const instance = Object.create(RemoteSseFrontendTest); await instance.setUpClass(); await instance.test_cache_polling_uses_the_revision_guard(); });
 test("RemoteSseFrontendTest.test_healthy_sse_is_the_only_continuous_cache_state_feed", async () => { const instance = Object.create(RemoteSseFrontendTest); await instance.setUpClass(); await instance.test_healthy_sse_is_the_only_continuous_cache_state_feed(); });
 test("RemoteSseFrontendTest.test_native_heartbeat_detects_silent_loss_without_polling_healthy_stream", async () => { const instance = Object.create(RemoteSseFrontendTest); await instance.setUpClass(); await instance.test_native_heartbeat_detects_silent_loss_without_polling_healthy_stream(); });
+test("RemoteSseFrontendTest.test_native_diagnostics_wait_for_registration_and_keep_authenticated_events", async () => { const instance = Object.create(RemoteSseFrontendTest); await instance.setUpClass(); await instance.test_native_diagnostics_wait_for_registration_and_keep_authenticated_events(); });
 test("RemoteSseFrontendTest.test_event_source_unsupported_uses_one_bounded_fallback_timer", async () => { const instance = Object.create(RemoteSseFrontendTest); await instance.setUpClass(); await instance.test_event_source_unsupported_uses_one_bounded_fallback_timer(); });
 test("RemoteSseFrontendTest.test_event_source_without_valid_state_uses_then_cancels_fallback", async () => { const instance = Object.create(RemoteSseFrontendTest); await instance.setUpClass(); await instance.test_event_source_without_valid_state_uses_then_cancels_fallback(); });
 test("RemoteSseFrontendTest.test_remote_connection_phase_tracks_sse_and_bounded_fallback_recovery", async () => { const instance = Object.create(RemoteSseFrontendTest); await instance.setUpClass(); await instance.test_remote_connection_phase_tracks_sse_and_bounded_fallback_recovery(); });

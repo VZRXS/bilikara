@@ -15,6 +15,7 @@ async function check(name, operation) {
   catch (error) { checks.push({ name, passed: false, error: error.stack }); }
 }
 async function main() {
+  const { hostOutputGuards } = await import("./frontend_contract_support.mjs");
   // A disposable offline namespace may block multicast. This explicit fixture
   // option keeps real host ICE candidates numeric rather than requiring mDNS.
   const browser = await chromium.launch({ executablePath, headless: true, env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toLowerCase().includes('proxy'))), args: ["--no-sandbox", "--disable-background-networking", ...(process.env.BILIKARA_TRANSPORT_LOCAL_ICE === '1' ? ['--disable-features=WebRtcHideLocalIpsWithMdns'] : [])] });
@@ -128,9 +129,11 @@ async function main() {
       method: "POST", body: JSON.stringify(body) })).json(), { route, body });
     const initial = (await nativeFetch("/api/state")).data;
     const target = { item_id: initial.current_item.id, playback_generation: initial.playback_generation };
-    const apply = read("app.js").slice(read("app.js").indexOf("function applyRemotePlayerControl("), read("app.js").indexOf("function observedHostPlayerStatus("));
+    const apply = hostOutputGuards()
+      + read("app.js").slice(read("app.js").indexOf("function applyRemotePlayerControl("), read("app.js").indexOf("function observedHostPlayerStatus("));
     // A real seekable HTMLVideoElement; only unrelated playback/session plumbing
-    // is fixture-owned. applyRemotePlayerControl and ACK are production source.
+    // is fixture-owned. Output guards, applyRemotePlayerControl and ACK are
+    // production source, sharing the same guard loader as the player contracts.
     await host.evaluate(({ initial, apply }) => {
       document.body.insertAdjacentHTML("afterbegin", '<section id="concurrency-evidence" style="position:fixed;inset:0;z-index:999999;background:#f4f7fa;padding:32px;color:#172536"><h1>LAN / Internet concurrency baseline</h1><p>Real Chromium video + WebRTC DataChannels + native Host HTTP</p><div id="fixture-player"><video controls preload="auto" width="640" src="/__fixture/media.webm"></video></div><pre id="fixture-result"></pre></section>');
       const video = document.querySelector("#fixture-player video");

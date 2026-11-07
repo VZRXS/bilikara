@@ -157,6 +157,12 @@ exhaust the per-peer pending-request capacity.
 item shape contains display metadata, public cache projection, audio-variant
 labels, Bilibili cover URL, and an opaque item-incarnation token used only for
 optimistic concurrency. The token is not a credential and grants no capability.
+The optional `cache.retry.audio_page` positive page number requests an audio
+supplement rather than a full retry, under the existing CacheRetry controller
+permission and exact item-incarnation/revision checks. Ordinary retry requests
+retain their existing meaning. `audio_supplements` projects per-item incarnation,
+page, status, optional progress and candidate audio labels/IDs/pages. Candidate
+file paths, media URLs and publication internals are excluded from this DTO.
 The DTO has no local paths, resolved media URLs, cookies, diagnostics, update
 state, or tool settings. Display titles reuse the Rust title-cleanup service.
 Player settings include the authoritative `av_delay_lock_button_enabled` and
@@ -306,3 +312,54 @@ HTTP path; `/api/lark/search` remains an alias and `table` selection is retired
 with 410. Eligible search outages use the verified public Sheets snapshot;
 external exclusion synchronization remains unverified. See the
 [catalog service contract](shared-catalog.md).
+
+## KTV assistance extension
+
+`ktv.status.get`, `ktv.scan.request`, `ktv.scan.accept`, `ktv.scan.decline`,
+`ktv.scan.submit`, `ktv.authorization.check`, `ktv.authorization.link.get`,
+`ktv.authorization.resume.request`, and `ktv.scan.cancel` enter the same
+bounded typed decoder on the control lane. Binding operations require a 64-hex
+request ID and Host epoch; submitted QR/description text is limited to 12,000
+UTF-8 bytes. Unknown fields/operations, wrong lane/epoch and replayed sequences
+fail closed. Controller capability permits requesting assistance, not independent
+room management: Rust additionally enforces exact connection identity and the
+Host-approved one-time grant. Viewer sees sanitized room status in ordinary
+state but is never an eligible scanner or authorized to mutate assistance.
+
+The trusted Host bridge reserves the exact native connection at typed dispatch,
+then executes only that validated assistance request. A replaced peer cannot
+inherit a delayed dispatch. Private `type: "ktv"` messages use the corresponding
+peer's authenticated control DataChannel, with monotonic native revision and
+Host epoch. They are separate from shared state, bulk broadcasts and signaling.
+The bridge also checks the peer epoch before delivering a private event. Host
+assistance HTTP/SSE projections carry the same native revision and epoch, so a
+delayed device-list reply cannot overwrite a newer consent request.
+Only a permitted submit or explicit candidate-owner link reply returns the
+official URL over the authenticated encrypted control channel. QR text never
+enters retry keys or persistent storage. A separate Host-only `authorization_link`
+command can return the current approved candidate's URL on an explicit local
+Host request. It requires the current request ID, Host epoch and live candidate;
+it does not enter DataChannel broadcasts, SSE or persisted state. Host `check`
+uses the same bound asynchronous receiver worker as the candidate owner.
+Unregistered connections remain status-only; a registered LAN connection can
+request explicit Host consent. Host rejects ineligible invitations and requests.
+
+Candidates have a separate binding to request, exact connection, Host epoch,
+stable user/session generation, room generation and the original deadline.
+An Accepted scan grant without its own candidate cannot check a room. Cancel,
+expiry or replacement drops the owned staged candidate without releasing an
+in-flight rollback lease. A safely staged disconnect can leave only a bounded
+Host-owned recovery record, never a reusable Remote authorization capability.
+Resume requests require the distinct Host approve_resume command and bind a
+fresh connection/request without extending that deadline. Matching usernames
+never authorize recovery. No candidate survives Host restart.
+
+Each Remote document has a fresh cryptographic endpoint ID. Shared identity
+storage may restore the username/stable user ID, never a tab's routing identity.
+Abort/timeout, channel reset, expiry and document retirement remove KTV pending
+requests/listeners; receiver rollback retains its native I/O lease until done.
+Temporary backgrounding and BFCache suspension do not themselves cancel a valid
+permission. Return verifies current connection state; continuing, requesting
+Host-approved recovery and checking the receiver are explicit user actions.
+See [Pure K assistance](purek-media-output.md) for LAN consent, plaintext
+transport limits, intentionally unsupported cross-disconnect recovery and hardware gates.

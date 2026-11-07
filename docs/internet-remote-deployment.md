@@ -93,3 +93,12 @@ credential. See [Cloudflare's GitHub Actions setup](https://developers.cloudflar
 Updating online assets affects newly loaded Remote pages. It does not update
 installed Host bundles. Changes to the Remote protocol must preserve support
 for already-released Hosts or coordinate a compatible Host release first.
+
+The KTV Remote section uses `ktv-remote.css`, `ktv-remote.js`, `ktv-scanner.js`
+and the pinned local `qr-decoder.js` distribution. Their allowlist, syntax gates,
+license and provenance travel with `remote.html`; no runtime CDN or additional
+CSP script origin is needed. A deployment that sets CSP must allow `blob:` in
+`img-src` for local photo decoding; this does not require additional script or
+network sources. Camera access still requires a secure context and browser
+permission. Asset sync does not provide TLS to a native HTTP LAN Host,
+a receiver-network tunnel, or permission to submit KTV credentials over HTTP.

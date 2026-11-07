@@ -1,3 +1,4 @@
+import {desktopWorkflow} from './ci_workflow_support.mjs';
 import { readSourceText } from './frontend_contract_support.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -6,6 +7,7 @@ import path from 'node:path';
 import { root, runNative, executableOnPath } from './desktop_construction_support.mjs';
 import { ownedDirectory } from './libav_prerequisite_support.mjs';
 import { markupSummary } from './frontend_contract_support.mjs';
+import {groups, selectTests} from '../scripts/ci_tests.mjs';
 
 const read = file => readSourceText(path.join(root, file));
 const workflow = read('.github/workflows/internet-remote-sync.yml');
@@ -59,9 +61,16 @@ test('test/workflow/Host-only edits do not deploy; PR validation/manual redeploy
     '.github/workflows/internet-remote-sync.yml', 'static/app.js', 'static/index.html', 'static/internet-remote-host.js', 'static/styles.css']) {
     assert.ok(![...push].some(pattern => matches(file, pattern)), file);
   }
-  const pr = eventPaths('pull_request');
-  for (const file of ['.github/workflows/internet-remote-sync.yml', 'tests/internet_remote_frontend_contract.test.mjs', 'tests/internet_remote_deployment.test.mjs',
-    'tests/frontend_contract_support.mjs', 'static/**']) assert.ok(pr.has(file));
+  assert.ok(!workflow.includes('\n  pull_request:'), 'PR verification is owned by CI');
+  const ci = read('.github/workflows/ci.yml');
+  assert.ok(ci.includes('pull_request:'));
+  const pkg = JSON.parse(read('package.json'));
+  const selected = selectTests(groups.shared, pkg.scripts).files;
+  assert.ok(desktopWorkflow.includes('node scripts/ci_tests.mjs shared'));
+  assert.ok(ci.includes('node scripts/ci_tests.mjs frontend'));
+  for (const file of ['internet_remote_frontend_contract', 'internet_remote_ice', 'internet_remote_host_lifecycle', 'internet_remote_provisioning', 'internet_remote_deployment']) {
+    assert.equal(selected.filter(item => item === `tests/${file}.test.mjs`).length, 1, file);
+  }
   assert.ok(workflow.includes('\n  workflow_dispatch:'));
   assert.ok(workflow.includes("github.event_name != 'pull_request'"));
   const validate = workflow.split('\n  validate:\n')[1].split('\n  dispatch:\n')[0];

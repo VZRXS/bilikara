@@ -13,6 +13,7 @@ const vm = require('node:vm');
     clientHeaders:h=>h, t:k=>k, setAppMessage:()=>errors++,renderCurrentRatingButton(){},
     fetch:(_url,options)=>{payload=JSON.parse(options.body);calls++; return new Promise(r=>{resolve=r;});}};
   vm.createContext(context);
+  if(file.endsWith('app.js'))vm.runInContext(source.slice(source.indexOf('async function fetchHostApi('),source.indexOf('async function apiPost(')),context);
   vm.runInContext(source.slice(source.indexOf('function ratingSubmissionUserId('),source.indexOf('function ratingSubmissionKey(')),context);
   vm.runInContext(source.slice(source.indexOf('function serverRatingStatus('),source.indexOf('function normalizeRatingPromptItem(')),context);
   vm.runInContext(fn,context);

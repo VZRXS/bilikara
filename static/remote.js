@@ -1910,12 +1910,16 @@ function renderRemoteIdentity() {
 }
 
 function applyRemoteIdentity(payload) {
+  const wasRegistered = Boolean(state.remoteIdentity?.registered);
   state.remoteIdentity = normalizedRemoteIdentity(payload);
   state.remoteIdentityChecking = false;
   state.remoteIdentitySaving = false;
   state.remoteIdentityModalMode = "register";
   state.remoteIdentityError = "";
   renderRemoteIdentity();
+  if (!wasRegistered && state.remoteIdentity.registered && state.eventStreamHealthy) {
+    reportNativeRemoteConnection("connected");
+  }
 }
 
 async function fetchRemoteIdentity({ showExpired = false } = {}) {
@@ -3432,7 +3436,9 @@ function closeEventStream() {
 }
 
 function reportNativeRemoteConnection(event, receivedRevision = null) {
-  if (!state.data?.capabilities?.event_heartbeat) return;
+  // SSE is public before registration; this endpoint requires a requester.
+  // applyRemoteIdentity reports an already healthy stream after admission.
+  if (!state.remoteIdentity?.registered || !state.data?.capabilities?.event_heartbeat) return;
   // Fixed measurements only, no title/user, cookie, invite or arbitrary error.
   fetch("/api/remote/connection-diagnostic", {
     method: "POST", headers: {...clientHeaders(), "Content-Type":"application/json"},
@@ -4658,7 +4664,7 @@ function renderD1BrowseView(kind = state.remoteDiscoverMode) {
   if (backButton) {
     backButton.textContent = t("common.back");
     backButton.classList.toggle("hidden", !mode.letter);
-    backButton.disabled = mode.loading;
+    backButton.disabled = false;
   }
 
   const tags = Array.isArray(mode.data?.tags) ? mode.data.tags : emptyD1Tags;
@@ -4704,7 +4710,7 @@ function renderD1BrowseView(kind = state.remoteDiscoverMode) {
   if (results) {
     if (mode.tag) {
       const scrollTop = results.scrollTop;
-      renderSearchResultItems(results, items, t(mode.loading ? "search.browseLoading" : "search.larkNoResults"));
+      renderSearchResultItems(results, items, t(mode.loading ? "search.browseItemsLoading" : "search.larkNoResults"));
       results.scrollTop = scrollTop;
     } else {
       results.innerHTML = "";
@@ -4884,7 +4890,8 @@ function renderCategoryBrowseView() {
     });
   }
   if (results) {
-    renderSearchResultItems(results, state.categoryBrowseItems, t("search.larkNoResults"));
+    renderSearchResultItems(results, state.categoryBrowseItems,
+      t(state.categoryBrowseLoading ? "search.browseItemsLoading" : "search.larkNoResults"));
   }
   if (message) message.textContent = "";
   window.BilikaraBrowseSearch?.sync(view.querySelector("[data-category-browse-search]"), tabs, {
@@ -5317,24 +5324,17 @@ function followOwnerDisplayName(owner) {
 function scheduleFavlistBrowseReloadFromState(previousSnapshot, nextSnapshot) {
   const previousUpdatedAt = Number(previousSnapshot?.gatcha_favlist_updated_at || 0);
   const nextUpdatedAt = Number(nextSnapshot?.gatcha_favlist_updated_at || 0);
-  if (!state.favlistBrowseData || state.favlistBrowseLoading || !nextUpdatedAt || nextUpdatedAt <= previousUpdatedAt) {
+  if (!state.favlistBrowseData || !nextUpdatedAt || nextUpdatedAt <= previousUpdatedAt) {
     return;
   }
-  if (state.favlistBrowseReloadTimer) {
-    window.clearTimeout(state.favlistBrowseReloadTimer);
-  }
-  state.favlistBrowseReloadTimer = window.setTimeout(() => {
-    state.favlistBrowseReloadTimer = null;
-    if (!state.favlistBrowseData || state.favlistBrowseLoading) {
-      return;
-    }
+  window.BilikaraSourceStatus?.queueReload("favorites", () => !state.favlistBrowseLoading, () => {
     state.favlistBrowseRenderSignature = "";
     loadFavlistBrowse({
       folderId: state.favlistBrowseSelectedFolderId,
       query: String(elements.favlistSearchQuery?.value || "").trim(),
       keepQuery: true,
     });
-  }, 0);
+  });
 }
 
 function renderSourcesFollowBrowse() {
@@ -9128,6 +9128,8 @@ elements.favlistGrid?.addEventListener("click", async (event) => {
 });
 
 elements.favlistBrowseBack?.addEventListener("click", () => {
+  state.favlistBrowseSeq += 1;
+  state.favlistBrowseLoading = false;
   state.favlistBrowseSelectedFolderId = "";
   if (elements.favlistSearchQuery) {
     elements.favlistSearchQuery.value = "";
@@ -9238,6 +9240,7 @@ elements.remoteRequestDiscoverPanel?.addEventListener("click", async (event) => 
   const categoryBackButton = event.target.closest("[data-category-browse-back]");
   if (categoryBackButton && elements.remoteRequestDiscoverPanel.contains(categoryBackButton)) {
     state.categoryBrowseSeq += 1;
+    state.categoryBrowseLoading = false;
     state.categoryBrowseSelectedId = "";
     state.categoryBrowseQuery = "";
     state.categoryBrowseItems = [];
@@ -9405,6 +9408,8 @@ elements.sourcesFollowGrid?.addEventListener("click", async (event) => {
 });
 
 elements.sourcesFollowBack?.addEventListener("click", () => {
+  state.followBrowseSeq += 1;
+  state.followBrowseLoading = false;
   state.followBrowseSelectedUid = "";
   if (elements.sourcesFollowSearchQuery) {
     elements.sourcesFollowSearchQuery.value = "";

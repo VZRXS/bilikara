@@ -548,7 +548,7 @@
 
   function readOnlyRequest(kind) {
     return kind.startsWith("catalog.") || [
-      "state.get", "connection.health", "gatcha.search", "gatcha.browse",
+      "state.get", "ktv.status.get", "ktv.authorization.link.get", "connection.health", "gatcha.search", "gatcha.browse",
       "gatcha.favlist_browse", "gatcha.pool_config_get", "gatcha.candidate",
       "gatcha.uid_preview", "gatcha.favlist_preview",
     ].includes(kind);
@@ -799,11 +799,27 @@
       || Math.abs(next.position - predicted) > 2;
   }
 
+  async function localGetKtvEvents() {
+    const response=await fetch("/api/ktv/internet-events",{cache:"no-store"});
+    const payload=await response.json();
+    return response.ok&&payload.ok&&Array.isArray(payload.data)?payload.data:[];
+  }
   async function publishState(target = null) {
+    // Permission envelopes are private, exact-peer control messages. They are
+    // never part of the public snapshot or the signaling channel.
     const response = await fetch("/api/internet-remote/state", { cache: "no-store" });
     const payload = await response.json();
     if (!response.ok || !payload.ok) return;
     const remoteState = payload.data;
+    if (remoteState.capabilities?.ktv_assistance) {
+      for (const event of await localGetKtvEvents()) {
+        const peer=peers.get(event.peer_id);
+        if (!peer?.authorized || peer.epoch!==event.peer_epoch || peer.control?.readyState!=="open" || (target && target!==peer)) continue;
+        const signature=JSON.stringify(event.data);
+        if (peer.ktvSignature===signature) continue;
+        await sendPeer(peer,"control",{type:"ktv",data:event.data});peer.ktvSignature=signature;
+      }
+    }
     const nextEpoch = typeof remoteState.state_epoch === "string" ? remoteState.state_epoch : "";
     if (state.retiredStateEpochs?.has(nextEpoch) || (state.stateEpoch && !nextEpoch)) return;
     if (nextEpoch && nextEpoch !== state.stateEpoch) {

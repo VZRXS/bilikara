@@ -342,6 +342,8 @@ pub(super) struct Saved {
     pub cache: CachePolicy,
     #[serde(default)]
     pub language: Option<UiLanguage>,
+    #[serde(default)]
+    pub purek_auto_discovery: bool,
 }
 
 fn storage_error() -> ApiError {
@@ -406,6 +408,7 @@ pub(super) fn save(
     directory: &Path,
     cache: &CachePolicy,
     language: Option<UiLanguage>,
+    purek_auto_discovery: bool,
 ) -> Result<(), ApiError> {
     let destination = directory.join("native-preferences.json");
     let pending = directory.join("native-preferences.pending");
@@ -423,6 +426,7 @@ pub(super) fn save(
         schema_version: 1,
         cache: cache.clone(),
         language,
+        purek_auto_discovery,
     })
     .map_err(|_| storage_error())?;
     file.write_all(&bytes)
@@ -455,7 +459,12 @@ pub(super) fn update(
             ));
         }
         if next != app.native().cache_policy {
-            save(&context.directory, &next, app.native().ui_language)?;
+            save(
+                &context.directory,
+                &next,
+                app.native().ui_language,
+                app.native().purek.auto_discovery,
+            )?;
             app.native().cache_policy = next;
             app.native().revision += 1;
         }
@@ -494,7 +503,12 @@ pub(super) fn language(
             if next != session.ui_language {
                 // First-run selection and manual changes survive listener-port
                 // changes. Serialize with cache writes so neither loses fields.
-                save(&context.directory, &session.cache_policy, next)?;
+                save(
+                    &context.directory,
+                    &session.cache_policy,
+                    next,
+                    session.purek.auto_discovery,
+                )?;
                 session.ui_language = next;
                 session.revision += 1;
             }
@@ -698,8 +712,15 @@ mod tests {
         let next = CachePolicy::default()
             .updated(&json!({"max_cache_items":4,"video_quality":"720P 高清","audio_hires":false}))
             .unwrap();
-        save(&directory, &CachePolicy::default(), Some(UiLanguage::Ja)).unwrap();
-        save(&directory, &next, Some(UiLanguage::Ja)).unwrap();
+        save(
+            &directory,
+            &CachePolicy::default(),
+            Some(UiLanguage::Ja),
+            false,
+        )
+        .unwrap();
+        save(&directory, &next, Some(UiLanguage::Ja), true).unwrap();
+        assert!(load(&directory, false).unwrap().purek_auto_discovery);
         assert_eq!(load(&directory, false).unwrap().cache, next);
         assert_eq!(
             load(&directory, false).unwrap().language,
@@ -715,13 +736,13 @@ mod tests {
         assert_eq!(load(&directory, false).unwrap().cache, next);
         for source in ["bbdown", "downkyi"] {
             let selected = next.updated(&json!({"download_source":source})).unwrap();
-            save(&directory, &selected, None).unwrap();
+            save(&directory, &selected, None, false).unwrap();
             assert_eq!(load(&directory, true).unwrap().cache, selected);
             assert!(load(&directory, false).is_err());
         }
         let mut invalid = next.clone();
         invalid.download_source = "unknown-executor".into();
-        save(&directory, &invalid, None).unwrap();
+        save(&directory, &invalid, None, false).unwrap();
         assert!(load(&directory, true).is_err());
         fs::write(directory.join("native-preferences.json"), b"invalid").unwrap();
         assert!(load(&directory, false).is_err());

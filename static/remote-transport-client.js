@@ -10,7 +10,6 @@
   const iceProvisioning = lowLevel?.createIceProvisioning();
   const identityStorageKey = "bilikara.internetRemote.identity.v1";
   const identityUserStorageKey = `${identityStorageKey}.${roomId}.userId`;
-  const endpointStorageKey = "bilikara.internetRemote.endpoint.v1";
   const heartbeatIntervalMs = 2_000;
   const heartbeatTimeoutMs = 8_000;
   const playlistAddRequestTimeoutMs = 60_000;
@@ -84,11 +83,9 @@
   };
 
   function loadPeerId() {
-    const existing = localStorage.getItem(endpointStorageKey) || "";
-    if (/^[A-Za-z0-9_-]{22}$/u.test(existing)) return existing;
-    const created = lowLevel?.randomBase64Url(16) || "";
-    if (created) localStorage.setItem(endpointStorageKey, created);
-    return created;
+    // Each document/tab is a separate authenticated transport endpoint.
+    // Shared username storage must never cause two tabs to replace one peer.
+    return lowLevel?.randomBase64Url(16) || "";
   }
 
   function ensureReadyPromise() {
@@ -264,6 +261,7 @@
   }
 
   function resetPeer({ preserveDiagnostic = false } = {}) {
+    global.dispatchEvent(new Event("bilikara:ktv-disconnected"));
     const wasAuthorized = state.authorized;
     clearTimeout(state.disconnectedTimer);
     state.disconnectedTimer = null;
@@ -304,6 +302,7 @@
     state.decoders = { control: new lowLevel.Decoder(), bulk: new lowLevel.Decoder() };
     for (const pending of state.pending.values()) {
       clearTimeout(pending.timeout);
+      pending.abortCleanup?.();
       pending.reject(new Error("连接已重置"));
     }
     state.pending.clear();
@@ -469,6 +468,10 @@
 
   function handleDataMessage(message) {
     if (!message || typeof message !== "object") return;
+    if (message.type === "ktv") {
+      if (state.authorized) global.BilikaraKtvRemote?.presence(message.data);
+      return;
+    }
     if (message.type === "pong") {
       const acknowledgedAt = Number(message.at || 0);
       if (Number.isFinite(acknowledgedAt) && acknowledgedAt >= state.heartbeatProbeAt) {
@@ -557,6 +560,7 @@
       if (pending) {
         state.pending.delete(message.request_id);
         clearTimeout(pending.timeout);
+        pending.abortCleanup?.();
         if (message.accepted === false) {
           const error = new Error(errorMessage);
           error.code = String(message.code || "internet_remote_request_rejected");
@@ -624,7 +628,9 @@
     }
   }
 
-  function request(kind, body, lane = "control", timeoutMs = 15_000) {
+  function request(kind, body, lane = "control", timeoutMs = 15_000, signal = null) {
+    const aborted=()=>Object.assign(new Error("Request canceled"),{name:"AbortError"});
+    if(signal?.aborted)return Promise.reject(aborted());
     if (!state.authorized || state[lane]?.readyState !== "open") {
       return Promise.reject(new Error("尚未连接 Host"));
     }
@@ -645,17 +651,21 @@
       return Promise.reject(error);
     }
     return new Promise((resolve, reject) => {
+      const abort=()=>{clearTimeout(timeout);state.pending.delete(id);signal?.removeEventListener("abort",abort);reject(aborted());};
       const timeout = setTimeout(() => {
         state.pending.delete(id);
+        signal?.removeEventListener("abort",abort);
         reject(new Error("Host 响应超时"));
       }, timeoutMs);
       const {offset, ...listContext} = body || {};
-      state.pending.set(id, { resolve, reject, timeout, kind, listContext: JSON.stringify(listContext) });
+      state.pending.set(id, { resolve, reject, timeout, kind, listContext: kind.startsWith("ktv.") ? "{}" : JSON.stringify(listContext),abortCleanup:()=>signal?.removeEventListener("abort",abort) });
+      signal?.addEventListener("abort",abort,{once:true});
       try {
         lowLevel.send(state[lane], { type: "request", lane, envelope });
       } catch (error) {
         clearTimeout(timeout);
         state.pending.delete(id);
+        signal?.removeEventListener("abort",abort);
         reject(error);
       }
     });
@@ -669,6 +679,7 @@
     "/api/playlist/move-next",
     "/api/playlist/play-now",
     "/api/cache/retry",
+    "/api/cache/audio",
     "/api/player/audio-variant",
   ]);
 
@@ -779,6 +790,9 @@
       session_users_version: String(remoteState.session_users_version || ""),
       remote_session_id: identitySessionId(),
       automatic_volume: remoteState.automatic_volume || null,
+      audio_supplements: remoteState.audio_supplements || {},
+      media_output: remoteState.media_output || null,
+      ktv_room: remoteState.ktv_room || null,
       player_settings: {
         av_offset_ms: Number(remoteState.player_settings?.effective_av_delay_ms || 0),
         av_delay: {
@@ -936,7 +950,15 @@
     if (url.origin !== global.location.origin || !url.pathname.startsWith("/api/")) {
       return nativeFetch(input, init);
     }
-    if (!state.authorized) await ready();
+    if(init.signal?.aborted)throw Object.assign(new Error("Request canceled"),{name:"AbortError"});
+    if (!state.authorized) {
+      if(!init.signal)await ready();
+      else await new Promise((resolve,reject)=>{
+        const signal=init.signal,abort=()=>reject(Object.assign(new Error("Request canceled"),{name:"AbortError"}));
+        signal.addEventListener("abort",abort,{once:true});
+        ready().then(resolve,reject).finally(()=>signal.removeEventListener("abort",abort));
+      });
+    }
     const method = String(init.method || "GET").toUpperCase();
     let body = {};
     if (init.body) {
@@ -947,6 +969,14 @@
       : null;
     try {
       let response;
+      if (method === "POST" && url.pathname === "/api/ktv/remote") {
+        const {operation,...fields}=body.request||{};
+        if (!/^ktv\.(status\.get|scan\.(request|accept|decline|submit|cancel)|authorization\.(check|link\.get|resume\.request))$/.test(operation||"")) {
+          return jsonResponse({ok:false,code:"ktv_invalid_request",error:"Invalid KTV request"},400);
+        }
+        response=await request(operation,fields,"control",25000,init.signal);
+        return jsonResponse({ok:true,data:response.data});
+      }
       if (method === "GET" && url.pathname === "/api/remote-identity") {
         return jsonResponse({ ok: true, data: { registered: state.authorized && Boolean(state.identity), name: state.identity, user_id: state.identityUserId, session_id: identitySessionId() } });
       }
@@ -1101,6 +1131,10 @@
           expected_item_incarnation_id: String(body.expected_item_incarnation_id || ""),
           expected_revision: expectedRevision(),
         });
+      } else if (method === "POST" && url.pathname === "/api/cache/audio") {
+        if (!Number.isSafeInteger(body.page) || body.page < 1 || body.page > 4294967295) throw new Error("Invalid audio page");
+        response = await request("cache.retry", {audio_page:Number(body.page), force:false,
+          item_id:String(body.item_id || ""), expected_item_incarnation_id:String(body.expected_item_incarnation_id || ""),expected_revision:expectedRevision()});
       } else if (method === "POST" && url.pathname === "/api/player/control") {
         const action = String(body.action || "");
         const kinds = {
@@ -1121,6 +1155,9 @@
         response = await request("playback.next", {
           playback_generation: Number(body.playback_generation),
         });
+      } else if (method === "POST" && url.pathname === "/api/player/output") {
+        if (Object.keys(body).length !== 1 || !["splice", "gradual"].includes(body.offset_mode)) return jsonResponse({ok:false,code:"host_only"},403);
+        response = await request("output.set_offset_mode", {offset_mode: body.offset_mode});
       } else if (method === "POST" && url.pathname === "/api/player/key-shift") {
         response = await request("player.set_key_shift", { key_shift: Number(body.key_shift || 0) });
       } else if (method === "POST" && url.pathname === "/api/player/volume") {
