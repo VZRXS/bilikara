@@ -1,5 +1,8 @@
+import {readCiPlatformMatrix} from '../scripts/ci_scope.mjs';
+import {desktopWorkflow, mobileWorkflow, desktopChecks, mobileChecks, desktopPackages, mobilePackages} from './ci_workflow_support.mjs';
 import { readSourceText } from './frontend_contract_support.mjs';
 import assert from 'node:assert/strict';
+import {selectTargets} from '../scripts/ci_targets.mjs';
 import { test } from 'node:test';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -9,9 +12,10 @@ import { ownedDirectory } from './libav_prerequisite_support.mjs';
 import { archiveMetadata, serializeMetadata } from '../scripts/tool_asset_metadata.mjs';
 
 const read = file => readSourceText(path.join(root, file));
-const pipeline = read('.github/workflows/ci-bundle.yml');
-const bundle = read('.github/workflows/desktop.yml'), tools = read('.github/workflows/tool-assets.yml');
-const android = read('.github/workflows/mobile.yml');
+const pipeline = read('.github/workflows/release.yml');
+const ci = read('.github/workflows/ci.yml'), manual = read('.github/workflows/bundle.yml');
+const bundle = desktopWorkflow, tools = read('.github/workflows/tool-assets.yml');
+const android = mobileWorkflow;
 const recipe = read('scripts/build_portable_macos_aria2.sh');
 const includes = (text, values) => { for (const value of values) assert.ok(text.includes(value), value); };
 const excludes = (text, values) => { for (const value of values) assert.ok(!text.includes(value), value); };
@@ -52,11 +56,15 @@ test('actual macOS backend gate executes the relative tool link and rejects perm
 });
 
 test('Rust caches/features retain distinct test/product ownership and compiler-artifact driver selection', () => {
-  const testJob = bundle.split('\n  test:\n')[1].split('\n  bundle:\n')[0];
-  const bundleJob = bundle.split('\n  bundle:\n')[1];
+  const testJob = desktopChecks;
+  const bundleJob = desktopPackages;
   const namespace = job => job.split('shared-key:')[1].split('\n')[0].trim();
   assert.notEqual(namespace(testJob), namespace(bundleJob));
-  includes(testJob, ['CARGO_PROFILE_DEV_DEBUG: "line-tables-only"']); excludes(bundle, ['CARGO_PROFILE_RELEASE_']);
+  includes(testJob, ['CARGO_PROFILE_DEV_DEBUG: line-tables-only']); excludes(bundle, ['CARGO_PROFILE_RELEASE_']);
+  includes(bundleJob, ['native-target: \'true\'',
+    'tauri build --no-bundle --target "$CARGO_BUILD_TARGET" -- --locked',
+    'tauri build --bundles app --target "$CARGO_BUILD_TARGET" -- --locked']);
+  includes(step(bundleJob, 'Build Tauri App on Windows'), ['shell: bash', 'set -euo pipefail']);
   includes(read('xtask/src/main.rs'), ['"--features",\n            "native-host"']);
   for (const file of ['build-posix.sh', 'prepare-windows.ps1']) {
     includes(read(`media-libav/${file}`), ['libav-finish']); excludes(read(`media-libav/${file}`), ['rust-runtime/Cargo.toml']);
@@ -88,7 +96,8 @@ test('actual Rust gate preserves compiler failure status and stops before later 
   try {
     for (const name of ['rust', 'rust-runtime', 'src-tauri']) mkdirSync(path.join(directory, name));
     const stub = `cargo() { printf '%s\\n' "\${PWD##*/}:$*" >> ../calls.log; if [ "$1" = clippy ]; then return 42; fi; return 0; }\n`;
-    const result = await runBash(stub + script(bundle, 'Rust Checks and Build'), directory);
+    const result = await runBash(stub + script(bundle, 'Rust Checks and Build'), directory,
+      {...process.env, RUNNER_OS: 'Linux', CI_SCOPE: 'full'});
     assert.equal(result.status, 42, result.stdout + result.stderr);
     assert.deepEqual(readFileSync(path.join(directory, 'calls.log'), 'utf8').trimEnd().split('\n'), ['rust:fmt --check', 'rust:clippy --all-targets --locked -- -D warnings']);
   } finally { rmSync(directory, {recursive: true, force: true}); }
@@ -96,7 +105,7 @@ test('actual Rust gate preserves compiler failure status and stops before later 
 
 test('actual naming script preserves all branch/tag/architecture archive and upload identities', async () => {
   assert.ok(bash); const block = step(bundle, 'Resolve bundle archive name');
-  includes(block, ['BUNDLE_SLUG: ${{ matrix.slug }}', 'BUNDLE_ARCH: ${{ matrix.arch }}']);
+  includes(block, ['BUNDLE_SLUG: ${{ inputs.slug }}', 'BUNDLE_ARCH: ${{ inputs.arch }}']);
   const upload = step(bundle, 'Upload native bundle');
   includes(upload, ['uses: actions/upload-artifact@v7', 'path: ${{ steps.bundle-name.outputs.archive_name }}', 'archive: false']);
   excludes(upload, ['if: always()', 'dist/']); excludes(bundle, ['Upload native libav diagnostics', 'diagnostics-${{ steps.bundle-name.outputs.artifact_name }}', 'dist/libav-build-records']);
@@ -109,9 +118,9 @@ test('actual naming script preserves all branch/tag/architecture archive and upl
       try {
         const output = path.join(directory, 'output'), envFile = path.join(directory, 'env');
         const result = await runBash(script(bundle, 'Resolve bundle archive name'), directory, {...process.env,
-          GITHUB_REF_TYPE: type, GITHUB_REF_NAME: ref, BUNDLE_SLUG: slug, BUNDLE_ARCH: arch, GITHUB_OUTPUT: portable(output), GITHUB_ENV: portable(envFile)});
+          GITHUB_SHA: '0123456789abcdef0123456789abcdef01234567', GITHUB_REF_TYPE: type, GITHUB_REF_NAME: ref, BUNDLE_SLUG: slug, BUNDLE_ARCH: arch, GITHUB_OUTPUT: portable(output), GITHUB_ENV: portable(envFile)});
         assert.equal(result.status, 0, result.stdout + result.stderr);
-        const name = 'bilikara-' + suffix;
+        const name = 'bilikara-' + suffix + (type === 'branch' ? '-0123456789ab' : '');
         assert.equal(readFileSync(output, 'utf8'), `archive_name=${name}.zip\nartifact_name=${name}\n`);
         assert.equal(readFileSync(envFile, 'utf8'), `BUNDLE_ARCHIVE=${name}.zip\n`);
       } finally { rmSync(directory, {recursive: true, force: true}); }
@@ -121,8 +130,9 @@ test('actual naming script preserves all branch/tag/architecture archive and upl
 
 test('ordinary bundle keeps tool pins/preparation/signature/package gates without publication credentials', () => {
   excludes(bundle, ['macos-aria2-tools', 'build_portable_macos_aria2.sh', 'build_portable_macos_ffmpeg.sh', 'Publish immutable aria2c', 'Publish immutable FFmpeg', 'choco install ffmpeg']);
-  const job = bundle.split('\n  bundle:\n')[1];
-  includes(job, ['needs: test', 'BILIKARA_REQUIRE_TAURI_SMOKE=1', 'node --test tests/macos_tauri_smoke.test.mjs']);
+  const job = desktopPackages;
+  excludes(job, ['needs: test']);
+  includes(job, ["if: matrix.kind == 'desktop'", 'BILIKARA_REQUIRE_TAURI_SMOKE=1', 'node --test tests/macos_tauri_smoke.test.mjs']);
   excludes(job, ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'aws s3', '--tool-smoke', "& './libav-smoke.ps1'", 'BILIKARA_REQUIRE_BACKEND_SMOKE', 'setup-python', 'pip install']);
   includes(bundle, ['Build Windows libav libraries and companion', '--target host-tuple -- verify-native-desktop', 'Build POSIX libav libraries and companion',
     '--target host-tuple -- prepare-bbdown', 'Verify native backend and bundled tools on Windows', 'Verify native backend and bundled tools on macOS',
@@ -142,7 +152,7 @@ test('shared Rust release split, native libav callers and prerequisite ordering 
     assert.ok(bundle.indexOf(backend) < bundle.indexOf(`Verify native backend and bundled tools on ${platform}`));
     assert.ok(bundle.indexOf(`Build Tauri App on ${platform}`) < bundle.indexOf(assembly));
   }
-  const job = bundle.split('\n  bundle:\n')[1];
+  const job = desktopPackages;
   assert.ok(job.indexOf('Setup Node.js') < job.indexOf('Build Tauri App on Windows'));
   includes(job, ['./xtask -> target', '--target host-tuple -- prepare-bbdown', '--target host-tuple -- libav-cache key', '--target host-tuple -- verify-native-desktop',
     'Verify extracted Windows bundle', 'Archive and verify round-trip macOS bundle', 'plutil -lint', '--verify --deep --strict', 'README-macOS.txt']);
@@ -158,11 +168,11 @@ test('shared Rust release split, native libav callers and prerequisite ordering 
 });
 
 test('native matrices and assembly preserve prerequisites, extracted gates and tag-only publication', () => {
-  const testJob = bundle.split('\n  test:\n')[1].split('\n  bundle:\n')[0];
-  const job = bundle.split('\n  bundle:\n')[1];
-  assert.deepEqual(JSON.parse(testJob.match(/^        os: (.+)$/m)?.[1]),
+  const testJob = desktopChecks;
+  const job = desktopPackages;
+  assert.deepEqual(readCiPlatformMatrix(ci).include.filter(row => row.kind === 'desktop').map(row => row.os),
     ['ubuntu-latest', 'windows-latest', 'macos-latest']);
-  assert.deepEqual(JSON.parse(job.match(/^        include: (.+)$/m)?.[1]), [
+  assert.deepEqual(selectTargets('all').desktop.include, [
     {os: 'windows-latest', label: 'Windows x64', slug: 'windows', arch: 'x64'},
     {os: 'windows-11-arm', label: 'Windows ARM64', slug: 'windows', arch: 'arm64'},
     {os: 'macos-latest', label: 'macOS ARM64', slug: 'macos', arch: 'arm64'},
@@ -190,9 +200,11 @@ test('native matrices and assembly preserve prerequisites, extracted gates and t
     ['Expand-Archive -Path $env:BUNDLE_ARCHIVE', "uses: actions/upload-artifact@v7"],
   ]) assert.ok(position(before) < position(after), `${before} before ${after}`);
   includes(job, ['BILIKARA_REQUIRE_TAURI_SMOKE=1', 'node --test tests/macos_tauri_smoke.test.mjs']);
-  assert.equal((bundle + android + pipeline).split("if: startsWith(github.ref, 'refs/tags/v')").length - 1, 3);
-  includes(pipeline, ['needs: [desktop, mobile]', 'uses: ./.github/workflows/mobile.yml']);
-  includes(android, ['Upload signed APK to GitHub Release']);
+  assert.ok((bundle + android + pipeline).includes("if: startsWith(github.ref, 'refs/tags/v')"));
+  includes(pipeline, ['needs: [checks, packages]', 'uses: ./.github/workflows/bundle.yml']);
+  excludes(android, ['action-gh-release', 'Upload signed APK to GitHub Release']);
+  excludes(bundle, ['action-gh-release', 'Upload bundle to GitHub Release']);
+  includes(pipeline, ['collectRelease', 'prepareDraft', 'publishDraft', 'skip-decompress: true', 'digest-mismatch: error']);
 });
 
 test('tool recipe/manual publication keep exact source and immutable transport rules with native metadata', () => {
@@ -261,38 +273,96 @@ test('actual immutable publication script is exercised offline for reuse/upload/
 });
 
 
-test('one CI entry runs independent Desktop and Mobile test-to-bundle matrices at the caller commit', () => {
-  const trigger = pipeline.split('\non:\n')[1].split('\npermissions:\n')[0];
-  includes(trigger, ['branches: [main]', 'paths-ignore:', "'images/**'", 'workflow_dispatch:', 'pull_request:']);
-  for (const [group, implementation] of [['desktop', bundle], ['mobile', android]]) {
-    const caller = pipeline.split(`\n  ${group}:\n`)[1].split(/\n  [a-z][\w-]*:\n/)[0];
-    includes(caller, [`uses: ./.github/workflows/${group}.yml`]);
-    excludes(caller, ['needs:', '@main', 'runs-on:', 'steps:']);
-    const calledTrigger = implementation.split('\non:\n')[1].split('\npermissions:\n')[0];
-    includes(calledTrigger, ['workflow_call:']);
-    excludes(calledTrigger, ['push:', 'pull_request:', 'workflow_dispatch:']);
-    const checks = implementation.split('\n  test:\n')[1].split('\n  bundle:\n')[0];
-    const packages = implementation.split('\n  bundle:\n')[1];
-    includes(checks, ['matrix:']); excludes(checks, ['needs:']);
-    includes(packages, ['matrix:', 'needs: test']);
+test('one CI entry tests only; manual Bundle uses selected matrices without full tests', () => {
+  const trigger = ci.split('\non:\n')[1].split('\npermissions:\n')[0];
+  includes(trigger, ['pull_request:', 'workflow_dispatch:', 'feature/ios']);
+  excludes(trigger, ['paths-ignore:', 'tags:']);
+  for (const group of ['desktop', 'mobile']) {
+    const checks = group === 'desktop' ? desktopChecks : mobileChecks;
+    const packages = group === 'desktop' ? desktopPackages : mobilePackages;
+    includes(checks, ["needs.preflight.outputs.scope == 'full'", `uses: ./.github/actions/${group}-checks`]);
+    includes(packages, ['needs: plan', 'fromJSON(needs.plan.outputs.matrix)']);
+    excludes(packages, ['needs: checks', 'needs: test', 'workflows/ci.yml']);
   }
-  excludes(pipeline, ['android-bundle:', 'android.yml']);
-  includes(pipeline, ['needs: [desktop, mobile]', 'bundle_version: ${{ inputs.bundle_version']);
-  const checks = android.split('\n  test:\n')[1].split('\n  bundle:\n')[0];
-  const packages = android.split('\n  bundle:\n')[1];
+  excludes(ci, ['secrets.', 'mode: bundle', 'tauri build']);
+  includes(ci, ["if: failure()", 'fast-playback-linux', 'retention-days: 3']);
+  includes(manual, ['default: All', 'ci_targets.mjs', 'ios_adhoc:']);
+  const checks = mobileChecks;
+  const packages = mobilePackages;
   excludes(checks, ['secrets.', 'Resolve APK and prepare signing', 'Build APK']);
-  includes(checks, ['platform: Android', 'os: ubuntu-latest', 'cargo test --manifest-path rust/Cargo.toml --locked',
-    'cargo test --manifest-path rust-runtime/Cargo.toml --features native-host --locked', 'npm run test:frontend',
+  includes(checks, ['platform: ${{ matrix.label }}', 'runs-on: ${{ matrix.os }}',
+    'cargo test --manifest-path rust-runtime/Cargo.toml --features native-host --locked',
     'BILIKARA_REQUIRE_ANDROID_SIGNING_TESTS=1']);
-  assert.ok(checks.indexOf('npm ci') < checks.indexOf('npm run test:frontend'));
-  includes(packages, ['platform: Android', 'rust_target: aarch64-linux-android', 'tauri_target: aarch64',
-    'apksigner', 'zipalign', 'key: android-36-ndk-27.0.12077973']);
+  assert.ok(readCiPlatformMatrix(ci).include.some(row => row.label === 'iOS' && row.os === 'xcode-27'));  includes(checks, ['npm run test:ios-bootstrap', 'npm run test:ios-build']);
+  excludes(checks, ['npm run test:frontend', 'cargo test --manifest-path rust/Cargo.toml']);
+  includes(bundle, ['node scripts/ci_tests.mjs shared']);
+  includes(read('scripts/ci_targets.mjs'), ["platform: 'Android'", "rust_target: 'aarch64-linux-android'", "tauri_target: 'aarch64'"]);
+  includes(packages, [
+    'apksigner', 'zipalign', "format('android-apk-arm64-api36-ndk27.0.12077973-{0}-v1'", "&& 'release' || 'debug'"]);
+  // The action ignores `key` alongside shared-key; pin identity in the actual
+  // prefix used for both exact hits and partial restores.
+  includes(checks, ["format('ios-check-aarch64-apple-ios-{0}-v1'", 'steps.ios-environment.outputs.sdk-key', './src-tauri -> target', './xtask -> target']);
+  includes(packages, ["format('ios-app-{0}-{1}-debug-v1'", "format('ios-adhoc-aarch64-apple-ios-{0}-release-v1'"]);
+  for (const cache of android.split(/^      - name:/m).filter(block => block.includes('uses: Swatinem/rust-cache@v2'))) {
+    excludes(cache, ['\n          key:']);
+  }
+  includes(step(bundle, 'Prepare Linux runner SDK space'), ["if: runner.os == 'Linux'", 'ci_sdk_space.mjs desktop']);
+  includes(step(checks, 'Prepare Android runner SDK space'), ["if: inputs.platform == 'Android'", 'ci_sdk_space.mjs android']);
+  includes(step(packages, 'Prepare Android runner SDK space'), ["if: inputs.platform == 'Android'", 'ci_sdk_space.mjs android']);
+  includes(step(packages, 'Cache Rust builds'), ['CARGO_PROFILE_DEV_DEBUG: line-tables-only']);
+  includes(step(packages, 'Build APK'), ['CARGO_PROFILE_DEV_DEBUG: line-tables-only', 'df -h "$GITHUB_WORKSPACE"']);
   excludes(packages, ['cargo test --manifest-path', 'npm run test:frontend']);
   assert.ok(packages.indexOf('npm ci') < packages.indexOf('npm exec -- tauri android build'));
   const toolchain = read('.github/actions/rust-toolchain/action.yml');
   includes(toolchain, ['RUSTUP_HOME=%s/bilikara-ci-rustup', '"$RUNNER_TEMP"', 'rustup toolchain install', 'rustup toolchain list']);
   excludes(toolchain, ['toolchain uninstall', 'rustup default', 'RUSTUP_TOOLCHAIN=']);
   assert.equal(bundle.split('uses: ./.github/actions/rust-toolchain').length - 1, 2);
-  assert.equal(android.split('uses: ./.github/actions/rust-toolchain').length - 1, 2);
-  includes(bundle, ["github.event_name == 'push' && github.ref == 'refs/heads/main'"]);
+  assert.equal(android.split('uses: ./.github/actions/rust-toolchain').length - 1, 3);
+  excludes(desktopPackages, ['needs: test']);
+});
+
+test('iOS mobile lane builds the device IPA without entering Android signing or release steps', () => {
+  const checks = mobileChecks;
+  const packages = mobilePackages;
+  assert.equal(selectTargets('ios').mobile.include[0].rust_target, 'aarch64-apple-ios');
+  assert.equal(selectTargets('ios').mobile.include[0].artifact_kind, 'device-arm64-unsigned');
+  includes(packages, ['npm run ios:init -- --skip-targets-install']);
+  excludes(packages, ['aarch64-apple-ios-sim', 'aarch64-sim', 'arm64-sim', 'simulator-arm64', 'IOSSIMULATOR']);
+  const build = step(packages, 'Build iOS without signing credentials');
+  includes(build, ["if: inputs.platform == 'iOS'", '--no-sign --ci', 'node scripts/ios.mjs build']);
+  excludes(build, ['secrets.', 'APPLE_CERTIFICATE', 'APPLE_DEVELOPMENT_TEAM', 'ANDROID_']);
+  for (const name of ['Setup Java', 'Setup Android SDK', 'Resolve Android libav C cache',
+    'Restore Android libav C cache', 'Verify actual Android media libraries and cache', 'Validate Android signing contract']) {
+    includes(step(checks, name), ["if: inputs.platform == 'Android'"]);
+  }
+  for (const name of ['Setup Java', 'Setup Android SDK', 'Prepare native YouTube binding generator',
+    'Install pinned Android tools', 'Cache Rust builds', 'Resolve Android libav C cache', 'Restore Android libav C cache',
+    'Cache Gradle dependencies', 'Resolve APK and prepare signing', 'Build APK', 'Compile Android playback service tests',
+    'Stage and verify APK', 'Upload APK test artifact', 'Remove temporary signing file']) {
+    includes(step(packages, name), ["inputs.platform == 'Android'"]);
+  }
+  const stage = step(packages, 'Stage iOS test artifact');
+  includes(stage, ['plutil -lint', 'CFBundleIdentifier', 'NSAllowsArbitraryLoads', 'embedded.mobileprovision',
+    'CFBundleShortVersionString', 'ios_release_version="${GITHUB_REF_NAME#v}"',
+    'lipo -archs', 'vtool -show-build', 'ios_expected_platform=IOS',
+    'ditto -x -k', 'cp "$ios_ipa"', 'SHA256SUMS', 'GITHUB_SHA']);
+  const upload = step(packages, 'Upload iOS test artifact');
+  includes(upload, ["if: inputs.platform == 'iOS'", 'actions/upload-artifact@v7', 'if-no-files-found: error']);
+  excludes(upload, ['action-gh-release', 'secrets.']);
+  const apple = read('.github/actions/ios-toolchain/action.yml');
+  includes(apple, ['Xcode_27.1.app', 'xcodegen.zip', '/2.46.0/', 'shasum -a 256 --check',
+    '4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806', '--max-filesize',
+    'libclang.dylib', 'GITHUB_PATH', 'sdk-key=']);
+  excludes(apple, ['brew install', 'releases/latest', 'APPLE_DEVELOPMENT_TEAM', 'secrets.']);
+  excludes(apple, ['XCODE_XCCONFIG_FILE']);
+  includes(read('scripts/ios-branding.mjs'), ['ASSETCATALOG_OTHER_FLAGS', '--standalone-icon-behavior all', "run('xcodegen'", "include: ['project.yml']"]);
+  includes(read('scripts/ios-branding.mjs'), ['for (const scale of [2, 3])', 'regular(input)', "'ios_packaged_icon_mismatch'", "'Assets.car'"]);
+});
+
+test('lightweight performance summaries preserve artifact downloads and avoid a separate summary job', () => {
+  for (const workflow of [ci, manual, pipeline, bundle, android]) excludes(workflow, ['\n  summary:', 'scripts/ci_summary.mjs', 'GITHUB_STEP_SUMMARY']);
+  for (const workflow of [ci, bundle, android]) includes(workflow, ['uses: ./.github/actions/ci-diagnostics']);
+  includes(read('scripts/ci_diagnostics.mjs'), ['listJobsForWorkflowRunAttempt', 'post-job steps', 'fresh artifacts reused']);
+  includes(bundle, ['Log build caches', 'libav exact cache hit', 'Upload native bundle', 'retention-days: 7']);
+  includes(android, ['Log Rust test cache', 'Log iOS build', 'Log Rust cache', 'add-job-summary: never', 'Upload APK test artifact', 'Upload iOS test artifact']);
 });

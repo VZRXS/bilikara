@@ -13,6 +13,12 @@ on:
       - static/export-download.js
       - static/export-guard.js
       - static/i18n.json
+      - static/ktv-remote.css
+      - static/ktv-remote.js
+      - static/ktv-scanner.js
+      - static/qr-decoder.js
+      - static/qr-decoder.LICENSE
+      - static/qr-decoder.README.md
       - static/internet-remote-transport.js
       - static/part-selector.js
       - static/playback-restart.js
@@ -24,11 +30,14 @@ on:
       - static/remote-queue.css
       - static/remote-queue.js
       - static/remote-transport-client.js
+      - static/media-output.js
+      - static/media-output.css
       - static/remote.css
       - static/remote.html
       - static/remote.js
       - static/result-pagination.css
       - static/result-pagination.js
+      - static/subtab-swipe.js
       - static/search-result-media.css
       - static/search-result-media.js
       - static/request-tabs.css
@@ -40,19 +49,6 @@ on:
       - static/volume-control.css
       - static/volume-control.js
       - static/pic/*
-  pull_request:
-    branches: [dev, work/v0.8.0]
-    paths:
-      - .github/workflows/internet-remote-sync.yml
-      - scripts/sync_internet_remote_assets.ps1
-      - static/**
-      - tests/internet_remote_frontend_contract.test.mjs
-      - tests/internet_remote_ice.test.mjs
-      - tests/internet_remote_host_lifecycle.test.mjs
-      - tests/internet_remote_provisioning.test.mjs
-      - tests/internet_remote_deployment.test.mjs
-      - tests/frontend_contract_support.mjs
-      - tests/desktop_construction_support.mjs
   workflow_dispatch:
 
 permissions:
@@ -91,14 +87,19 @@ jobs:
           node --check static/internet-remote-host.js
           node --check static/internet-remote-transport.js
           node --check static/remote-transport-client.js
+          node --check static/media-output.js
           node --check static/part-selector.js
           node --check static/playback-restart.js
           node --check static/playback-sheet-gestures.js
           node --check static/request-input.js
           node --check static/qrcode-generator.js
+          node --check static/ktv-remote.js
+          node --check static/ktv-scanner.js
+          node --check static/qr-decoder.js
           node --check static/remote.js
           node --check static/remote-queue.js
           node --check static/result-pagination.js
+          node --check static/subtab-swipe.js
           node --check static/search-result-media.js
           node --check static/song-detail.js
           node --check static/volume-control.js

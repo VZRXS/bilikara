@@ -1,0 +1,201 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, dev, feature/ios, work/v0.9.0]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      scope:
+        type: string
+        default: full
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+
+concurrency:
+  # Explicit Full calls must not cancel a caller's parallel Bundle validation.
+  # Automatic branch/PR updates still replace their stale checks.
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.scope == 'full' && github.run_id || inputs.scope || 'auto' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' && github.ref_type == 'branch' }}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  preflight:
+    name: Plan
+    # Private development uses local checks; skip before allocating a runner.
+    if: github.repository == 'VZRXS/bilikara'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.plan.outputs.run }}
+      scope: ${{ steps.plan.outputs.scope }}
+      plan: ${{ steps.plan.outputs.plan }}
+      desktop: ${{ steps.plan.outputs.desktop }}
+      mobile: ${{ steps.plan.outputs.mobile }}
+      frontend: ${{ steps.plan.outputs.frontend }}
+      auxiliary: ${{ steps.plan.outputs.auxiliary }}
+      docs: ${{ steps.plan.outputs.docs }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Select required jobs from a complete change list
+        id: plan
+        uses: actions/github-script@v8
+        env:
+          CI_SCOPE: ${{ github.event_name == 'workflow_dispatch' && 'full' || inputs.scope || 'fast' }}
+        with:
+          script: |
+            const {pathToFileURL} = require('node:url');
+            const {join} = require('node:path');
+            const {resolveCiPlan} = await import(pathToFileURL(join(process.env.GITHUB_WORKSPACE, 'scripts/ci_scope.mjs')).href);
+            const plan = await resolveCiPlan({github, context, requested: process.env.CI_SCOPE, warn: core.warning});
+            core.setOutput('run', String(plan.run));
+            core.setOutput('scope', plan.scope);
+            core.setOutput('plan', JSON.stringify(plan));
+            for (const [job, required] of Object.entries(plan.jobs)) core.setOutput(job, String(required));
+            await core.summary.addHeading('CI plan', 2).addRaw(JSON.stringify(plan) + '\n').write();
+
+  platforms:
+    name: ${{ matrix.label }}
+    needs: preflight
+    if: needs.preflight.outputs.run == 'true' && needs.preflight.outputs.scope == 'full'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      # JSON is valid YAML and lets Gate independently verify the actual target set.
+      matrix: {"include":[{"label":"Linux","os":"ubuntu-latest","kind":"desktop"},{"label":"Windows","os":"windows-latest","kind":"desktop"},{"label":"macOS","os":"macos-latest","kind":"desktop"},{"label":"Android","os":"ubuntu-latest","kind":"mobile"},{"label":"iOS","os":"xcode-27","kind":"mobile"}]}
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@v5
+      - name: Desktop checks
+        if: matrix.kind == 'desktop'
+        uses: ./.github/actions/desktop-checks
+      - name: Mobile checks
+        if: matrix.kind == 'mobile'
+        uses: ./.github/actions/mobile-checks
+        with:
+          platform: ${{ matrix.label }}
+
+  frontend:
+    name: Frontend
+    needs: preflight
+    if: needs.preflight.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      BILIKARA_REQUIRE_REMOTE_SYNC_TEST: '1'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: ./.github/actions/rust-toolchain
+        with:
+          native-target: 'true'
+      - uses: Swatinem/rust-cache@v2
+        id: rust-cache
+        with:
+          workspaces: |
+            ./rust-runtime -> target
+          cache-workspace-crates: true
+          # Keep valid compiler artifacts when a later behavioral test fails.
+          cache-on-failure: true
+          shared-key: ci-frontend-workspace-v1
+      - name: Build shared Linux Host fixtures
+        # The browser suites still select their current compiler-artifact outputs.
+        run: cargo build --manifest-path rust-runtime/Cargo.toml --locked --target host-tuple --features native-host --bin bilikara-desktop-host --example native_host_alpha --example update_preferences_fixture
+      - name: Prepare shared browser and media fixtures
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          npm exec -- playwright install --with-deps chromium webkit
+      - name: Validate shared frontend once
+        env:
+          BILIKARA_IOS_PLAYBACK_EVIDENCE: ${{ runner.temp }}/bilikara-shared-playback
+        run: node scripts/ci_tests.mjs frontend
+      - name: Upload failed playback diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fast-playback-linux
+          path: ${{ runner.temp }}/bilikara-shared-playback
+          if-no-files-found: ignore
+          retention-days: 3
+      - uses: ./.github/actions/ci-diagnostics
+        if: always()
+        with:
+          title: Frontend
+          caches: '{"Rust":"${{ steps.rust-cache.outputs.cache-hit }}"}'
+
+  auxiliary:
+    name: Checks
+    needs: preflight
+    if: needs.preflight.outputs.auxiliary == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install locked auxiliary tools
+        run: npm ci
+      - name: Validate workflow, tooling and asset contracts once
+        run: npm run test:auxiliary
+      - name: Check browser scripts
+        run: |
+          for file in static/*.js; do node --check "$file"; done
+
+  docs:
+    name: Docs
+    needs: preflight
+    if: needs.preflight.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: node scripts/ci_docs.mjs
+      - run: node --test tests/ci_plan.test.mjs
+
+  gate:
+    name: Gate
+    needs: [preflight, platforms, frontend, auxiliary, docs]
+    if: always() && github.repository == 'VZRXS/bilikara'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/github-script@v8
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        with:
+          script: |
+            const {pathToFileURL} = require('node:url');
+            const {join} = require('node:path');
+            const {checkCiGate, groupCiPlatformResults, readCiPlatformMatrix, verifyCiPlatformJobs} = await import(pathToFileURL(join(process.env.GITHUB_WORKSPACE, 'scripts/ci_scope.mjs')).href);
+            const fs = require('node:fs');
+            const matrix = readCiPlatformMatrix(fs.readFileSync(join(process.env.GITHUB_WORKSPACE, '.github/workflows/ci.yml'), 'utf8'));
+            const plan = checkCiGate(groupCiPlatformResults(JSON.parse(process.env.RESULTS), matrix));
+            if (plan.run && plan.kind === 'full') {
+              const jobs = await verifyCiPlatformJobs({github, context, runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT)});
+              core.info(`Verified platform executions: ${JSON.stringify(jobs)}`);
+            }
+            await core.summary.addHeading('CI Gate', 2).addRaw(`Accepted ${plan.kind}: ${plan.reason}.\n`).write();

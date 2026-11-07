@@ -1,0 +1,283 @@
+name: Desktop Checks
+description: Native desktop checks with shared verified setup
+inputs:
+  python_version:
+    description: 'python version'
+    required: false
+    default: '3.11'
+runs:
+  using: composite
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ inputs.python_version }}
+        cache: pip
+        cache-dependency-path: requirements*.txt
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: 24
+        cache: npm
+
+    - name: Install locked Node dependencies
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: npm ci
+
+    - name: Prepare Linux runner SDK space
+      if: runner.os == 'Linux'
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: node scripts/ci_sdk_space.mjs desktop
+
+    - name: Install dependencies
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install -r requirements-packaging.txt
+
+    - name: Install Tauri system dependencies
+      if: runner.os == 'Linux'
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: |
+        # The Azure Ubuntu mirror stalled for over forty minutes in a real
+        # validation run. Keep signed Ubuntu sources and bound runner setup.
+        for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do
+          [ -f "$source" ] || continue
+          sudo sed -i 's#https\?://azure\.archive\.ubuntu\.com/ubuntu#https://archive.ubuntu.com/ubuntu#g' "$source"
+        done
+        printf '%s\n' 'Acquire::Retries "1";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/80-bilikara-ci >/dev/null
+        sudo timeout --kill-after=15s 600s apt-get update
+        sudo timeout --kill-after=15s 600s apt-get install -y g++ libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf ffmpeg
+
+    - name: Setup repository Rust toolchain
+      uses: ./.github/actions/rust-toolchain
+      with:
+        native-target: 'true'
+
+    - name: Setup native MSVC environment
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: ./scripts/setup_msvc.ps1 -Arch x64
+
+    - name: Cache Rust builds
+      id: rust-cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: |
+          ./rust -> target
+          ./rust-runtime -> target
+          ./src-tauri -> target
+          ./xtask -> target
+        # Retain our crates as well as dependencies; Cargo still validates them.
+        cache-workspace-crates: true
+        # Keep valid compiler artifacts when a later behavioral test fails.
+        cache-on-failure: true
+        # Separate feature sets; rotate once because exact hits are immutable.
+        shared-key: ci-test-workspace-v1
+
+    - name: Desktop construction tool checks
+      shell: bash
+      run: |
+        set -euo pipefail
+        cargo fmt --manifest-path xtask/Cargo.toml --check
+        cargo clippy --manifest-path xtask/Cargo.toml --all-targets --locked --target host-tuple -- -D warnings
+        cargo test --manifest-path xtask/Cargo.toml --locked --target host-tuple
+        # The entry tests select/build the current xtask compiler artifact.
+        node scripts/ci_tests.mjs tooling
+
+    - name: Rust Checks and Build
+      shell: bash
+      env:
+        CI_SCOPE: full
+      run: |
+        set -euo pipefail
+        cd rust
+        if [ "${RUNNER_OS:-Linux}" = Linux ]; then
+          cargo fmt --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+        fi
+        # Full Python/FFI tests below consume these host-native cdylibs.
+        if [ "${CI_SCOPE:-full}" = full ]; then env -u CARGO_BUILD_TARGET cargo build --release --locked; fi
+        cd ../rust-runtime
+        cargo fmt --check
+        cargo clippy --all-targets --locked -- -D warnings
+        cargo test --locked
+        if [ "${CI_SCOPE:-full}" = full ]; then env -u CARGO_BUILD_TARGET cargo build --release --locked; fi
+        if [ "${RUNNER_OS:-Linux}" = Linux ]; then
+          cargo clippy --features native-host --all-targets --locked -- -D warnings
+          cargo test --features native-host --locked
+        fi
+        cd ../src-tauri
+        cargo fmt --check
+        cargo clippy --all-targets --locked -- -D warnings
+        cargo test --locked
+        # Shell execution/signature qualification uses the extracted Bundle,
+        # never a second unused release shell from the Test job.
+        cd ..
+
+    - name: Verify offline desktop data import
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ "$RUNNER_OS" != Linux ]; then
+          cargo test --manifest-path rust-runtime/Cargo.toml --features native-host --locked --target host-tuple --lib native_host::desktop_import
+        fi
+        npm run test:native-import
+
+    - name: Verify frontend and native shell test tooling
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Actual locked manifest checks run after the native Cargo graphs exist.
+        # Shared frontend contracts run in the union below, after all graphs exist.
+        npm run test:native-smoke
+
+    - name: Compile Python files
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: |
+        python -m compileall -q bilikara
+
+    - name: Test release mirror verification
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: node --test tests/release_mirror.test.mjs
+
+    - name: Test native YouTube quick-request contract
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: node --test tests/youtube_quick_request.test.mjs
+
+    - name: Restore platform-independent signed media source
+      if: runner.os == 'Linux'
+      id: ffmpeg-source
+      uses: ./.github/actions/libav-source-cache
+      with:
+        phase: restore
+
+    - name: Resolve Linux media test cache identity
+      if: runner.os == 'Linux'
+      id: test-libav-key
+      env:
+        BILIKARA_LIBAV_PREFIX: ${{ runner.temp }}/bilikara-test-libav
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-cache key >> "$GITHUB_OUTPUT"
+
+    - name: Cache verified Linux media test libraries
+      if: runner.os == 'Linux'
+      id: test-libav-cache
+      uses: actions/cache/restore@v5
+      with:
+        path: ${{ runner.temp }}/bilikara-test-libav-cache
+        key: ${{ steps.test-libav-key.outputs.key }}
+
+    - name: Build libav prerequisite for packaged media tests
+      if: runner.os == 'Linux'
+      env:
+        BILIKARA_LIBAV_PREFIX: ${{ runner.temp }}/bilikara-test-libav
+        BILIKARA_LIBAV_CACHE: ${{ runner.temp }}/bilikara-test-libav-cache
+        BILIKARA_LIBAV_CACHE_HIT: ${{ steps.test-libav-cache.outputs.cache-hit }}
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: |
+        # This suite loads only the companion. Release drivers/test binaries
+        # and packaging records are built by the desktop bundle jobs.
+        bash media-libav/build-posix-libraries.sh
+        cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-companion --prefix "$BILIKARA_LIBAV_PREFIX" --out "$BILIKARA_LIBAV_PREFIX/bin" --test
+        echo "BILIKARA_TEST_LIBAV_COMPANION=$BILIKARA_LIBAV_PREFIX/bin/libbilikara_media_libav.so" >> "$GITHUB_ENV"
+
+    - name: Prepare shared browser fixtures
+      if: runner.os == 'Linux'
+      env:
+        BILIKARA_IOS_PLAYBACK_EVIDENCE: ${{ runner.temp }}/bilikara-shared-playback
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: |
+        npm exec -- playwright install --with-deps chromium webkit
+
+    - name: Verify real libav prerequisite contracts
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -euo pipefail
+        npm run test:libav-prerequisites
+        # Uses this job's actual rebuilt companion and an isolated Rust Host.
+        # A synthetic renderer does not qualify physical G2/G2b support.
+        npm run test:purek-output
+        npm run test:purek-l1
+        npm run test:purek-controller
+
+    - name: Save verified Linux media test libraries
+      if: runner.os == 'Linux' && steps.test-libav-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ runner.temp }}/bilikara-test-libav-cache
+        key: ${{ steps.test-libav-key.outputs.key }}
+
+    - name: Preserve verified source for other native runners
+      if: runner.os == 'Linux' && steps.ffmpeg-source.outputs.hit != 'true'
+      uses: ./.github/actions/libav-source-cache
+      with:
+        phase: publish
+        prefix: ${{ runner.temp }}/bilikara-test-libav
+
+    - name: Run unit tests
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: |
+        python -m unittest discover -s tests -v
+      env:
+        BILIKARA_REQUIRE_RUST_LIB: "1"
+        BILIKARA_RUST_STRICT_EQUIVALENCE: "1"
+
+    - name: Verify native desktop business workflows
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Node selects the actual current locked host-native Cargo artifact.
+        # Linux media/cookie tests require the prefix exported above.
+        npm run test:playlist-entry
+        npm run test:native-transport-entry
+        npm run test:native-host
+        npm run test:native-http
+        npm run test:native-catalog
+        npm run test:catalog-maintenance
+        npm run test:native-qr
+        npm run test:native-images
+        npm run test:native-login
+        npm run test:remote-load
+        if [ "$RUNNER_OS" = Linux ]; then
+          cargo run --manifest-path rust-runtime/Cargo.toml --locked --features native-host --example validate_announcements -- announcements/index.json
+        fi
+
+    - name: Verify rendered native ratings and media workflows
+      if: runner.os == 'Linux'
+      shell: bash
+      env:
+        BILIKARA_REQUIRE_REMOTE_SYNC_TEST: '1'
+        BILIKARA_IOS_PLAYBACK_EVIDENCE: ${{ runner.temp }}/bilikara-shared-playback
+        BILIKARA_PRESENTATION_TIMING_EVIDENCE: ${{ runner.temp }}/bilikara-shared-playback/presentation
+      run: |
+        set -euo pipefail
+        node scripts/ci_tests.mjs shared
+
+    - name: Upload failed playback diagnostics
+      if: failure() && runner.os == 'Linux'
+      uses: actions/upload-artifact@v7
+      with:
+        name: shared-playback-linux
+        path: ${{ runner.temp }}/bilikara-shared-playback
+        if-no-files-found: ignore
+        retention-days: 3
+
+    - name: Log build caches
+      if: always()
+      shell: bash
+      env:
+        RUST_CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
+        LIBAV_CACHE_HIT: ${{ steps.test-libav-cache.outputs.cache-hit }}
+        LIBAV_CACHE_KEY: ${{ steps.test-libav-key.outputs.key }}
+      run: |
+        printf 'Rust exact cache hit: %s\nlibav exact cache hit: %s\nlibav key: %s\nSee restore/save logs and step timings for details.\n' "${RUST_CACHE_HIT:-unavailable}" "${LIBAV_CACHE_HIT:-unavailable}" "${LIBAV_CACHE_KEY:-unavailable}"
+
+    - uses: ./.github/actions/ci-diagnostics
+      if: always()
+      with:
+        title: ${{ runner.os == 'macOS' && 'macOS' || runner.os }}
+        caches: '{"Rust":"${{ steps.rust-cache.outputs.cache-hit }}","libav C":"${{ steps.test-libav-cache.outputs.cache-hit }}"}'

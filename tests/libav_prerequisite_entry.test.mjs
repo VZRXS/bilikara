@@ -1,3 +1,4 @@
+import {desktopWorkflow, desktopChecks, desktopPackages} from './ci_workflow_support.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -36,21 +37,21 @@ test('real local and CI entries keep required native validation after the prefix
   assert.equal(scripts['test:libav-wrapper'], 'node --test tests/libav_xtask_wrapper.test.mjs tests/libav_prerequisite_entry.test.mjs');
   assert.equal(scripts['test:libav-prerequisites'], 'node --test tests/libav_prerequisite_contract.test.mjs');
   assert.ok(!scripts['test:desktop-build'].includes('libav_prerequisite_contract'), 'early desktop fixtures cannot become an all-skipped real-library gate');
-  const workflow = readFileSync(path.join(root, '.github/workflows/desktop.yml'), 'utf8').replace(/\r\n/g, '\n');
-  const job = workflow.slice(workflow.indexOf('\n  test:'), workflow.indexOf('\n  bundle:'));
-  const wrapper = job.indexOf('npm run test:libav-wrapper'), real = job.indexOf('npm run test:libav-prerequisites');
+  const workflow = desktopWorkflow.replace(/\r\n/g, '\n');
+  const job = desktopChecks;
+  const wrapper = job.indexOf('node scripts/ci_tests.mjs tooling'), real = job.indexOf('npm run test:libav-prerequisites');
   const prefix = job.indexOf('echo "BILIKARA_TEST_LIBAV_COMPANION=');
   assert.ok(wrapper >= 0 && prefix > wrapper && real > prefix);
-  for (const setup of ['actions/setup-node@v6', 'node-version: 24', 'uses: ./.github/actions/rust-toolchain', 'cargo build --manifest-path xtask/Cargo.toml --locked --target host-tuple']) assert.ok(job.indexOf(setup) >= 0 && job.indexOf(setup) < wrapper, setup);
+  for (const setup of ['actions/setup-node@v6', 'node-version: 24', 'uses: ./.github/actions/rust-toolchain', 'cargo test --manifest-path xtask/Cargo.toml --locked --target host-tuple']) assert.ok(job.indexOf(setup) >= 0 && job.indexOf(setup) < wrapper, setup);
   assert.ok(job.indexOf('bash media-libav/build-posix-libraries.sh') < prefix);
   assert.ok(job.indexOf('libav-companion --prefix') < prefix);
   const block = job.split(/^      - name:/m).find(step => step.includes('npm run test:libav-prerequisites'));
   assert.match(block, /if: runner.os == 'Linux'/); assert.match(block, /shell: bash/); assert.match(block, /set -euo pipefail\s+npm run test:libav-prerequisites/);
   assert.doesNotMatch(block, /\|\|\s*true|continue-on-error|python/);
-  for (const command of ['npm run test:libav-wrapper', 'npm run test:libav-prerequisites']) assert.equal(job.split(command).length, 2, `run ${command} once`);
+  for (const command of ['node scripts/ci_tests.mjs tooling', 'npm run test:libav-prerequisites']) assert.equal(job.split(command).length, 2, `run ${command} once`);
   for (const file of ['tests/test_libav_prerequisite_contract.py', 'tests/test_libav_xtask_wrapper.py']) assert.equal(existsSync(path.join(root, file)), false, `retire ${file}`);
 
-  const bundle = workflow.slice(workflow.indexOf('\n  bundle:'), workflow.indexOf('\n  android:'));
+  const bundle = desktopPackages;
   const regression = bundle.indexOf('BILIKARA_LIBAV_COMPANION="$companion" cargo test');
   assert.ok(regression > bundle.indexOf('bash media-libav/build-posix.sh'));
   assert.ok(regression > bundle.indexOf('./media-libav/prepare-windows.ps1'));
@@ -64,7 +65,7 @@ test('real local and CI entries keep required native validation after the prefix
 });
 
 test('actual required CI run block propagates failing npm and cannot hide it with a later success', async () => {
-  const workflow = readFileSync(path.join(root, '.github/workflows/desktop.yml'), 'utf8').replace(/\r\n/g, '\n');
+  const workflow = desktopWorkflow.replace(/\r\n/g, '\n');
   const block = workflow.split(/^      - name:/m).find(step => step.includes('npm run test:libav-prerequisites'));
   const script = block.split('run: |\n')[1].split('\n\n')[0].replace(/^          /gm, '');
   const gitBash = process.platform === 'win32' && process.env.ProgramFiles ? path.join(process.env.ProgramFiles, 'Git/bin/bash.exe') : undefined;
@@ -78,7 +79,7 @@ test('actual required CI run block propagates failing npm and cannot hide it wit
 test('actual timestamp gate passes the existing native companion path and preserves Cargo failures', async t => {
   const directory = ownedDirectory('timestamp gate'); t.after(() => rmSync(directory, { recursive: true, force: true }));
   const prefix = path.join(directory, 'prefix'); mkdirSync(path.join(prefix, 'bin'), { recursive: true });
-  const workflow = readFileSync(path.join(root, '.github/workflows/desktop.yml'), 'utf8').replace(/\r\n/g, '\n');
+  const workflow = desktopWorkflow.replace(/\r\n/g, '\n');
   const block = workflow.split(/^      - name:/m).find(step => step.includes('reordered_video_preserves_nonzero_start'));
   const script = block.split('run: |\n')[1].split('\n\n')[0].replace(/^          /gm, '');
   const gitBash = process.platform === 'win32' && process.env.ProgramFiles ? path.join(process.env.ProgramFiles, 'Git/bin/bash.exe') : undefined;
@@ -90,7 +91,7 @@ test('actual timestamp gate passes the existing native companion path and preser
   }\n`;
   const invoke = (os, status = 0) => runNative(bash, ['--noprofile', '--norc', '-c', stub + script + '\nprintf "unexpected later success"'],
     { ...process.env, RUNNER_OS: os, BILIKARA_LIBAV_PREFIX: prefix + path.sep + '.', CARGO_STATUS: String(status) }, 20_000, directory);
-  const expectedArgs = ['test', '--manifest-path', 'rust-runtime/Cargo.toml', '--locked', '--target', 'host-tuple', '--lib',
+  const expectedArgs = ['test', '--manifest-path', 'rust-runtime/Cargo.toml', '--release', '--features', 'native-host', '--locked', '--target', 'host-tuple', '--lib',
     'experimental_libav::remux::package_tests::reordered_video_preserves_nonzero_start', '--', '--exact', '--ignored'];
   for (const [os, filename] of [['Windows', 'bilikara_media_libav.dll'], ['macOS', 'libbilikara_media_libav.dylib']]) {
     const companion = path.join(prefix, 'bin', filename); writeFileSync(companion, 'path fixture, not a native library');

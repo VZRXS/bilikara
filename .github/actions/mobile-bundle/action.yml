@@ -1,0 +1,337 @@
+name: Mobile Bundle
+description: Native mobile bundle with shared verified setup
+inputs:
+  artifact_kind:
+    description: 'artifact kind'
+    required: false
+    default: ''
+  export_arch:
+    description: 'export arch'
+    required: false
+    default: ''
+  label:
+    description: 'label'
+    required: false
+    default: ''
+  platform:
+    description: 'platform'
+    required: false
+    default: ''
+  rust_target:
+    description: 'rust target'
+    required: false
+    default: ''
+  tauri_target:
+    description: 'tauri target'
+    required: false
+    default: ''
+  android_beta_keystore_base64:
+    description: 'android beta keystore base'
+    required: false
+    default: ''
+  android_keystore_base64:
+    description: 'android keystore base'
+    required: false
+    default: ''
+  android_keystore_password:
+    description: 'android keystore password'
+    required: false
+    default: ''
+  android_key_alias:
+    description: 'android key alias'
+    required: false
+    default: ''
+  android_key_password:
+    description: 'android key password'
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Select mobile debug profiles
+      shell: bash
+      run: |
+        printf 'CARGO_PROFILE_DEV_DEBUG=line-tables-only\nCARGO_PROFILE_TEST_DEBUG=line-tables-only\n' >> "$GITHUB_ENV"
+    - name: Setup Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: 24
+        cache: npm
+
+    - name: Install locked Node dependencies
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: npm ci
+
+    - name: Setup Java
+      if: inputs.platform == 'Android'
+      uses: actions/setup-java@v5
+      with:
+        distribution: temurin
+        java-version: 17
+
+    - name: Setup Android SDK
+      if: inputs.platform == 'Android'
+      uses: android-actions/setup-android@v4
+      with:
+        # The action's default also requests the unavailable legacy "tools" package.
+        packages: platform-tools
+
+    - name: Prepare native YouTube binding generator
+      if: inputs.platform == 'Android'
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libclang-dev make gnupg gpgv
+
+    - name: Install pinned Android tools
+      if: inputs.platform == 'Android'
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: |
+        sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
+        echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+        yt_ndk="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64"
+        echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--target=aarch64-linux-android24 --sysroot=$yt_ndk/sysroot -resource-dir=$yt_ndk/lib/clang/18" >> "$GITHUB_ENV"
+
+    - name: Prepare Android runner SDK space
+      if: inputs.platform == 'Android'
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: node scripts/ci_sdk_space.mjs android
+
+    - name: Setup iOS build tools
+      if: inputs.platform == 'iOS'
+      id: ios-environment
+      uses: ./.github/actions/ios-toolchain
+
+    - name: Setup repository Rust toolchain
+      uses: ./.github/actions/rust-toolchain
+
+    - name: Install mobile Rust target
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: rustup target add "${{ inputs.rust_target }}"
+
+    - name: Cache Rust builds
+      if: inputs.platform == 'Android'
+      id: rust-cache
+      uses: Swatinem/rust-cache@v2
+      env:
+        CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      with:
+        workspaces: |
+          ./rust-runtime -> target
+          ./src-tauri -> target
+          ./xtask -> target
+        cache-workspace-crates: true
+        shared-key: ${{ format('android-apk-arm64-api36-ndk27.0.12077973-{0}-v1', startsWith(github.ref, 'refs/tags/v') && 'release' || 'debug') }}
+
+    - name: Cache iOS Rust builds
+      if: inputs.platform == 'iOS'
+      id: ios-rust-cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: |
+          ./rust-runtime -> target
+          ./src-tauri -> target
+          ./xtask -> target
+        cache-workspace-crates: true
+        shared-key: ${{ format('ios-app-{0}-{1}-debug-v1', inputs.rust_target, steps.ios-environment.outputs.sdk-key) }}
+
+    - name: Resolve Android libav C cache
+      if: inputs.platform == 'Android'
+      id: media-key
+      shell: bash
+      run: |
+        echo "BILIKARA_ANDROID_LIBAV_CACHE=$RUNNER_TEMP/bilikara-android-libav-cache" >> "$GITHUB_ENV"
+        cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- android-libav --ndk "$ANDROID_HOME/ndk/27.0.12077973" --abi arm64-v8a --out "$RUNNER_TEMP/android-media-output" --cache "$RUNNER_TEMP/bilikara-android-libav-cache" --cache-key >> "$GITHUB_OUTPUT"
+
+    - name: Restore Android libav C cache
+      if: inputs.platform == 'Android'
+      id: media-cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/bilikara-android-libav-cache
+        key: ${{ steps.media-key.outputs.key }}
+
+    - name: Cache Gradle dependencies
+      if: inputs.platform == 'Android'
+      uses: gradle/actions/setup-gradle@v5
+      with:
+        add-job-summary: never
+        cache-read-only: ${{ github.event_name == 'pull_request' }}
+
+    - name: Resolve APK and prepare signing
+      if: inputs.platform == 'Android'
+      id: android
+      env:
+        # Never expose the persistent beta key to pull-request builds or tags.
+        ANDROID_BETA_KEYSTORE_BASE64: ${{ github.event_name == 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/') && inputs.android_beta_keystore_base64 || '' }}
+        ANDROID_KEYSTORE_BASE64: ${{ startsWith(github.ref, 'refs/tags/v') && inputs.android_keystore_base64 || '' }}
+        ANDROID_KEYSTORE_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && inputs.android_keystore_password || '' }}
+        ANDROID_KEY_ALIAS: ${{ startsWith(github.ref, 'refs/tags/v') && inputs.android_key_alias || '' }}
+        ANDROID_KEY_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && inputs.android_key_password || '' }}
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: node scripts/android_release.mjs
+
+    - name: Build APK
+      if: inputs.platform == 'Android'
+      env:
+        CARGO_PROFILE_DEV_DEBUG: line-tables-only
+        ANDROID_KEYSTORE_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && inputs.android_keystore_password || '' }}
+        ANDROID_KEY_ALIAS: ${{ startsWith(github.ref, 'refs/tags/v') && inputs.android_key_alias || '' }}
+        ANDROID_KEY_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && inputs.android_key_password || '' }}
+        RELEASE_APK: ${{ steps.android.outputs.release }}
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: |
+        df -h "$GITHUB_WORKSPACE"
+        chmod +x src-tauri/gen/android/gradlew
+        if [ "$RELEASE_APK" = "true" ]; then
+          npm exec -- tauri android build --apk --target "${{ inputs.tauri_target }}" --ci
+        else
+          npm exec -- tauri android build --debug --apk --target "${{ inputs.tauri_target }}" --ci
+        fi
+        df -h "$GITHUB_WORKSPACE"
+
+    - name: Compile Android playback service tests
+      if: inputs.platform == 'Android'
+      working-directory: src-tauri/gen/android
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: |
+        ./gradlew :app:compileArm64DebugAndroidTestKotlin :app:testArm64DebugUnitTest \
+          -PabiList=arm64-v8a -x :app:rustBuildArm64Debug --console=plain
+
+    - name: Stage and verify APK
+      if: inputs.platform == 'Android'
+      env:
+        APK_NAME: ${{ steps.android.outputs.apk }}
+        RELEASE_APK: ${{ steps.android.outputs.release }}
+        APK_SIGNING_MODE: ${{ steps.android.outputs.signing }}
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: |
+        variant=debug
+        if [ "$RELEASE_APK" = "true" ]; then variant=release; fi
+        mapfile -t apks < <(find src-tauri/gen/android/app/build/outputs/apk -type f -name "*${variant}.apk")
+        test "${#apks[@]}" = 1
+        "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "${apks[0]}" > "$RUNNER_TEMP/android-apk-signature.txt"
+        cat "$RUNNER_TEMP/android-apk-signature.txt"
+        node scripts/android_release.mjs --verify-signature "$RUNNER_TEMP/android-apk-signature.txt" "$APK_SIGNING_MODE"
+        "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 -v 4 "${apks[0]}"
+        cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- verify-android-apk --ndk "$ANDROID_HOME/ndk/27.0.12077973" --abi "arm64-v8a" --apk "$(realpath "${apks[0]}")"
+        cp "${apks[0]}" "$APK_NAME"
+
+    - name: Upload APK test artifact
+      if: inputs.platform == 'Android'
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.android.outputs.apk }}
+        archive: false
+        if-no-files-found: error
+        retention-days: 7
+
+    - name: Initialize iOS project
+      if: inputs.platform == 'iOS'
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: |
+        node scripts/ios.mjs release-version
+        npm run ios:doctor
+        npm run ios:init -- --skip-targets-install
+
+    - name: Build iOS without signing credentials
+      if: inputs.platform == 'iOS'
+      env:
+        IOS_TAURI_TARGET: ${{ inputs.tauri_target }}
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: node scripts/ios.mjs build --debug --target "$IOS_TAURI_TARGET" --no-sign --ci
+
+    - name: Stage iOS test artifact
+      if: inputs.platform == 'iOS'
+      env:
+        IOS_EXPORT_ARCH: ${{ inputs.export_arch }}
+        IOS_ARTIFACT_KIND: ${{ inputs.artifact_kind }}
+        IOS_RUST_TARGET: ${{ inputs.rust_target }}
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: |
+        set -euo pipefail
+        ios_product_name="$(node -p "require('./src-tauri/tauri.ios.conf.json').productName ?? require('./src-tauri/tauri.conf.json').productName")"
+        ios_product_root="src-tauri/gen/apple/build/$IOS_EXPORT_ARCH"
+        ios_stage="$RUNNER_TEMP/bilikara-ios-artifacts"
+        mkdir -p "$ios_stage"
+        ios_ipa="$ios_product_root/$ios_product_name.ipa"
+        ios_artifact_name="bilikara-ios-$IOS_ARTIFACT_KIND.ipa"
+        ios_expected_platform=IOS
+        test -f "$ios_ipa"
+        ditto -x -k "$ios_ipa" "$RUNNER_TEMP/bilikara-ios-unpacked"
+        ios_app="$RUNNER_TEMP/bilikara-ios-unpacked/Payload/$ios_product_name.app"
+        plutil -lint "$ios_app/Info.plist"
+        # Retain native packaging evidence when a platform asset check fails.
+        node -e 'const fs=require("node:fs"); console.log("Compiled iOS icon assets:", fs.readdirSync(process.argv[1]).filter(name => /^(Assets\.car|AppIcon.*\.png|Info\.plist)$/.test(name)));' "$ios_app"
+        node scripts/ios-branding.mjs verify "$ios_app"
+        test ! -e "$ios_app/embedded.mobileprovision"
+        if codesign -d "$ios_app" 2> "$RUNNER_TEMP/ios-signing-inspection.txt"; then
+          echo 'Expected an unsigned IPA, but found a code signature' >&2
+          exit 1
+        fi
+        grep -q 'code object is not signed at all' "$RUNNER_TEMP/ios-signing-inspection.txt"
+        ios_bundle_id="$(node -p "require('./src-tauri/tauri.ios.conf.json').identifier ?? require('./src-tauri/tauri.conf.json').identifier")"
+        test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$ios_app/Info.plist")" = "$ios_bundle_id"
+        if [ "$GITHUB_REF_TYPE" = tag ]; then
+          ios_release_version="${GITHUB_REF_NAME#v}"
+          ios_release_version="${ios_release_version%%-preview.*}"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ios_app/Info.plist")" = "$ios_release_version"
+        fi
+        test "$(/usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity:NSAllowsArbitraryLoads' "$ios_app/Info.plist")" = false
+        ios_executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$ios_app/Info.plist")"
+        case "$ios_executable" in ''|*/*|.|..) exit 1 ;; esac
+        test "$(xcrun lipo -archs "$ios_app/$ios_executable")" = arm64
+        xcrun otool -L "$ios_app/$ios_executable" > "$ios_stage/system-frameworks.txt"
+        test "$(awk '$1 == "/System/Library/Frameworks/AVFAudio.framework/AVFAudio" {count++} END {print count+0}' "$ios_stage/system-frameworks.txt")" = 1
+        xcrun vtool -show-build "$ios_app/$ios_executable" > "$ios_stage/build-platform.txt"
+        test "$(awk '$1 == "platform" {print $2}' "$ios_stage/build-platform.txt")" = "$ios_expected_platform"
+        cp "$ios_ipa" "$ios_stage/$ios_artifact_name"
+        {
+          printf 'commit=%s\nrun_id=%s\nrust_target=%s\nartifact_kind=%s\nsigning=unsigned\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$IOS_RUST_TARGET" "$IOS_ARTIFACT_KIND"
+          cat "$RUNNER_TEMP/bilikara-ios-toolchain.txt"
+          rustc --version
+          node --version
+          xcodegen --version
+        } > "$ios_stage/build-info.txt"
+        (cd "$ios_stage" && shasum -a 256 "$ios_artifact_name" > SHA256SUMS)
+
+    - name: Upload iOS test artifact
+      if: inputs.platform == 'iOS'
+      uses: actions/upload-artifact@v7
+      with:
+        name: bilikara-ios-${{ inputs.artifact_kind }}-${{ github.sha }}
+        path: ${{ runner.temp }}/bilikara-ios-artifacts/
+        if-no-files-found: error
+        retention-days: 7
+
+    - name: Log iOS build
+      if: always() && inputs.platform == 'iOS'
+      env:
+        CACHE_HIT: ${{ steps.ios-rust-cache.outputs.cache-hit }}
+        IOS_ARTIFACT_KIND: ${{ inputs.artifact_kind }}
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: |
+        printf 'iOS %s\nRust exact cache hit: %s. No provisioning/signing credentials were used. Device IPA requires valid signing before installation; this build is not device acceptance.\n' "$IOS_ARTIFACT_KIND" "${CACHE_HIT:-unavailable}"
+
+    - name: Log Rust cache
+      if: always() && inputs.platform == 'Android'
+      env:
+        CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: |
+        printf 'Android bundle Rust exact cache hit: %s (see restore/save steps for details).\n' "${CACHE_HIT:-unavailable}"
+
+    - uses: ./.github/actions/ci-diagnostics
+      if: always()
+      with:
+        title: ${{ format('{0} {1}', inputs.platform, inputs.label) }}
+        caches: '{"Android Rust":"${{ steps.rust-cache.outputs.cache-hit }}","iOS Rust":"${{ steps.ios-rust-cache.outputs.cache-hit }}","Android libav C":"${{ steps.media-cache.outputs.cache-hit }}"}'
+
+    - name: Remove temporary signing file
+      if: always() && inputs.platform == 'Android'
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: |
+        if [ -n "${ANDROID_KEYSTORE_PATH:-}" ] && [ "$ANDROID_KEYSTORE_PATH" = "$RUNNER_TEMP/bilikara-android-release.jks" ]; then
+          rm -f -- "$ANDROID_KEYSTORE_PATH"
+        fi
+        rm -f -- "$RUNNER_TEMP/bilikara-android-beta.p12"

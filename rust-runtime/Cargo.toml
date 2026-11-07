@@ -19,6 +19,12 @@ required-features = ["native-host", "portable-loudness"]
 name = "validate_announcements"
 required-features = ["native-host"]
 
+[[example]]
+# Test-only shell file I/O; reuse the browser fixtures' Runtime dependency graph.
+name = "update_preferences_fixture"
+path = "../src-tauri/examples/update_preferences_fixture.rs"
+required-features = ["native-host"]
+
 [[bin]]
 name = "bilikara-desktop-host"
 required-features = ["native-host"]

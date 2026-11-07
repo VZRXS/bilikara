@@ -102,6 +102,7 @@ export async function runDesktopBrowser(evidence, options = [], environment = pr
     const playwright = createRequire(import.meta.url)('playwright');
     const env={...isolatedEnvironment(home),...fixture.environment,PATH:environment.PATH,NO_PROXY:'127.0.0.1,localhost',no_proxy:'127.0.0.1,localhost',BILIKARA_TEST_NATIVE_HOST:executable,BILIKARA_TEST_NATIVE_ALPHA:alpha,
       BILIKARA_VERSION:'0.8.0',BILIKARA_CATALOG_SHEETS_URL:'http://127.0.0.1:1/disabled.csv',DESKTOP_FIXTURE_CONTROL:fixture.base,
+      BILIKARA_IOS_PLAYBACK_EVIDENCE:environment.BILIKARA_IOS_PLAYBACK_EVIDENCE,
       BILIKARA_TEST_APPLICATION_PATH:path.join(home,'empty-path'),BILIKARA_TEST_BROWSER_DATA_DIR:path.join(home,'native-data'),
       BILIKARA_BROWSER_EXECUTABLE:environment.BILIKARA_BROWSER_EXECUTABLE||playwright[shared?(environment.BILIKARA_TEST_BROWSER||'firefox'):'webkit'].executablePath(),
       BILIKARA_TEST_BROWSER:shared?(environment.BILIKARA_TEST_BROWSER||'firefox'):undefined,BILIKARA_TEST_ACTIVE_PITCH:environment.BILIKARA_TEST_ACTIVE_PITCH};

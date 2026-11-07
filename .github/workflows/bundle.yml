@@ -1,0 +1,184 @@
+name: Bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Build target — All builds six packages; a platform builds only its packages'
+        type: choice
+        default: All
+        options: [All, Desktop, Mobile, Windows, macOS, Android, iOS]
+      ios_adhoc:
+        description: 'Sign iOS for registered devices — adds Ad Hoc IPA; unsigned IPA is always built. Requires Apple credentials/profile; not App Store.'
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      target:
+        type: string
+        default: all
+      ios_adhoc:
+        type: boolean
+        default: false
+    secrets:
+      IOS_CERTIFICATE:
+        required: false
+      IOS_CERTIFICATE_PASSWORD:
+        required: false
+      IOS_MOBILE_PROVISION:
+        required: false
+      ANDROID_BETA_KEYSTORE_BASE64:
+        required: false
+      ANDROID_KEYSTORE_BASE64:
+        required: false
+      ANDROID_KEYSTORE_PASSWORD:
+        required: false
+      ANDROID_KEY_ALIAS:
+        required: false
+      ANDROID_KEY_PASSWORD:
+        required: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: bundle-${{ github.run_id }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  plan:
+    name: Targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Validate targets and optional signing
+        id: targets
+        env:
+          BUNDLE_TARGET: ${{ inputs.target }}
+          BUNDLE_IOS_ADHOC: ${{ inputs.ios_adhoc }}
+          IOS_CERTIFICATE: ${{ inputs.ios_adhoc && secrets.IOS_CERTIFICATE || '' }}
+          IOS_CERTIFICATE_PASSWORD: ${{ inputs.ios_adhoc && secrets.IOS_CERTIFICATE_PASSWORD || '' }}
+          IOS_MOBILE_PROVISION: ${{ inputs.ios_adhoc && secrets.IOS_MOBILE_PROVISION || '' }}
+        run: node scripts/ci_targets.mjs
+
+  packages:
+    name: ${{ matrix.name }}
+    needs: plan
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    env:
+      BILIKARA_EXPECT_RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build and verify desktop package
+        if: matrix.kind == 'desktop'
+        uses: ./.github/actions/desktop-bundle
+        with:
+          slug: ${{ matrix.slug }}
+          arch: ${{ matrix.arch }}
+          label: ${{ matrix.label }}
+      - name: Build and verify mobile package
+        if: matrix.kind == 'mobile'
+        uses: ./.github/actions/mobile-bundle
+        with:
+          platform: ${{ matrix.platform }}
+          label: ${{ matrix.label }}
+          rust_target: ${{ matrix.rust_target }}
+          tauri_target: ${{ matrix.tauri_target }}
+          export_arch: ${{ matrix.export_arch }}
+          artifact_kind: ${{ matrix.artifact_kind }}
+          android_beta_keystore_base64: ${{ matrix.platform == 'Android' && github.event_name == 'workflow_dispatch' && secrets.ANDROID_BETA_KEYSTORE_BASE64 || '' }}
+          android_keystore_base64: ${{ matrix.platform == 'Android' && startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_KEYSTORE_BASE64 || '' }}
+          android_keystore_password: ${{ matrix.platform == 'Android' && startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          android_key_alias: ${{ matrix.platform == 'Android' && startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_KEY_ALIAS || '' }}
+          android_key_password: ${{ matrix.platform == 'Android' && startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_KEY_PASSWORD || '' }}
+
+  ios-adhoc:
+    name: iOS ARM64 Ad Hoc
+    needs: plan
+    timeout-minutes: 90
+    if: inputs.ios_adhoc && github.event_name == 'workflow_dispatch' && (github.repository == 'VZRXS/bilikara' || github.repository == 'VZRXS/bilikara-next') && startsWith(github.ref, 'refs/heads/')
+    runs-on: xcode-27
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup iOS build tools
+        id: ios-environment
+        uses: ./.github/actions/ios-toolchain
+
+      - name: Check Ad Hoc signing inputs
+        env:
+          IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION }}
+        run: node scripts/ios-signing.mjs preflight "$RUNNER_TEMP/bilikara-ios-signing.json"
+
+      - name: Install locked Node dependencies
+        run: npm ci
+
+      - name: Setup repository Rust toolchain
+        uses: ./.github/actions/rust-toolchain
+
+      - name: Install iOS device Rust target
+        run: rustup target add aarch64-apple-ios
+
+      - name: Cache iOS release Rust builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            ./rust -> target
+            ./rust-runtime -> target
+            ./src-tauri -> target
+          cache-workspace-crates: true
+          shared-key: ${{ format('ios-adhoc-aarch64-apple-ios-{0}-release-v1', steps.ios-environment.outputs.sdk-key) }}
+
+      - name: Initialize iOS project
+        run: npm run ios:init -- --skip-targets-install
+
+      - name: Build iOS Ad Hoc
+        env:
+          IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION }}
+        # Pinned Tauri 2.11 uses Xcode's release-testing name for Ad Hoc.
+        run: node scripts/ios.mjs build --target aarch64 --export-method release-testing --ci
+
+      - name: Verify and stage signed iOS IPA
+        run: |
+          ios_product_name="$(node -p "require('./src-tauri/tauri.ios.conf.json').productName ?? require('./src-tauri/tauri.conf.json').productName")"
+          node scripts/ios-signing.mjs verify "src-tauri/gen/apple/build/arm64/$ios_product_name.ipa" \
+            "$RUNNER_TEMP/bilikara-ios-signing.json" "$RUNNER_TEMP/bilikara-ios-adhoc-artifact"
+
+      - name: Upload iOS Ad Hoc test artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: bilikara-ios-device-arm64-adhoc-${{ github.sha }}
+          path: ${{ runner.temp }}/bilikara-ios-adhoc-artifact/
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Remove owned provisioning copy and inspection receipt
+        if: always()
+        run: node scripts/ios-signing.mjs cleanup "$RUNNER_TEMP/bilikara-ios-signing.json"

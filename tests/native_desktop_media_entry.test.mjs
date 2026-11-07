@@ -1,3 +1,4 @@
+import {desktopWorkflow, desktopChecks} from './ci_workflow_support.mjs';
 import { readSourceText as readFileSync } from './frontend_contract_support.mjs';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -88,16 +89,19 @@ test('explicit required media input rejects absent, malformed and foreign librar
 
 test('native browser media caller runs once after required prefix, test oracle and installed browser; old producer is retired',()=>{
   const scripts=JSON.parse(readFileSync(path.join(root,'package.json'),'utf8')).scripts;
-  assert.equal(scripts['test:native-media'],'node --test tests/native_desktop_media.test.mjs');
+  assert.equal(scripts['test:native-media'],'node --test tests/shared_workspace_icon.test.mjs tests/shared_host_layout_browser.test.mjs tests/native_desktop_media.test.mjs');
   assert.equal(scripts['test:native-shared'],'node tests/run_desktop_rust_host.mjs');
   assert.equal(existsSync(path.join(root,'tests/run_desktop_rust_host.py')),false);
-  const workflow=readFileSync(path.join(root,'.github/workflows/desktop.yml'),'utf8');
-  const job=workflow.slice(workflow.indexOf('\n  test:'),workflow.indexOf('\n  bundle:'));
-  const call='npm run test:native-media',invocation=`\n          ${call}\n`;assert.equal(job.split('\n').filter(line=>line.trim()===call).length,1);
+  const workflow=desktopWorkflow;
+  const job=desktopChecks;
+  const call='node scripts/ci_tests.mjs shared',invocation=`\n          ${call}\n`;assert.equal(job.split('\n').filter(line=>line.trim()===call).length,1);
   assert.ok(job.indexOf('BILIKARA_TEST_LIBAV_COMPANION=')<job.indexOf(invocation));
   assert.ok(job.indexOf('ffmpeg')<job.indexOf(invocation),'FFmpeg is an explicit test oracle, never a product executable');
   const step=job.split(/^      - name:/m).find(block=>block.includes(invocation));
   assert.match(step,/if: runner.os == 'Linux'/);assert.match(step,/set -euo pipefail/);
-  assert.ok(step.indexOf('playwright install --with-deps chromium webkit')<step.indexOf(call));
+  const browserOwner = job.split(/^      - name:/m).find(block => block.includes('Prepare shared browser fixtures'));
+  assert.ok(browserOwner?.includes('playwright install --with-deps chromium webkit'));
+  assert.ok(job.indexOf('Prepare shared browser fixtures') < job.indexOf('Verify rendered native ratings and media workflows'));
+  assert.match(job, /needs.preflight.outputs.scope == 'full'/);
   assert.doesNotMatch(step,/python|continue-on-error|\|\| true/);
 });

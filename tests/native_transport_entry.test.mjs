@@ -1,3 +1,4 @@
+import {desktopWorkflow, desktopChecks} from './ci_workflow_support.mjs';
 import { readSourceText as readFileSync } from './frontend_contract_support.mjs';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
@@ -14,9 +15,9 @@ test('transport browser command validates arguments before building or starting 
 });
 
 test('normal transport gate runs once after actual native inputs and installed Chromium; old drivers are retired', () => {
-  const workflow=readFileSync(path.join(root,'.github/workflows/desktop.yml'),'utf8');
-  const checks=workflow.slice(workflow.indexOf('\n  test:'),workflow.indexOf('\n  bundle:'));
-  const command='npm run test:native-transport', entry='npm run test:native-transport-entry';
+  const workflow=desktopWorkflow;
+  const checks=desktopChecks;
+  const command='node scripts/ci_tests.mjs shared', entry='npm run test:native-transport-entry';
   for(const invocation of [command,entry]) assert.equal(checks.split('\n').filter(line=>line.trim()===invocation).length,1);
   const block=checks.split(/\n      - /).find(step=>step.split('\n').some(line=>line.trim()===command));
   assert.match(block,/if: runner.os == 'Linux'/);assert.match(block,/set -euo pipefail/);

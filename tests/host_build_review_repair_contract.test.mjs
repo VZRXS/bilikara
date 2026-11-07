@@ -247,12 +247,12 @@ let inline_rules, player_frame_rule;
 assert.doesNotMatch(this.styles, new RegExp("\\[data-active-workspace=\"(?:queue|history|request|random|users)\"\\]\\s*\\{[^}]*--host-",""));
 assert.ok(!contains("data-request-subview", this.styles));
 assert.ok(contains("--host-tool-card-width", this.styles));
-assert.ok(contains("--host-tool-card-width: minmax(380px, 1fr)", this.styles));
+assert.ok(contains("--host-tool-card-width: minmax(calc(var(--host-workspace-min-rem) * 1rem), 1fr)", this.styles));
 assert.ok(contains("grid-template-columns: minmax(0, 1.82fr) var(--host-tool-card-width)", this.styles));
 assert.ok(!contains("--host-tool-dock-width", this.styles));
 assert.ok(contains("\"compact\"", this.script));
 assert.ok(contains("\"narrow\"", this.script));
-assert.ok(contains("data-stage-controls-layout=\"inline\"", this.styles));
+assert.ok(contains("data-stage-controls-layout^=\"inline\"", this.styles));
 assert.ok(contains("id=\"stage-controls-toggle\"", this.markup));
 assert.ok(contains("id=\"stage-control-backdrop\"", this.markup));
 assert.ok(contains("id=\"stage-control-tray\"", this.markup));
@@ -269,7 +269,7 @@ assert.ok(contains("--stage-frame-inline-size", player_frame_rule));
 assert.ok(contains("data-i18n=\"player.controls\"", this.markup));
 assert.ok(contains("stageControlTrayDirection", this.script));
 assert.ok(contains("spaceBelow", this.script));
-inline_rules = this.styles.slice(sourceIndex(this.styles, ".app-shell[data-stage-controls-layout=\"inline\"] .left-column > .player-panel"), sourceIndex(this.styles, ".host-workspace-region {", sourceIndex(this.styles, ".app-shell[data-stage-controls-layout=\"inline\"] .left-column > .player-panel")));
+inline_rules = this.styles.slice(sourceIndex(this.styles, ".app-shell[data-stage-controls-layout^=\"inline\"] .left-column > .player-panel"), sourceIndex(this.styles, ".host-workspace-region {", sourceIndex(this.styles, ".app-shell[data-stage-controls-layout^=\"inline\"] .left-column > .player-panel")));
 assert.ok(contains(".stage-controls-toggle", inline_rules));
 assert.ok(contains(".stage-control-tray-head", inline_rules));
 assert.ok(contains("display: none", inline_rules));
@@ -278,7 +278,7 @@ assert.ok(contains("state.stageControlInlineCollapsed = false", this.script));
 },
 async test_narrow_tool_card_uses_measured_resident_or_bottom_overlay_geometry() {
 let narrow_rules;
-narrow_rules = this.styles.slice(lastSourceIndex(this.styles, "@media (max-width: 1179px)"), undefined);
+narrow_rules = this.styles.slice(lastSourceIndex(this.styles, "/* CSS and stage fitting use the same measured Desktop/Tablet admission. */"), undefined);
 assert.ok(contains("grid-template-rows: minmax(0, 1fr)", narrow_rules));
 assert.ok(contains("position: absolute", narrow_rules));
 assert.ok(contains("inset: auto 0 0", narrow_rules));
@@ -376,7 +376,7 @@ assert.ok(contains("border: 0", control_rows));
 aligned_controls = this.styles.match(new RegExp("\\.stage-extended-controls \\.av-sync-controls,\\s*\\.stage-extended-controls \\.volume-controls\\s*\\{([^}]*)\\}",""))[1];
 assert.ok(contains("width: max-content", aligned_controls));
 assert.ok(contains("justify-self: end", aligned_controls));
-inline_tray = this.styles.match(new RegExp("\\.app-shell\\[data-stage-controls-layout=\"inline\"\\] \\.stage-control-tray\\s*\\{([^}]*)\\}",""))[1];
+inline_tray = this.styles.match(new RegExp("\\.app-shell\\[data-stage-controls-layout\\^=\"inline\"\\] \\.stage-control-tray\\s*\\{([^}]*)\\}",""))[1];
 assert.ok(contains("z-index: 7", inline_tray));
 gatcha_rail = this.markup.match(new RegExp("id=\"work-rail-random\"(?<body>.*?)</button>","s")).groups["body"];
 assert.ok(contains("<rect", gatcha_rail));
@@ -458,14 +458,18 @@ for (const declaration of iterableValues(["position: fixed;", "inset: 0;", "padd
 assert.ok(contains(declaration, fullscreen_rule));
 }
 },
-async test_fullscreen_exit_combines_remote_qr_and_touch_safe_exit() {
+async test_fullscreen_exit_and_phone_qr_have_separate_actions() {
 let declaration, fullscreen_popover, fullscreen_popover_end, fullscreen_popover_start, links, marker;
 for (const marker of iterableValues(["id=\"player-fullscreen-control\"", "id=\"player-fullscreen-remote-popover\"", "id=\"player-fullscreen-remote-qr-image\"", "id=\"player-fullscreen-public-meta\"", "id=\"player-fullscreen-public-qr-image\"", "id=\"player-fullscreen-public-password\"", "class=\"fullscreen-enter-icon\"", "class=\"fullscreen-phone-icon\"", "class=\"fullscreen-exit-icon\""])) {
 assert.ok(contains(marker, this.markup));
 }
-for (const marker of iterableValues(["function setPlayerFullscreenRemotePinned", "function playerFullscreenActivationUsesTouch", "function syncPlayerFullscreenExpandedWidth", "setPlayerFullscreenRemotePinned(true)", "playerFullscreenPublicMeta"])) {
+for (const marker of iterableValues(["function setPlayerFullscreenRemotePinned", "function syncPlayerFullscreenExpandedWidth", "playerFullscreenPublicMeta"])) {
 assert.ok(contains(marker, this.script));
 }
+const exitHandler = this.script.slice(sourceIndex(this.script, 'elements.playerFullscreenButton?.addEventListener("click"'), sourceIndex(this.script, 'elements.remoteUrlLink,', sourceIndex(this.script, 'elements.playerFullscreenButton?.addEventListener("click"')));
+assert.ok(contains("await togglePlayerFullscreen()", exitHandler));
+assert.ok(contains("setPlayerFullscreenRemotePinned(false)", exitHandler));
+assert.ok(!contains("setPlayerFullscreenRemotePinned(true)", exitHandler));
 fullscreen_popover_start = sourceIndex(this.markup, "<div class=\"fullscreen-remote-popover remote-access-popover\"");
 fullscreen_popover_end = sourceIndex(this.markup, "<div class=\"player-frame\"", fullscreen_popover_start);
 fullscreen_popover = this.markup.slice(fullscreen_popover_start, fullscreen_popover_end);
@@ -569,7 +573,7 @@ for (const permission of iterableValues(["core:window:allow-close", "core:window
 assert.ok(contains(permission, main_capability["permissions"]));
 }
 macos = JSON.parse(readFileSync(path.join(path.join(ROOT, "src-tauri"), "tauri.macos.conf.json"), "utf8"))["app"]["windows"][0];
-assert.deepEqual(macos["titleBarStyle"], "Overlay");
+assert.deepEqual(macos["titleBarStyle"], "Transparent");
 assert.ok(hasContent(macos["hiddenTitle"]));
 assert.ok(contains("id=\"window-controls\"", this.markup));
 assert.ok(contains("initializeWindowChrome", this.script));
@@ -606,7 +610,7 @@ assert.ok(!contains("translateY", transition_styles));
 assert.ok(contains("background-color 150ms ease-out", this.styles));
 assert.ok(!contains("syncHostWorkspaceRailHighlight", this.script));
 assert.ok(contains("renderHostWorkspaceSelection({ measureNarrowLayout: false })", this.script));
-assert.ok(contains("const inlineControls = narrowShell", this.script));
+assert.ok(contains("const inlineControls = scrollableControlsFit || (narrowShell", this.script));
 request_follow_grids = Array.from(this.styles.matchAll(new RegExp("#host-workspace-request \\.follow-up-grid,\\s*\\.request-workspace \\.follow-up-grid\\s*\\{([^}]*)\\}","g")), m => m.length === 1 ? m[0] : m.length === 2 ? m[1] : m.slice(1));
 assert.ok(hasContent(Array.from(Array.from(iterableValues(request_follow_grids))).map((rule) => (contains("min(100%, 112px)", rule))).some(Boolean)));
 request_follow_name = this.styles.match(new RegExp("#host-workspace-request \\.follow-up-name,\\s*\\.request-workspace \\.follow-up-name\\s*\\{([^}]*)\\}",""))[1];
@@ -899,7 +903,7 @@ test("HostBuildReviewRepairTest.test_sources_and_pool_use_direct_compact_respons
 test("HostBuildReviewRepairTest.test_discover_hierarchy_uses_one_local_scroll_owner_per_level", async () => { const instance = Object.create(HostBuildReviewRepairTest); await instance.setUpClass(); await instance.test_discover_hierarchy_uses_one_local_scroll_owner_per_level(); });
 test("HostBuildReviewRepairTest.test_follow_owner_detail_assigns_scrolling_to_cards_only", async () => { const instance = Object.create(HostBuildReviewRepairTest); await instance.setUpClass(); await instance.test_follow_owner_detail_assigns_scrolling_to_cards_only(); });
 test("HostBuildReviewRepairTest.test_player_fullscreen_overrides_persistent_card_and_webkit_insets", async () => { const instance = Object.create(HostBuildReviewRepairTest); await instance.setUpClass(); await instance.test_player_fullscreen_overrides_persistent_card_and_webkit_insets(); });
-test("HostBuildReviewRepairTest.test_fullscreen_exit_combines_remote_qr_and_touch_safe_exit", async () => { const instance = Object.create(HostBuildReviewRepairTest); await instance.setUpClass(); await instance.test_fullscreen_exit_combines_remote_qr_and_touch_safe_exit(); });
+test("HostBuildReviewRepairTest.test_fullscreen_exit_and_phone_qr_have_separate_actions", async () => { const instance = Object.create(HostBuildReviewRepairTest); await instance.setUpClass(); await instance.test_fullscreen_exit_and_phone_qr_have_separate_actions(); });
 test("HostBuildReviewRepairTest.test_fullscreen_address_updates_disable_stale_links_and_use_external_open", async () => { const instance = Object.create(HostBuildReviewRepairTest); await instance.setUpClass(); await instance.test_fullscreen_address_updates_disable_stale_links_and_use_external_open(); });
 test("HostBuildReviewRepairTest.test_stage_density_prefers_full_frame_and_checks_group_overflow", async () => { const instance = Object.create(HostBuildReviewRepairTest); await instance.setUpClass(); await instance.test_stage_density_prefers_full_frame_and_checks_group_overflow(); });
 test("HostBuildReviewRepairTest.test_platform_specific_tauri_chrome_is_explicit", async () => { const instance = Object.create(HostBuildReviewRepairTest); await instance.setUpClass(); await instance.test_platform_specific_tauri_chrome_is_explicit(); });

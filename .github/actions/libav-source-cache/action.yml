@@ -1,0 +1,66 @@
+name: Signed FFmpeg source cache
+description: Share only authenticated upstream source bytes between POSIX runners; native C caches stay platform-specific.
+inputs:
+  phase:
+    description: restore or publish
+    required: true
+  prefix:
+    description: Prepared native prefix, required only for publish
+    default: ''
+outputs:
+  hit:
+    description: Exact source cache hit
+    value: ${{ steps.restore.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - name: Restore signed upstream source bytes
+      if: inputs.phase == 'restore'
+      id: restore
+      uses: actions/cache/restore@v5
+      with:
+        path: ${{ runner.temp }}/bilikara-ffmpeg-source-downloads
+        key: bilikara-ffmpeg-signed-source-9.0.1-v1
+    - name: Select restored source input
+      if: inputs.phase == 'restore' && steps.restore.outputs.cache-hit == 'true'
+      shell: bash
+      env:
+        SOURCE_CACHE: ${{ runner.temp }}/bilikara-ffmpeg-source-downloads
+      run: |
+        set -euo pipefail
+        for name in ffmpeg-9.0.1.tar.xz ffmpeg-9.0.1.tar.xz.asc ffmpeg-devel.asc; do
+          test -f "$SOURCE_CACHE/$name" && test ! -L "$SOURCE_CACHE/$name"
+        done
+        # The ordinary build still performs its pinned GPG verification.
+        printf 'BILIKARA_LIBAV_SOURCE_DIR=%s\n' "$SOURCE_CACHE" >> "$GITHUB_ENV"
+    - name: Verify and stage signed upstream source
+      if: inputs.phase == 'publish'
+      shell: bash
+      env:
+        SOURCE_PREFIX: ${{ inputs.prefix }}
+        SOURCE_CACHE: ${{ runner.temp }}/bilikara-ffmpeg-source-downloads
+      run: |
+        set -euo pipefail
+        test -n "$SOURCE_PREFIX"
+        mkdir -p "$SOURCE_CACHE"
+        for name in ffmpeg-9.0.1.tar.xz ffmpeg-9.0.1.tar.xz.asc ffmpeg-devel.asc; do
+          test -f "$SOURCE_PREFIX/source/$name" && test ! -L "$SOURCE_PREFIX/source/$name"
+          cp "$SOURCE_PREFIX/source/$name" "$SOURCE_CACHE/$name"
+        done
+        shopt -s dotglob nullglob
+        source_files=("$SOURCE_CACHE"/*)
+        test "${#source_files[@]}" -eq 3
+        keyring="$(mktemp -d "$RUNNER_TEMP/bilikara-source-keyring.XXXXXX")"
+        trap 'rm -rf "$keyring"' EXIT
+        chmod 700 "$keyring"
+        gpg --homedir "$keyring" --no-autostart --batch --import "$SOURCE_CACHE/ffmpeg-devel.asc" >/dev/null 2>&1
+        gpg --homedir "$keyring" --no-autostart --batch --status-fd 1 --verify \
+          "$SOURCE_CACHE/ffmpeg-9.0.1.tar.xz.asc" "$SOURCE_CACHE/ffmpeg-9.0.1.tar.xz" \
+          > "$keyring/signature.log" 2>&1
+        grep -F '[GNUPG:] VALIDSIG FCF986EA15E6E293A5644F10B4322F04D67658D8 ' "$keyring/signature.log" >/dev/null
+    - name: Publish authenticated upstream source bytes
+      if: inputs.phase == 'publish'
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ runner.temp }}/bilikara-ffmpeg-source-downloads
+        key: bilikara-ffmpeg-signed-source-9.0.1-v1

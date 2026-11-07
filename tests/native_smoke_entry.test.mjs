@@ -1,3 +1,4 @@
+import {desktopWorkflow, desktopChecks} from './ci_workflow_support.mjs';
 import { readSourceText as readFileSync } from './frontend_contract_support.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -21,7 +22,7 @@ test('required Linux launcher validation fails without its declared candidate', 
 });
 
 test('native process contracts and extracted macOS shell checks use real Node entries after required prerequisites', () => {
-  const workflow = readFileSync(path.join(root, '.github/workflows/desktop.yml'), 'utf8');
+  const workflow = desktopWorkflow;
   const command = 'node --test tests/macos_tauri_smoke.test.mjs';
   const block = workflow.split(/\n      - /).find(step => step.includes(command)); assert.ok(block);
   assert.ok(block.includes('BILIKARA_REQUIRE_TAURI_SMOKE=1')); assert.ok(block.includes('test_extract/dist_release/bilikara-desktop.app/Contents/MacOS/bilikara'));
@@ -30,8 +31,8 @@ test('native process contracts and extracted macOS shell checks use real Node en
   const scripts = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).scripts;
   assert.equal(scripts['test:native-smoke'], 'node tests/run_native_smoke.mjs');
   assert.equal(workflow.split('\n').filter(line => line.trim() === 'npm run test:native-smoke').length, 1);
-  const testJob = workflow.slice(workflow.indexOf('\n  test:'), workflow.indexOf('\n  bundle:'));
+  const testJob = desktopChecks;
   const nativeGraphs = testJob.indexOf('cd ../src-tauri');
-  assert.ok(nativeGraphs >= 0 && nativeGraphs < testJob.indexOf('npm run test:frontend'));
+  assert.ok(nativeGraphs >= 0 && nativeGraphs < testJob.indexOf('node scripts/ci_tests.mjs shared'));
   assert.ok(nativeGraphs < testJob.indexOf('npm run test:native-smoke'), 'offline manifest checks follow actual native Cargo graphs');
 });

@@ -24,6 +24,21 @@ fn fixture(directory: &Path, video: &Path, audio: &Path, count: usize) {
             "selected_pages":[1,2],"selected_cids":[2,3],"selected_durations":[90,90],"selected_parts":["Original","Instrumental"],
             "available_pages":[1,2],"available_cids":[2,3],"available_durations":[90,90],"available_parts":["Original","Instrumental"],
             "cache_status":"pending","cache_message":"Offline layout fixture preparation"});
+        // Link interaction tests need distinct authoritative current/history
+        // identities. Never inject competing history into the live browser.
+        if std::env::var_os("BILIKARA_NATIVE_FIXTURE_EXTERNAL_LINKS").is_some() {
+            let (bvid, page) = match index {
+                0 => ("BV17x411w7KC", 3),
+                _ => ("BV1yyjzzCEQn", 1),
+            };
+            item["bvid"] = json!(bvid);
+            item["page"] = json!(page);
+            item["video_page"] = json!(page);
+            item["original_url"] = json!(format!("https://www.bilibili.com/video/{bvid}"));
+            item["resolved_url"] = json!(format!("https://www.bilibili.com/video/{bvid}?p={page}"));
+            item["selected_pages"] = json!([page, page + 1]);
+            item["available_pages"] = json!([page, page + 1]);
+        }
         // Layout tests must use the same metadata as subsequent SSE snapshots.
         // The third part is available but deliberately not bound/cached.
         if std::env::var_os("BILIKARA_NATIVE_FIXTURE_THREE_PARTS").is_some() {
@@ -32,6 +47,7 @@ fn fixture(directory: &Path, video: &Path, audio: &Path, count: usize) {
             item["available_durations"] = json!([90, 90, 90]);
             item["available_parts"] = json!(["on vocal", "off vocal 有和声", "off vocal 无和声"]);
         }
+        let primary_page = item["page"].as_u64().unwrap();
         let added = execute(
             json!({"schema_version":1,"command":"add_item","item":item,"position":"tail","requester_name":"Alice","reset_av_delay":false,"allow_repeat":true,"now":3.0}),
         );
@@ -63,13 +79,13 @@ fn fixture(directory: &Path, video: &Path, audio: &Path, count: usize) {
             json!({"schema_version":1,"command":"apply_cache_event","item_id":id,"cache_attempt_token":reserved["cache_attempt_token"],"now":4.0,
             "event":{"kind":"ready","message":"Ready","item_incarnation_id":reserved["item_incarnation_id"],"artifact_set_id":reserved["artifact_set_id"],"artifact_relative_directory":relative,
                 "video_relative_path":format!("{relative}/video.mp4"),"video_media_url":format!("/media/{relative}/video.mp4"),
-                "audio_variants":[{"id":"p1_original","label":"Original","page":1,"audio_url":format!("/media/{relative}/original.m4a")},
-                    {"id":"p2_instrumental","label":"Instrumental","page":2,"audio_url":format!("/media/{relative}/instrumental.m4a")}],"selected_audio_variant_id":"p1_original"}}),
+                "audio_variants":[{"id":"p1_original","label":"Original","page":primary_page,"audio_url":format!("/media/{relative}/original.m4a")},
+                    {"id":"p2_instrumental","label":"Instrumental","page":primary_page+1,"audio_url":format!("/media/{relative}/instrumental.m4a")}],"selected_audio_variant_id":"p1_original"}}),
         );
     }
 }
 
-fn main() {
+pub(crate) fn main() {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     assert!(
         [2, 4, 5].contains(&arguments.len()),
@@ -77,6 +93,15 @@ fn main() {
     );
     let directory = Path::new(&arguments[0]);
     let assets = Path::new(&arguments[1]).canonicalize().unwrap();
+    // Explicit development/profile harness admission, never a product override.
+    // Reuse the real capability probe and shared native L0/L1 configuration.
+    if let Some(companion) = std::env::var_os("BILIKARA_TEST_NATIVE_ALPHA_COMPANION") {
+        #[cfg(debug_assertions)]
+        bilikara_runtime::native_host::configure_development_media(Path::new(&companion))
+            .expect("profile requires a valid full native media companion");
+        #[cfg(not(debug_assertions))]
+        panic!("media profiling requires a debug harness: {companion:?}");
+    }
     let seed: AppStateSeed = serde_json::from_value(
         json!({"session_started_at":1.0,"session_played_file":"native.json","updated_at":1.0}),
     )
@@ -144,8 +169,29 @@ fn main() {
     // The test runner captures this locally; never publish it in a report/log.
     println!("{}", json!({"bootstrap_url":host.bootstrap_url()}));
     std::io::stdout().flush().unwrap();
-    let mut stop = String::new();
-    let _ = std::io::stdin().read_line(&mut stop);
+    // An isolated test-only native bridge. Production bundles never ship this
+    // fixture or expose this stdin protocol as an HTTP/Remote capability.
+    loop {
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
+            break;
+        }
+        let Ok(command) = serde_json::from_str::<serde_json::Value>(&line) else {
+            break;
+        };
+        if command["operation"] != "native-json" {
+            break;
+        }
+        let result = serde_json::from_value(command["request"].clone())
+            .map_err(|_| "native_api_request")
+            .and_then(|request| host.json_client().execute(request));
+        let reply = match result {
+            Ok(reply) => serde_json::to_value(reply).unwrap(),
+            Err(code) => json!({"transport_error":code}),
+        };
+        println!("NATIVE_JSON {}", json!({"id":command["id"],"reply":reply}));
+        std::io::stdout().flush().unwrap();
+    }
     drop(host);
     std::thread::sleep(std::time::Duration::from_millis(500));
     execute_app_state(AppStateRequest::Shutdown { schema_version: 1 });

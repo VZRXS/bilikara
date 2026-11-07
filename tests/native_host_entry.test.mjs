@@ -1,3 +1,4 @@
+import {desktopWorkflow, desktopChecks} from './ci_workflow_support.mjs';
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -38,7 +39,7 @@ test('declared missing Host fails; no ambient/stale/fixture fallback', async () 
 });
 
 test('native business CI runs once after real Linux prerequisite export and never uses Python transport', () => {
-  const workflow = readFileSync(path.join(root, '.github/workflows/desktop.yml'), 'utf8').replace(/\r\n/g, '\n'), checks = workflow.slice(workflow.indexOf('\n  test:'), workflow.indexOf('\n  bundle:'));
+  const workflow = desktopWorkflow.replace(/\r\n/g, '\n'), checks = desktopChecks;
   const command = 'npm run test:native-host'; assert.equal(checks.split('\n').filter(line => line.trim() === command).length, 1);
   assert.ok(checks.indexOf('BILIKARA_TEST_LIBAV_COMPANION=') < checks.indexOf(`\n          ${command}\n`));
   const block = checks.split(/\n      - /).find(step => step.includes(`\n          ${command}\n`)); assert.match(block, /set -euo pipefail/); assert.doesNotMatch(block, /python|if: runner.os/);
@@ -51,13 +52,13 @@ test('native business CI runs once after real Linux prerequisite export and neve
     assert.ok(checks.indexOf('BILIKARA_TEST_LIBAV_COMPANION=') < checks.indexOf(`\n          ${invocation}\n`));
     assert.match(scripts[entry], /^node --test tests\/[a-z_]+\.test\.mjs$/);
   }
-  const ratings = 'npm run test:native-ratings';
+  const ratings = 'node scripts/ci_tests.mjs shared';
   assert.equal(checks.split('\n').filter(line => line.trim() === ratings).length, 1);
   assert.ok(checks.indexOf('BILIKARA_TEST_LIBAV_COMPANION=') < checks.indexOf(ratings));
   const browser = checks.split(/\n      - /).find(step => step.includes(ratings));
   assert.match(browser, /if: runner.os == 'Linux'/);
   assert.match(browser, /set -euo pipefail/);
-  assert.ok(browser.indexOf('playwright install --with-deps chromium webkit') < browser.indexOf(ratings));
+  assert.ok(checks.indexOf('playwright install --with-deps chromium webkit') < checks.indexOf(ratings));
   assert.doesNotMatch(browser, /python|continue-on-error|\|\| true/);
   assert.equal(scripts['test:native-ratings'], 'node --test tests/native_ratings_browser.test.mjs');
   assert.equal(JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).devDependencies.playwright, '1.63.0');
@@ -66,6 +67,6 @@ test('native business CI runs once after real Linux prerequisite export and neve
   assert.ok(install >= 0, 'install locked npm dependencies before any test or browser invocation');
   assert.ok(steps.findIndex(step => step.includes('uses: actions/setup-node@')) < install);
   for (const [index, step] of steps.entries()) {
-    if (/npm (run test:|exec -- playwright)/.test(step)) assert.ok(install < index, 'npm ci must precede its consumers');
+    if (/(?:npm (run test:|exec -- playwright)|node scripts\/ci_tests\.mjs)/.test(step)) assert.ok(install < index, 'npm ci must precede its consumers');
   }
 });

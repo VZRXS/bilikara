@@ -1594,17 +1594,17 @@ mod tests {
 
     #[test]
     fn native_download_reports_backend_unavailable_at_transport_boundary() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("reserve test port");
-        let port = listener.local_addr().expect("local address").port();
-        drop(listener);
+        // Port zero cannot name a listening service. Releasing an ephemeral
+        // listener instead lets parallel tests immediately reuse that port,
+        // accidentally turning this unavailable-backend case into a download.
         let request = validate_backend_download_request(&download_request(
             "/api/playlist/export?format=csv",
             None,
             Some("client-1"),
         ))
         .expect("request");
-        let error = request_backend_download(&format!("http://127.0.0.1:{port}"), &request, None)
-            .expect_err("closed port must fail");
+        let error = request_backend_download("http://127.0.0.1:0", &request, None)
+            .expect_err("unavailable service must fail at connect");
         assert!(error.starts_with("无法连接本机后端："));
     }
 

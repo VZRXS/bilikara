@@ -1,3 +1,4 @@
+import {desktopWorkflow} from './ci_workflow_support.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, existsSync, mkdtempSync, copyFileSync, mkdirSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -51,7 +52,7 @@ test('retired Python construction and duplicate Source entries have no live call
     'server.py', 'start_bilikara.py']) {
     assert.equal(existsSync(path.join(root, name)), false, name);
   }
-  const workflow = readFileSync(path.join(root, '.github/workflows/desktop.yml'), 'utf8');
+  const workflow = desktopWorkflow;
   assert.match(workflow, /python -m compileall -q bilikara\s*\n/);
   assert.doesNotMatch(workflow, /py_compile[^\n]*(?:start_bilikara|server\.py|build_bundle)/);
   for (const [file, invocation] of [['build_windows.bat', /call npm run build/], ['build_macos.command', /npm run build/]]) {

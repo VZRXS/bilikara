@@ -1,5 +1,9 @@
 name: Repository Rust toolchain
 description: Install only the repository-pinned toolchain in a job-local Rustup home.
+inputs:
+  native-target:
+    description: Align implicit native Cargo builds with explicit host-tuple test artifacts.
+    default: 'false'
 runs:
   using: composite
   steps:
@@ -15,3 +19,11 @@ runs:
         rustup show active-toolchain
         rustc --version
         rustup toolchain list
+    - name: Select one native Cargo output tree
+      if: inputs.native-target == 'true'
+      shell: bash
+      run: |
+        native_target="$(rustc -vV | sed -n 's/^host: //p')"
+        test -n "$native_target"
+        printf 'CARGO_BUILD_TARGET=%s\n' "$native_target" >> "$GITHUB_ENV"
+        printf 'BILIKARA_CARGO_DIAGNOSTICS=%s/bilikara-cargo-operations.jsonl\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"

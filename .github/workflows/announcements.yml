@@ -1,17 +1,6 @@
 name: Announcements
 
 on:
-  pull_request:
-    paths:
-      - 'announcements/**'
-      - 'rust/src/announcement_policy.rs'
-      - 'rust-runtime/src/announcements/**'
-      - 'rust-runtime/src/announcements.rs'
-      - 'rust-runtime/src/native_host/announcements.rs'
-      - 'rust-runtime/examples/validate_announcements.rs'
-      - 'static/announcements.*'
-      - 'tests/announcements_browser.cjs'
-      - '.github/workflows/announcements.yml'
   workflow_dispatch:
     inputs:
       publish:

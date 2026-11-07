@@ -1,0 +1,185 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  checks:
+    name: CI
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      scope: full
+
+  packages:
+    name: Bundle
+    needs: checks
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/bundle.yml
+    with:
+      target: all
+    secrets:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+  mirror-release-r2:
+    name: Verify and publish
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    needs: [checks, packages]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      R2_BUCKET: ${{ vars.R2_BUCKET || 'bilikara-releases' }}
+      RELEASE_DOWNLOAD_BASE_URL: ${{ vars.RELEASE_DOWNLOAD_BASE_URL || 'https://api.kevinx96.icu/bilikara/releases/download' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install AWS CLI
+        run: python -m pip install --upgrade awscli
+
+      - name: Require release publication configuration
+        run: |
+          test -n "$R2_ACCOUNT_ID"
+          test -n "$AWS_ACCESS_KEY_ID"
+          test -n "$AWS_SECRET_ACCESS_KEY"
+
+      - name: Download this run's original package artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: bilikara-*
+          path: release-artifacts
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Verify six targets and upload only distributable assets to a draft
+        id: draft
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const {pathToFileURL} = require('node:url');
+            const {join} = require('node:path');
+            const fs = require('node:fs/promises');
+            const {collectRelease, prepareDraft} = await import(pathToFileURL(join(process.env.GITHUB_WORKSPACE, 'scripts/ci_release.mjs')).href);
+            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {...context.repo, run_id: context.runId, per_page: 100});
+            const manifest = await collectRelease({tag: context.ref.slice('refs/tags/'.length), sha: context.sha,
+              runId: context.runId, artifacts, directory: 'release-artifacts', destination: 'release-assets'});
+            await fs.mkdir('release-metadata');
+            await fs.writeFile('release-metadata/verified-inputs.json', JSON.stringify(manifest), 'utf8');
+            const id = await prepareDraft({github, repo: context.repo, manifest, directory: 'release-assets'});
+            core.setOutput('release_id', String(id));
+
+      - name: Read back draft assets and verify exact bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$GITHUB_REF_NAME" --dir draft-roundtrip
+          node scripts/ci_release_verify.mjs release-metadata/verified-inputs.json draft-roundtrip
+
+      - name: Stage and read back R2 release assets before publication
+        run: |
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          aws s3 cp release-assets "s3://${R2_BUCKET}/bilikara/releases/download/${GITHUB_REF_NAME}/" \
+            --recursive --endpoint-url "$endpoint" --cache-control "public, max-age=0, must-revalidate" --only-show-errors
+          aws s3 cp "s3://${R2_BUCKET}/bilikara/releases/download/${GITHUB_REF_NAME}/" r2-asset-roundtrip \
+            --recursive --endpoint-url "$endpoint" --only-show-errors
+          node scripts/ci_release_verify.mjs release-metadata/verified-inputs.json r2-asset-roundtrip
+
+      - name: Publish verified draft and read release metadata
+        uses: actions/github-script@v8
+        env:
+          VERIFIED_RELEASE_ID: ${{ steps.draft.outputs.release_id }}
+        with:
+          script: |
+            const {pathToFileURL} = require('node:url');
+            const {join} = require('node:path');
+            const fs = require('node:fs/promises');
+            const {publishDraft} = await import(pathToFileURL(join(process.env.GITHUB_WORKSPACE, 'scripts/ci_release.mjs')).href);
+            const manifest = JSON.parse(await fs.readFile('release-metadata/verified-inputs.json', 'utf8'));
+            const release_id = Number(process.env.VERIFIED_RELEASE_ID);
+            const published = await publishDraft({github, repo: context.repo, manifest, releaseId: release_id, sha: context.sha});
+            await fs.writeFile('release-metadata/current-github.json', JSON.stringify(published), 'utf8');
+            const releases = await github.paginate(github.rest.repos.listReleases, {...context.repo, per_page: 100});
+            await fs.writeFile('release-metadata/releases-github.json', JSON.stringify(releases), 'utf8');
+
+      - name: Generate mirrored release metadata
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import {mirrorReleaseMetadata} from './scripts/ci_release.mjs';
+          const mirror = release => mirrorReleaseMetadata(release, process.env.RELEASE_DOWNLOAD_BASE_URL);
+          const current = mirror(JSON.parse(fs.readFileSync('release-metadata/current-github.json', 'utf8')));
+          const releases = JSON.parse(fs.readFileSync('release-metadata/releases-github.json', 'utf8'))
+            .filter(release => release && typeof release === 'object' && !release.draft).map(mirror);
+          fs.writeFileSync('release-metadata/tag.json', JSON.stringify(current, null, 2));
+          fs.writeFileSync('release-metadata/releases.json', JSON.stringify(releases, null, 2));
+          if (!current.prerelease) fs.writeFileSync('release-metadata/latest.json', JSON.stringify(current, null, 2));
+          NODE
+
+      - name: Upload release mirror to R2
+        run: |
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          tag="${GITHUB_REF_NAME}"
+          aws s3 cp release-metadata/tag.json "s3://${R2_BUCKET}/bilikara/releases/tags/${tag}.json" \
+            --endpoint-url "$endpoint" \
+            --content-type "application/json; charset=utf-8" \
+            --cache-control "public, max-age=300" \
+            --only-show-errors
+          aws s3 cp release-metadata/releases.json "s3://${R2_BUCKET}/bilikara/releases/releases.json" \
+            --endpoint-url "$endpoint" \
+            --content-type "application/json; charset=utf-8" \
+            --cache-control "public, max-age=300" \
+            --only-show-errors
+
+      - name: Verify uploaded R2 bytes and release metadata
+        run: |
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          mkdir -p r2-verification/assets r2-verification/metadata
+          aws s3 cp "s3://${R2_BUCKET}/bilikara/releases/download/${GITHUB_REF_NAME}/" r2-verification/assets \
+            --recursive --endpoint-url "$endpoint" --only-show-errors
+          aws s3 cp "s3://${R2_BUCKET}/bilikara/releases/tags/${GITHUB_REF_NAME}.json" r2-verification/metadata/tag.json \
+            --endpoint-url "$endpoint" --only-show-errors
+          aws s3 cp "s3://${R2_BUCKET}/bilikara/releases/releases.json" r2-verification/metadata/releases.json \
+            --endpoint-url "$endpoint" --only-show-errors
+          node scripts/verify_release_mirror.mjs release-metadata release-assets r2-verification
+
+      - name: Promote verified latest metadata
+        run: |
+          if [ -f release-metadata/latest.json ]; then
+            endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+            aws s3 cp release-metadata/latest.json "s3://${R2_BUCKET}/bilikara/releases/latest.json" \
+              --endpoint-url "$endpoint" --content-type "application/json; charset=utf-8" \
+              --cache-control "public, max-age=300" --only-show-errors
+            aws s3 cp "s3://${R2_BUCKET}/bilikara/releases/latest.json" r2-verification/metadata/latest.json \
+              --endpoint-url "$endpoint" --only-show-errors
+            cmp release-metadata/latest.json r2-verification/metadata/latest.json
+          fi
+
+      - name: Preserve R2 verification receipts
+        uses: actions/upload-artifact@v7
+        with:
+          name: r2-release-verification
+          path: r2-verification/verification.json
+          if-no-files-found: error

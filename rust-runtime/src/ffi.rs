@@ -109,7 +109,7 @@ enum RuntimeServiceCommand {
     Video(crate::native_video::VideoServiceRequest),
     DesktopLogin(crate::desktop_login::LoginCommand),
     BilibiliRedirect(BilibiliRedirectRequest),
-    CacheRuntime(CacheRuntimeCommand),
+    CacheRuntime(Box<CacheRuntimeCommand>),
     NativeCache(crate::cache_runtime::orchestration::Command),
     ArtifactLifetime(crate::artifact_service::ArtifactCommand),
     Cloudflare(CloudflareServiceRequest),
@@ -431,7 +431,7 @@ pub unsafe extern "C" fn bilikara_runtime_service(request_json: *const c_char) -
                 service_result(resolve_redirect(&request))
             }
             RuntimeServiceCommand::CacheRuntime(request) => {
-                service_result(execute_cache_runtime(request))
+                service_result(execute_cache_runtime(*request))
             }
             RuntimeServiceCommand::NativeCache(request) => {
                 service_result(crate::cache_runtime::orchestration::execute(request))

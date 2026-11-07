@@ -56,7 +56,7 @@ assert.ok(!contains("update_installer", command));
 async test_locked_tauri_core_restart_contract_needs_no_process_plugin() {
 let lockedPackage, tauri_packages;
 tauri_packages = Array.from(Array.from(iterableValues(this.cargo_lock["package"])) .filter((lockedPackage) => ((lockedPackage["name"] === "tauri")))).map((lockedPackage) => lockedPackage);
-assert.deepEqual(Array.from(Array.from(iterableValues(tauri_packages))).map((lockedPackage) => lockedPackage["version"]), ["2.11.2"]);
+assert.deepEqual(Array.from(Array.from(iterableValues(tauri_packages))).map((lockedPackage) => lockedPackage["version"]), ["2.12.3"]);
 assert.ok(!contains("tauri-plugin-process", this.cargo_toml));
 assert.ok(!contains("tauri-plugin-process", Array.from(Array.from(iterableValues(this.cargo_lock["package"]))).map((lockedPackage) => lockedPackage["name"])));
 assert.ok(contains("sets restart_on_exit", this.lifecycle_rs));

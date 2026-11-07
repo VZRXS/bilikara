@@ -1,0 +1,23 @@
+name: CI performance diagnostics
+description: Summarize selected targets, cache restores and completed step timings without publication.
+inputs:
+  title:
+    required: true
+    description: Current matrix job name, excluding reusable-workflow callers.
+  caches:
+    default: '{}'
+    description: Cache names and their exact restore outputs as JSON.
+runs:
+  using: composite
+  steps:
+    - uses: actions/github-script@v8
+      env:
+        CI_DIAGNOSTICS_TITLE: ${{ inputs.title }}
+        CI_DIAGNOSTICS_CACHES: ${{ inputs.caches }}
+      with:
+        script: |
+          const {pathToFileURL} = require('node:url');
+          const {join} = require('node:path');
+          const {writeJobDiagnostics} = await import(pathToFileURL(join(process.env.GITHUB_WORKSPACE, 'scripts/ci_diagnostics.mjs')).href);
+          await writeJobDiagnostics({github, core, context, title: process.env.CI_DIAGNOSTICS_TITLE,
+            caches: JSON.parse(process.env.CI_DIAGNOSTICS_CACHES), operations: process.env.BILIKARA_CARGO_DIAGNOSTICS});

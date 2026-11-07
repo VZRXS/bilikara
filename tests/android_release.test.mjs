@@ -1,3 +1,4 @@
+import {mobileWorkflow, mobilePackages, mobileChecks} from './ci_workflow_support.mjs';
 import { readSourceText } from './frontend_contract_support.mjs';
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -23,16 +24,23 @@ test("only tag APKs use the installable release name", () => {
   const release = buildMetadata({ GITHUB_REF_TYPE: "tag", GITHUB_REF_NAME: "v0.8.0-preview.1" });
   assert.equal(release.apk, "bilikara-v0.8.0-preview.1-android-arm64.apk");
 });
+test("manual Bundle uses automatic naming and never accepts an embedded-version label", () => {
+  const env = {GITHUB_REF_TYPE: 'branch', GITHUB_REF_NAME: 'feature/ios', GITHUB_EVENT_NAME: 'workflow_dispatch'};
+  const original = buildMetadata(env);
+  assert.equal(original.apk, 'bilikara-beta-feature-ios-android-arm64-debug.apk');
+  assert.deepEqual(buildMetadata({...env, BILIKARA_BUNDLE_VERSION: 'v99.0.0'}), original);
+  assert.equal(original.release, false);
+});
 test("Android SDK bootstrap excludes the unavailable legacy tools package", () => {
-  const workflow = readSourceText(new URL("../.github/workflows/mobile.yml", import.meta.url));
-  const job = workflow.match(/\n  bundle:\n([\s\S]*?)(?=\n  [\w-]+:|$)/)?.[1];
+  const workflow = mobileWorkflow;
+  const job = mobilePackages;
   assert.ok(job, "Android APK job must exist");
-  assert.match(job, /^    needs: test$/m, "APK build must wait for its own Android test matrix");
-  const checks = workflow.match(/\n  test:\n([\s\S]*?)(?=\n  [\w-]+:|$)/)?.[1];
+  assert.doesNotMatch(job, /^    needs: test$/m, "Manual APK builds do not wait for full CI");
+  const checks = mobileChecks;
   assert.ok(checks);
-  assert.doesNotMatch(checks, /^    needs:/m, "Android tests must not wait for desktop tests");
-  for (const matrix of [checks, job]) assert.match(matrix, /    strategy:\n      fail-fast: false\n      matrix:/);
-  assert.doesNotMatch(job, /^    if:/m, "Independent Android entry must not omit PR builds");
+  assert.doesNotMatch(checks, /^    needs: desktop/m, "Android tests must not wait for desktop tests");
+  assert.match(job, /    strategy:\n      fail-fast: false\n      matrix:/);
+  assert.match(job, /if: matrix.kind == 'mobile'/m, "PR/CI mode must never build APKs");
   const setup = workflow.match(/- name: Setup Android SDK\n([\s\S]*?)(?=\n      - name:)/)?.[1];
   assert.ok(setup, "Android SDK setup step must exist");
   assert.match(setup, /uses: android-actions\/setup-android@v4/);
@@ -42,8 +50,8 @@ test("Android SDK bootstrap excludes the unavailable legacy tools package", () =
   assert.match(workflow, /sdkmanager "platforms;android-36" "build-tools;36\.0\.0" "ndk;27\.0\.12077973"/);
 });
 test("mirror waits for APK and publishes the release index; tag build fails closed without signing", () => {
-  const workflow = readSourceText(new URL("../.github/workflows/ci-bundle.yml", import.meta.url));
-  assert.match(workflow, /needs: \[desktop, mobile\]/);
+  const workflow = readSourceText(new URL("../.github/workflows/release.yml", import.meta.url));
+  assert.match(workflow, /needs: \[checks, packages\]/);
   assert.match(workflow, /aws s3 cp release-metadata\/releases.json/);
   const packaging = fs.readFileSync(new URL("../scripts/android_release.mjs", import.meta.url), "utf8");
   for (const secret of ["ANDROID_KEYSTORE_BASE64", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_ALIAS", "ANDROID_KEY_PASSWORD"]) assert.ok(packaging.includes(secret));
@@ -72,6 +80,7 @@ test("manual beta builds fail closed without a stable signer; PRs use clearly di
   const missing = isolatedCli(directory, {});
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /Missing ANDROID_BETA_KEYSTORE_BASE64/);
+  assert.match(missing.stderr, /repository Actions secrets/);
   assert.equal(fs.existsSync(path.join(directory, "github-output")), false);
   const pr = isolatedCli(directory, { GITHUB_EVENT_NAME: "pull_request", ANDROID_BETA_KEYSTORE_BASE64: "must-not-be-read" });
   assert.equal(pr.status, 0, pr.stderr);
@@ -160,9 +169,9 @@ test("Tauri debug suffix discovery reaches the build type rather than a signing 
 });
 
 test("manual CI wires the pinned beta signer into Gradle and verifies the final APK before upload", () => {
-  const workflow = readSourceText(new URL("../.github/workflows/mobile.yml", import.meta.url));
+  const workflow = mobileWorkflow;
   const beta = workflow.split("\n").find(line => line.includes("ANDROID_BETA_KEYSTORE_BASE64: ${{"));
-  assert.match(beta, /github.event_name == 'workflow_dispatch' && !startsWith\(github.ref, 'refs\/tags\/'\) && secrets.ANDROID_BETA_KEYSTORE_BASE64/);
+  assert.match(beta, /github.event_name == 'workflow_dispatch' && !startsWith\(github.ref, 'refs\/tags\/'\) && inputs.android_beta_keystore_base64/);
   assert.match(workflow, /apksigner" verify --verbose --print-certs/);
   assert.match(workflow, /node scripts\/android_release.mjs --verify-signature/);
   assert.ok(workflow.indexOf("--verify-signature") < workflow.indexOf("- name: Upload APK test artifact"));

@@ -1,3 +1,4 @@
+import {desktopWorkflow, desktopPackages} from './ci_workflow_support.mjs';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -7,8 +8,8 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const workflow = readFileSync(new URL('../.github/workflows/desktop.yml', import.meta.url), 'utf8');
-const bundle = workflow.slice(workflow.indexOf('\n  bundle:'), workflow.length);
+const workflow = desktopWorkflow;
+const bundle = desktopPackages;
 const steps = bundle.split(/\n      - /).slice(1);
 const verify = 'cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- verify-native-desktop';
 const installed = 'cargo test --manifest-path xtask/Cargo.toml --locked --target host-tuple native_package::installed:: -- --ignored --nocapture';
@@ -38,7 +39,7 @@ test('both native gates verify the extracted artifact and then run actual instal
   const msvc = steps.findIndex(step => step.includes('./scripts/setup_msvc.ps1'));
   assert.ok(rust >= 0 && rust < steps.indexOf(windows) && rust < steps.indexOf(macos));
   assert.ok(msvc >= 0 && msvc < steps.indexOf(windows));
-  assert.ok(bundle.includes("BILIKARA_EXPECT_RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || inputs.bundle_version || '' }}"));
+  assert.ok(bundle.includes("BILIKARA_EXPECT_RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}"));
   for (const required of ['codesign --verify --deep --strict', 'lipo -archs', 'plutil -lint', 'cmp README-macOS.txt']) assert.ok(bundle.includes(required), required);
   assert.doesNotMatch(bundle, /setup-python|pip install/);
   for (const required of ['actions/setup-python@v6', 'requirements-packaging.txt', 'python -m unittest discover -s tests -v']) assert.ok(workflow.includes(required), required);
@@ -69,7 +70,7 @@ test('old package/business drivers are retired; independent Node transport does 
   for (const name of ['test_native_desktop_admin', 'test_native_desktop_sources', 'test_native_source_queue', 'test_native_desktop_startup', 'test_native_compatibility_migration', 'test_native_recheck_regressions']) {
     assert.equal(existsSync(new URL(`./${name}.py`, import.meta.url)), false, name);
   }
-  assert.match(workflow, /npm run test:desktop-build/);
+  assert.match(workflow, /node scripts\/ci_tests\.mjs tooling/);
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.ok(pkg.scripts['test:desktop-build'].includes('tests/native_package_entry.test.mjs'));
 });

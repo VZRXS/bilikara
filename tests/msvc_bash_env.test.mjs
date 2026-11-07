@@ -1,3 +1,4 @@
+import {desktopWorkflow, desktopPackages} from './ci_workflow_support.mjs';
 // Recording shell commands qualify PATH/argv/bootstrap behavior, not MSVC binaries.
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -95,8 +96,8 @@ test('actual Windows setup exports the initializer after architecture checks, wi
 });
 
 test('bundle CI executes the real MSVC header/path regression after native setup and before the libav recipe', () => {
-  const workflow = readFileSync(path.join(root, '.github/workflows/desktop.yml'), 'utf8');
-  const bundle = workflow.slice(workflow.indexOf('\n  bundle:'), workflow.length);
+  const workflow = desktopWorkflow;
+  const bundle = desktopPackages;
   const setup = bundle.indexOf("run: ./scripts/setup_msvc.ps1 -Arch");
   const probe = bundle.indexOf('cargo test --manifest-path xtask/Cargo.toml --locked --target host-tuple windows_msvc_companion_paths_compile_generated_header -- --ignored');
   const libraries = bundle.indexOf('run: bash media-libav/build-windows.sh');

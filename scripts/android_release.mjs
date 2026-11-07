@@ -36,7 +36,7 @@ export function buildMetadata(env) {
 
 export function prepareBetaSigning(env, expectedCertificate = betaCertificateSha256) {
   const encoded = String(env.ANDROID_BETA_KEYSTORE_BASE64 || "").replace(/\s/g, "");
-  if (!encoded) throw new Error("Missing ANDROID_BETA_KEYSTORE_BASE64; refusing a non-upgradeable manual APK");
+  if (!encoded) throw new Error("Missing ANDROID_BETA_KEYSTORE_BASE64; configure the stable beta keystore in repository Actions secrets before running a manual Android Bundle");
   if (encoded.length > 65536 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
     throw new Error("Invalid Android beta keystore encoding");
   }

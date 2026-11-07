@@ -1,0 +1,5 @@
+# GitHub-hosted Apple Silicon image, GA 2026-10-15. Older actionlint releases
+# do not yet include it in their built-in hosted runner label list.
+# https://github.blog/changelog/2026-10-15-xcode-27-runner-image-generally-available/
+self-hosted-runner:
+  labels: [xcode-27]
