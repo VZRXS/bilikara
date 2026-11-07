@@ -2043,6 +2043,11 @@ function publishPresentationOutputState(session = state.hostPlaybackSession, { f
   // requested by a newly opened audience window.
   const signature = JSON.stringify({
     ...payload,
+    // QR data images are immutable strings; compare them directly below rather
+    // than encoding up to 512 KiB on every suppressed clock observation. Keep
+    // the complete payload on every actual send and on forced output replay.
+    remoteAccess: { ...payload.remoteAccess, qr_image: undefined },
+    internetRemote: { ...payload.internetRemote, qr_image: undefined },
     clock: { ...clock, mediaTime: undefined, sampledAt: undefined },
   });
   const previous = state.presentationOutputLastPublication;
@@ -2050,9 +2055,12 @@ function publishPresentationOutputState(session = state.hostPlaybackSession, { f
     sync.predictedMediaTime(previous.clock, now) - clock.mediaTime,
   ) > sync.softSyncThresholdSeconds;
   const interval = clock.paused ? presentationOutputHeartbeatMs : presentationOutputClockIntervalMs;
-  if (!force && previous?.signature === signature && !clockJumped
+  if (!force && previous?.signature === signature
+    && previous.remoteQrImage === payload.remoteAccess.qr_image
+    && previous.internetQrImage === payload.internetRemote.qr_image && !clockJumped
     && now - previous.sentAt < interval) return false;
-  state.presentationOutputLastPublication = { signature, clock, sentAt: now };
+  state.presentationOutputLastPublication = { signature, clock, sentAt: now,
+    remoteQrImage: payload.remoteAccess.qr_image, internetQrImage: payload.internetRemote.qr_image };
   const envelope = sync.makeEnvelope("master-state", payload, {
     senderId: state.presentationOutputSenderId,
     sequence: ++state.presentationOutputSequence,

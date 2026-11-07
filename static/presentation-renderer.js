@@ -52,6 +52,20 @@
     }
   }
 
+  function setAttribute(node, name, value) {
+    const text = String(value ?? "");
+    if (node && node.getAttribute(name) !== text) node.setAttribute(name, text);
+  }
+
+  function setHidden(node, hidden) {
+    if (node && node.hidden !== hidden) node.hidden = hidden;
+  }
+
+  function setData(node, key, value) {
+    const text = String(value ?? "");
+    if (node.dataset[key] !== text) node.dataset[key] = text;
+  }
+
   function createBadge(className, play = false) {
     const badge = createElement("span", `${className} queue-order`);
     badge.setAttribute("aria-hidden", "true");
@@ -181,22 +195,25 @@
     if (primaryBadge) {
       const numbered = options.primaryIndex !== undefined;
       primaryBadge.classList.toggle("is-empty", numbered && options.primaryIndex === null);
-      primaryBadge.querySelector(".queue-badge-label").hidden = !numbered;
+      setHidden(primaryBadge.querySelector(".queue-badge-label"), !numbered);
       setText(primaryBadge.querySelector(".queue-badge-label"), numbered ? options.primaryIndex : "");
       const playIcon = primaryBadge.querySelector(".queue-badge-play");
-      if (numbered) playIcon.setAttribute("hidden", "");
-      else playIcon.removeAttribute("hidden");
+      if (numbered) setAttribute(playIcon, "hidden", "");
+      else if (playIcon.hasAttribute("hidden")) playIcon.removeAttribute("hidden");
     }
     const queueHeading = overlay.querySelector("[data-delay-queue-heading]");
     setText(queueHeading, model?.queueHeading);
-    if (queueHeading) queueHeading.hidden = !model?.queueHeading;
+    setHidden(queueHeading, !model?.queueHeading);
     setText(overlay.querySelector("[data-delay-total]"), model?.totalText);
-    overlay.style.setProperty("--delay-ring-offset", String(119.38 * (1 - progress)));
+    const ringOffset = String(119.38 * (1 - progress));
+    if (overlay.style.getPropertyValue?.("--delay-ring-offset") !== ringOffset) {
+      overlay.style.setProperty("--delay-ring-offset", ringOffset);
+    }
     overlay.classList.toggle("is-compact", Boolean(options.compact));
 
     const countdown = overlay.querySelector("[data-delay-countdown]");
     if (countdown) {
-      countdown.setAttribute("aria-label", String(model?.countdownLabel ?? ""));
+      setAttribute(countdown, "aria-label", model?.countdownLabel);
     }
     const list = overlay.querySelector("[data-delay-list]");
     if (list) {
@@ -232,8 +249,10 @@
     if (options.manageVisibility !== false) {
       overlay.classList.toggle("hidden", !visible);
       overlay.classList.toggle("is-visible", visible);
-      overlay.classList.remove("is-entering", "is-leaving");
-      overlay.setAttribute("aria-hidden", String(!visible));
+      if (overlay.classList.contains("is-entering") || overlay.classList.contains("is-leaving")) {
+        overlay.classList.remove("is-entering", "is-leaving");
+      }
+      setAttribute(overlay, "aria-hidden", !visible);
     }
   }
 
@@ -241,10 +260,10 @@
     if (!root || !scene) {
       return null;
     }
-    root.dataset.presentationGeneration = String(scene.generation || 0);
-    root.dataset.presentationRevision = String(scene.revision || 0);
-    root.dataset.presentationItemIdentity = String(scene.currentItemIdentity || "");
-    root.dataset.presentationTitle = String(scene.title || "");
+    setData(root, "presentationGeneration", scene.generation || 0);
+    setData(root, "presentationRevision", scene.revision || 0);
+    setData(root, "presentationItemIdentity", scene.currentItemIdentity || "");
+    setData(root, "presentationTitle", scene.title || "");
     const overlay = ensureOverlay(root);
     renderOverlay(overlay, scene.overlay || { visible: false }, options);
     if (options.showDownloadProgress) renderDownloadProgress(root, scene);
@@ -286,9 +305,7 @@
     } else if (!progress.hasAttribute("value") || progress.value !== metadata.cacheProgress) {
       progress.value = metadata.cacheProgress;
     }
-    if (progress.getAttribute("aria-label") !== metadata.cacheDetail) {
-      progress.setAttribute("aria-label", metadata.cacheDetail);
-    }
+    setAttribute(progress, "aria-label", metadata.cacheDetail);
   }
 
   return {

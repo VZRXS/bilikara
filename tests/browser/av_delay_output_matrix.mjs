@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import {installPCMChirpClock} from './pcm_chirp_clock.mjs';
 
-export async function avDelayOutputMatrix({main,output,host,samples}) {
+export async function avDelayOutputMatrix({main,output,host,samples,engine}) {
   const control=async(action,target)=>{
     const identity=await main.evaluate(()=>({item_id:state.data.current_item.id,playback_generation:state.data.playback_generation}));
     await host.api('/api/player/control',{action,...identity,...(target===undefined?{}:{target_seconds:target})});
@@ -11,8 +11,11 @@ export async function avDelayOutputMatrix({main,output,host,samples}) {
   await control('seek-absolute',20);
   await main.waitForFunction(()=>!state.hostPlaybackSession.seekSettling&&state.hostPlaybackSession.video.currentTime>20);
   if(await main.evaluate(()=>document.documentElement.dataset.hostPlatform==='desktop')){
-    // Begin on native unity volume. The first AV edit prepares the existing
-    // captured-output route; software clocks do not prove physical sound.
+    // Begin on native unity volume. WebKit's first AV edit prepares its
+    // captured-output workaround. Chromium retains its native unity route
+    // until DSP is requested; require that route rather than a WebKit workaround.
+    // Both engines still run the complete captured PCM matrix below.
+    assert.ok(['chromium','webkit'].includes(engine));
     assert.equal(await main.evaluate(()=>Boolean(state.hostPlaybackSession.audio.bilikaraPitchSource)),false);
     for(const offset of [100,0,-100,0,400,-400,0]){
       await main.evaluate(value=>dispatchAvDelayAction({type:'set_effective',effective_delay_ms:value}),offset);
@@ -23,8 +26,8 @@ export async function avDelayOutputMatrix({main,output,host,samples}) {
           offset:currentAvOffsetSeconds(),captured:Boolean(audio.bilikaraPitchSource),rates:[video.playbackRate,audio.playbackRate]};
       });
       assert.ok(Math.abs(clocks.video-clocks.audio-clocks.offset)<.05,JSON.stringify(clocks));
-      assert.equal(clocks.captured,true);assert.deepEqual(clocks.rates,[1,1]);
-      samples.push({label:'native-unity to captured WebKit alignment; physical sound unverified',...clocks});
+      assert.equal(clocks.captured,engine==='webkit');assert.deepEqual(clocks.rates,[1,1]);
+      samples.push({label:'native-unity AV alignment; physical sound unverified',engine,...clocks});
     }
   }
   await main.evaluate(installPCMChirpClock);

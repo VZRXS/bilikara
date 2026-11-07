@@ -219,7 +219,7 @@ for (const [name, engine] of [['chromium', chromium], ['webkit', webkit]]) {
       await output.waitForFunction(()=>!window.timingVideo.paused&&window.timingVideo.currentTime>40.3);
       // Keep the original steady-stream pause-count measurement isolated from
       // the deliberate seek/pause transitions in this additional matrix.
-      if(delayMatrix)await avDelayOutputMatrix({main,output,host,samples});
+      if(delayMatrix)await avDelayOutputMatrix({main,output,host,samples,engine:name});
       // A quiet/stalled relay cannot make the output extrapolate indefinitely.
       await main.evaluate(()=>{window.__timingRelay=async()=>null;});
       await output.waitForFunction(()=>window.timingVideo.paused,null,{timeout:5000});

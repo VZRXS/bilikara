@@ -11,6 +11,7 @@ const publishCode=app.slice(app.indexOf('function publishPresentationOutputState
 function publisher(native=true) {
   let now=1000,offset=.2;
   const nativeMessages=[],browserMessages=[],writes=[];
+  const remoteAccess={preferred_url:'http://127.0.0.1:1234/remote',connected_count:1};
   const video={currentTime:0,paused:false,playbackRate:1,seeking:false};
   const scene={generation:7,revision:1,currentItemIdentity:'song',title:'Song',videoUrl:'/media/song.mp4',overlay:{visible:false}};
   const state={presentationSession:{generation:7,mode:'localDualScreen',phase:'active'},language:'zh',
@@ -20,12 +21,12 @@ function publisher(native=true) {
     state,window:{},Date:{now:()=>now},presentationOutputClockIntervalMs:250,presentationOutputHeartbeatMs:1000,
     presentationSyncApi:()=>sync,currentPresentationScene:()=>scene,activePrimaryVideoElement:()=>video,
     isCurrentHostPlaybackSession:session=>session===state.hostPlaybackSession,currentAvOffsetSeconds:()=>offset,
-    remoteAccessForPresentation:()=>({preferred_url:'http://127.0.0.1:1234/remote',connected_count:1}),
+    remoteAccessForPresentation:()=>({...remoteAccess}),
     relayPresentationOutputState:envelope=>{if(native)nativeMessages.push(envelope);return native;},
     ensurePresentationOutputChannel:()=>({postMessage:envelope=>browserMessages.push(envelope)}),
     localStorage:{setItem:(...args)=>writes.push(args),removeItem:(...args)=>writes.push(args)},
   });
-  return {state,video,scene,publish,nativeMessages,browserMessages,writes,setNow:value=>{now=value;},setOffset:value=>{offset=value;}};
+  return {state,video,scene,remoteAccess,publish,nativeMessages,browserMessages,writes,setNow:value=>{now=value;},setOffset:value=>{offset=value;}};
 }
 
 test('native audience clocks are bounded without duplicate browser storage writes',()=>{
@@ -139,4 +140,23 @@ test('uncaptured desktop audio owns audience time during a video hold and retain
   Object.assign(f.video,{currentTime:8,paused:true,seeking:true});
   f.publish(undefined,{force:true});const clock=f.nativeMessages.at(-1).payload.clock;
   assert.equal(clock.paused,false);assert.equal(clock.seeking,false);assert.ok(Math.abs(clock.mediaTime-10.12)<1e-9);
+});
+
+
+test('large unchanged QR images avoid signature serialization but changes and replay retain the full payload [P0-PERF-02]',()=>{
+  const f=publisher(),image='data:image/svg+xml;base64,'+'A'.repeat(520000);
+  f.state.internetRemoteDisplay.qr_image=image;f.remoteAccess.qr_image=image;
+  f.publish();assert.equal(f.nativeMessages.length,1);
+  assert.ok(f.state.presentationOutputLastPublication.signature.length<4096);
+  for(let i=1;i<10;i++){f.setNow(1000+i*20);f.video.currentTime=i*.02;f.publish();}
+  assert.equal(f.nativeMessages.length,1,'unchanged clocks still honor the original cadence');
+  assert.equal(f.nativeMessages[0].payload.internetRemote.qr_image,image);
+  assert.equal(f.nativeMessages[0].payload.remoteAccess.qr_image,image);
+  f.setNow(1200);f.state.internetRemoteDisplay.qr_image=image.slice(0,-1)+'B';f.publish();
+  assert.equal(f.nativeMessages.length,2,'a changed QR bypasses clock throttling immediately');
+  f.setNow(1210);f.remoteAccess.qr_image='';f.publish();assert.equal(f.nativeMessages.length,3);
+  assert.equal(f.nativeMessages.at(-1).payload.remoteAccess.qr_image,'','clearing QR is also immediate');
+  f.setNow(1220);f.remoteAccess.connected_count=2;f.publish();assert.equal(f.nativeMessages.length,4);
+  f.setNow(1230);f.publish(undefined,{force:true});assert.equal(f.nativeMessages.length,5);
+  assert.equal(f.nativeMessages.at(-1).payload.internetRemote.qr_image,image.slice(0,-1)+'B','output-ready replay remains complete');
 });
