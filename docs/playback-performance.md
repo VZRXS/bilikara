@@ -57,6 +57,62 @@ it is neither Native HLS nor a qualified physical receiver.
 
 Measurement-only switches (never shipping player settings):
 
+`--audible` removes Chromium headless's default audio mute for an explicitly
+configured laboratory audio sink. Use the same setting/server for every compared
+case. A PulseAudio null sink is virtual output, not physical audio qualification.
+
+`scripts/compare-media-round-a.mjs` compares a preserved production frontend,
+the isolated Audio-First fixture and the standalone GStreamer renderer. It
+requires explicit baseline SHA/static directory, fixture cache, SDK, executable
+and external evidence directory. Use three 60-second repetitions. It records
+source/binary/media hashes, dirty state and separate process-group CPU/PSS/RSS.
+The scopes differ: A1 has a stripped fixture UI and explicit relay; A2 has no
+Host/Audience UI or Native Host integration and always processes Signalsmith.
+Their totals cannot establish a product-wide percentage saving or attribute all
+differences to decoder elimination. Preserve browser frames/correction evidence,
+actual Gst factories/clock and functional PCM checks alongside resource totals.
+
+Use the same explicit `--key-shift 2` to compare active pinned DSP in all three
+paths; at zero, the Web paths can bypass DSP while the native PoC does not.
+Browser context rates and the native 48kHz resampling can still differ. The
+native `dsp-work` counters expose minimum per-chunk vector allocations/copies;
+do not describe this prototype as an optimized native implementation.
+
+`--approaches a1,a1-shadow` isolates the cost of one additional hidden video
+inside the **same** Audio-First harness. The shadow element has no audio, clock,
+readiness or EOS authority. Confirm decoded/frame activity and unchanged audible
+output before attributing a difference to an extra decoder. This is neither a
+shipping change nor proof that a hidden production video can safely be removed.
+Actual virtual-sink PCM and narrow Chromium CDP decoder facts are retained;
+WebKit decoder identities and real underruns can remain unavailable. Three
+seconds of warmup after readiness are excluded. CPU includes native threads
+through process-wide counters, with process/thread counts and ownership scopes.
+
+## Correlated virtual-output timing
+
+Use `scripts/validate-media-timing.mjs --sdk /SDK --output /HDD/evidence \
+--seconds 180 --repeats 3 --engines chromium,webkit,native --binary /PoC` for
+separate short/medium observations. `--delay-ms` sets the initial signed offset;
+`--seconds 3600 --engines native` enables a bounded software soak. Do not relabel
+an unrun 60–120-minute or physical-device test as passed.
+
+The generated fixture contains an actual decoded frame barcode and correlated
+frequency-identified PCM pulses. Browser performance clocks are calibrated to
+Node's monotonic clock with RTT uncertainty; native X11 observations retain
+their request/response interval. PCM is mapped from sample indices through
+actual audio-server pipe chunks. Unknown fixed server/pipe latency remains.
+Reading only the barcode row limits measurement overhead.
+
+Report these independently: barcode versus media timestamp, actual PCM onset,
+decoded/compositor-callback or X11 pixel observation, expected-display API time,
+fixed offset, fitted drift over the run, and temporary recovery. Native steady
+sampling begins after actual sink PCM plus warmup, not process launch/read-ahead;
+startup data remains in the report. An 80ms virtual observation assertion is a
+diagnostic gate, not physical one-frame lip-sync acceptance. Callback stalls,
+missing pulses, uncertainty and failed gates must remain visible. Never use
+separate Date.now() values as a precise shared clock or silently subtract an
+unmeasured latency to obtain a pass.
+
 - `--dual-experiment baseline|pause|retire|static`: current dual behavior;
   pause only the Host video; additionally release its source; or retain the
   Audience bridge/overlay without its video. Pause/retire suppress the paired
@@ -187,3 +243,8 @@ return. External time-coded observation is needed for physical display/audio
 latency; software clock equality alone does not measure lip sync. Keep video
 handoff, system mirror/independent display and native DLNA as separate routes.
 Do not infer an app root cause solely from a Windows receiver stutter report.
+
+The completed three-repeat Round A comparison, real sink PCM and correlated
+timing outcomes are in [Round A validation](round-a-validation.md). Whole-harness
+costs are not comparable product totals. WebKit counters that reset on Seek are
+not decoded-FPS evidence; the hour-run drift estimate is method-dependent.

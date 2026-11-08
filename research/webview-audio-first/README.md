@@ -52,3 +52,11 @@ gate, **not** the product's physical one-frame synchronization acceptance.
 Failed gates return exit code 2; unrun or unobservable physical timing remains
 NOT QUALIFIED. Never relabel the functional test's coarse 450ms transport check
 as synchronization evidence.
+
+## Review qualification
+
+[Final validation](../../docs/round-a-validation.md) includes capture-ready PCM
+and decoded-frame evidence. Signed opening content/mapping is implemented, but
+both engines still fail some precise virtual timing gates; this is not a
+production-ready decoder retirement. Recorder readiness is observed from actual
+data, and source-zero tone is checked explicitly. Production remains unchanged.

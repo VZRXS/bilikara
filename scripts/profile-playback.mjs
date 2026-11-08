@@ -12,6 +12,7 @@ import {chromium,webkit} from 'playwright';
 import {root,runNative} from '../tests/desktop_construction_support.mjs';
 import {buildNativeAlpha} from '../tests/native_runtime_artifacts.mjs';
 import {RunningHost,isolatedEnvironment,waitFor} from '../tests/native_host_support.mjs';
+import {observeDecoders} from '../research/decoder-observer.mjs';
 
 assert.equal(process.platform,'linux','This process sampler uses Linux /proc; native platform profiles are separate');
 const args=process.argv.slice(2),value=(key,fallback)=>{const at=args.indexOf(key);return at<0?fallback:args[at+1];};
@@ -34,6 +35,7 @@ const qrBytes=Number(value('--qr-bytes','0'));assert.ok(Number.isInteger(qrBytes
 const worker=value('--hls-worker','off');assert.ok(['on','off'].includes(worker));
 const actions=args.includes('--actions');
 const audible=args.includes('--audible');
+const keyShift=Number(value('--key-shift','0'));assert.ok(Number.isInteger(keyShift)&&Math.abs(keyShift)<=6);
 const cpuProfile=args.includes('--cpu-profile');assert.ok(!cpuProfile||engineName==='chromium','CDP CPU profiles require Chromium');
 const frameObserver=value('--frame-observer','on');assert.ok(['on','counters'].includes(frameObserver));
 const workerPolicy=value('--worker-policy','production');assert.ok(['production','allow-blob'].includes(workerPolicy));
@@ -54,7 +56,7 @@ mkdirSync(mediaDirectory,{recursive:true});
 const fixtureManifest=path.join(mediaDirectory,'fixture.json');
 const targetKbps=profile==='1280x720:30'?2000:profile==='1920x1080:30'?5000:8000;
 const metadata={evidenceClass:'SOFTWARE-PROFILE',machine:hostname(),platform:process.platform,architecture:process.arch,
-  audibleOutputRequested:audible,
+  audibleOutputRequested:audible,keyShift,
   osRelease:release(),buildMode:'dev',cpu:cpus()[0].model,logicalCpus:cpus().length,engine:engineName,engineVersion:null,profile,seconds,
   cpuAffinity:readFileSync('/proc/self/status','utf8').match(/^Cpus_allowed_list:\s*(.+)$/m)?.[1],nice:getPriority(),
   softwareDecoding:true,hardwareDecode:'disabled; not device evidence',hostViewport,audienceViewport,repeats,experiment,overlay,qrBytes,worker,workerPolicy,actions,effects,frameObserver,cpuProfile,
@@ -302,6 +304,7 @@ try{
       if(receiver)environment.NO_PROXY=environment.no_proxy=`127.0.0.1,localhost,${receiver.ip}`;
       mkdirSync(data);
       host=await RunningHost.start(alpha,directory,[data,staticDirectory,...(mode==='idle'?[]:[video,audio,'3'])],environment,true);
+      if(keyShift)await host.api('/api/player/key-shift',{key_shift:keyShift});
       server=await launch();
       browser=await engine.connect(server.wsEndpoint());metadata.engineVersion=browser.version();
       const context=await browser.newContext({viewport:hostViewport});
@@ -309,7 +312,7 @@ try{
       await context.addCookies([...host.cookies].map(([name,value])=>({name,value,url:host.base})));
       await context.addInitScript(()=>localStorage.setItem('bilikara.update.automatic','false'));
       await context.route('**/*',r=>new URL(r.request().url()).origin===host.base?r.fallback():r.abort());
-      const main=await context.newPage();const startupAt=performance.now();main.on('pageerror',e=>errors.push(e.name));await main.goto(host.base);
+      const main=await context.newPage();const decoderFacts={host:await observeDecoders(main)};const startupAt=performance.now();main.on('pageerror',e=>errors.push(e.name));await main.goto(host.base);
       if(effects==='flat')await flattenEffects(main);
       await main.waitForFunction(()=>state.hasValidStateResponse);
       if(mode!=='idle') {
@@ -340,6 +343,7 @@ try{
       const dual=['dual','native-dual'].includes(mode);
       let audience=null;
       if(dual){audienceServer=await launch();audienceBrowser=await engine.connect(audienceServer.wsEndpoint());audience=await connectAudience(audienceBrowser,host,main);}
+      if(audience)decoderFacts.audience=await observeDecoders(audience);
       const diagnostic=dual&&['pause','retire'].includes(experiment)?await suspendHostVideo(main,experiment):null;
       if(audience){audience.on('pageerror',e=>errors.push(e.name));await audience.waitForFunction(()=>__bilikaraProfile.snapshot().functions.applyClock?.count>0);}
       if(receiver){
@@ -375,13 +379,13 @@ try{
       for(const [,session]of profilers){await session.send('Profiler.enable');await session.send('Profiler.setSamplingInterval',{interval:1000});await session.send('Profiler.start');}
       const sample=sampler({host:host.process.pid,hostBrowser:server.process().pid,...(audienceServer?{audienceBrowser:audienceServer.process().pid}:{})});sample();
       const initial={host:await mediaSample(main),audience:audience?await mediaSample(audience):[],receiver:receiver?.sample()};
-      const samples=[],started=performance.now();let last=started;
+      const samples=[],started=performance.now(),steadyStartNs=process.hrtime.bigint().toString();let last=started;
       while(performance.now()-started<seconds*1000){
         await delay(1000);const now=performance.now();const hostClock=await main.evaluate(()=>{const c=state.presentationOutputLastPublication?.clock;return {wall:Date.now(),clock:c?{mediaTime:c.mediaTime,sampledAt:c.sampledAt,paused:c.paused,rate:c.playbackRate}:null,audioTime:state.hostPlaybackSession?.audio?.currentTime??null,audioContext:state.audioContext?.state??null};});
         const audienceClock=audience?await audience.evaluate(()=>{const v=document.querySelector('video');return{wall:Date.now(),time:v?.currentTime??null,paused:v?.paused??null};}):null;
         samples.push({seconds:(now-started)/1000,intervalSeconds:(now-last)/1000,roles:sample(),hostClock,audienceClock});last=now;
       }
-      const elapsed=(performance.now()-started)/1000;
+      const elapsed=(performance.now()-started)/1000,steadyEndNs=process.hrtime.bigint().toString();
       for(const [role,session]of profilers){
         const {profile:trace}=await session.send('Profiler.stop');
         const scripts=new Set(readdirSync(staticDirectory).filter(name=>name.endsWith('.js')));
@@ -412,7 +416,7 @@ try{
       const o=(await host.api('/api/state')).media_output;
       const decoder=await main.evaluate(()=>state.nativeOutputPreview?.diagnostics()?.decoder??null);
       const actualOutput={decoder,target:o.target,status:o.status,pipelineLevel:o.pipeline_level,generation:o.stream_generation};
-      const result={actualOutput,mode,repetition,status:'MEASURED',startupMs,hlsStartupMs,elapsed,summary,initial,final,samples,observations,synchronization,browserPerformance,recovery,actionFailures,diagnosticValidity,errors,output:receiver?(await host.api('/api/purek/state')).output:undefined};
+      const result={actualOutput,mode,repetition,status:'MEASURED',startupMs,hlsStartupMs,elapsed,steadyWindowNs:{start:steadyStartNs,end:steadyEndNs},audioContextFacts:await main.evaluate(()=>({sampleRate:state.audioContext?.sampleRate??null,baseLatency:state.audioContext?.baseLatency??null,outputLatency:state.audioContext?.outputLatency??null})),summary,initial,final,samples,observations,synchronization,browserPerformance,recovery,actionFailures,diagnosticValidity,errors,decoderFacts,output:receiver?(await host.api('/api/purek/state')).output:undefined};
       // Output snapshots include lease/transport URLs; retain ONLY fixed metrics.
       if(result.output){const o=result.output;result.output={status:o.status,pipelineLevel:o.pipeline_level,bytesSent:o.bytes_sent,lastError:o.last_error};}
       if(errors.length||final.receiver?.streamError)result.status='ERROR';

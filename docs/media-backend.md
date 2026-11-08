@@ -101,3 +101,7 @@ GStreamer must not become a packaged/default backend without functional timing,
 single-decoder surface and cross-platform packaging gates in the requirements.
 See [the experimental runner](../research/media-gstreamer/README.md) and
 [measurement rules](playback-performance.md).
+
+Review outcome and explicit remaining synchronization/EOS gates are recorded in
+[Round A validation](round-a-validation.md). Functional tests do not qualify
+physical playback; both prototypes remain isolated and the Legacy path default.
