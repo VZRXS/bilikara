@@ -5,6 +5,7 @@ import './ios_playback.test.mjs';
 import './v7_playback_regression.test.mjs';
 import './ios_presentation.test.mjs';
 import './audio_clock.test.mjs';
+import './media_backend.test.mjs';
 import './pcm_chirp_clock.test.mjs';
 import './media_output_transport.test.mjs';
 import './android_alpha_bootstrap_contract.test.mjs';

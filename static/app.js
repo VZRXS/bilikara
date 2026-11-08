@@ -552,6 +552,11 @@ function setHostPlaybackSessionPhase(session, phase) {
     return false;
   }
   session.phase = phase;
+  session.mediaBackend?.observe(session.mediaBackend.program, {
+    type: phase === "playing" ? "playing" : phase === "failed" ? "error" : "phase",
+    phase,
+    ...(phase === "failed" ? { code: "legacy-playback-failed" } : {}),
+  });
   return true;
 }
 
@@ -13930,6 +13935,7 @@ async function handleSplitAudioEnded(currentItem, video, audio, reportStatus) {
     || !state.localShouldBePlaying || endingSession.logicalPlayIntent === false
     || shouldHoldCurrentItemForTransition(currentItem)) return;
   state.localPlaybackEndHandled = true;
+  endingSession.mediaBackend?.observe(endingSession.mediaBackend.program, { type: "eos", drained: true });
   state.localShouldBePlaying = false;
   state.hostPlaybackSession.seekResumePending = false;
   if (!video.paused) {
@@ -14031,6 +14037,7 @@ function commitHostPlaybackSessionReadyPaused(session, video, audio, { applyInte
     video.pause();
   }
   session.readyCommitted = true;
+  session.mediaBackend?.observe(session.mediaBackend.program, { type: "ready" });
   session.readyCommitCount += 1;
   setHostPlaybackSessionPhase(session, "ready-paused");
   clearSplitPlaybackStartupWatchdog(session);
@@ -16490,6 +16497,7 @@ function retireHostPlaybackSession(
   }
   const ownsCurrentSession = state.hostPlaybackSession === session;
   setHostPlaybackSessionPhase(session, "retiring");
+  session.mediaBackend?.dispose();
   clearLocalPlayerEventListeners(session);
   clearWebKitAudioStarvationTimer(session);
   clearLocalPlayerSyncTimer(session);
@@ -16630,7 +16638,7 @@ function beginHostPlaybackSessionOwnershipClaim(session) {
         if (!isCurrentHostPlaybackSession(session, session.video, session.audio)) {
           return;
         }
-        if (!beginHostPlaybackSessionElementLoading(session)) {
+        if (!session.mediaBackend.load(session.mediaBackend.program)) {
           failHostPlaybackCandidate(
             session,
             session.video,
@@ -16756,6 +16764,32 @@ function mountHostPlaybackSessionElements(session, currentItem, mountData) {
   session.video = video;
   session.audio = audio;
   session.mountData = mountData;
+  const program = Object.freeze({ ...session.playbackProgram, playback_generation: session.playbackGeneration });
+  session.mediaBackend = BilikaraMediaBackend.createLegacyPlaybackAdapter({
+    program,
+    current: () => isCurrentHostPlaybackSession(session, video, audio) ? program : null,
+    capabilities: { independentAudio: true, pitch: true, signedAvDelay: true, output: "existing-host" },
+    ports: {
+      load: () => beginHostPlaybackSessionElementLoading(session),
+      play: options => setSplitPlaybackIntent(video, audio, true, options),
+      pause: () => setSplitPlaybackIntent(video, audio, false),
+      seek: seconds => seekHostPlayer(video, audio, seconds),
+      setVolume: (volume, muted, options) => setLocalPlayerVolumeAndMuted(volume, muted, options),
+      setKeyShift: semitones => setLocalPlayerKeyShift(semitones),
+      setAvDelay: milliseconds => setAvOffset(milliseconds),
+      selectAudioVariant: variantId => selectHostAudioVariant(variantId),
+      snapshot: () => ({ program, phase: session.phase, ready: session.readyCommitted,
+        playing: hostPlaybackSessionObservedPlaying(session),
+        timeSeconds: video.currentTime,
+        audioTimeSeconds: audio.bilikaraAudioClock?.outputTime() ?? audio.currentTime,
+        audioTimeBasis: audio.bilikaraAudioClock ? "output-segment" : "reported-media",
+        durationSeconds: audio.duration,
+        keyShift: Number(state.pendingPlayerKeyShift?.value ?? state.data?.player_settings?.key_shift ?? 0),
+        avDelayMs: currentAvOffsetMs(), volume: state.localPlayerVolume, muted: state.localPlayerMuted }),
+      stop: () => retireHostPlaybackSession(session),
+      // Existing session retirement below owns all media/DSP/lease teardown.
+    },
+  });
   replaceHostPlayerView(video, audio);
   return { video, audio };
 }
@@ -16959,7 +16993,7 @@ function renderPlayer(currentItem, playbackMode) {
   if (reconciliation.kind !== "mounted") {
     const retained=reconciliation.session;
     if(retained?.phase==="binding" && !retained.loadingStarted) {
-      if(retained.ownershipClaimed)beginHostPlaybackSessionElementLoading(retained);
+      if(retained.ownershipClaimed)retained.mediaBackend.load(retained.mediaBackend.program);
       else beginHostPlaybackSessionOwnershipClaim(retained);
     }
     return;
@@ -22363,6 +22397,12 @@ async function handleAudioVariantSelection(event) {
   }
 
   const nextVariantId = button.dataset.variantId || "";
+  return selectHostAudioVariant(nextVariantId);
+}
+
+async function selectHostAudioVariant(nextVariantId) {
+  const currentItem = state.data?.current_item;
+  if (!currentItem || audioVariantSwitchLocked()) return;
   const selectedVariant = selectedAudioVariantForItem(currentItem);
   if (!nextVariantId || nextVariantId === selectedVariant?.id) {
     return;

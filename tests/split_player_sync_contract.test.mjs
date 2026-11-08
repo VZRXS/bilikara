@@ -1432,6 +1432,11 @@ result = (await this.run_node_script((`
   function registerRendererTail() {
   ` + String(this.renderer_tail_source) + `
 
+  const backendIdentity = { ...program, playback_generation: session.playbackGeneration };
+  session.mediaBackend = BilikaraMediaBackend.createLegacyPlaybackAdapter({
+    program: backendIdentity, current: () => backendIdentity,
+    ports: { load: () => beginHostPlaybackSessionElementLoading(session) },
+  });
   registerRendererTail();
   await Promise.resolve();
   await Promise.resolve();
@@ -4569,7 +4574,8 @@ assert.ok(contains("setHostPlaybackSessionPhase(session, \"binding\")", this.sou
 assert.ok(contains("commitHostPlaybackSessionReadyPaused", renderer));
 assert.ok(contains("beginHostPlaybackSessionOwnershipClaim(session)", renderer));
 ownership_claim = (await this._slice("function beginHostPlaybackSessionOwnershipClaim", "function replaceHostPlayerView"));
-assert.ok(contains("beginHostPlaybackSessionElementLoading(session)", ownership_claim));
+assert.ok(contains("session.mediaBackend.load(session.mediaBackend.program)", ownership_claim));
+assert.ok(contains("load: () => beginHostPlaybackSessionElementLoading(session)", this.source));
 },
 async test_only_one_player_renderer_and_one_sync_interval_remain() {
 let renderer;

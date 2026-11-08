@@ -137,6 +137,12 @@ responses. The renderer and prewarm share Rust font resources; there is no
 Pillow renderer or Python semantic fallback. All other frozen references and
 public-interface retention decisions remain unchanged.
 
+Playback execution uses the thin generation-bound `LegacyPlaybackAdapter` in
+`static/media-backend.js`; the existing session still owns media, DSP, claims,
+synchronization and EOS. See `docs/media-backend.md`. Experimental renderers in
+`research/` must stay outside production entry points and package graphs. Never
+interpret a backend EOS observation as authority to select Next or write history.
+
 ### Queue ordering authority (R7)
 
 Top and manual moves are local selected-ID moves; Next consumes the committed

@@ -190,6 +190,11 @@ function renderPlayer(item, mode) {
   const session = createHostPlaybackSession(state.data.playback_generation, state.data.playback_program);
   Object.assign(session, { phase: 'binding', video: media('replacement-video'), audio: media('replacement-audio') });
   state.hostPlaybackSession = session;
+  const identity = { ...session.playbackProgram, playback_generation: session.playbackGeneration };
+  session.mediaBackend = BilikaraMediaBackend.createLegacyPlaybackAdapter({
+    program: identity, current: () => isCurrentHostPlaybackSession(session) ? identity : null,
+    ports: { load: () => beginHostPlaybackSessionElementLoading(session) },
+  });
   beginHostPlaybackSessionOwnershipClaim(session);
 }
 const observations = [];

@@ -7,7 +7,8 @@ import { root, runNative } from './desktop_construction_support.mjs';
 // Large, generated player fixtures exceed Windows' command-line limit. Node
 // reads the same CommonJS script from stdin; require still resolves from cwd.
 export function runNodeScript(script, timeout = 10_000, cwd = root, environment = process.env) {
-  return runNative(process.execPath, ['-'], environment, timeout, cwd, 'utf8', script);
+  return runNative(process.execPath, ['-'], environment, timeout, cwd, 'utf8',
+    readSourceText(path.join(root, 'static/media-backend.js')) + '\n' + script);
 }
 
 // Source contracts inspect semantic UTF-8 text, as the prior universal-newline
@@ -22,7 +23,8 @@ export function readSourceText(file, encoding = 'utf8') {
 export function hostOutputGuards() {
   const source=readSourceText(path.join(root,'static/app.js'));
   const part=(start,end)=>{const a=source.indexOf(start),b=source.indexOf(end,a);assert.ok(a>=0&&b>a);return source.slice(a,b);};
-  return part('function networkOutputOwnsPlayback()', 'function syncMediaOutputComponents()')
+  return readSourceText(path.join(root, 'static/media-backend.js')) + '\n'
+    + part('function networkOutputOwnsPlayback()', 'function syncMediaOutputComponents()')
     + part('function holdLocalPlaybackForNetworkOutput()', 'function renderPlayer(currentItem, playbackMode)');
 }
 
