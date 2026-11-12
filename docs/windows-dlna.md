@@ -4,6 +4,8 @@
 
 每次搜索同时使用 Windows 系统 UPnP、UDP 1900 的 SSDP 公告和各网卡的主动查询。系统 UPnP 或 UDP 1900 不可用时仍会主动查询。搜索最多监听 40 秒，验证通过的设备即时出现，可以直接选择。选择设备、关闭投屏开关或切回实体观众屏会结束搜索。
 
+和 Kirakara-App 一样，Windows 桌面端运行期间会保持系统和屏幕唤醒，退出时释放请求。手动睡眠、合盖和电源键仍由 Windows 处理。
+
 需要带 `show_host_set_audience_hud_state` 的 x64 Show（已针对 Kirakara Show `a045213` 验证）。开发时，从启动桌面端的同一 PowerShell 环境指定可信 DLL 的绝对路径：
 
 ```powershell
