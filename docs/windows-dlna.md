@@ -24,6 +24,8 @@ npm run dev
 - 音画延迟不生效，Host 和 Remote 的控件禁用，后端拒绝此项写入。Show 输出音量上限为 100%，既有本地设置不被投屏本身改写。
 - 不显示换歌倒计时。准备好的下一首先尝试预热；未缓存时等待缓存，Show 输出会话仍保持。
 
+Windows x64 的缓存任务同时保存下载的原始音视频轨和本地播放成品。Show 只读原始轨，负责输出 TS；本地播放和退出投屏后的恢复使用普通缓存文件。只有本地成品的旧缓存仍可用于本地播放；投屏时缓存服务会为当前和下一首补齐原始轨，等待期间保持投屏会话。
+
 Rust 负责 SSDP 发现与首次投放；一次投屏保留一个 Show 子进程、一个端口和一条持续 MPEG-TS 输出。自然结束、切歌、切音轨不重新投放 URI。不依赖接收端报告进度或缓冲；已进入接收端缓冲的内容仍按顺序播放，操控效果会晚于发送端状态。投屏断开时先结束 Show 和媒体读取，再收回临时缓存文件名；长时间投屏期间，本场用过的文件仍占用磁盘。
 
 ### 验证
@@ -50,5 +52,7 @@ node --test tests/show_cast_browser.test.mjs
 ```
 
 三轨回归使用 12 秒视频和三条可区分的音轨。设置 `BILIKARA_TEST_SHOW_TRACK_VIDEO`、`BILIKARA_TEST_SHOW_TRACK_FIRST`、`BILIKARA_TEST_SHOW_TRACK_SHORT`、`BILIKARA_TEST_SHOW_TRACK_LONG` 为对应的绝对路径，短轨约 3.8 秒，长轨超过 12 秒。执行同一 Cargo 测试命令时将用例名换成 `show_cast_real_dll_switches_three_parts_over_the_same_http_connection`。
+
+如需复现原始轨和本地成品不同的场景，可以在自然切歌用例中用 `BILIKARA_TEST_SHOW_NEXT_VIDEO`、`BILIKARA_TEST_SHOW_NEXT_AUDIO` 指定第二首的原始轨，再用 `BILIKARA_TEST_SHOW_NEXT_LOCAL_VIDEO`、`BILIKARA_TEST_SHOW_NEXT_LOCAL_AUDIO` 指定同一首的本地缓存成品。
 
 原生用例会启动实际 DLL 和播放进程，检查自然切歌、同一 HTTP 连接、待播字段与暂停交还。浏览器用例使用真实 Host 页面与受控的输出事件；可用 `BILIKARA_TEST_CHROMIUM_CHANNEL=msedge` 选择已安装的 Edge。两者都不代表特定电视的 DLNA 兼容性或实机缓冲已经验收。

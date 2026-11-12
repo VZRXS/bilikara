@@ -1,5 +1,7 @@
 use super::*;
 
+pub(super) const ORIGINAL_PENDING: &str = "cast_original_pending";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct AudioTrack {
     pub(super) id: String,
@@ -257,5 +259,12 @@ fn pin_path(context: &HostContext, route: &str) -> Result<(PathBuf, MediaLease),
     if !path.starts_with(&root) || !path.is_file() {
         return Err(ApiError::invalid("投屏媒体不在缓存目录中"));
     }
-    Ok((path, lease))
+    let original = crate::cache_runtime::resolve_show_input(&path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            ApiError::new(409, ORIGINAL_PENDING, "等待缓存原始投屏媒体")
+        } else {
+            ApiError::new(500, "cast_storage", "无法读取原始投屏媒体")
+        }
+    })?;
+    Ok((original, lease))
 }

@@ -72,6 +72,12 @@ const MAX_PARALLEL_TRACK_DOWNLOADS: usize = 4;
 const TRACK_ATTEMPTS: u32 = 10;
 const TRACK_RETRY_DELAY: Duration = Duration::from_secs(3);
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(30);
+const KEEP_SHOW_INPUTS: bool = cfg!(all(
+    feature = "native-host",
+    windows,
+    target_arch = "x86_64"
+));
+const SHOW_INPUT_DIRECTORY: &str = "show-inputs";
 static ATTEMPT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -104,6 +110,8 @@ pub struct CacheJobSpec {
         Arc<std::sync::OnceLock<Result<crate::youtube::Streams, crate::youtube::Error>>>,
     #[serde(skip)]
     pub(crate) executor: Executor,
+    #[serde(skip)]
+    pub(crate) require_show_inputs: bool,
     #[serde(default = "schema_version")]
     pub schema_version: u32,
     pub item_id: String,
@@ -335,6 +343,7 @@ struct TrackSpec {
 struct TrackResult {
     spec: TrackSpec,
     temporary_path: PathBuf,
+    show_source: Option<PathBuf>,
     final_name: String,
     probe: TrackValidation,
 }
@@ -1155,6 +1164,17 @@ impl CacheRuntime {
         let ready = state.completed.get(&job.item_id).is_some_and(|completed| {
             completed.reservation.item_incarnation_id == job.item_incarnation_id
                 && completed_artifacts_ready(cache_root, &completed.result)
+                && (!job.require_show_inputs
+                    || show_inputs_ready(
+                        cache_root,
+                        std::iter::once(Some(completed.result.video_relative_path.as_str())).chain(
+                            completed
+                                .result
+                                .audio_variants
+                                .iter()
+                                .map(|variant| variant.audio_url.strip_prefix("/media/")),
+                        ),
+                    ))
         });
         if !ready {
             state.completed.remove(&job.item_id);
@@ -1691,28 +1711,41 @@ fn run_track(
             continue;
         }
         emit_track_progress(shared, job, track, "validating", attempt, (0, 0));
-        let normalized =
-            if bbdown::default_passthrough(&job.spec, track.kind, stream.codec_name.as_deref()) {
-                bbdown::validate_default_track(&job.spec, track, &raw_path, cancel).and_then(
-                    |metadata| {
-                        fs::rename(&raw_path, &normalized_path).map_err(|_| {
-                            CacheRuntimeError::new("storage", "Cannot stage validated media")
-                        })?;
-                        Ok(TrackValidation::Inspected(metadata))
-                    },
-                )
-            } else {
-                normalize_track(&job.spec, track, &raw_path, &normalized_path, cancel)
-                    .map(TrackValidation::Normalized)
-            };
-        let _ = fs::remove_file(&raw_path);
+        let passthrough =
+            bbdown::default_passthrough(&job.spec, track.kind, stream.codec_name.as_deref());
+        let normalized = if passthrough {
+            bbdown::validate_default_track(&job.spec, track, &raw_path, cancel).and_then(
+                |metadata| {
+                    fs::rename(&raw_path, &normalized_path).map_err(|_| {
+                        CacheRuntimeError::new("storage", "Cannot stage validated media")
+                    })?;
+                    Ok(TrackValidation::Inspected(metadata))
+                },
+            )
+        } else {
+            normalize_track(&job.spec, track, &raw_path, &normalized_path, cancel)
+                .map(TrackValidation::Normalized)
+        };
         match normalized {
             Ok(probe) => {
+                // The input and the local playback result publish together.
+                // Passthrough already uses the original bytes for both.
+                let show_source = if KEEP_SHOW_INPUTS {
+                    Some(if passthrough {
+                        normalized_path.clone()
+                    } else {
+                        raw_path
+                    })
+                } else {
+                    let _ = fs::remove_file(&raw_path);
+                    None
+                };
                 let size = probe.file_bytes();
                 emit_track_progress(shared, job, track, "ready", attempt, (size, size));
                 return Ok(TrackResult {
                     spec: track.clone(),
                     temporary_path: normalized_path,
+                    show_source,
                     final_name,
                     probe,
                 });
@@ -2174,6 +2207,10 @@ where
     let canonical_staging = canonical_directory_within_cache_root(&job.cache_root, &staging_dir)?;
     fs::create_dir(&complete_dir)
         .map_err(|error| CacheRuntimeError::new("publish", error.to_string()))?;
+    if KEEP_SHOW_INPUTS {
+        fs::create_dir(complete_dir.join(SHOW_INPUT_DIRECTORY))
+            .map_err(|error| CacheRuntimeError::new("publish", error.to_string()))?;
+    }
     let mut final_names = HashSet::with_capacity(tracks.len());
     for track in &tracks {
         if track.probe.file_bytes() == 0
@@ -2195,7 +2232,11 @@ where
                 "validated cache track escaped its attempt staging directory",
             ));
         }
-        fs::rename(&track.temporary_path, complete_dir.join(&track.final_name))
+        let local = complete_dir.join(&track.final_name);
+        if KEEP_SHOW_INPUTS {
+            stage_show_input(track, &canonical_track, &canonical_staging, &local)?;
+        }
+        fs::rename(&track.temporary_path, &local)
             .map_err(|error| CacheRuntimeError::new("publish", error.to_string()))?;
     }
     authorize(&job.item_id, reservation)?;
@@ -2603,6 +2644,67 @@ fn clear_directory(root: &Path) -> Result<(), CacheRuntimeError> {
     Ok(())
 }
 
+// Source tracks accepted by the cache are MP4, including FLAC inside MP4.
+// Give Media Foundation the MP4 suffix even if local normalization emits FLAC.
+pub(crate) fn show_input_path(local: &Path) -> Option<PathBuf> {
+    let mut name = local.file_stem()?.to_os_string();
+    name.push(".mp4");
+    Some(local.with_file_name(SHOW_INPUT_DIRECTORY).join(name))
+}
+
+fn stage_show_input(
+    track: &TrackResult,
+    canonical_track: &Path,
+    canonical_staging: &Path,
+    local: &Path,
+) -> Result<(), CacheRuntimeError> {
+    let missing = || CacheRuntimeError::new("publish", "original track is missing or invalid");
+    let original = track.show_source.as_ref().ok_or_else(missing)?;
+    let destination = show_input_path(local).ok_or_else(missing)?;
+    let canonical_original = original.canonicalize().map_err(|_| missing())?;
+    let metadata = fs::symlink_metadata(original).map_err(|_| missing())?;
+    if !canonical_original.starts_with(canonical_staging)
+        || !metadata.is_file()
+        || metadata.len() == 0
+        || destination.exists()
+    {
+        return Err(missing());
+    }
+    let result = if canonical_original == canonical_track {
+        fs::hard_link(original, &destination)
+            .or_else(|_| fs::copy(original, &destination).map(|_| ()))
+    } else {
+        fs::rename(original, &destination)
+    };
+    result.map_err(|error| CacheRuntimeError::new("publish", error.to_string()))
+}
+
+// The local path must already be canonical and within the pinned artifact.
+pub(crate) fn resolve_show_input(local: &Path) -> std::io::Result<PathBuf> {
+    let input =
+        show_input_path(local).ok_or_else(|| std::io::Error::other("invalid local track path"))?;
+    let metadata = fs::symlink_metadata(&input)?;
+    if !metadata.is_file() || metadata.len() == 0 || input.canonicalize()? != input {
+        return Err(std::io::Error::other("invalid original track path"));
+    }
+    Ok(input)
+}
+
+fn show_inputs_ready<'a>(
+    cache_root: &Path,
+    tracks: impl IntoIterator<Item = Option<&'a str>>,
+) -> bool {
+    let Ok(root) = cache_root.canonicalize() else {
+        return false;
+    };
+    tracks.into_iter().all(|relative| {
+        relative
+            .and_then(|relative| safe_relative_cache_path(&root, relative))
+            .and_then(|path| path.canonicalize().ok())
+            .is_some_and(|path| path.starts_with(&root) && resolve_show_input(&path).is_ok())
+    })
+}
+
 pub(crate) fn existing_artifacts_ready(job: &CacheJobSpec) -> bool {
     if !job.reported_ready || job.existing_audio_variants.is_empty() {
         return false;
@@ -2615,10 +2717,20 @@ pub(crate) fn existing_artifacts_ready(job: &CacheJobSpec) -> bool {
     if !nonempty_file(&video_path) {
         return false;
     }
-    job.existing_audio_variants.iter().all(|variant| {
+    let local_ready = job.existing_audio_variants.iter().all(|variant| {
         safe_relative_cache_path(&job.cache_root, &variant.relative_path)
             .is_some_and(|path| reusable_audio_file(&path))
-    })
+    });
+    local_ready
+        && (!job.require_show_inputs
+            || show_inputs_ready(
+                &job.cache_root,
+                std::iter::once(Some(job.existing_video_relative_path.as_str())).chain(
+                    job.existing_audio_variants
+                        .iter()
+                        .map(|track| Some(track.relative_path.as_str())),
+                ),
+            ))
 }
 
 fn completed_artifacts_ready(cache_root: &Path, result: &CacheReadyResult) -> bool {
@@ -2967,6 +3079,12 @@ pathlib.Path(name).write_bytes(b'truncated' if n == 1 else (root/'valid.mp4').re
             .unwrap();
             ACQUIRED_STREAM.with(|s| *s.borrow_mut() = None);
             transfer.join().unwrap();
+            if KEEP_SHOW_INPUTS {
+                assert_eq!(
+                    fs::read(result.show_source.as_ref().unwrap()).unwrap(),
+                    fs::read(fixtures.join(name)).unwrap(),
+                );
+            }
             assert!(result.temporary_path.is_file());
             assert!(
                 result.temporary_path.starts_with(
@@ -3081,6 +3199,7 @@ pathlib.Path(name).write_bytes(b'truncated' if n == 1 else (root/'valid.mp4').re
             media_source: Default::default(),
             youtube_streams: Default::default(),
             executor: Executor::Native,
+            require_show_inputs: false,
             display_title: "Fixture song".to_owned(),
             schema_version: 1,
             item_id: "song-a".to_owned(),
@@ -3217,6 +3336,11 @@ pathlib.Path(name).write_bytes(b'truncated' if n == 1 else (root/'valid.mp4').re
                 fs::create_dir(&track_dir).expect("track directory");
                 let temporary_path = track_dir.join(&final_name);
                 fs::write(&temporary_path, format!("fixture-{final_name}")).expect("track fixture");
+                let show_source = KEEP_SHOW_INPUTS.then(|| {
+                    let source = track_dir.join("original.mp4");
+                    fs::write(&source, format!("original-{final_name}")).expect("original fixture");
+                    source
+                });
                 let file_bytes = temporary_path.metadata().expect("metadata").len();
                 TrackResult {
                     spec,
@@ -3236,10 +3360,83 @@ pathlib.Path(name).write_bytes(b'truncated' if n == 1 else (root/'valid.mp4').re
                         fast_start: true,
                     }),
                     temporary_path,
+                    show_source,
                     final_name,
                 }
             })
             .collect()
+    }
+
+    #[cfg(all(feature = "native-host", windows, target_arch = "x86_64"))]
+    #[test]
+    fn missing_show_inputs_refresh_an_old_cache_without_retiring_it() {
+        let root = publication_root("show-input-refresh");
+        let mut job = job(&root);
+        let old = reservation(1);
+        let tracks = publication_tracks(&job, &old);
+        let ready = publish_tracks_with_authorizer(&job, &old, tracks, |_, _| Ok(())).unwrap();
+        let video = root.join(&ready.video_relative_path);
+        let original = resolve_show_input(&video.canonicalize().unwrap()).unwrap();
+        assert_eq!(fs::read(&original).unwrap(), b"original-video-p1.mp4");
+        assert_eq!(fs::read(&video).unwrap(), b"fixture-video-p1.mp4");
+        let audio = root.join(
+            ready.audio_variants[0]
+                .audio_url
+                .strip_prefix("/media/")
+                .unwrap(),
+        );
+        assert_eq!(
+            fs::read(resolve_show_input(&audio.canonicalize().unwrap()).unwrap()).unwrap(),
+            b"original-audio-p1.m4a",
+        );
+
+        // Simulate a cache that predates original track publication.
+        fs::remove_file(original).unwrap();
+        job.reported_ready = true;
+        job.existing_video_relative_path = ready.video_relative_path;
+        job.existing_audio_variants = ready
+            .audio_variants
+            .iter()
+            .map(|variant| ExistingAudioVariant {
+                id: variant.id.clone(),
+                label: variant.label.clone(),
+                page: variant.page,
+                relative_path: variant.audio_url.strip_prefix("/media/").unwrap().into(),
+            })
+            .collect();
+        let mut refresh = reservation(2);
+        refresh
+            .item_incarnation_id
+            .clone_from(&old.item_incarnation_id);
+        refresh.artifact_relative_directory = format!(
+            "artifacts/{}/{}",
+            refresh.item_incarnation_id, refresh.artifact_set_id
+        );
+        refresh.refresh = true;
+        let runtime = CacheRuntime::new_without_workers(Arc::new(move |_, _| Ok(refresh.clone())));
+        let sync = |job: &CacheJobSpec| {
+            runtime
+                .sync(
+                    &root,
+                    HashMap::from([(job.item_id.clone(), job.item_incarnation_id.clone())]),
+                    vec![job.item_id.clone()],
+                    vec![job.clone()],
+                    vec![job.item_id.clone()],
+                    "",
+                )
+                .unwrap()
+        };
+        assert_eq!(sync(&job)["snapshot"]["pending_ids"], json!([]));
+        job.require_show_inputs = true;
+        let scheduled = sync(&job);
+        assert_eq!(scheduled["snapshot"]["pending_ids"], json!([job.item_id]));
+        assert_eq!(
+            sync(&job)["cache_attempt_tokens"],
+            scheduled["cache_attempt_tokens"]
+        );
+        assert_eq!(fs::read(&video).unwrap(), b"fixture-video-p1.mp4");
+        assert_eq!(fs::read(&audio).unwrap(), b"fixture-audio-p1.m4a");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

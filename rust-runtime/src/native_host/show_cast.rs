@@ -86,6 +86,10 @@ pub(crate) struct CastState {
 }
 
 impl CastState {
+    pub(super) fn needs_original_tracks(&self) -> bool {
+        matches!(self.phase, Phase::Connecting | Phase::Active)
+    }
+
     pub(crate) fn snapshot(&self) -> Value {
         json!({
             "supported": self.supported, "available": self.available,
@@ -693,6 +697,18 @@ impl Active {
         Ok(())
     }
 
+    fn wait_for_media(&mut self, generation: u64) -> Result<(), ApiError> {
+        if self.waiting_generation != Some(generation) {
+            if self.programme.take().is_some() {
+                self.native.stop().map_err(native_error)?;
+                self.want_play = true;
+            }
+            self.waiting_generation = Some(generation);
+            self.last_report = None;
+        }
+        Ok(())
+    }
+
     fn tick(&mut self, context: &HostContext) -> Result<(), ApiError> {
         let (snapshot, command, hud) = with_app(|app| {
             let snapshot = app.native_cast_input()?;
@@ -715,24 +731,28 @@ impl Active {
         let item = snapshot.current_item.as_ref();
         let media = item.map(MediaKey::from_ready).transpose()?.flatten();
         let status = if let (Some(item), Some(media)) = (item, media) {
-            if self.programme.as_ref().is_none_or(|loaded| {
+            let load = if self.programme.as_ref().is_none_or(|loaded| {
                 loaded.generation != generation
                     || loaded.media.video != media.video
                     || loaded.audio() != &media.first
-            }) && !self.load(context, &snapshot, item, media)?
-            {
-                return Ok(());
-            }
-            Some(self.native.status().map_err(native_error)?)
-        } else {
-            if self.waiting_generation != Some(generation) {
-                if self.programme.take().is_some() {
-                    self.native.stop().map_err(native_error)?;
-                    self.want_play = true;
+            }) {
+                self.load(context, &snapshot, item, media)
+            } else {
+                Ok(true)
+            };
+            match load {
+                Ok(true) => Some(self.native.status().map_err(native_error)?),
+                Ok(false) => return Ok(()),
+                Err(error) if error.code == media::ORIGINAL_PENDING => {
+                    // An old cache may only have the local playback files.
+                    // The cache worker upgrades it while the Cast stream stays up.
+                    self.wait_for_media(generation)?;
+                    None
                 }
-                self.waiting_generation = Some(generation);
-                self.last_report = None;
+                Err(error) => return Err(error),
             }
+        } else {
+            self.wait_for_media(generation)?;
             None
         };
         if !owns_programme(generation)? {

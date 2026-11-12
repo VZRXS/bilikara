@@ -14,6 +14,13 @@ impl Drop for FixtureDirectory {
     }
 }
 
+fn stage_track(source: &Path, local: &Path) {
+    let original = crate::cache_runtime::show_input_path(local).unwrap();
+    std::fs::create_dir_all(original.parent().unwrap()).unwrap();
+    std::fs::copy(source, original).unwrap();
+    std::fs::copy(source, local).unwrap();
+}
+
 fn add_programme(
     root: &Path,
     id: &str,
@@ -58,14 +65,13 @@ fn add_programme(
     let reserved = reserved.result().unwrap();
     let relative = reserved["artifact_relative_directory"].as_str().unwrap();
     let artifact = root.join(relative);
-    std::fs::create_dir_all(&artifact).unwrap();
-    std::fs::copy(video, artifact.join("video.mp4")).unwrap();
+    stage_track(video, &artifact.join("video.mp4"));
     let variants = audio
         .iter()
         .map(|(page, source)| {
             let name =
                 PathBuf::from(format!("audio-p{page}")).with_extension(source.extension().unwrap());
-            std::fs::copy(source, artifact.join(&name)).unwrap();
+            stage_track(source, &artifact.join(&name));
             json!({"id":format!("p{page}_original"),"label":"Original","page":page,
             "audio_url":format!("/media/{relative}/{}", name.to_str().unwrap())})
         })
@@ -176,10 +182,56 @@ fn fixture_renderer() -> Renderer {
 }
 
 #[test]
+fn cast_keeps_original_track_bytes_and_never_uses_the_local_copy() {
+    let _global = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (_cleanup, context) = fixture_context();
+    let video = context.directory.join("source.mp4");
+    let audio = context.directory.join("source.m4a");
+    std::fs::write(&video, b"original video").unwrap();
+    std::fs::write(&audio, b"original audio").unwrap();
+    let artifact = add_programme(
+        &context.cache_root,
+        "originals",
+        "Alice",
+        &video,
+        &[(1, &audio)],
+    );
+    let local_video = artifact.join("video.mp4");
+    let local_audio = artifact.join("audio-p1.m4a");
+    std::fs::write(&local_video, b"normalized video").unwrap();
+    std::fs::write(&local_audio, b"normalized audio").unwrap();
+    let item = with_app(|app| Ok(app.native_cast_input()?.current_item.unwrap())).unwrap();
+    let key = MediaKey::from_ready(&item).unwrap().unwrap();
+    let mut files = SessionFiles::new(&context).unwrap();
+    let paths = files.paths(&context, &key).unwrap();
+    assert_eq!(std::fs::read(&paths.video).unwrap(), b"original video");
+    assert_eq!(std::fs::read(&paths.first).unwrap(), b"original audio");
+
+    // The session owns its link even if cache collection removes the input.
+    let original = crate::cache_runtime::show_input_path(&local_video).unwrap();
+    std::fs::remove_file(&original).unwrap();
+    assert_eq!(std::fs::read(&paths.video).unwrap(), b"original video");
+    drop(files);
+    let mut files = SessionFiles::new(&context).unwrap();
+    assert_eq!(
+        files.paths(&context, &key).err().unwrap().code,
+        media::ORIGINAL_PENDING,
+    );
+    assert_eq!(std::fs::read(&local_video).unwrap(), b"normalized video");
+    assert_eq!(std::fs::read(&local_audio).unwrap(), b"normalized audio");
+}
+
+#[test]
 #[ignore = "requires a real Windows Show DLL, Host executable, and short H.264/AAC fixtures"]
 fn show_cast_real_dll_advances_over_the_same_http_connection() {
     let video = required("BILIKARA_TEST_SHOW_VIDEO");
     let audio = required("BILIKARA_TEST_SHOW_AUDIO");
+    let next_video = std::env::var_os("BILIKARA_TEST_SHOW_NEXT_VIDEO")
+        .map_or_else(|| video.clone(), PathBuf::from);
+    let next_audio = std::env::var_os("BILIKARA_TEST_SHOW_NEXT_AUDIO")
+        .map_or_else(|| audio.clone(), PathBuf::from);
     let _global = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -191,7 +243,26 @@ fn show_cast_real_dll_advances_over_the_same_http_connection() {
         &video,
         &[(1, &audio)],
     );
-    add_programme(&context.cache_root, "beta", "Bob", &video, &[(1, &audio)]);
+    let next = add_programme(
+        &context.cache_root,
+        "beta",
+        "Bob",
+        &next_video,
+        &[(1, &next_audio)],
+    );
+    let local_video = next.join("video.mp4");
+    for (env, destination) in [
+        ("BILIKARA_TEST_SHOW_NEXT_LOCAL_VIDEO", local_video.clone()),
+        (
+            "BILIKARA_TEST_SHOW_NEXT_LOCAL_AUDIO",
+            next.join("audio-p1")
+                .with_extension(next_audio.extension().unwrap()),
+        ),
+    ] {
+        if let Some(source) = std::env::var_os(env) {
+            std::fs::copy(source, destination).unwrap();
+        }
+    }
     let mut native = open_native();
     let port = native.start_stream().unwrap();
     assert_eq!(native.served_streams().unwrap(), 0);
@@ -293,6 +364,14 @@ fn show_cast_real_dll_advances_over_the_same_http_connection() {
         assert_ne!(snapshot["cast_active"], true);
         assert_eq!(snapshot["show_cast"]["resume"]["item_id"], "beta");
         assert_eq!(snapshot["show_cast"]["resume"]["was_playing"], false);
+        assert_eq!(
+            context.cache_root.join(
+                snapshot["current_item"]["video_relative_path"]
+                    .as_str()
+                    .unwrap()
+            ),
+            local_video,
+        );
         Ok(())
     })
     .unwrap();
@@ -317,9 +396,12 @@ fn show_cast_real_dll_switches_three_parts_over_the_same_http_connection() {
         &[(3, &long), (1, &first), (4, &first), (2, &short)],
     );
     std::fs::remove_file(
-        artifact
-            .join("audio-p4")
-            .with_extension(first.extension().unwrap()),
+        crate::cache_runtime::show_input_path(
+            &artifact
+                .join("audio-p4")
+                .with_extension(first.extension().unwrap()),
+        )
+        .unwrap(),
     )
     .unwrap();
     let incarnation = with_app(|app| {
