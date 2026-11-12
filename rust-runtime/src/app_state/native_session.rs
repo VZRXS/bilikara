@@ -1245,6 +1245,7 @@ impl AppState {
             .ok_or_else(|| ApiError::new(503, "state_unavailable", "Rust Host 尚未初始化"))?;
         Ok(crate::native_host::show_cast::CastInput {
             playback_generation: data.playback_generation,
+            restart_generation: self.native_session.show_cast.restart_generation,
             queue_version: data.queue_version(),
             current_item: data.current_item.clone(),
             upcoming: data.playlist.iter().take(4).cloned().collect(),

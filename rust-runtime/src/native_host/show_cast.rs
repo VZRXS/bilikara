@@ -5,12 +5,12 @@ use super::*;
 use crate::app_state::{AppStateRequest, PlaylistItem};
 use crate::show_dlna::{self, Renderer};
 use crate::show_host_process::ShowHostProcess;
-use crate::windows_show_host::{HudRow, QueueHud, Status};
+use crate::windows_show_host::{AudioSlot, HudRow, QueueHud, Status};
 use serde::Deserialize;
 use std::time::Instant;
 
 mod media;
-use media::{MediaKey, SessionFiles};
+use media::{AudioTrack, MediaKey, MediaPaths, SessionFiles};
 
 #[cfg(all(test, windows, target_arch = "x86_64"))]
 mod tests;
@@ -60,6 +60,7 @@ struct Titles {
 /// ratings or entire playlist ten times per second.
 pub(crate) struct CastInput {
     pub(crate) playback_generation: u64,
+    pub(crate) restart_generation: u64,
     pub(crate) queue_version: String,
     pub(crate) current_item: Option<PlaylistItem>,
     pub(crate) upcoming: Vec<PlaylistItem>,
@@ -74,6 +75,7 @@ pub(crate) struct CastState {
     available: bool,
     phase: Phase,
     pub(crate) owns_playback: bool,
+    pub(crate) restart_generation: u64,
     operation: u64,
     pending: Option<Command>,
     renderers: Vec<Renderer>,
@@ -274,6 +276,13 @@ struct Programme {
     item_id: String,
     incarnation: String,
     media: MediaKey,
+    audio_slot: AudioSlot,
+}
+
+impl Programme {
+    fn audio(&self) -> &AudioTrack {
+        self.media.track(self.audio_slot)
+    }
 }
 
 struct Active {
@@ -417,9 +426,61 @@ impl Active {
         context: &HostContext,
         snapshot: &CastInput,
         item: &PlaylistItem,
-        media: MediaKey,
+        mut media: MediaKey,
     ) -> Result<bool, ApiError> {
         let generation = snapshot.playback_generation;
+        let previous = self.programme.clone();
+        let same_item = previous
+            .as_ref()
+            .filter(|old| old.incarnation == item.item_incarnation_id);
+        let switching = same_item.filter(|old| {
+            old.media.video == media.video && snapshot.restart_generation <= old.generation
+        });
+        if let Some(old) = switching {
+            if let Some(slot) = old.media.slot_for(&media.first) {
+                if !owns_programme(generation)? {
+                    return Ok(false);
+                }
+                if slot != old.audio_slot {
+                    let audio_end = self.files.audio_duration(old.audio());
+                    let position = self.native.status().map_err(native_error)?.position;
+                    if let Err(error) = self.native.set_audio_track(slot) {
+                        if error.code == "TRACK_SWITCH_FAILED" {
+                            return self.reject_audio_switch(generation, native_error(error));
+                        }
+                        return Err(native_error(error));
+                    }
+                    if audio_end.is_none_or(|end| position + 0.25 >= end) {
+                        // The shorter track can exhaust its PCM worker while
+                        // the video clock keeps running. Re-anchor only audio
+                        // to the current Cast clock before leaving that tail.
+                        self.native.set_audio_offset(0.0).map_err(native_error)?;
+                    }
+                }
+                let loaded = self.programme.as_mut().expect("resident audio programme");
+                loaded.audio_slot = slot;
+                loaded.generation = generation;
+                self.last_report = None;
+                return owns_programme(generation);
+            }
+            // The DLL can only change the selected slot in place. Reload the
+            // pair in this session with the current audible track as standby.
+            media.second = Some(old.audio().clone());
+        }
+        let paths = self.files.paths(context, &media);
+        if !owns_programme(generation)? {
+            return Ok(false);
+        }
+        let paths = match paths {
+            Err(error) if switching.is_some() => {
+                return self.reject_audio_switch(generation, error);
+            }
+            paths => paths?,
+        };
+        if paths.second.is_none() {
+            media.second = None;
+        }
+
         let mut position = 0.0;
         if let Some(initial) = self
             .initial
@@ -429,38 +490,57 @@ impl Active {
             position = initial["current_time"].as_f64().unwrap_or(0.0);
             self.want_play =
                 initial["is_paused"] != true || initial["observed_phase"] == "starting";
-        } else if let Some(old) = &self.programme {
-            if old.incarnation == item.item_incarnation_id {
-                if old.media != media {
-                    // Track/cache replacement keeps the song position. A
-                    // restart with unchanged media begins at zero instead.
-                    position = self.native.status().map_err(native_error)?.position;
-                }
-            } else {
-                self.want_play = true;
+        } else if let Some(old) = same_item {
+            if snapshot.restart_generation <= old.generation {
+                position = self.native.status().map_err(native_error)?.position;
             }
+        } else if previous.is_some() {
+            self.want_play = true;
         }
-        let paths = self.files.paths(context, &media);
-        if !owns_programme(generation)? {
-            return Ok(false);
+
+        self.prepared = None;
+        if let Err(error) = self.play_media(&paths, AudioSlot::First, position) {
+            if let Some(old) = switching {
+                // Load can discard the previous native programme before it
+                // reports failure. Reopen the resident pair before rolling back
+                // the selection, while retaining the HTTP/TS session.
+                let previous_paths = self.files.paths(context, &old.media)?;
+                self.play_media(&previous_paths, old.audio_slot, position)?;
+                self.loaded_at = Instant::now();
+                self.saw_playback = false;
+                self.last_report = None;
+                return self.reject_audio_switch(generation, error);
+            }
+            return Err(error);
         }
-        let (video, audio) = paths?;
-        let loaded = self.native.load(&video, &audio).map_err(native_error);
-        if !owns_programme(generation)? {
-            return Ok(false);
-        }
-        loaded?;
         self.programme = Some(Programme {
             generation,
             item_id: item.id.clone(),
             incarnation: item.item_incarnation_id.clone(),
             media,
+            audio_slot: AudioSlot::First,
         });
         self.waiting_generation = None;
-        self.prepared = None;
         self.saw_playback = false;
         self.loaded_at = Instant::now();
         self.last_report = None;
+        // Record the physical programme even if another selection arrived
+        // while Show was loading. The next tick must see the actual slots.
+        owns_programme(generation)
+    }
+
+    fn play_media(
+        &mut self,
+        paths: &MediaPaths,
+        slot: AudioSlot,
+        position: f64,
+    ) -> Result<(), ApiError> {
+        self.native
+            .load_pair(&paths.video, &paths.first, paths.second.as_deref())
+            .map_err(native_error)?;
+        if slot == AudioSlot::Second {
+            self.native.set_audio_track(slot).map_err(native_error)?;
+        }
         // Load has a separate source clock; no Cast HTTP/encoder reset.
         if position > 0.0 {
             let duration = self.native.status().map_err(native_error)?.duration;
@@ -474,7 +554,30 @@ impl Active {
         if self.want_play {
             self.native.play().map_err(native_error)?;
         }
-        Ok(true)
+        Ok(())
+    }
+
+    fn reject_audio_switch(&self, generation: u64, error: ApiError) -> Result<bool, ApiError> {
+        eprintln!("[show-cast] audio switch rejected: {error}");
+        let old = self
+            .programme
+            .as_ref()
+            .expect("switch requires a resident programme");
+        with_app(|app| {
+            if app.native_cast_generation(generation) {
+                let result = app.native_execute(AppStateRequest::SetAudioVariant {
+                    schema_version: 1,
+                    item_id: old.item_id.clone(),
+                    expected_item_incarnation_id: old.incarnation.clone(),
+                    variant_id: old.audio().id.clone(),
+                    now: now(),
+                })?;
+                if result["found"] != true {
+                    return Err(error);
+                }
+            }
+            Ok(false)
+        })
     }
 
     fn command(
@@ -612,11 +715,11 @@ impl Active {
         let item = snapshot.current_item.as_ref();
         let media = item.map(MediaKey::from_ready).transpose()?.flatten();
         let status = if let (Some(item), Some(media)) = (item, media) {
-            if self
-                .programme
-                .as_ref()
-                .is_none_or(|loaded| loaded.generation != generation || loaded.media != media)
-                && !self.load(context, &snapshot, item, media)?
+            if self.programme.as_ref().is_none_or(|loaded| {
+                loaded.generation != generation
+                    || loaded.media.video != media.video
+                    || loaded.audio() != &media.first
+            }) && !self.load(context, &snapshot, item, media)?
             {
                 return Ok(());
             }
@@ -649,9 +752,9 @@ impl Active {
             && self.prepared.as_ref() != Some(&next)
         {
             // Prewarming is opportunistic; normal load remains the fallback.
-            if let Ok((video, audio)) = self.files.paths(context, &next) {
+            if let Ok(paths) = self.files.paths(context, &next) {
                 self.native
-                    .prepare_next(&video, &audio)
+                    .prepare_next(&paths.video, &paths.first, paths.second.as_deref())
                     .map_err(native_error)?;
                 self.prepared = Some(next);
             }

@@ -31,6 +31,7 @@ const REQUIRED_SYMBOLS: &[&str] = &[
     "show_host_set_volume",
     "show_host_set_key_semitones",
     "show_host_set_audio_clock_offset",
+    "show_host_set_audio_track",
     "show_host_get_state",
     "show_host_get_position",
     "show_host_get_duration",

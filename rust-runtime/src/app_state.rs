@@ -5441,6 +5441,12 @@ impl AppState {
                     if clears_controls {
                         self.player_controls.clear();
                     }
+                    #[cfg(feature = "native-host")]
+                    if mutation.force_program_lifetime
+                        && self.native_session.show_cast.owns_playback
+                    {
+                        self.native_session.show_cast.restart_generation = next.playback_generation;
+                    }
                     self.data = Some(next);
                     #[cfg(feature = "native-host")]
                     self.notify_analysis(clears_controls);

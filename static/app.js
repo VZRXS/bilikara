@@ -21245,29 +21245,26 @@ async function handleAudioVariantSelection(event) {
     return;
   }
 
-  const playbackSession = state.hostPlaybackSession;
-  const video = playbackSession?.video;
-  if (
-    !isCurrentHostPlaybackSession(
-      playbackSession,
-      video,
-      playbackSession?.audio,
-    )
-  ) {
-    return;
+  let pendingRestore = null;
+  if (state.data.cast_active !== true) {
+    const playbackSession = state.hostPlaybackSession;
+    const video = playbackSession?.video;
+    if (!isCurrentHostPlaybackSession(playbackSession, video, playbackSession?.audio)) {
+      return;
+    }
+    pendingRestore = {
+      itemId: currentItem.id,
+      itemIncarnationId: currentItem.item_incarnation_id,
+      variantId: nextVariantId,
+      currentTime: video ? Number(video.currentTime || 0) : 0,
+      // Buffering/clock recovery can hold video without changing play intent.
+      wasPlaying: Boolean(playbackSession.logicalPlayIntent),
+    };
+    state.pendingPlaybackRestore = pendingRestore;
   }
   state.audioVariantSwitchInFlight = true;
   state.audioVariantSwitchUnlockAt = Date.now() + audioVariantSwitchDebounceMs;
   renderAudioVariantBar(currentItem, frontendPlaybackMode(state.data?.playback_mode));
-  const pendingRestore = {
-    itemId: currentItem.id,
-    itemIncarnationId: currentItem.item_incarnation_id,
-    variantId: nextVariantId,
-    currentTime: video ? Number(video.currentTime || 0) : 0,
-    // Buffering/clock recovery can hold video without changing play intent.
-    wasPlaying: Boolean(playbackSession.logicalPlayIntent),
-  };
-  state.pendingPlaybackRestore = pendingRestore;
   try {
     const outcome = await apiPostExactStateCommand("/api/player/audio-variant", {
       item_id: currentItem.id,
@@ -21275,14 +21272,14 @@ async function handleAudioVariantSelection(event) {
       expected_item_incarnation_id: currentItem.item_incarnation_id,
     });
     if (!outcome.commandApplied) {
-      if (state.pendingPlaybackRestore === pendingRestore) {
+      if (pendingRestore && state.pendingPlaybackRestore === pendingRestore) {
         state.pendingPlaybackRestore = null;
       }
       state.audioVariantSwitchUnlockAt = 0;
     }
     render();
   } catch (error) {
-    if (state.pendingPlaybackRestore === pendingRestore) {
+    if (pendingRestore && state.pendingPlaybackRestore === pendingRestore) {
       state.pendingPlaybackRestore = null;
     }
     setAppMessage(error.message, true);

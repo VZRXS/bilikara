@@ -19,6 +19,8 @@ npm run dev
 
 - 待播卡片显示当前歌与后四首。歌名使用主控已有的清理规则，第二栏为点歌人。Show 按自身规则展示浮窗；本分支不发送二维码。
 - 进度条为只读的发送端进度。现有前后 15 秒按钮、暂停/继续、下一首和变调交给 Show，不向接收端发 Pause 或 Seek。
+- 投屏时先载入当前选中的音轨，以及 P 数最靠前的另一条已缓存音轨。两条已载入的轨可以原地切换。选到其他已缓存分 P 时，Show 在同一个 TS 会话里换入目标轨和正在播的轨，从当前进度继续。这次换入会重新缓冲视频。
+- 同一首歌始终按所选视频的时间轴播放。音轨较短时尾部输出静音，音轨较长时播放到视频结尾。跨分 P 的剪辑差异沿用各自的原始时间轴。
 - 音画延迟不生效，Host 和 Remote 的控件禁用，后端拒绝此项写入。Show 输出音量上限为 100%，既有本地设置不被投屏本身改写。
 - 不显示换歌倒计时。准备好的下一首先尝试预热；未缓存时等待缓存，Show 输出会话仍保持。
 
@@ -46,5 +48,7 @@ npm run test:frontend
 cargo test --locked --manifest-path rust-runtime/Cargo.toml --features native-host --lib show_cast_real_dll_advances_over_the_same_http_connection -- --ignored
 node --test tests/show_cast_browser.test.mjs
 ```
+
+三轨回归使用 12 秒视频和三条可区分的音轨。设置 `BILIKARA_TEST_SHOW_TRACK_VIDEO`、`BILIKARA_TEST_SHOW_TRACK_FIRST`、`BILIKARA_TEST_SHOW_TRACK_SHORT`、`BILIKARA_TEST_SHOW_TRACK_LONG` 为对应的绝对路径，短轨约 3.8 秒，长轨超过 12 秒。执行同一 Cargo 测试命令时将用例名换成 `show_cast_real_dll_switches_three_parts_over_the_same_http_connection`。
 
 原生用例会启动实际 DLL 和播放进程，检查自然切歌、同一 HTTP 连接、待播字段与暂停交还。浏览器用例使用真实 Host 页面与受控的输出事件；可用 `BILIKARA_TEST_CHROMIUM_CHANNEL=msedge` 选择已安装的 Edge。两者都不代表特定电视的 DLNA 兼容性或实机缓冲已经验收。

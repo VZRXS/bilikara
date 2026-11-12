@@ -14,21 +14,31 @@ impl Drop for FixtureDirectory {
     }
 }
 
-fn add_programme(root: &Path, id: &str, name: &str, video: &Path, audio: &Path) {
+fn add_programme(
+    root: &Path,
+    id: &str,
+    name: &str,
+    video: &Path,
+    audio: &[(u32, &Path)],
+) -> PathBuf {
     let result = |input: Value| {
         let reply = execute_app_state(serde_json::from_value(input).unwrap());
         assert!(reply.error().is_none(), "{:?}", reply.error());
         reply
     };
+    let pages = audio.iter().map(|(page, _)| *page).collect::<Vec<_>>();
+    let cids = pages.iter().map(|page| page + 1).collect::<Vec<_>>();
+    let durations = vec![4; pages.len()];
+    let parts = vec!["Original"; pages.len()];
     let item = json!({
         "id":id,"original_url":"https://www.bilibili.com/video/BV1z84y1p7oS",
         "resolved_url":"https://www.bilibili.com/video/BV1z84y1p7oS?p=1",
         "bvid":"BV1z84y1p7oS","aid":1,"cid":2,"page":1,"video_page":1,
         "title":format!("Song {id}"),"part_title":"Original",
         "display_title":format!("Song {id}"),"cover_url":"","embed_url":"",
-        "selected_pages":[1],"selected_cids":[2],"selected_durations":[4],
-        "selected_parts":["Original"],"available_pages":[1],"available_cids":[2],
-        "available_durations":[4],"available_parts":["Original"],
+        "selected_pages":pages,"selected_cids":cids,"selected_durations":durations,
+        "selected_parts":parts,"available_pages":pages,"available_cids":cids,
+        "available_durations":durations,"available_parts":parts,
     });
     let reply = result(json!({
         "schema_version":1, "command":"add_item", "item":item, "position":"tail",
@@ -50,7 +60,16 @@ fn add_programme(root: &Path, id: &str, name: &str, video: &Path, audio: &Path) 
     let artifact = root.join(relative);
     std::fs::create_dir_all(&artifact).unwrap();
     std::fs::copy(video, artifact.join("video.mp4")).unwrap();
-    std::fs::copy(audio, artifact.join("audio.m4a")).unwrap();
+    let variants = audio
+        .iter()
+        .map(|(page, source)| {
+            let name =
+                PathBuf::from(format!("audio-p{page}")).with_extension(source.extension().unwrap());
+            std::fs::copy(source, artifact.join(&name)).unwrap();
+            json!({"id":format!("p{page}_original"),"label":"Original","page":page,
+            "audio_url":format!("/media/{relative}/{}", name.to_str().unwrap())})
+        })
+        .collect::<Vec<_>>();
     result(json!({
         "schema_version":1,"command":"apply_cache_event","item_id":id,
         "cache_attempt_token":reserved["cache_attempt_token"], "now":3.0,
@@ -59,35 +78,27 @@ fn add_programme(root: &Path, id: &str, name: &str, video: &Path, audio: &Path) 
             "artifact_set_id":reserved["artifact_set_id"],"artifact_relative_directory":relative,
             "video_relative_path":format!("{relative}/video.mp4"),
             "video_media_url":format!("/media/{relative}/video.mp4"),
-            "audio_variants":[{"id":"p1_original","label":"Original","page":1,
-                "audio_url":format!("/media/{relative}/audio.m4a")}],
+            "audio_variants":variants,
             "selected_audio_variant_id":"p1_original"
         }
     }));
+    artifact
 }
 
-#[test]
-#[ignore = "requires a real Windows Show DLL, Host executable, and short H.264/AAC fixtures"]
-fn show_cast_real_dll_advances_over_the_same_http_connection() {
-    let required = |name| {
-        PathBuf::from(std::env::var_os(name).expect(name))
-            .canonicalize()
-            .unwrap()
-    };
-    let executable = required("BILIKARA_TEST_SHOW_HOST_EXE");
-    let dll = required("BILIKARA_TEST_SHOW_DLL");
-    let video = required("BILIKARA_TEST_SHOW_VIDEO");
-    let audio = required("BILIKARA_TEST_SHOW_AUDIO");
-    let _global = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+fn required(name: &str) -> PathBuf {
+    PathBuf::from(std::env::var_os(name).expect(name))
+        .canonicalize()
+        .unwrap()
+}
+
+fn fixture_context() -> (FixtureDirectory, HostContext) {
     execute_app_state(AppStateRequest::Shutdown { schema_version: 1 });
     let directory = std::env::temp_dir()
         .canonicalize()
         .unwrap()
         .join(format!("bilikara-show-test-{}", token().unwrap()));
     std::fs::create_dir(&directory).unwrap();
-    let _cleanup = FixtureDirectory(directory.clone());
+    let cleanup = FixtureDirectory(directory.clone());
     let seed: AppStateSeed = serde_json::from_value(json!({
         "session_users":["Alice","Bob"],"session_started_at":1.0,"session_played_file":"fixture.json","updated_at":1.0
     })).unwrap();
@@ -103,8 +114,6 @@ fn show_cast_real_dll_advances_over_the_same_http_connection() {
     crate::app_state::with_cache_application(|app| app.open_artifact_lifetime(&cache_root))
         .unwrap()
         .unwrap();
-    add_programme(&cache_root, "alpha", "Alice", &video, &audio);
-    add_programme(&cache_root, "beta", "Bob", &video, &audio);
     let context = HostContext {
         directory,
         cache_root,
@@ -124,9 +133,10 @@ fn show_cast_real_dll_advances_over_the_same_http_connection() {
         desktop_installation: None,
         workers: Default::default(),
     };
-    let mut native = ShowHostProcess::with_executable(&executable, &dll).unwrap();
-    let port = native.start_stream().unwrap();
-    assert_eq!(native.served_streams().unwrap(), 0);
+    (cleanup, context)
+}
+
+fn open_receiver(port: u16) -> BufReader<TcpStream> {
     let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(6)))
@@ -145,6 +155,47 @@ fn show_cast_real_dll_advances_over_the_same_http_connection() {
             break;
         }
     }
+    receiver
+}
+
+fn open_native() -> ShowHostProcess {
+    let executable = required("BILIKARA_TEST_SHOW_HOST_EXE");
+    let dll = required("BILIKARA_TEST_SHOW_DLL");
+    ShowHostProcess::with_executable(&executable, &dll).unwrap()
+}
+
+fn fixture_renderer() -> Renderer {
+    Renderer {
+        id: "fixture".into(),
+        name: "Fixture reader".into(),
+        location: String::new(),
+        av_transport_url: String::new(),
+        av_transport_type: String::new(),
+        local_address: Ipv4Addr::LOCALHOST,
+    }
+}
+
+#[test]
+#[ignore = "requires a real Windows Show DLL, Host executable, and short H.264/AAC fixtures"]
+fn show_cast_real_dll_advances_over_the_same_http_connection() {
+    let video = required("BILIKARA_TEST_SHOW_VIDEO");
+    let audio = required("BILIKARA_TEST_SHOW_AUDIO");
+    let _global = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (_cleanup, context) = fixture_context();
+    add_programme(
+        &context.cache_root,
+        "alpha",
+        "Alice",
+        &video,
+        &[(1, &audio)],
+    );
+    add_programme(&context.cache_root, "beta", "Bob", &video, &[(1, &audio)]);
+    let mut native = open_native();
+    let port = native.start_stream().unwrap();
+    assert_eq!(native.served_streams().unwrap(), 0);
+    let mut receiver = open_receiver(port);
     let mut initial_ts = [0; 188 * 8];
     receiver.read_exact(&mut initial_ts).unwrap();
     assert!(initial_ts.chunks_exact(188).all(|packet| packet[0] == 0x47));
@@ -166,15 +217,12 @@ fn show_cast_real_dll_advances_over_the_same_http_connection() {
         Ok(snapshot.playback_generation)
     })
     .unwrap();
-    let renderer = Renderer {
-        id: "fixture".into(),
-        name: "Fixture reader".into(),
-        location: String::new(),
-        av_transport_url: String::new(),
-        av_transport_type: String::new(),
-        local_address: Ipv4Addr::LOCALHOST,
-    };
-    let mut active = Active::new(native, SessionFiles::new(&context).unwrap(), renderer, None);
+    let mut active = Active::new(
+        native,
+        SessionFiles::new(&context).unwrap(),
+        fixture_renderer(),
+        None,
+    );
     let pid = active.native.id();
     active.tick(&context).unwrap();
     let hud = active.last_hud.as_ref().unwrap();
@@ -248,4 +296,147 @@ fn show_cast_real_dll_advances_over_the_same_http_connection() {
         Ok(())
     })
     .unwrap();
+}
+
+#[test]
+#[ignore = "requires a real Windows Show DLL and three identifiable audio fixtures"]
+fn show_cast_real_dll_switches_three_parts_over_the_same_http_connection() {
+    let video = required("BILIKARA_TEST_SHOW_TRACK_VIDEO");
+    let first = required("BILIKARA_TEST_SHOW_TRACK_FIRST");
+    let short = required("BILIKARA_TEST_SHOW_TRACK_SHORT");
+    let long = required("BILIKARA_TEST_SHOW_TRACK_LONG");
+    let _global = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (_cleanup, context) = fixture_context();
+    let artifact = add_programme(
+        &context.cache_root,
+        "parts",
+        "Alice",
+        &video,
+        &[(3, &long), (1, &first), (4, &first), (2, &short)],
+    );
+    std::fs::remove_file(
+        artifact
+            .join("audio-p4")
+            .with_extension(first.extension().unwrap()),
+    )
+    .unwrap();
+    let incarnation = with_app(|app| {
+        app.native().show_cast.phase = Phase::Active;
+        app.native().show_cast.owns_playback = true;
+        Ok(app
+            .native_cast_input()?
+            .current_item
+            .unwrap()
+            .item_incarnation_id)
+    })
+    .unwrap();
+    let select = |page| {
+        let selected = with_app(|app| {
+            app.native_execute(AppStateRequest::SetAudioVariant {
+                schema_version: 1,
+                item_id: "parts".into(),
+                expected_item_incarnation_id: incarnation.clone(),
+                variant_id: format!("p{page}_original"),
+                now: now(),
+            })
+        })
+        .unwrap();
+        assert_eq!(selected["found"], true);
+    };
+    let mut native = open_native();
+    let port = native.start_stream().unwrap();
+    let mut receiver = open_receiver(port);
+    receiver.get_ref().set_nonblocking(true).unwrap();
+    let mut active = Active::new(
+        native,
+        SessionFiles::new(&context).unwrap(),
+        fixture_renderer(),
+        None,
+    );
+    let pid = active.native.id();
+    let mut capture = Vec::new();
+    let mut chunk = [0_u8; 64 * 1024];
+    let mut poll = |active: &mut Active, position| {
+        let deadline = Instant::now() + Duration::from_secs(8);
+        loop {
+            active.tick(&context).unwrap();
+            loop {
+                match receiver.read(&mut chunk) {
+                    Ok(0) => panic!("the original TS connection closed during an audio switch"),
+                    Ok(count) => capture.extend_from_slice(&chunk[..count]),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) => panic!("receiver read: {error}"),
+                }
+            }
+            let status = active.native.status().unwrap();
+            if status.position >= position && !status.buffering {
+                return status;
+            }
+            assert!(Instant::now() < deadline, "Show stalled at {status:?}");
+            thread::sleep(Duration::from_millis(20));
+        }
+    };
+    poll(&mut active, 1.4);
+    let resident = active.programme.as_ref().unwrap();
+    assert_eq!(resident.audio().id, "p1_original");
+    assert_eq!(resident.media.second.as_ref().unwrap().id, "p2_original");
+    let initial_load = active.loaded_at;
+
+    select(2);
+    let after_short = poll(&mut active, 4.8);
+    assert_eq!(
+        after_short.state, 1,
+        "short audio ended the video programme"
+    );
+    assert_eq!(active.programme.as_ref().unwrap().audio().id, "p2_original");
+    assert_eq!(active.loaded_at, initial_load);
+
+    select(1);
+    poll(&mut active, 6.3);
+    assert_eq!(active.loaded_at, initial_load);
+    select(3);
+    active.tick(&context).unwrap();
+    let after_load = active.native.status().unwrap();
+    assert!(after_load.position >= 6.15, "{after_load:?}");
+    let replacement = active.programme.as_ref().unwrap();
+    assert_eq!(replacement.audio().id, "p3_original");
+    assert_eq!(replacement.media.second.as_ref().unwrap().id, "p1_original");
+    assert!(active.loaded_at > initial_load);
+    let replacement_load = active.loaded_at;
+
+    poll(&mut active, 7.9);
+    select(4);
+    active.tick(&context).unwrap();
+    with_app(|app| {
+        assert_eq!(
+            app.native_cast_input()?
+                .current_item
+                .unwrap()
+                .selected_audio_variant_id,
+            "p3_original"
+        );
+        assert!(app.native().show_cast.owns_playback);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(active.loaded_at, replacement_load);
+    select(1);
+    poll(&mut active, 9.5);
+    assert_eq!(active.loaded_at, replacement_load);
+    assert_eq!(active.programme.as_ref().unwrap().audio().id, "p1_original");
+
+    select(3);
+    let ended = poll(&mut active, 11.99);
+    assert_eq!(ended.state, 3, "{ended:?}");
+    assert!((ended.duration - 12.0).abs() < 0.1, "{ended:?}");
+    assert_eq!(active.native.port().unwrap(), port);
+    assert_eq!(active.native.id(), pid);
+    assert_eq!(active.native.served_streams().unwrap(), 1);
+    assert!(capture.len() > 188 * 100);
+    if let Some(path) = std::env::var_os("BILIKARA_TEST_SHOW_TRACK_CAPTURE") {
+        std::fs::write(path, &capture).unwrap();
+    }
+    active.native.close().unwrap();
 }

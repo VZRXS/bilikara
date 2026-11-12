@@ -1,9 +1,16 @@
 use super::*;
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct AudioTrack {
+    pub(super) id: String,
+    route: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct MediaKey {
-    video: String,
-    audio: String,
+    pub(super) video: String,
+    pub(super) first: AudioTrack,
+    pub(super) second: Option<AudioTrack>,
 }
 
 impl MediaKey {
@@ -11,19 +18,64 @@ impl MediaKey {
         if item.cache_status != "ready" {
             return Ok(None);
         }
-        let audio = item
-            .audio_variants
-            .iter()
-            .find(|v| v["id"].as_str() == Some(&item.selected_audio_variant_id))
-            .and_then(|v| v["audio_url"].as_str())
+        let tracks = item.audio_variants.iter().filter_map(|variant| {
+            let id = variant.get("id")?.as_str()?;
+            let route = variant
+                .get("audio_url")?
+                .as_str()
+                .filter(|route| !route.is_empty())?;
+            let page = variant
+                .get("page")
+                .and_then(Value::as_u64)
+                .or_else(|| id.strip_prefix('p')?.split('_').next()?.parse().ok())
+                .filter(|page| *page > 0)
+                .unwrap_or(u64::MAX);
+            Some((page, id, route))
+        });
+        let track = |(_, id, route): (_, &str, &str)| AudioTrack {
+            id: id.to_owned(),
+            route: route.to_owned(),
+        };
+        let first = tracks
+            .clone()
+            .find(|&(_, id, _)| id == item.selected_audio_variant_id)
+            .map(track)
             .ok_or_else(|| {
                 ApiError::new(409, "cast_media_missing", "当前歌曲没有可播放的缓存音轨")
             })?;
+        let second = tracks
+            .filter(|&(_, id, _)| id != first.id)
+            .min_by_key(|&(page, _, _)| page)
+            .map(track);
         Ok(Some(Self {
             video: item.video_media_url.clone(),
-            audio: audio.to_owned(),
+            first,
+            second,
         }))
     }
+
+    pub(super) fn slot_for(&self, track: &AudioTrack) -> Option<AudioSlot> {
+        if self.first == *track {
+            Some(AudioSlot::First)
+        } else if self.second.as_ref() == Some(track) {
+            Some(AudioSlot::Second)
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn track(&self, slot: AudioSlot) -> &AudioTrack {
+        match slot {
+            AudioSlot::First => &self.first,
+            AudioSlot::Second => self.second.as_ref().expect("loaded second audio slot"),
+        }
+    }
+}
+
+pub(super) struct MediaPaths {
+    pub(super) video: PathBuf,
+    pub(super) first: PathBuf,
+    pub(super) second: Option<PathBuf>,
 }
 
 struct MediaLease(String);
@@ -44,7 +96,8 @@ impl Drop for MediaLease {
 pub(super) struct SessionFiles {
     root: PathBuf,
     sequence: u64,
-    paths: std::collections::HashMap<MediaKey, (PathBuf, PathBuf)>,
+    paths: std::collections::HashMap<String, PathBuf>,
+    audio_durations: std::collections::HashMap<String, Option<f64>>,
 }
 impl SessionFiles {
     pub(super) fn new(context: &HostContext) -> Result<Self, ApiError> {
@@ -107,35 +160,66 @@ impl SessionFiles {
             root,
             sequence: 0,
             paths: Default::default(),
+            audio_durations: Default::default(),
         })
     }
     pub(super) fn paths(
         &mut self,
         context: &HostContext,
         key: &MediaKey,
-    ) -> Result<(PathBuf, PathBuf), ApiError> {
-        if let Some(paths) = self.paths.get(key) {
-            return Ok(paths.clone());
+    ) -> Result<MediaPaths, ApiError> {
+        let video = self.path(context, &key.video)?;
+        let first = self.path(context, &key.first.route)?;
+        let second = key
+            .second
+            .as_ref()
+            .and_then(|track| match self.path(context, &track.route) {
+                Ok(path) => Some(path),
+                Err(error) => {
+                    eprintln!("[show-cast] unavailable standby audio: {error}");
+                    None
+                }
+            });
+        Ok(MediaPaths {
+            video,
+            first,
+            second,
+        })
+    }
+
+    pub(super) fn audio_duration(&mut self, track: &AudioTrack) -> Option<f64> {
+        *self
+            .audio_durations
+            .entry(track.route.clone())
+            .or_insert_with(|| {
+                let path = self.paths.get(&track.route)?;
+                crate::probe_media(&crate::MediaPathRequest {
+                    schema_version: 1,
+                    source: path.clone(),
+                    expected_kind: crate::ExpectedMediaKind::Audio,
+                })
+                .ok()
+                .map(|probe| probe.duration_seconds)
+                .filter(|duration| duration.is_finite() && *duration > 0.0)
+            })
+    }
+
+    fn path(&mut self, context: &HostContext, route: &str) -> Result<PathBuf, ApiError> {
+        if let Some(path) = self.paths.get(route) {
+            return Ok(path.clone());
         }
-        let (source_video, _video_lease) = pin_path(context, &key.video)?;
-        let (source_audio, _audio_lease) = pin_path(context, &key.audio)?;
+        let (source, _lease) = pin_path(context, route)?;
         self.sequence += 1;
-        let directory = self.root.join(self.sequence.to_string());
-        std::fs::create_dir(&directory)
-            .map_err(|e| ApiError::new(500, "cast_storage", e.to_string()))?;
-        let video = directory.join("video.mp4");
-        let audio = directory
-            .join("audio")
-            .with_extension(source_audio.extension().unwrap_or_default());
-        for (source, destination) in [(&source_video, &video), (&source_audio, &audio)] {
-            if std::fs::hard_link(source, destination).is_err() {
-                std::fs::copy(source, destination)
-                    .map_err(|e| ApiError::new(500, "cast_storage", e.to_string()))?;
-            }
+        let destination = self
+            .root
+            .join(self.sequence.to_string())
+            .with_extension(source.extension().unwrap_or_default());
+        if std::fs::hard_link(&source, &destination).is_err() {
+            std::fs::copy(source, &destination)
+                .map_err(|e| ApiError::new(500, "cast_storage", e.to_string()))?;
         }
-        self.paths
-            .insert(key.clone(), (video.clone(), audio.clone()));
-        Ok((video, audio))
+        self.paths.insert(route.to_owned(), destination.clone());
+        Ok(destination)
     }
 }
 impl Drop for SessionFiles {

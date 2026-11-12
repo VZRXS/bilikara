@@ -23,6 +23,7 @@ pub const REQUIRED_ABI_SYMBOLS: &[&str] = &[
     "show_host_set_volume",
     "show_host_set_key_semitones",
     "show_host_set_audio_clock_offset",
+    "show_host_set_audio_track",
     "show_host_get_state",
     "show_host_get_position",
     "show_host_get_duration",
@@ -59,6 +60,13 @@ pub struct Status {
     pub position: f64,
     pub duration: f64,
     pub buffering: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AudioSlot {
+    First,
+    Second,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -127,16 +135,28 @@ impl ShowHostNativeAdapter {
     /// Show's video decoder opens asynchronously, so inspect actual HTTP media
     /// and status before claiming successful playback.
     pub fn load(&mut self, video: &Path, audio: &Path) -> Result<(), Error> {
+        self.load_pair(video, audio, None)
+    }
+
+    pub(crate) fn load_pair(
+        &mut self,
+        video: &Path,
+        audio: &Path,
+        alternate: Option<&Path>,
+    ) -> Result<(), Error> {
         let n = self.instance()?;
         let video = native::media_path(video)?;
         let audio = native::media_path(audio)?;
+        let alternate = alternate.map(native::media_path).transpose()?;
         if !unsafe {
             (n.api.load)(
                 n.host,
                 video.as_ptr(),
                 std::ptr::null(),
                 audio.as_ptr(),
-                std::ptr::null(),
+                alternate
+                    .as_ref()
+                    .map_or(std::ptr::null(), |path| path.as_ptr()),
                 1,
                 1,
             )
@@ -149,10 +169,16 @@ impl ShowHostNativeAdapter {
         Ok(())
     }
 
-    pub(crate) fn prepare_next(&mut self, video: &Path, audio: &Path) -> Result<bool, Error> {
+    pub(crate) fn prepare_next(
+        &mut self,
+        video: &Path,
+        audio: &Path,
+        alternate: Option<&Path>,
+    ) -> Result<bool, Error> {
         let n = self.instance()?;
         let video = native::media_path(video)?;
         let audio = native::media_path(audio)?;
+        let alternate = alternate.map(native::media_path).transpose()?;
         // Match load() so Show can promote this standby programme at the boundary.
         Ok(unsafe {
             (n.api.prepare)(
@@ -160,10 +186,27 @@ impl ShowHostNativeAdapter {
                 video.as_ptr(),
                 std::ptr::null(),
                 audio.as_ptr(),
-                std::ptr::null(),
+                alternate
+                    .as_ref()
+                    .map_or(std::ptr::null(), |path| path.as_ptr()),
                 1,
             )
         })
+    }
+
+    pub(crate) fn set_audio_track(&mut self, slot: AudioSlot) -> Result<(), Error> {
+        let n = self.instance()?;
+        let index = match slot {
+            AudioSlot::First => 0,
+            AudioSlot::Second => 1,
+        };
+        if !unsafe { (n.api.audio_track)(n.host, index) } {
+            return Err(Error::new(
+                "TRACK_SWITCH_FAILED",
+                "ShowHost rejected the audio slot",
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn set_queue_hud(&mut self, revision: u64, hud: &QueueHud) -> Result<(), Error> {
@@ -303,7 +346,23 @@ impl ShowHostNativeAdapter {
     pub fn load(&mut self, _video: &Path, _audio: &Path) -> Result<(), Error> {
         Err(unavailable())
     }
-    pub(crate) fn prepare_next(&mut self, _video: &Path, _audio: &Path) -> Result<bool, Error> {
+    pub(crate) fn load_pair(
+        &mut self,
+        _video: &Path,
+        _audio: &Path,
+        _alternate: Option<&Path>,
+    ) -> Result<(), Error> {
+        Err(unavailable())
+    }
+    pub(crate) fn prepare_next(
+        &mut self,
+        _video: &Path,
+        _audio: &Path,
+        _alternate: Option<&Path>,
+    ) -> Result<bool, Error> {
+        Err(unavailable())
+    }
+    pub(crate) fn set_audio_track(&mut self, _slot: AudioSlot) -> Result<(), Error> {
         Err(unavailable())
     }
     pub(crate) fn set_queue_hud(&mut self, _revision: u64, _hud: &QueueHud) -> Result<(), Error> {
@@ -550,6 +609,7 @@ mod native {
         pub volume: unsafe extern "C" fn(Handle, i32),
         pub key: unsafe extern "C" fn(Handle, i32),
         pub offset: unsafe extern "C" fn(Handle, f64),
+        pub audio_track: unsafe extern "C" fn(Handle, i32) -> bool,
         pub state: unsafe extern "C" fn(Handle) -> i32,
         pub position: unsafe extern "C" fn(Handle) -> f64,
         pub duration: unsafe extern "C" fn(Handle) -> f64,
@@ -691,6 +751,10 @@ mod native {
                 offset: bind!(
                     c"show_host_set_audio_clock_offset",
                     unsafe extern "C" fn(Handle, f64)
+                ),
+                audio_track: bind!(
+                    c"show_host_set_audio_track",
+                    unsafe extern "C" fn(Handle, i32) -> bool
                 ),
                 state: bind!(c"show_host_get_state", unsafe extern "C" fn(Handle) -> i32),
                 position: bind!(

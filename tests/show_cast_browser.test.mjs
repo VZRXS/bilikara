@@ -33,9 +33,16 @@ test("DLNA uses the dual-screen console and returns to the local player", {
     cache_status: "ready", cover_url: "", original_url: "", owner_name: "",
     video_media_url: "/media/artifacts/" + id + "/video.mp4",
     selected_audio_variant_id: "original",
-    audio_variants: [{ id: "original", label: "原唱", audio_url: "/media/artifacts/" + id + "/audio.m4a" }],
+    audio_variants: [{ id: "original", label: "原唱", page: 1, audio_url: "/media/artifacts/" + id + "/audio.m4a" }],
   });
   state.current_item = song("current", "当前歌曲", "Alice");
+  Object.assign(state.current_item, {
+    selected_pages: [1, 2],
+    selected_parts: ["原唱", "伴奏"],
+  });
+  state.current_item.audio_variants.push({
+    id: "instrumental", label: "伴奏", page: 2, audio_url: "/media/artifacts/current/audio-p2.m4a",
+  });
   state.playlist = [song("next", "下一首", "Bob")];
   state.queue_version = "cast-ui-fixture";
   state.playback_generation += 1;
@@ -46,7 +53,7 @@ test("DLNA uses the dual-screen console and returns to the local player", {
     selected_audio_variant_id: "original", artifact_set_id: state.current_item.artifact_set_id,
   };
   state.show_cast = { supported: true, available: true, phase: "idle", renderers: [] };
-  const commands = [], captions = [], errors = [], castTransitions = [];
+  const commands = [], captions = [], errors = [], castTransitions = [], selections = [];
   browser = await chromium.launch({ headless: true, channel: process.env.BILIKARA_TEST_CHROMIUM_CHANNEL });
   const context = await browser.newContext({ viewport: { width: 700, height: 600 } });
   await context.addCookies([...host.cookies].map(([name, value]) => ({ name, value, url: host.base })));
@@ -98,6 +105,16 @@ test("DLNA uses the dual-screen console and returns to the local player", {
     if (pathname === "/api/show-cast/hud") {
       captions.push(route.request().postDataJSON());
       return send({ accepted: true });
+    }
+    if (pathname === "/api/player/audio-variant") {
+      const input = route.request().postDataJSON();
+      selections.push(input);
+      state.current_item.selected_audio_variant_id = input.variant_id;
+      state.playback_program.selected_audio_variant_id = input.variant_id;
+      state.playback_generation += 1;
+      state.revision += 1;
+      state.player_status.playback_generation = state.playback_generation;
+      return changed();
     }
     if (pathname === "/api/player/control" || pathname === "/api/player/key-shift") {
       const input = route.request().postDataJSON();
@@ -168,6 +185,14 @@ test("DLNA uses the dual-screen console and returns to the local player", {
   assert.equal(await page.locator("#presentation-host-forward").isEnabled(), true);
   assert.equal(await page.locator("#key-shift-panel input").isEnabled(), true);
   await page.locator("#presentation-settings-toggle").click();
+  await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith("/api/player/audio-variant")),
+    page.locator("#audio-variant-bar button[data-variant-id='instrumental']").click(),
+  ]);
+  assert.deepEqual(selections, [{
+    item_id: "current", variant_id: "instrumental", expected_item_incarnation_id: "inc-current",
+  }]);
+  assert.equal(await page.locator("#player-frame video, #player-frame audio").count(), 0);
   await Promise.all([
     page.waitForResponse((response) => response.url().endsWith("/api/player/control")),
     page.locator("#presentation-host-forward").click(),

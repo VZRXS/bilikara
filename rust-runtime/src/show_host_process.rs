@@ -1,7 +1,7 @@
 //! Private process boundary for the optional, unmodified ShowHost DLL.
 //! A whole casting session shares one child, native instance and HTTP stream.
 //! Process exit reclaims native resources which the DLL cannot release itself.
-use crate::windows_show_host::{Error, QueueHud, ShowHostNativeAdapter, Status};
+use crate::windows_show_host::{AudioSlot, Error, QueueHud, ShowHostNativeAdapter, Status};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -237,19 +237,38 @@ impl ShowHostProcess {
     }
 
     pub fn load(&mut self, video: &Path, audio: &Path) -> Result<(), Error> {
+        self.load_pair(video, audio, None)
+    }
+
+    pub(crate) fn load_pair(
+        &mut self,
+        video: &Path,
+        audio: &Path,
+        alternate: Option<&Path>,
+    ) -> Result<(), Error> {
         self.request(
             "load",
-            json!({"video": path_text(video)?, "audio": path_text(audio)?}),
+            json!({"video": path_text(video)?, "audio": path_text(audio)?, "alternate": alternate.map(path_text).transpose()?}),
         )
         .map(|_| ())
     }
-    pub(crate) fn prepare_next(&mut self, video: &Path, audio: &Path) -> Result<bool, Error> {
+    pub(crate) fn prepare_next(
+        &mut self,
+        video: &Path,
+        audio: &Path,
+        alternate: Option<&Path>,
+    ) -> Result<bool, Error> {
         self.request(
             "prepare_next",
-            json!({"video": path_text(video)?, "audio": path_text(audio)?}),
+            json!({"video": path_text(video)?, "audio": path_text(audio)?, "alternate": alternate.map(path_text).transpose()?}),
         )?
         .as_bool()
         .ok_or_else(|| error("NATIVE_OUTPUT_INVALID", "invalid Show standby result"))
+    }
+
+    pub(crate) fn set_audio_track(&mut self, slot: AudioSlot) -> Result<(), Error> {
+        self.request("set_audio_track", json!({"slot": slot}))
+            .map(|_| ())
     }
 
     pub(crate) fn set_queue_hud(&mut self, revision: u64, hud: &QueueHud) -> Result<(), Error> {
@@ -485,19 +504,27 @@ fn execute(
             .filter(|value| value.is_finite())
             .ok_or_else(|| error("INVALID_ARGUMENT", "invalid media-worker seconds"))
     };
+    let media_paths = || {
+        let video = Path::new(argument(arguments, "video")?);
+        let audio = Path::new(argument(arguments, "audio")?);
+        let alternate = if arguments["alternate"].is_null() {
+            None
+        } else {
+            Some(Path::new(argument(arguments, "alternate")?))
+        };
+        Ok::<_, Error>((video, audio, alternate))
+    };
     match command {
         "start_stream" => return instance.start_stream().map(|port| json!(port)),
         "port" => return instance.port().map(|port| json!(port)),
-        "load" => instance.load(
-            Path::new(argument(arguments, "video")?),
-            Path::new(argument(arguments, "audio")?),
-        )?,
+        "load" => {
+            let (video, audio, alternate) = media_paths()?;
+            instance.load_pair(video, audio, alternate)?;
+        }
         "prepare_next" => {
+            let (video, audio, alternate) = media_paths()?;
             return instance
-                .prepare_next(
-                    Path::new(argument(arguments, "video")?),
-                    Path::new(argument(arguments, "audio")?),
-                )
+                .prepare_next(video, audio, alternate)
                 .map(|prepared| json!(prepared));
         }
         "set_queue_hud" => {
@@ -519,6 +546,11 @@ fn execute(
         "set_volume" => instance.set_volume(integer("percent")?)?,
         "set_key" => instance.set_key(integer("semitones")?)?,
         "set_audio_offset" => instance.set_audio_offset(seconds()?)?,
+        "set_audio_track" => {
+            let slot = serde_json::from_value(arguments["slot"].clone())
+                .map_err(|_| error("INVALID_ARGUMENT", "invalid Show audio slot"))?;
+            instance.set_audio_track(slot)?;
+        }
         "status" => {
             return serde_json::to_value(instance.status()?)
                 .map_err(|e| error("NATIVE_OUTPUT_INVALID", e.to_string()));
