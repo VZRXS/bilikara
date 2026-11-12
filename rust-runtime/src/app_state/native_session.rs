@@ -56,6 +56,7 @@ pub(crate) struct NativeSession {
     pub startup_warning: String,
     pub updates: crate::native_host::updates::UpdateState,
     pub announcements: crate::announcements::State,
+    pub show_cast: crate::native_host::show_cast::CastState,
     pub host_token: String,
     pub state_epoch: String,
     pub cookie: String,
@@ -708,7 +709,13 @@ impl AppState {
             })
             .cloned()
             .unwrap_or(Value::Null);
-        value["player_control_command"] = if host {
+        if session.show_cast.owns_playback {
+            value["cast_active"] = json!(true);
+        }
+        if host {
+            value["show_cast"] = session.show_cast.snapshot();
+        }
+        value["player_control_command"] = if host && !session.show_cast.owns_playback {
             self.player_control_head().unwrap_or(Value::Null)
         } else {
             Value::Null
@@ -891,6 +898,9 @@ impl AppState {
             }
             return Ok(json!({"released":released}));
         }
+        if self.native_session.show_cast.owns_playback {
+            return Ok(json!({"claimed":false}));
+        }
         let snapshot = self.native_core_snapshot()?;
         let current = snapshot.playback_program.as_ref();
         let matches = !self.artifact_program_retired(&identity.client, generation)
@@ -927,6 +937,9 @@ impl AppState {
         now: f64,
     ) -> Result<Value, ApiError> {
         self.native_authorize(identity, true)?;
+        if self.native_session.show_cast.owns_playback {
+            return Err(ApiError::new(409, "stale_player", "Show 已接管播放"));
+        }
         let generation = positive(body, "playback_generation")?;
         let sequence = positive(body, "status_sequence")?;
         let item_id = text(body, "item_id")?;
@@ -1031,6 +1044,9 @@ impl AppState {
 
     pub(crate) fn native_ack(&mut self, identity: &Identity, body: &Value) -> Result<(), ApiError> {
         self.native_authorize(identity, true)?;
+        if self.native_session.show_cast.owns_playback {
+            return Err(ApiError::new(409, "stale_player", "Show 已接管播放"));
+        }
         let seq = positive(body, "seq")?;
         self.native_execute(AppStateRequest::AckPlayerControl {
             schema_version: 1,
@@ -1201,6 +1217,118 @@ impl AppState {
     }
     pub(crate) fn native_release_claim(&mut self) {
         self.native_session.claim = None;
+    }
+
+    pub(crate) fn native_take_cast_playback(&mut self) -> Option<Value> {
+        self.native_release_claim();
+        // An old WebView may have applied a command whose ACK is still in
+        // flight. Never replay that tail on a different playback owner.
+        self.player_controls.clear();
+        self.native_session.revision += 1;
+        self.native_session.observation.take()
+    }
+
+    pub(crate) fn native_cast_control(&self) -> Option<Value> {
+        self.native_session
+            .show_cast
+            .owns_playback
+            .then(|| self.player_control_head())
+            .flatten()
+    }
+
+    pub(crate) fn native_cast_input(
+        &self,
+    ) -> Result<crate::native_host::show_cast::CastInput, ApiError> {
+        let data = self
+            .data
+            .as_ref()
+            .ok_or_else(|| ApiError::new(503, "state_unavailable", "Rust Host 尚未初始化"))?;
+        Ok(crate::native_host::show_cast::CastInput {
+            playback_generation: data.playback_generation,
+            queue_version: data.queue_version(),
+            current_item: data.current_item.clone(),
+            upcoming: data.playlist.iter().take(4).cloned().collect(),
+            volume_percent: data.player_settings.volume_percent,
+            is_muted: data.player_settings.is_muted,
+            key_shift: data.player_settings.key_shift,
+        })
+    }
+
+    pub(crate) fn native_cast_generation(&self, generation: u64) -> bool {
+        self.native_session.show_cast.owns_playback
+            && self
+                .data
+                .as_ref()
+                .is_some_and(|data| data.playback_generation == generation)
+    }
+
+    pub(crate) fn native_report_cast_playback(
+        &mut self,
+        generation: u64,
+        item_id: &str,
+        phase: &str,
+        position: f64,
+        duration: f64,
+        now: f64,
+    ) -> Result<(), ApiError> {
+        if !self.native_cast_generation(generation)
+            || !self
+                .data
+                .as_ref()
+                .and_then(|data| data.current_item.as_ref())
+                .is_some_and(|item| item.id == item_id)
+        {
+            return Ok(());
+        }
+        let duration = duration.clamp(0.0, PLAYER_STATUS_MAX_SECONDS);
+        let position = position.clamp(0.0, PLAYER_STATUS_MAX_SECONDS);
+        if matches!(phase, "playing" | "ended") {
+            self.native_execute(AppStateRequest::ApplyPlayerStatusObservation {
+                schema_version: 1,
+                expected_playback_generation: generation,
+                item_id: item_id.to_owned(),
+                is_paused: false,
+                current_time: position,
+                duration,
+                now,
+            })?;
+        }
+        let seq = self
+            .native_session
+            .observation
+            .as_ref()
+            .and_then(|old| old["status_sequence"].as_u64())
+            .unwrap_or(0)
+            + 1;
+        self.native_session.observation = Some(json!({
+            "item_id":item_id, "playback_generation":generation, "status_sequence":seq,
+            "observed_phase":phase, "is_paused":phase != "playing",
+            "current_time":position, "duration":duration, "position_source":"show_sender",
+        }));
+        self.native_session.revision += 1;
+        Ok(())
+    }
+
+    pub(crate) fn native_return_cast_playback(&mut self) -> Result<(), ApiError> {
+        let before = self.native_core_snapshot()?;
+        let observation = self.native_session.observation.take().filter(|old| {
+            old["playback_generation"] == before.playback_generation
+                && old["item_id"].as_str()
+                    == before.current_item.as_ref().map(|item| item.id.as_str())
+        });
+        self.native_session.show_cast.owns_playback = false;
+        self.native_release_claim();
+        self.player_controls.clear();
+        // Fresh generation allows the previous browser client to claim again
+        // after it retired its media readers on takeover.
+        self.native_execute(AppStateRequest::RestartPlaybackProgram { schema_version: 1 })?;
+        let after = self.native_core_snapshot()?;
+        self.native_session.show_cast.resume = observation.map(|old| json!({
+            "playback_generation":after.playback_generation,
+            "item_id":old["item_id"], "current_time":old["current_time"],
+            "was_playing":matches!(old["observed_phase"].as_str(), Some("playing" | "starting")),
+        }));
+        Ok(())
     }
 
     pub(crate) fn native_retire_cache(&mut self) {

@@ -38,6 +38,9 @@ pub(super) fn dispatch(
     body: Value,
 ) -> Result<Value, ApiError> {
     with_app(|app| app.native_authorize(identity, false))?;
+    if path.starts_with("/api/show-cast/") {
+        return show_cast::route(context, identity, method, path, body);
+    }
     if context.desktop {
         if path.starts_with("/api/app/") {
             with_app(|app| app.native_authorize(identity, true))?;

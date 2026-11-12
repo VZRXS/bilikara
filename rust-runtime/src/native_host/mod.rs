@@ -27,6 +27,7 @@ mod network;
 mod owner_enrichment;
 pub(crate) mod preferences;
 pub(crate) mod ratings;
+pub(crate) mod show_cast;
 pub(crate) mod updates;
 
 use crate::app_state::native_session::{Identity, with_app};
@@ -499,6 +500,7 @@ fn start(
     };
     library::start_coordinator(context.clone())?;
     cache::start_pump(context.clone())?;
+    show_cast::start(context.clone())?;
     automatic_volume::configure_capability();
     automatic_volume::start(context.clone())?;
     network::start_monitor(&context)?;

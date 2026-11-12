@@ -9,6 +9,9 @@ fn public_state(app: &mut AppState) -> Result<Value, ApiError> {
         .native_execute(AppStateRequest::InternetRemoteState { schema_version: 1 })?["remote_state"]
         .clone();
     let snapshot = app.native_snapshot(false)?;
+    if snapshot["cast_active"] == true {
+        state["cast_active"] = json!(true);
+    }
     state["song_ratings"] = snapshot["song_ratings"].clone();
     // Rating navigation needs only the current/previous plays. Explicitly
     // project public fields; catalog projection wraps arrays and omits eligibility.

@@ -106,6 +106,26 @@ export class ConstructionFixtures {
       const compile = await runNative('rustc', ['--edition=2024', '--target', nativeTarget(), '--crate-name', 'desktop_commands',
         path.join(root, 'tests/fixtures/desktop_prepare_cargo.rs'), '-o', this.fixture], environment);
       assert.equal(compile.status, 0, compile.stderr);
+      if (process.platform === 'win32') {
+        const selected = Object.entries(environment).find(([key]) => key.toUpperCase() === 'VCTOOLSREDISTDIR')?.[1];
+        assert.ok(selected && path.isAbsolute(selected), 'Windows /MD fixtures require the selected native MSVC redist');
+        const architecture = path.join(selected, process.arch === 'arm64' ? 'arm64' : 'x64');
+        const candidates = readdirSync(architecture, { withFileTypes: true })
+          .filter(entry => entry.isDirectory() && /^Microsoft\.VC\d+\.CRT$/i.test(entry.name));
+        assert.equal(candidates.length, 1, 'test setup must select one native MSVC CRT directory');
+        this.msvcCrtDirectory = path.join(architecture, candidates[0].name);
+        const dumpbin = executableOnPath('dumpbin.exe', environment);
+        assert.ok(dumpbin, 'native dumpbin independently checks the fixture /MD import contract');
+        const privateCrts = async file => {
+          const result = await runNative(dumpbin, ['/nologo', '/dependents', file], environment);
+          assert.equal(result.status, 0, result.stderr);
+          return result.stdout.split(/\r?\n/).map(line => line.trim().toLowerCase())
+            .filter(name => /^(?:vcruntime|msvcp|concrt)\d.*\.dll$/.test(name)).sort();
+        };
+        assert.deepEqual(await privateCrts(this.fixture), ['vcruntime140.dll'], 'known native command fixture CRT imports');
+        assert.deepEqual(await privateCrts(path.join(this.msvcCrtDirectory, 'vcruntime140.dll')), [],
+          'selected fixture CRT has no further private CRT dependency');
+      }
     } catch (error) { this.close(); throw error; }
   }
   close() { rmSync(this.temporary, { recursive: true, force: true }); }
@@ -127,6 +147,7 @@ class ConstructionCase {
       !/^(?:BILIKARA_|TAURI_ENV_|GITHUB_|BB_DOWN_|XTASK_|CARGO_TARGET_DIR$|CARGO_BUILD_TARGET$|PATH$)/i.test(key)));
     Object.assign(this.environment, { PATH: [this.bin, ...remaining].join(path.delimiter), BILIKARA_VERSION: 'v0.8.0-preview.3-contract' });
     if (release) {
+      if (process.platform === 'win32') this.environment.BILIKARA_MSVC_REDIST_DIR = fixtures.msvcCrtDirectory;
       this.toolFixture();
       if (process.platform === 'win32') {
         copyFileSync(this.fixture, path.join(this.bin, 'npm-fixture.exe'));
