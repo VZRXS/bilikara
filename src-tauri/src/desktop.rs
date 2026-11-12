@@ -157,7 +157,19 @@ pub(crate) fn run() {
             }
         })
         .build(context)
-        .map(|app| app.run(window_lifecycle::handle_run_event));
+        .map(|app| {
+            #[cfg(windows)]
+            let mut sleep_inhibitor =
+                crate::windows_power::SleepInhibitor::acquire(startup_log.clone());
+            app.run(move |handle, event| {
+                #[cfg(windows)]
+                if matches!(event, tauri::RunEvent::Exit) {
+                    // Tauri normally exits the process directly after this event.
+                    drop(sleep_inhibitor.take());
+                }
+                window_lifecycle::handle_run_event(handle, event);
+            });
+        });
 
     match run_result {
         Ok(()) => {

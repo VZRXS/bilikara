@@ -317,6 +317,39 @@
               </div>
               <div class="presentation-display-list" id="presentation-host-display-list" aria-live="polite"></div>
             </div>
+            <section id="show-cast-section" class="presentation-cast-section" hidden>
+              <div class="presentation-panel-heading">
+                <div class="presentation-panel-heading-main">
+                  <span class="presentation-device-icon presentation-output-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                      stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M2 8V4h20v16H10M2 14a6 6 0 0 1 6 6M2 10a10 10 0 0 1 10 10M2 18v2"></path>
+                    </svg>
+                  </span>
+                  <div>
+                    <p class="cache-panel-label" data-i18n="cast.title">无线投屏</p>
+                    <p class="cache-panel-hint" id="show-cast-status" role="status" aria-live="polite"></p>
+                  </div>
+                </div>
+                <button type="button" class="presentation-output-switch" id="show-cast-switch" role="switch"
+                  aria-checked="false" aria-controls="show-cast-targets" data-i18n-aria-label="cast.title">
+                  <span class="presentation-output-switch-thumb" aria-hidden="true"></span>
+                </button>
+              </div>
+              <div id="show-cast-targets" class="presentation-target-section" hidden>
+                <div class="presentation-target-heading">
+                  <p class="cache-panel-label" data-i18n="cast.targets">投屏设备</p>
+                  <button type="button" class="icon-button presentation-refresh-button" id="show-cast-refresh"
+                    data-i18n-title="cast.refresh" data-i18n-aria-label="cast.refresh" aria-label="刷新投屏设备">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                      stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"></path>
+                    </svg>
+                  </button>
+                </div>
+                <div id="show-cast-devices" class="presentation-display-list" aria-live="polite"></div>
+              </div>
+            </section>
           </div>
         </div>
         <div class="status-chip" id="cache-settings">
@@ -1954,6 +1987,7 @@
   <script src="/desktop-platform.js" defer></script>
   <script src="/android-platform.js" defer></script>
   <script src="/host-updates.js" defer></script>
+  <script src="/show-cast.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/android-export.js" defer></script>
   <script src="/android-playback.js" defer></script>

@@ -2,7 +2,7 @@
 use crate::{
     Result, build_backend_executable, compliance,
     config::{Config, Os},
-    files, libav, macos, tools,
+    files, libav, macos, msvc_redist, tools,
 };
 use serde_json::Value;
 use std::{
@@ -115,6 +115,13 @@ pub fn build_backend(config: &Config, dist: &Path) -> Result<PathBuf> {
     let mut inputs = compliance::input_files(config)?;
     inputs.extend(tools::bbdown_path(config)?);
     let executable = build_backend_executable(config)?;
+    inputs.extend(msvc_redist::input_directory(
+        config,
+        &[
+            executable.clone(),
+            executable.with_file_name(config.platform.executable("bilikara-updater")),
+        ],
+    )?);
     let name = if config.platform.os == Os::Macos {
         "bilikara.app"
     } else {
@@ -129,6 +136,15 @@ pub fn build_backend(config: &Config, dist: &Path) -> Result<PathBuf> {
         &executable,
         Some(&prefix),
         config.platform.os == Os::Macos,
+    )?;
+    let code = files::Layout::new(&destination, config.platform.os == Os::Macos).code;
+    msvc_redist::stage(
+        config,
+        &[
+            code.join(config.platform.executable("bilikara-desktop-host")),
+            code.join(config.platform.executable("bilikara-updater")),
+        ],
+        &code,
     )?;
     compliance::write(
         config,
@@ -225,6 +241,7 @@ pub fn assemble(config: &Config, dist: &Path, shell: &Path) -> Result<PathBuf> {
         }
         let launcher = backend.join(config.platform.executable("bilikara-desktop"));
         reject_links(&launcher, &config.root)?;
+        msvc_redist::stage(config, std::slice::from_ref(&shell), &backend)?;
         files::copy(&shell, &launcher)?;
         write_import_launcher(config, &backend)?;
         Ok(backend)

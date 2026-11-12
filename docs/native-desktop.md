@@ -46,6 +46,8 @@ Python Host ranks addresses with the same Rust policy.
 
 ## Build and development
 
+For the Windows x64 Show-based wireless output, see [Windows DLNA development](windows-dlna.md).
+
 Use the repository's Node.js 24 and Rust toolchains. From the repository root:
 
 ```sh

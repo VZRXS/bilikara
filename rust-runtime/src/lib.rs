@@ -30,8 +30,14 @@ mod networking;
 pub mod playlist_export;
 mod qr_image;
 pub mod shared_catalog;
+#[cfg(feature = "native-host")]
+mod show_dlna;
+#[cfg(feature = "native-host")]
+pub mod show_host_process;
 mod status_service;
 pub mod update_installer;
+#[cfg(feature = "native-host")]
+pub mod windows_show_host;
 mod youtube;
 
 pub use app_state::{

@@ -313,6 +313,43 @@ fn earlier_native_layout_and_exact_optional_import_launcher_are_accepted() {
         fixture.inspect().unwrap();
     }
 }
+
+#[test]
+fn windows_outer_inventory_accepts_only_the_actual_shell_crt_closure() {
+    let platform = Platform::new("windows", "x86_64").unwrap();
+    let bytes = crate::msvc_redist::tests::pe(&["vcruntime140_1.dll"], false);
+    let fixture = Fixture::layout(platform, false, &bytes, "valid");
+    let package = package_root(&fixture.executable);
+    // Old packages without app-local CRT remain accepted.
+    fixture.inspect().unwrap();
+    fs::write(
+        package.join("vcruntime140_1.dll"),
+        crate::msvc_redist::tests::pe(&["vcruntime140.dll"], false),
+    )
+    .unwrap();
+    assert!(fixture.inspect().is_err());
+    fs::write(
+        package.join("vcruntime140.dll"),
+        crate::msvc_redist::tests::pe(&["kernel32.dll"], false),
+    )
+    .unwrap();
+    fixture.inspect().unwrap();
+    for name in ["concrt140.dll", "private-codec.dll"] {
+        fs::write(
+            package.join(name),
+            crate::msvc_redist::tests::pe(&[], false),
+        )
+        .unwrap();
+        assert!(fixture.inspect().is_err(), "unexpected root DLL: {name}");
+        fs::remove_file(package.join(name)).unwrap();
+    }
+    fs::write(
+        package.join("vcruntime140.dll"),
+        crate::msvc_redist::tests::pe(&[], true),
+    )
+    .unwrap();
+    assert!(fixture.inspect().is_err());
+}
 #[test]
 fn forbidden_payloads_multiple_vendor_and_user_data_exemption() {
     let fixture = Fixture::new("valid");
