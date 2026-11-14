@@ -18,3 +18,16 @@ test('native contextual tag ordering covers landscape and tablet layouts',()=>{
     assert.ok(css.includes(`html:is([data-host-platform="android"], [data-host-platform="ios"]) .request-discover-view .tag-browser.is-browsing-tags > ${child} { grid-row: ${row}; }`));
   }
 });
+test('Host and Remote use one TopSlot gap and category-height owner',()=>{
+  const shared=read('request-tabs.css');
+  assert.match(shared,/--request-top-content-gap: 12px;/);
+  assert.match(shared,/--request-content-paint-inset: 2px;/);
+  assert.match(shared,/row-gap: calc\(var\(--request-top-content-gap\) - var\(--request-content-paint-inset\)\);/);
+  assert.match(shared,/padding-top: var\(--request-content-paint-inset\);/);
+  assert.match(shared,/--category-browser-tab-height: var\(--host-peer-action-height, var\(--remote-peer-action-height\)\);/);
+  for(const name of ['styles.css','host-layout.css','remote.css']) {
+    assert.doesNotMatch(read(name),/--request-top-content-gap\s*:/,name);
+    assert.doesNotMatch(read(name),/--category-browser-tab-height\s*:/,name);
+  }
+  assert.match(read('styles.css'),/\.source-browse-scroll\.is-detail-view \.follow-up-items-view \{\s*height: 100%;\s*padding-top: 0;/);
+});

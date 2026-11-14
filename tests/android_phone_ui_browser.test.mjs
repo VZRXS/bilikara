@@ -395,6 +395,97 @@ async function assertFittedBrowsePage(grid, viewport, selector, minimumRows=1) {
   return cards.length;
 }
 
+async function installTopSlotFixtures(page) {
+  const items=Array.from({length:60},(_,i)=>({bvid:`BV${String(i+1).padStart(10,'0')}`,title:`Fixture song ${i+1}`,owner_name:'Fixture UP'}));
+  const tags=Array.from({length:30},(_,i)=>({tag:`Artist ${i+1}`,count:60}));
+  await page.route(/\/api\/(?:catalog\/search|gatcha\/search|d1\/(?:browse|category-browse)|gatcha\/(?:favlist\/)?browse)(?:\?|$)/,route=>{
+    const url=new URL(route.request().url()),offset=Number(url.searchParams.get('offset')||0),limit=Number(url.searchParams.get('limit')||100);
+    const uid=url.searchParams.get('uid')||'',folder=url.searchParams.get('folder_id')||'';
+    return route.fulfill({json:{ok:true,data:{items:items.slice(offset,offset+limit),tags,
+      owners:[{uid:'42',name:'Fixture UP',count:60}],folders:[{id:'42:7',folder_id:'7',title:'Fixture favorites',count:60}],
+      selected_uid:uid,selected_folder_id:folder,query:url.searchParams.get('q')||'',matched_count:60,
+      has_more:offset+limit<60,next_offset:Math.min(60,offset+limit)}}});
+  });
+}
+
+for(const engine of [chromium,webkit]) for(const [client,width,height] of [
+  ['desktop',1440,900],['desktop',700,800],['android',393,844],['android',844,393],
+  ['android',1024,768],['android',1180,820],['remote',393,844],['remote',360,740],
+]) test(`${engine.name()} ${client} ${width}x${height} Request TopSlots share bounds and first-card spacing`,{timeout:120000,skip:process.platform!=='linux'},async t=>{
+  const {page,host}=await open(t,engine);
+  await installTopSlotFixtures(page);
+  const remote=client==='remote';
+  if(remote){
+    await page.goto(host.base+'/remote');
+    await page.waitForFunction(()=>typeof state!=='undefined'&&state.data?.session_user_entries?.length);
+    await page.locator('#remote-identity-input').fill('TopSlot tester');
+    await page.locator('#remote-identity-submit').click();
+    await page.locator('#remote-identity-modal').waitFor({state:'hidden'});
+  }else{
+    await page.evaluate(client=>{document.documentElement.dataset.hostPlatform=client;activateHostWorkspace('request');},client);
+  }
+  await page.setViewportSize({width,height});
+  await page.evaluate(()=>setLanguage('zh'));
+  const activate=async(view,mode)=>page.evaluate(({remote,view,mode})=>{
+    if(remote){
+      activateRemoteRequestView(view);
+      ({search:activateRemoteSearchMode,discover:activateRemoteDiscoverMode,sources:activateRemoteSourcesMode})[view](mode);
+    }else{
+      activateRequestSubview(view);
+      ({search:activateSearchMode,discover:activateDiscoverMode,sources:activateSourcesMode})[view](mode);
+    }
+  },{remote,view,mode});
+  const measurements=[];
+  const sample=async(name,topSelector,cardSelector,{separateAlphabet=false}={})=>{
+    await page.locator(cardSelector).first().waitFor({state:'visible'});
+    await page.evaluate(async()=>{
+      await document.fonts.ready;
+      await Promise.allSettled(document.getAnimations().filter(a=>a.effect?.getTiming().iterations!==Infinity).map(a=>a.finished));
+      window.scrollTo(0,0);
+      await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+    });
+    const value=await page.evaluate(({topSelector,cardSelector})=>{
+      const top=document.querySelector(topSelector).getBoundingClientRect(),card=document.querySelector(cardSelector).getBoundingClientRect();
+      return {x:top.x,y:top.y,width:top.width,height:top.height,gap:card.y-top.bottom,
+        expectedGap:parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--request-top-content-gap'))};
+    },{topSelector,cardSelector});
+    assert.ok(Math.abs(value.gap-value.expectedGap)<=1,JSON.stringify({name,...value}));
+    for(const key of ['x','y','width','height'])if(measurements.length&&!(key==='y'&&separateAlphabet))assert.ok(Math.abs(value[key]-measurements[0][key])<=1,JSON.stringify({name,key,value,reference:measurements[0]}));
+    measurements.push({name,...value});
+  };
+  for(const mode of ['shared','local']){
+    await activate('search',mode);
+    const form=mode==='shared'?'#shared-search-form':'#search-form',grid=mode==='shared'?'#shared-search-results':'#search-results';
+    await page.locator(form+' input').fill('Fixture');
+    await page.locator(form+' button[type="submit"]').click();
+    await sample(`search-${mode}`,form,grid+' .search-result-item');
+  }
+  await activate('discover','categories');
+  const category=remote?'#remote-discover-categories-panel':'#request-discover-categories';
+  await page.locator(category+' [data-category-browser-home] [data-category-id]').first().click();
+  await sample('category-results',category+' .browse-search-bar',category+' .search-result-item');
+  // Desktop retains its separate persistent alphabet navigation; native and
+  // Remote contextual levels have one TopSlot above both tags and song cards.
+  for(const kind of ['name','artist']){
+    await activate('discover',kind);
+    const view=remote?`#remote-discover-${kind}-panel`:`#request-discover-${kind}`;
+    await page.locator(view+' [data-letter="A"]').click();
+    await sample(`${kind}-tags`,view+' .browse-search-bar',view+' .tag-browser-tag',{separateAlphabet:client==='desktop'});
+    await page.locator(view+' .tag-browser-tag').first().click();
+    await sample(`${kind}-results`,view+' .browse-search-bar',view+' .search-result-item',{separateAlphabet:client==='desktop'});
+  }
+  for(const mode of ['uids','favorites']){
+    const favorite=mode==='favorites';
+    await activate('sources',mode);
+    const panel=remote?`#remote-sources-${mode}-panel`:`#request-sources-${mode}`;
+    const grid=favorite?'#favlist-grid':remote?'#sources-follow-grid':'#follow-up-grid';
+    const results=favorite?'#favlist-song-results':remote?'#sources-follow-results':'#follow-song-results';
+    await sample(`${mode}-list`,panel+' .source-uid-form',grid+' .follow-up-button');
+    await page.locator(grid+' .follow-up-button').first().click();
+    await sample(`${mode}-detail`,panel+' .browse-search-bar',results+' .search-result-item');
+  }
+});
+
 for (const engine of [chromium, webkit]) test(`${engine.name()} Request search fills the frame and landscape tag navigation stays above content`, {timeout:120000,skip:process.platform!=='linux'}, async t=>{
   const {page}=await open(t,engine);
   const items=Array.from({length:60},(_,i)=>({bvid:`BV${String(i+1).padStart(10,'0')}`,title:`Song ${i+1}`,owner_name:'Fixture'}));

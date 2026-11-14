@@ -3306,7 +3306,6 @@ select:disabled {
 
 
 .category-browser-detail {
-  --category-browser-tab-height: 64px;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   gap: 12px;

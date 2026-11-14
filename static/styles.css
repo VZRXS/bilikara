@@ -6616,7 +6616,6 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 }
 
 .category-browser-detail {
-  --category-browser-tab-height: 74px;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   gap: 12px;
@@ -6943,10 +6942,6 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
     gap: 12px;
   }
 
-
-  .category-browser-detail {
-    --category-browser-tab-height: 64px;
-  }
 
   .category-browser-tabs {
     padding-right: 40px;
@@ -10558,7 +10553,7 @@ body.is-presentation-stage-only .left-column {
 
 .request-sources-view .source-browse-scroll.is-detail-view .follow-up-items-view {
   height: 100%;
-  padding-top: 2px;
+  padding-top: 0;
   box-sizing: border-box;
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;

@@ -137,6 +137,14 @@ Search results fill the panel's remaining height after visible query/status
 content; empty status nodes leave neither a track nor a gap. Native name/artist
 contextual navigation stays above its result frame in portrait, landscape and
 two-column tablet layouts, including when a session-user notice is visible.
+The complete contextual bar, including its search toggle, shares the outer
+query/source-form axis. RequestTopSlot spacing is owned by `request-tabs.css`:
+`--request-top-content-gap` is 12px from the bar's bottom to the first card,
+including the grid's 2px `--request-content-paint-inset`. Search, discovery,
+source lists and source details use this same contract on Host and Remote;
+only visible status/notice content adds an intermediate row. Contextual category
+strips use the ordinary 44px control track with no extra vertical padding or
+scrollbar track; horizontal scrolling still exposes every category.
 Category pagination uses the server's exact matched count when supplied; when
 the provider omits it, keep navigation available without displaying a guessed
 total. Phone category switches use ordinary 44px controls and 16px text, with

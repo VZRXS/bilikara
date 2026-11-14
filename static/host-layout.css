@@ -747,7 +747,6 @@ html[data-native-host="true"][data-host-layout="portrait"] .app-shell .category-
 html[data-host-layout="portrait"] .category-browser-tabs { padding: 0; gap: 6px; scrollbar-width: none; }
 html[data-host-layout="portrait"] .request-mode-head { padding: 8px 10px; }
 html[data-host-layout="portrait"] :is(.request-discover-view, .request-search-view, .request-sources-view) > .request-mode-panel { padding: 0; }
-html[data-host-layout="portrait"] .category-browser-detail { gap: 8px; --category-browser-tab-height: 40px; }
 html[data-host-layout="portrait"] #host-workspace-request .search-results { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 /* Phone feed density: desktop's 118/150px minimum distorts narrow covers.
    Keep one renderer for category/search/source cards, including missing art. */

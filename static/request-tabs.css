@@ -1,5 +1,8 @@
 /* Shared request navigation: one visual contract, independent of hierarchy. */
 :root {
+  /* TopSlot bottom to the first card, including the grid's hover paint room. */
+  --request-top-content-gap: 12px;
+  --request-content-paint-inset: 2px;
   --remote-segmented-control-bg: rgba(67, 53, 41, 0.06);
   --remote-segmented-control-idle-color: var(--muted);
   --remote-segmented-control-active-bg: rgba(255, 255, 255, 0.95);
@@ -141,4 +144,30 @@ html[data-host-layout="portrait"] .request-mode-tabs {
   width: auto;
   padding-inline: 12px;
   white-space: nowrap;
+}
+
+/* RequestTopSlot geometry is shared by the bounded Host and document Remote.
+   Keep the complete contextual bar (including its search toggle) on the same
+   axis as query/source forms. Optional status rows still take their own space. */
+:root #host-workspace-request .request-search-view > .request-mode-panel,
+:root #host-workspace-request :is(.source-mode-panel, .tag-browser, .category-browser-detail, .follow-up-items-view),
+:root .remote-shell .request-panel :is(.remote-search-mode-panel, .tag-browser, .category-browser-detail,
+  #favlist-list-view, #favlist-items-view, #sources-follow-list-view, #sources-follow-items-view) {
+  row-gap: calc(var(--request-top-content-gap) - var(--request-content-paint-inset));
+}
+:root :is(#host-workspace-request, .request-panel) :is(.search-results, .tag-browser-tags, .follow-up-grid) {
+  padding-top: var(--request-content-paint-inset);
+}
+:root :is(#host-workspace-request, .request-panel) .category-browser-detail {
+  --category-browser-tab-height: var(--host-peer-action-height, var(--remote-peer-action-height));
+}
+:root :is(#host-workspace-request, .request-panel) .browse-search-bar {
+  --browse-track-inset: 0px;
+}
+:root :is(#host-workspace-request, .request-panel) .browse-search-bar > .category-browser-tabs {
+  padding-block: 0;
+  scrollbar-width: none;
+}
+:root :is(#host-workspace-request, .request-panel) .category-browser-tabs::-webkit-scrollbar {
+  display: none;
 }
