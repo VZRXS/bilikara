@@ -122,6 +122,13 @@ not an HTTP/Worker schema change. As before, either boolean has no effect on
 the refresh request: Rust selects eligible new rows for catalog indexing.
 It does not enable provider uploads or writes to the read-only Sheets snapshot.
 
+The developer smoke surface checks cover both clients' `shared-search-*`
+controls, shared panels, submit/input/result event hooks and canonical search
+route. The non-browser guard `node --test tests/catalog_cleanup_contract.test.mjs`
+checks those smoke expectations against the actual product assets, including
+negative fixtures for missing controls or disconnected request hooks. It does
+not replace the full source-Host smoke flow or browser interaction acceptance.
+
 Rust also owns module-level review/admin/rating/maintenance validation and
 response interpretation. The separate monthly maintenance runner, local rating
 identity ledger, login/cache lifecycle, UI flow and public permissions retain
