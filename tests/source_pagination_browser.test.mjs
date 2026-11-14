@@ -577,6 +577,19 @@ for(const engine of [chromium,webkit])for(const [client,nativeDock] of [['androi
               if(client==='ios'){document.documentElement.style.setProperty('--ios-safe-top','59px');document.documentElement.style.setProperty('--ios-safe-bottom','34px');}
             },{client,font});
             await settle();
+            if(!await panel.isVisible()){
+              // A larger root font raises the rem-based two-column minimums, so a
+              // landscape tablet can fall back to the compact layout, whose Request
+              // tool sheet starts closed. Only that layout may hide the panel; reopen
+              // it through the rail like a user, then apply every assertion below.
+              assert.equal(await page.evaluate(()=>document.documentElement.dataset.hostColumns),'compact',
+                'only the compact layout may close the Request panel: '+JSON.stringify({width,height,font}));
+              await page.locator('[data-host-workspace="request"]').click();
+              await panel.waitFor({state:'visible'});
+              // Measure the settled sheet, not its entry transform.
+              await page.evaluate(()=>Promise.allSettled(document.getAnimations().filter(a=>a.effect?.getTiming().iterations!==Infinity).map(a=>a.finished)));
+              await settle();
+            }
             const sample=await panel.evaluate(n=>{
               const rect=n=>{const r=n.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,height:r.height};};
               const q=s=>rect(n.querySelector(s)),grid=n.querySelector('.follow-up-grid'),style=getComputedStyle(grid),panelStyle=getComputedStyle(n);
