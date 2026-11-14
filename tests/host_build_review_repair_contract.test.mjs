@@ -633,6 +633,12 @@ assert.ok(contains('background: transparent', drag)); assert.ok(contains('box-sh
 const slot = this.styles.match(/\.session-user-trash-slot\s*\{([^}]*)\}/)[1];
 assert.ok(contains('width: 52px', slot)); assert.ok(contains('height: 52px', slot));
 assert.ok(52 >= 44 * 1.15); assert.ok(contains('grid-template-rows: minmax(0, 1fr) 52px', this.styles));
+const sources = readFileSync(path.join(ROOT, 'static/source-removal.css'), 'utf8');
+const sourceSlot = sources.match(/\.source-trash-slot\s*\{([^}]*)\}/)[1];
+assert.ok(contains('width: 52px', sourceSlot)); assert.ok(contains('height: 52px', sourceSlot));
+assert.match(sources,/\.source-tools \.source-remove-selected\.drag-over\s*\{\s*transform: scale\(1\.15\)/);
+assert.match(sources,/\.source-frame-footer\s*\{[^}]*gap: 0;/);
+assert.doesNotMatch(sources,/\.source-frame-footer[^{}]*\{[^}]*gap: 4px/);
 assert.ok(contains('this.drag?.image?.remove()', editor));
 },
 async test_audio_variants_are_persistent_and_expand_as_one_popup() {
