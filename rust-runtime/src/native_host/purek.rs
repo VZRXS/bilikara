@@ -107,16 +107,16 @@ fn body(response: reqwest::blocking::Response) -> Result<String, ApiError> {
     // the streaming limit below for chunked/missing/dishonest length headers.
     if response
         .content_length()
-        .is_some_and(|size| size > 1024 * 1024)
+        .is_some_and(|size| size > protocol::MAX_XML_BYTES as u64)
     {
         return Err(failure(502, "protocol", "房台响应过大"));
     }
     let mut bytes = Vec::new();
     response
-        .take(1024 * 1024 + 1)
+        .take(protocol::MAX_XML_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| network_error())?;
-    if bytes.len() > 1024 * 1024 {
+    if bytes.len() > protocol::MAX_XML_BYTES {
         return Err(failure(502, "protocol", "房台响应过大"));
     }
     String::from_utf8(bytes).map_err(|_| failure(502, "protocol", "房台响应格式无效"))

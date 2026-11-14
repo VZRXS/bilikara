@@ -31,6 +31,120 @@ const SOAP: &str = "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelo
 fn media_description() -> String {
     description("fixture", "/control").replace("</serviceList>", "<service><serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType><controlURL>/transport</controlURL></service><service><serviceType>urn:schemas-upnp-org:service:RenderingControl:2</serviceType><controlURL>/rendering</controlURL></service></serviceList>")
 }
+
+#[test]
+fn network_xml_depth_is_bounded_on_a_two_mib_stack() {
+    thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            let location = Url::parse("http://192.168.1.8/description.xml").unwrap();
+            let service = "urn:schemas-upnp-org:service:ConnectionManager:1";
+            for depth in [65, 5000] {
+                // Fake closes in lexical sections must not hide real nesting.
+                let text = format!(
+                    "{}<!-- </n> --><![CDATA[</n>]]><?pi </n>?>secret{}",
+                    "<n>".repeat(depth),
+                    "</n>".repeat(depth)
+                );
+                let error = protocol::xml(&text).err().unwrap();
+                assert_eq!(error.code, "purek_protocol");
+                assert!(error.to_string().contains("嵌套过深"));
+                assert!(!error.to_string().contains("secret"));
+                assert_eq!(
+                    Renderer::parse(&text, &location).err().unwrap().code,
+                    "purek_protocol"
+                );
+                assert_eq!(
+                    protocol::authorization_result(&text, service)
+                        .unwrap_err()
+                        .code,
+                    "purek_protocol"
+                );
+                assert_eq!(
+                    protocol::authorization_fault(&text, service).code,
+                    "purek_http"
+                );
+                assert_eq!(
+                    renderer::protocol_info(&text, service).err().unwrap().code,
+                    "purek_protocol_info"
+                );
+            }
+            for depth in [1, 63, 64] {
+                for leaf in ["<n/>", "<n></n>"] {
+                    let text = format!(
+                        "{}{leaf}{}",
+                        "<n>".repeat(depth - 1),
+                        "</n>".repeat(depth - 1)
+                    );
+                    let doc = protocol::xml(&text).unwrap();
+                    assert_eq!(doc.descendants().filter(|n| n.is_element()).count(), depth);
+                }
+            }
+            let empty_leaf_at_65 = format!("{}<n/>{}", "<n>".repeat(64), "</n>".repeat(64));
+            assert!(protocol::xml(&empty_leaf_at_65).is_err());
+            Renderer::parse(&media_description(), &location).unwrap();
+            protocol::authorization_result(SOAP, service).unwrap();
+            renderer::protocol_info(&protocol_reply("http-get:*:video/MP2T:*"), service).unwrap();
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn network_xml_scan_respects_lexical_sections_and_quoted_attributes() {
+    let text = format!(
+        "<?xml version=\"1.0\"?>{}<叶 a=\"> /&gt; &lt;\" b='> /&lt;'><!-- {} --><![CDATA[{}]]><?pi {}?></叶>{}",
+        "<n>".repeat(63),
+        "<fake></n>".repeat(80),
+        "<fake></n>".repeat(80),
+        "<fake></n>".repeat(80),
+        "</n>".repeat(63)
+    );
+    let doc = protocol::xml(&text).unwrap();
+    assert_eq!(doc.descendants().filter(|n| n.is_element()).count(), 64);
+    let leaf = doc.descendants().find(|n| n.has_tag_name("叶")).unwrap();
+    assert_eq!(leaf.attribute("a"), Some("> /> <"));
+    assert_eq!(leaf.attribute("b"), Some("> /<"));
+    assert_eq!(
+        leaf.children()
+            .find(|n| n.is_text())
+            .unwrap()
+            .text()
+            .unwrap(),
+        "<fake></n>".repeat(80)
+    );
+
+    // Skipped lexical sections cannot lower the depth before a malicious leaf.
+    for decoy in ["<!-- </n> -->", "<![CDATA[</n>]]>", "<?pi </n>?>"] {
+        let text = format!("{}{decoy}<n/>{}", "<n>".repeat(64), "</n>".repeat(64));
+        assert!(protocol::xml(&text).is_err());
+    }
+    for invalid in [
+        "<n a='<fake>'/>",
+        "<n a='unterminated/>",
+        "<n><fake</n>",
+        "<n><!-- unterminated</n>",
+        "<n><![CDATA[unterminated</n>",
+        "<n><?pi unterminated</n>",
+        "</n><n/>",
+        "<!DOCTYPE n [<!ENTITY x '<n/>'>]><n>&x;</n>",
+    ] {
+        assert_eq!(protocol::xml(invalid).err().unwrap().code, "purek_protocol");
+    }
+}
+
+#[test]
+fn network_xml_size_budget_also_applies_to_direct_parser_calls() {
+    let mut text = format!("<root>{}</root>", "x".repeat(1024 * 1024 - 13));
+    assert_eq!(text.len(), 1024 * 1024);
+    assert!(protocol::xml(&text).is_ok());
+    text.push(' ');
+    let error = protocol::xml(&text).err().unwrap();
+    assert_eq!(error.code, "purek_protocol");
+    assert_eq!(error.message, "房台响应过大");
+}
+
 fn protocol_reply(sink: &str) -> String {
     format!(
         "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><u:GetProtocolInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:ConnectionManager:1\"><Source/><Sink>{sink}</Sink></u:GetProtocolInfoResponse></s:Body></s:Envelope>"

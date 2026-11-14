@@ -280,10 +280,10 @@ pub(super) fn transport(
     }
     let mut bytes = Vec::new();
     reply
-        .take(1024 * 1024 + 1)
+        .take(protocol::MAX_XML_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| network_error())?;
-    if bytes.len() > 1024 * 1024 {
+    if bytes.len() > protocol::MAX_XML_BYTES {
         return Err(protocol_error());
     }
     let text = String::from_utf8(bytes).map_err(|_| protocol_error())?;
