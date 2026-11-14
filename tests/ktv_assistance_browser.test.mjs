@@ -14,15 +14,23 @@ const qrcode=createRequire(import.meta.url)('../static/qrcode-generator.js');
 const read=name=>readFileSync(path.join(root,'static',name),'utf8');
 let desktop,alpha;before(async()=>{if(process.platform!=='linux')return;desktop=process.env.BILIKARA_TEST_NATIVE_HOST_BINARY||await buildNativeHost();alpha=process.env.BILIKARA_TEST_NATIVE_ALPHA_BINARY||await buildNativeAlpha();},{timeout:300000});
 const evidence=process.env.BILIKARA_KTV_EVIDENCE;
-async function settleLayout(page){
-  await page.evaluate(async()=>{
+async function settleLayout(page,scope='#purek-modal'){
+  await page.evaluate(async scope=>{
     await document.fonts.ready;
-    await Promise.allSettled(document.getAnimations().filter(a=>a.effect?.getTiming().iterations!==Infinity).map(a=>a.finished));
+    const root=document.querySelector(scope);
+    // WebKit can retain unresolved transitions inside collapsed details. Only
+    // rendered targets in the surface under measurement can affect its bounds.
+    const relevant=document.getAnimations().filter(a=>{
+      const target=a.effect?.target;
+      return a.effect?.getTiming().iterations!==Infinity&&target&&root?.contains(target)
+        &&target.checkVisibility?.({contentVisibilityAuto:true})!==false;
+    });
+    await Promise.allSettled(relevant.map(a=>a.finished));
     await new Promise(resolve=>requestAnimationFrame(resolve));
-  });
+  },scope);
 }
-async function shot(page,name){if(evidence){
-  await page.evaluate(()=>Promise.all(document.getAnimations().filter(a=>a.effect?.getTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{}))));
+async function shot(page,name,scope='#purek-modal'){if(evidence){
+  await settleLayout(page,scope);
   mkdirSync(evidence,{recursive:true});await page.screenshot({path:path.join(evidence,name+'.png')});
 }}
 async function checkScannerGeometry(page) {
@@ -72,20 +80,20 @@ for(const engine of [chromium,webkit])for(const platform of ['desktop','android'
   const toolStyle=node=>{const s=getComputedStyle(node);return [s.height,s.minHeight,s.fontSize,s.fontWeight,s.borderRadius,s.paddingLeft,s.paddingRight,s.backgroundColor,s.color];};
   for(const [language,theme] of [['zh','light'],['en','dark'],['ja','blue']]){
     await host.evaluate(({language,theme})=>{setLanguage(language);applyTheme(theme);},{language,theme});
-    await settleLayout(host);
+    await settleLayout(host,'#purek-settings');
     const scan=await host.locator('#purek-open').evaluate(toolStyle);
     // Compare rendered controls. WebKit can retain an old computed palette
     // for a reference inside a display:none mobile Settings page.
     if(platform!=='desktop'){
       await host.locator('#android-open-settings').click();
       await host.locator('#host-workspace-settings').waitFor({state:'visible'});
-      await settleLayout(host);
+      await settleLayout(host,'#host-workspace-settings');
     }
     const reference=await host.locator('#diagnostic-copy-button').evaluate(toolStyle);
     if(platform!=='desktop'){
       await host.locator('#android-settings-back').click();
       await host.locator('#android-my-page').waitFor({state:'visible'});
-      await settleLayout(host);
+      await settleLayout(host,'#android-my-page');
     }
     const styles={scan,reference};
     assert.deepEqual(styles.scan,styles.reference,'Scan entry reuses the full settings-tool style');
@@ -104,7 +112,7 @@ for(const engine of [chromium,webkit])for(const platform of ['desktop','android'
   }
   await host.evaluate(()=>{setLanguage('zh');applyTheme('light');});
   await host.locator('#purek-settings').scrollIntoViewIfNeeded();
-  await shot(host,`settings-pill-${platform}-${engine.name()}`);
+  await shot(host,`settings-pill-${platform}-${engine.name()}`,'#purek-settings');
   const pill=await host.locator('#purek-open').boundingBox();
   await host.touchscreen.tap(pill.x+pill.width/2,pill.y-4);
   await host.locator(platform==='desktop'?'#ktv-host-empty':'#ktv-host-local-scan').waitFor({state:'visible'});
@@ -160,7 +168,7 @@ for(const engine of [chromium,webkit])for(const platform of ['desktop','android'
   for(const size of[{width:393,height:844},{width:844,height:393}]){
     await remote.setViewportSize(size);await remote.locator('#remote-menu-toggle').click();await remote.locator('#ktv-menu-toggle').click();
     assert.equal(await remote.locator('#remote-menu-panel').evaluate(n=>{const r=n.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth+1&&r.top>=0&&r.bottom<=innerHeight+1&&n.scrollWidth<=n.clientWidth+1;}),true);
-    await shot(remote,`menu-${size.width}-${platform}-${engine.name()}`);await remote.keyboard.press('Escape');
+    await shot(remote,`menu-${size.width}-${platform}-${engine.name()}`,'#remote-menu-panel');await remote.keyboard.press('Escape');
   }
   await host.locator('#purek-close').click();assert.equal(await host.locator('#purek-open').evaluate(n=>n===document.activeElement),true);
   if(platform==='desktop'){
@@ -356,7 +364,7 @@ test('actual authenticated encrypted DataChannels carry local QR results, never 
   await remote.evaluate(()=>{navigator.mediaDevices.getUserMedia=__originalGum;});
   await remote.locator('#ktv-camera').click();await remote.waitForFunction(()=>document.querySelector('#ktv-camera-preview').srcObject?.getVideoTracks().length===1);
   await remote.waitForFunction(()=>!document.querySelector('#ktv-camera').hasAttribute('aria-busy')&&!document.querySelector('#ktv-import').disabled);
-  await shot(remote,'scanner-live-camera');
+  await shot(remote,'scanner-live-camera','#ktv-remote-modal');
   await remote.evaluate(()=>{window.__cameraTrack=document.querySelector('#ktv-camera-preview').srcObject.getVideoTracks()[0];});
   const acceptedBeforeBackground=(await server.api('/api/ktv/host')).session.request_id;
   await remote.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'));});
@@ -377,7 +385,7 @@ test('actual authenticated encrypted DataChannels carry local QR results, never 
   assert.ok(await remote.evaluate(()=>__qrReads)>=1);
   assert.equal(await remote.evaluate(()=>__cameraTrack.readyState),'ended','image import stops the actual synthetic camera track');
   assert.equal(await remote.locator('#ktv-open-wechat').isVisible(),false);assert.match(await remote.locator('#ktv-wechat-help').innerText(),/微信|WeChat/);
-  await shot(remote,'official-authorization-instructions');
+  await shot(remote,'official-authorization-instructions','#ktv-remote-modal');
   const staged=(await server.api('/api/ktv/host')).session,stagedConnection=staged.connection_id,actionsBeforeReturn=[...tv.state.actions];
   await remote.evaluate(()=>{window.__returnNode=document.querySelector('#remote-menu-toggle');window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true}));});
   assert.equal(await remote.locator('#ktv-remote-modal').evaluate(n=>n.open),false);assert.equal(await remote.locator('#ktv-authorization-url').inputValue(),'');
@@ -472,7 +480,7 @@ test('actual authenticated encrypted DataChannels carry local QR results, never 
   assert.ok(!JSON.stringify(wire).includes('projection_url'));assert.ok(!JSON.stringify(wire).includes('synthetic-ktv-private'));
   assert.ok(!httpBodies.some(body=>body.includes('projection_url')||body.includes('synthetic-ktv-private')||body.includes('pixels')));
   assert.equal(await remote.evaluate(()=>[localStorage,sessionStorage].some(storage=>[...Array(storage.length)].some((_,i)=>/projection_url|synthetic-ktv-private/.test(storage.getItem(storage.key(i))||'')))),false);
-  assert.deepEqual(errors,[]);await shot(remote,'internet-qr-authorized');
+  assert.deepEqual(errors,[]);await shot(remote,'internet-qr-authorized','#ktv-remote-modal');
 });
 
 for(const engine of[chromium,webkit])test(`${engine.name()} Desktop explicitly retrieves Remote official links and rejects late or retired handoffs`,{skip:process.platform!=='linux',timeout:90000},async t=>{
@@ -574,10 +582,10 @@ for(const engine of[chromium,webkit])test(`${engine.name()} non-loopback HTTP LA
   await page.locator('#ktv-remote-modal .remote-info-button').click();
   await page.locator('#ktv-transport-info').waitFor({state:'visible'});
   assert.match(await page.locator('#ktv-secure-fallback').innerText(),/HTTP.*未加密/);
-  await shot(page,`http-lan-help-${engine.name()}`);
+  await shot(page,`http-lan-help-${engine.name()}`,'#ktv-remote-modal');
   await page.keyboard.press('Escape');assert.equal(await page.locator('#ktv-remote-modal').isVisible(),true);
   const code=qrcode(0,'M');code.addData(roomQr(tv.base));code.make();
-  await shot(page,`scanner-http-lan-${engine.name()}`);
+  await shot(page,`scanner-http-lan-${engine.name()}`,'#ktv-remote-modal');
   assert.equal(await page.locator('#ktv-remote-title').innerText(),'投屏设备');
   assert.equal(await page.locator('#ktv-scan-view #ktv-import').getAttribute('aria-label'),'导入图片');
   assert.equal(await page.locator('#ktv-import').innerText(),'');
@@ -595,7 +603,7 @@ for(const engine of[chromium,webkit])test(`${engine.name()} non-loopback HTTP LA
   assert.ok(!projection.includes('projection_url')&&!projection.includes('synthetic-ktv-private'));
   await page.locator('#ktv-check').click();await waitFor(async()=>(await server.api('/api/purek/state')).connected,'LAN authorized receiver check');
   await page.waitForFunction(()=>document.querySelector('#ktv-authorization-url').value==='');
-  await shot(page,`http-lan-authorized-${engine.name()}`);
+  await shot(page,`http-lan-authorized-${engine.name()}`,'#ktv-remote-modal');
   await page.locator('#ktv-remote-close').click();
   await page.locator('#remote-menu-toggle').click();await page.locator('#ktv-menu-toggle').click();
   await page.locator('#ktv-menu-scan').waitFor({state:'hidden'});
