@@ -96,12 +96,12 @@ for(const[platform,engine]of[['desktop',chromium],['android',chromium],['ios',we
     await input.waitFor({state:'hidden'});
     assert.equal((await host.api('/api/state')).session_user_entries[0].name,'Renamed singer');
     await go('request');await page.locator('[data-request-view="search"]').click();
-    await page.locator('#lark-search-form input').fill('Song');await page.locator('#lark-search-button').click();
+    await page.locator('#shared-search-form input').fill('Song');await page.locator('#shared-search-button').click();
     const pager=page.locator('#request-search-shared .result-pager');
     if(platform==='desktop'){
-      await page.locator('#lark-search-results .search-result-title').first().waitFor({state:'visible'});
+      await page.locator('#shared-search-results .search-result-title').first().waitFor({state:'visible'});
       assert.equal(await pager.count(),0,'desktop retains its result list instead of the mobile pager');
-      const query=page.locator('#lark-search-form input');
+      const query=page.locator('#shared-search-form input');
       assert.notEqual(await query.evaluate(n=>getComputedStyle(n).userSelect),'none');
       await query.focus();await query.evaluate(n=>n.select());
       assert.deepEqual(await query.evaluate(n=>[n.selectionStart,n.selectionEnd]),[0,4]);
@@ -113,7 +113,7 @@ for(const[platform,engine]of[['desktop',chromium],['android',chromium],['ios',we
     assert.deepEqual(await pageInput.evaluate(n=>[n.selectionStart,n.selectionEnd]),[0,1]);
     await pageInput.fill('2');await pageInput.press('Enter');
     await page.waitForFunction(()=>document.querySelector('#request-search-shared [data-page-input]').value==='2');
-    assert.notEqual(await page.locator('#lark-search-results .search-result-title').first().textContent(),'Song 1');
+    assert.notEqual(await page.locator('#shared-search-results .search-result-title').first().textContent(),'Song 1');
     }
     if(platform!=='desktop')await go('playback');
     await page.locator('#remote-mini-trigger').click();

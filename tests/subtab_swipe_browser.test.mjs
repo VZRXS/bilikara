@@ -109,7 +109,7 @@ for(const [name,engine]of Object.entries({chromium,webkit}))test(`${name}: intra
     const pager=document.createElement('div');pager.className='result-page-viewport';pager.id='last-page-owner';pager.style.height='60px';area.append(pager);
   });
   assert.equal((await swipe(page,{target:'#last-page-owner'})).after,'request.search.shared');
-  assert.equal((await swipe(page,{target:'#lark-search-query'})).after,'request.search.local',
+  assert.equal((await swipe(page,{target:'#shared-search-query'})).after,'request.search.local',
     'a fixed text field accepts a horizontal gesture while an ordinary tap still edits');
   await page.evaluate(()=>activateSearchMode('shared'));
   // Exercise the shipped pager, not just its ownership class. Card swipes
@@ -141,7 +141,7 @@ for(const [name,engine]of Object.entries({chromium,webkit}))test(`${name}: intra
     for(const child of gestureBar.children){child.setAttribute('style',child.dataset.oldStyle);delete child.dataset.oldStyle;}
     if(gestureBarStyle===null)gestureBar.removeAttribute('style');else gestureBar.setAttribute('style',gestureBarStyle);
   });
-  assert.equal((await swipe(page,{target:'#lark-search-button'})).after,'request.search.local',
+  assert.equal((await swipe(page,{target:'#shared-search-button'})).after,'request.search.local',
     'fixed ordinary toolbar actions also admit horizontal gestures');
   await page.evaluate(()=>activateSearchMode('shared'));
   await page.locator('[data-android-page="users"]').click();
@@ -235,7 +235,7 @@ for (const [name, engine] of Object.entries({chromium, webkit})) test(`${name}: 
   await page.locator('[data-host-workspace="request"]').click();
   await page.evaluate(() => activateRequestSubview('quick'));
   assert.equal((await swipe(page, {target: '#workspace-request-heading'})).after, 'request.search.shared');
-  assert.equal((await swipe(page, {target: '#lark-search-query'})).after, 'request.search.local');
+  assert.equal((await swipe(page, {target: '#shared-search-query'})).after, 'request.search.local');
   await page.evaluate(() => {
     const cards = document.createElement('div');
     cards.id = 'tablet-page-owner'; cards.style.height = '64px';

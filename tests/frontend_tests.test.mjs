@@ -69,3 +69,5 @@ import './tauri_export_source_contract.test.mjs';
 import './volume_boost_frontend_contract.test.mjs';
 
 import './source_management_contract.test.mjs';
+import './shared_catalog_ui_contract.test.mjs';
+import './catalog_cleanup_contract.test.mjs';

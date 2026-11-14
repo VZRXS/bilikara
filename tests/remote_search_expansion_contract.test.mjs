@@ -18,7 +18,7 @@ source = readFileSync(path.join(path.join(ROOT, "static"), "remote.js"), "utf8")
 this.size_tier_source = source.slice(sourceIndex(source, "function syncRemoteRequestPanelSizeTier("), sourceIndex(source, "function syncRemoteSearchModeSelection("));
 this.search_source = source.slice(sourceIndex(source, "const canonicalBilikaraSearch ="), sourceIndex(source, "function d1BrowseTitle("));
 this.hide_pager_source = source.slice(sourceIndex(source, "function hideRemoteResultPager("), sourceIndex(source, "function renderSearchResultPage("));
-this.form_handlers = source.slice(sourceIndex(source, "elements.larkSearchQuery?.addEventListener(\"input\""), sourceIndex(source, "elements.larkSearchResults?.addEventListener(\"click\""));
+this.form_handlers = source.slice(sourceIndex(source, "elements.sharedSearchQuery?.addEventListener(\"input\""), sourceIndex(source, "elements.sharedSearchResults?.addEventListener(\"click\""));
 },
 async run_node(body) {
 let completed, script;
@@ -57,25 +57,25 @@ function mockElement(id) {
 }
 
 const elements = {
-  larkSearchQuery: mockElement("lark-search-query"),
-  larkSearchResults: mockElement("lark-search-results"),
-  larkSearchButton: mockElement("lark-search-button"),
-  larkSearchMessage: mockElement("lark-search-message"),
-  larkSearchForm: mockElement("lark-search-form"),
+  sharedSearchQuery: mockElement("shared-search-query"),
+  sharedSearchResults: mockElement("shared-search-results"),
+  sharedSearchButton: mockElement("shared-search-button"),
+  sharedSearchMessage: mockElement("shared-search-message"),
+  sharedSearchForm: mockElement("shared-search-form"),
 };
 
 function t(key, params) { return params?.count === undefined ? key : \`\${key}:\${params.count}\`; }
-function setLarkSearchMessage(message, isError) {
-  elements.larkSearchMessage.textContent = message;
-  elements.larkSearchMessage.isError = Boolean(isError);
+function setSharedSearchMessage(message, isError) {
+  elements.sharedSearchMessage.textContent = message;
+  elements.sharedSearchMessage.isError = Boolean(isError);
 }
-function renderLarkSearchResults(items) {
-  elements.larkSearchResults.children = items.length ? items.map((item) => {
+function renderSharedSearchResults(items) {
+  elements.sharedSearchResults.children = items.length ? items.map((item) => {
     const row = { view: "compact" };
     searchResultItemByElement.set(row, item);
     return row;
-  }) : [{ className: "search-empty", textContent: t("search.larkNoResults") }];
-  elements.larkSearchResults.classList.remove("hidden");
+  }) : [{ className: "search-empty", textContent: t("search.sharedNoResults") }];
+  elements.sharedSearchResults.classList.remove("hidden");
 }
 
 const requests = [];
@@ -102,19 +102,19 @@ let result;
 result = (await this.run_node(`
 const item1 = { bvid: "BV1", title: "anime 1" };
 const item2 = { bvid: "BV2", title: "anime 2" };
-elements.larkSearchQuery.value = "anime";
-await elements.larkSearchQuery.dispatch("input");
-const searchPromise = elements.larkSearchForm.dispatch("submit");
-await elements.larkSearchForm.dispatch("submit"); // Duplicate while pending must not read again.
+elements.sharedSearchQuery.value = "anime";
+await elements.sharedSearchQuery.dispatch("input");
+const searchPromise = elements.sharedSearchForm.dispatch("submit");
+await elements.sharedSearchForm.dispatch("submit"); // Duplicate while pending must not read again.
 resolvers.get("anime").resolve({items:[item1, item2]});
 await searchPromise;
 console.log(JSON.stringify({
   requests,
   canonicalQuery: canonicalBilikaraSearch.query,
-  inputQuery: elements.larkSearchQuery.value,
-  resultCount: elements.larkSearchResults.children.length,
-  firstRowMatches: searchResultItemByElement.get(elements.larkSearchResults.children[0]) === item1,
-  buttonDisabled: elements.larkSearchButton.disabled,
+  inputQuery: elements.sharedSearchQuery.value,
+  resultCount: elements.sharedSearchResults.children.length,
+  firstRowMatches: searchResultItemByElement.get(elements.sharedSearchResults.children[0]) === item1,
+  buttonDisabled: elements.sharedSearchButton.disabled,
 }));
 `));
 assert.deepEqual(result["requests"], ["anime"]);
@@ -127,40 +127,40 @@ assert.ok(!hasContent(result["buttonDisabled"]));
 async test_no_results_appear_only_after_pending_request_resolves_empty() {
 let result;
 result = (await this.run_node(`
-elements.larkSearchQuery.value = "anime";
-const searchPromise = elements.larkSearchForm.dispatch("submit");
+elements.sharedSearchQuery.value = "anime";
+const searchPromise = elements.sharedSearchForm.dispatch("submit");
 const pending = {
-  message: elements.larkSearchMessage.textContent,
-  emptyRows: elements.larkSearchResults.children.filter((row) => row.className === "search-empty").length,
-  hidden: elements.larkSearchResults.classList.contains("hidden"),
+  message: elements.sharedSearchMessage.textContent,
+  emptyRows: elements.sharedSearchResults.children.filter((row) => row.className === "search-empty").length,
+  hidden: elements.sharedSearchResults.classList.contains("hidden"),
 };
 resolvers.get("anime").resolve({items:[]});
 await searchPromise;
 console.log(JSON.stringify({
   pending,
   settled: {
-    message: elements.larkSearchMessage.textContent,
-    emptyRows: elements.larkSearchResults.children.filter((row) => row.className === "search-empty").length,
-    emptyText: elements.larkSearchResults.children[0]?.textContent,
+    message: elements.sharedSearchMessage.textContent,
+    emptyRows: elements.sharedSearchResults.children.filter((row) => row.className === "search-empty").length,
+    emptyText: elements.sharedSearchResults.children[0]?.textContent,
   },
 }));
 `));
-assert.deepEqual(result["pending"]["message"], "search.larkSearching");
+assert.deepEqual(result["pending"]["message"], "search.sharedSearching");
 assert.deepEqual(result["pending"]["emptyRows"], 0);
 assert.ok(hasContent(result["pending"]["hidden"]));
-assert.deepEqual(result["settled"]["message"], "search.larkNoResults");
+assert.deepEqual(result["settled"]["message"], "search.sharedNoResults");
 assert.deepEqual(result["settled"]["emptyRows"], 1);
-assert.deepEqual(result["settled"]["emptyText"], "search.larkNoResults");
+assert.deepEqual(result["settled"]["emptyText"], "search.sharedNoResults");
 },
 async test_stale_request_completion_does_not_overwrite_newer_state() {
 let result;
 result = (await this.run_node(`
 const itemA = { bvid: "A" };
 const itemB = { bvid: "B" };
-elements.larkSearchQuery.value = "query A";
-const requestA = elements.larkSearchForm.dispatch("submit");
-elements.larkSearchQuery.value = "query B";
-const requestB = elements.larkSearchForm.dispatch("submit");
+elements.sharedSearchQuery.value = "query A";
+const requestA = elements.sharedSearchForm.dispatch("submit");
+elements.sharedSearchQuery.value = "query B";
+const requestB = elements.sharedSearchForm.dispatch("submit");
 resolvers.get("query B").resolve({items:[itemB]});
 await requestB;
 resolvers.get("query A").resolve({items:[itemA]});
@@ -168,7 +168,7 @@ await requestA;
 console.log(JSON.stringify({
   canonicalQuery: canonicalBilikaraSearch.query,
   itemBvid: canonicalBilikaraSearch.items[0]?.bvid,
-  inputQuery: elements.larkSearchQuery.value,
+  inputQuery: elements.sharedSearchQuery.value,
   requestCount: requests.length,
 }));
 `));

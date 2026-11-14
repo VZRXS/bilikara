@@ -105,7 +105,7 @@ const installState = value => {
         ratingPayloads.push(route.request().postDataJSON());
         return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({ok:true,data:{success:true}})});
       }
-      if(/^\/api\/(lark|d1)\//.test(u.pathname))return route.fulfill({status:200,contentType:'application/json',body:'{"ok":true,"data":{"items":[]}}'});
+      if(/^\/api\/(catalog|lark|d1)\//.test(u.pathname))return route.fulfill({status:200,contentType:'application/json',body:'{"ok":true,"data":{"items":[]}}'});
       return route.continue();
     });
     const remote = await context.newPage();

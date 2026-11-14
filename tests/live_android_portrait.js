@@ -167,7 +167,7 @@ const [exe, directory, video, audio, executablePath] = process.argv.slice(2);
       await assertCompactCards(".category-browser-results","compact-category");
       await page.locator('[data-request-view="search"]').click();
       for(const [mode,query,button,results] of [
-        ["shared","#lark-search-query","#lark-search-button","#lark-search-results"],
+        ["shared","#shared-search-query","#shared-search-button","#shared-search-results"],
         ["local","#search-query","#search-button","#search-results"],
       ]) {
         await page.locator(`[data-search-mode="${mode}"]`).click();

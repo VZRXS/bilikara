@@ -45,9 +45,9 @@ async function run() {
     await page.waitForFunction(()=>state.data?.capabilities?.shared_search === true);
     await page.locator("#work-rail-request").click();
     await page.locator('[data-request-view="search"]').click();
-    await page.locator("#lark-search-query").fill("高达");
-    await page.locator("#lark-search-button").click();
-    await page.waitForFunction(()=>document.querySelector("#lark-search-results")?.textContent.includes("高达 220"));
+    await page.locator("#shared-search-query").fill("高达");
+    await page.locator("#shared-search-button").click();
+    await page.waitForFunction(()=>document.querySelector("#shared-search-results")?.textContent.includes("高达 220"));
     await page.locator('[data-request-view="sources"]').click();
     await page.locator('#follow-up-grid [data-uid="123"]').click();
     await page.waitForFunction(()=>state.followBrowseData?.items.length===221);
@@ -89,9 +89,9 @@ async function run() {
     assert.equal(await remote.locator("#remote-request-search-tab").isVisible(), true);
     await remote.locator("#remote-request-search-tab").click();
     assert.equal(await remote.locator("#remote-request-search-panel").isVisible(), true);
-    await remote.locator("#lark-search-query").fill("高达");
-    await remote.locator("#lark-search-button").click();
-    await remote.waitForFunction(()=>document.querySelector("#lark-search-results")?.textContent.includes("高达 220"));
+    await remote.locator("#shared-search-query").fill("高达");
+    await remote.locator("#shared-search-button").click();
+    await remote.waitForFunction(()=>document.querySelector("#shared-search-results")?.textContent.includes("高达 220"));
     await remote.locator("#remote-search-local-tab").click();
     await remote.locator("#search-query").fill("高达 220");
     await remote.locator("#search-button").click();
@@ -130,8 +130,8 @@ async function run() {
   } catch (error) {
     if (page) console.log(await page.evaluate(()=>({
       view:state.requestSubview,source:state.sourcesMode,follow:state.followBrowseData?.items?.length,
-      favlist:state.favlistBrowseData?.items?.length,search:document.querySelector("#lark-search-message")?.textContent,
-      results:document.querySelector("#lark-search-results")?.textContent,
+      favlist:state.favlistBrowseData?.items?.length,search:document.querySelector("#shared-search-message")?.textContent,
+      results:document.querySelector("#shared-search-results")?.textContent,
     })).catch(()=>({})));
     throw error;
   } finally {

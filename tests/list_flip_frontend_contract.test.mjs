@@ -255,7 +255,7 @@ assert.ok(contains("--host-rail-width", this.styles));
 },
 async test_request_removes_host_search_flip_modal_and_source_duplicates() {
 let random_workspace, retired_css, retired_markup, retired_source;
-for (const retired_markup of iterableValues(["id=\"search-stage\"", "id=\"search-stage-inner\"", "id=\"search-expand-button\"", "id=\"search-modal\"", "id=\"lark-search-hitbox-form\""])) {
+for (const retired_markup of iterableValues(["id=\"search-stage\"", "id=\"search-stage-inner\"", "id=\"search-expand-button\"", "id=\"search-modal\"", "id=\"shared-search-hitbox-form\""])) {
 assert.ok(!contains(retired_markup, this.markup));
 }
 for (const retired_source of iterableValues(["searchStageView", "searchStageAngle", "searchFlipTimer", "searchFlipFrame", "syncSearchStageView", "openExpandedSearchModal", "closeExpandedSearchModal", "searchModalPlaceholder.appendChild"])) {
