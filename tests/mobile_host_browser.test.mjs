@@ -324,7 +324,7 @@ for (const platform of ['android','ios']) test(`${platform} phone subtitles, tit
 
 for(const [platform,channel] of [['android',''],['ios',''],['ios','stable']])test(`${platform} ${channel||'default'} build label and mobile selects retain platform, theme and focus semantics`,
   {skip:unavailable,timeout:90000},async t=>{
-    const {page}=await open(t,platform,{channel});
+    const {page,host}=await open(t,platform,{channel});
     await go(page,'request');
     const expected=platform==='android'?['Android','Android','Android']
       :channel==='stable'?['iOS','iOS','iOS']:['iOS 测试版','iOS beta','iOS テスト版'];
@@ -340,15 +340,72 @@ for(const [platform,channel] of [['android',''],['ios',''],['ios','stable']])tes
       assert.ok(await heading.locator('h2').textContent(),'semantic heading is retained');
     }
     await go(page,'my');
+    const ids=['cache-quality-select','cache-download-source-select'];
+    const saved=await page.evaluate(ids=>{
+      window.mobileRuntimeSelects=ids.map(id=>document.getElementById(id));
+      return mobileRuntimeSelects.map(node=>node.value);
+    },ids);
     for(const theme of ['light','dark','blue']){
       await page.evaluate(theme=>applyTheme(theme),theme);
-      for(const id of ['cache-quality-select','cache-download-source-select']){
-        const field=page.locator('#'+id+(platform==='ios'?'-trigger':''));
+      for(const id of ids){
+        const field=page.locator('#'+id);
         assert.equal(await field.isVisible(),true);
-        const style=await field.evaluate(node=>{const s=getComputedStyle(node);return{height:node.getBoundingClientRect().height,border:s.borderTopWidth,color:s.borderTopColor,background:s.backgroundColor,radius:parseFloat(s.borderRadius)};});
-        assert.equal(style.height,34);assert.equal(style.border,'1px');assert.ok(style.radius>=17);
+        assert.equal(await field.count(),1,'the original select is the only input for its setting');
+        await field.scrollIntoViewIfNeeded();
+        const style=await field.evaluate((node,ios)=>{
+          const owner=ios?node.parentElement:node,s=getComputedStyle(owner);
+          return {tag:node.tagName,hidden:node.hidden,height:owner.getBoundingClientRect().height,
+            nativeHeight:node.getBoundingClientRect().height,border:s.borderTopWidth,shadow:s.boxShadow,
+            color:ios?s.boxShadow.match(/rgba?\([^)]+\)/)?.[0]:s.borderTopColor,
+            background:s.backgroundColor,radius:parseFloat(s.borderRadius)};
+        },platform==='ios');
+        assert.equal(style.tag,'SELECT');assert.equal(style.hidden,false);
+        assert.equal(style.height,34);assert.ok(style.radius>=17);
+        assert.equal(style.nativeHeight,platform==='ios'?44:34);
+        if(platform==='ios') {
+          assert.match(style.shadow,/inset/);assert.match(style.shadow,/0px 0px 0px 1px/,'the shell retains its 1px theme-aware outline');
+          assert.equal(await page.locator('.runtime-select-trigger,.runtime-select-menu').count(),0,'iOS uses the system Picker');
+        } else assert.equal(style.border,'1px');
+        assert.ok(style.color,'the themed outline has a resolved color');
         assert.notEqual(style.color,style.background);
+        await field.focus();
+        const focus=await field.evaluate(node=>{
+          const shell=node.parentElement,b=shell.getBoundingClientRect(),r=node.getBoundingClientRect();
+          return {active:document.activeElement===node,label:node.labels?.[0]?.htmlFor,
+            outline:getComputedStyle(shell).outlineWidth,
+            edges:[b.top-4,b.bottom+4].map(y=>document.elementFromPoint(r.x+r.width/2,y)===node)};
+        });
+        assert.equal(focus.active,true,'focus belongs to the native select');assert.equal(focus.label,id);
+        assert.equal(focus.outline,'2px','native select focus retains the shared shell ring');
+        if(platform==='ios') assert.deepEqual(focus.edges,[true,true],'the real select owns the 44px hit region around the 34px pill');
       }
+      assert.deepEqual(await page.evaluate(()=>mobileRuntimeSelects.map(node=>node.value)),saved,'themes do not reset native values');
+      assert.equal(await page.evaluate(()=>mobileRuntimeSelects.every(node=>document.getElementById(node.id)===node)),true,'theme changes retain the original nodes');
+    }
+    if(platform==='ios') {
+      await page.evaluate(()=>{
+        window.mobileRuntimeEvents={};
+        for(const node of mobileRuntimeSelects) {
+          mobileRuntimeEvents[node.id]={input:0,change:0};
+          for(const type of ['input','change']) node.addEventListener(type,event=>{
+            if(event.target===node) mobileRuntimeEvents[node.id][type]++;
+          });
+        }
+      });
+      const quality=page.locator('#cache-quality-select');
+      const value=await quality.evaluate(node=>[...node.options].find(option=>!option.disabled&&option.value!==node.value)?.value);
+      assert.ok(value,'the native quality select has a different enabled choice');
+      await quality.selectOption(value);
+      await page.waitForFunction(value=>document.getElementById('cache-quality-select').value===value
+        &&state.data.cache_policy.video_quality===value&&!state.cachePolicySaving,value);
+      assert.equal((await host.api('/api/state')).cache_policy.video_quality,value,'native change updates authoritative quality');
+      assert.deepEqual(await page.evaluate(()=>mobileRuntimeEvents['cache-quality-select']),{input:1,change:1});
+      // Re-select the downloader already in use; do not prepare another tool
+      // just to exercise the original input/change event path.
+      await page.locator('#cache-download-source-select').selectOption(saved[1]);
+      assert.deepEqual(await page.evaluate(()=>mobileRuntimeEvents['cache-download-source-select']),{input:1,change:1});
+      assert.equal((await host.api('/api/state')).cache_policy.download_source,saved[1]);
+      assert.equal(await page.evaluate(()=>mobileRuntimeSelects.every(node=>document.getElementById(node.id)===node&&!node.hidden)),true);
     }
     await screenshot(page,`selects-${platform}-${channel||'default'}`);
   });
