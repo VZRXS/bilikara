@@ -63,8 +63,8 @@ async function box(page, selector) {
       await view("quick");
       const quick = await box(page, "#requester-select");
       await view("search");
-      const search = await box(page, "#lark-search-query");
-      const submit = await box(page, "#lark-search-button");
+      const search = await box(page, "#shared-search-query");
+      const submit = await box(page, "#shared-search-button");
       await view("sources");
       const sources = await box(page, "#modal-follow-uid-input");
       // Switching tabs keeps the first control row in one position and height.
@@ -106,8 +106,8 @@ async function box(page, selector) {
     await portrait.evaluate(() => activateHostWorkspace("request"));
     await portrait.evaluate(() => activateRequestSubview("search"));
     await portrait.waitForTimeout(250);
-    const portraitSearch = await box(portrait, "#lark-search-query");
-    const portraitSubmit = await box(portrait, "#lark-search-button");
+    const portraitSearch = await box(portrait, "#shared-search-query");
+    const portraitSubmit = await box(portrait, "#shared-search-button");
     assert.ok(near(portraitSubmit.height, portraitSearch.height) && near(portraitSubmit.center, portraitSearch.center),
       JSON.stringify({ portraitSearch, portraitSubmit }));
     await portrait.evaluate(() => activateRequestSubview("discover"));

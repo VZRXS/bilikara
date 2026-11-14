@@ -816,8 +816,8 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
       elements.urlInput.value = "BV1PRESERVEDQUICK";
       window.__stage2Nodes = {
         quick: elements.requestForm,
-        sharedForm: elements.larkSearchForm,
-        sharedResults: elements.larkSearchResults,
+        sharedForm: elements.sharedSearchForm,
+        sharedResults: elements.sharedSearchResults,
         localForm: elements.searchForm,
         localResults: elements.searchResults,
       };
@@ -890,17 +890,17 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
     const sharedResponse = page.waitForResponse((response) => (
       new URL(response.url()).pathname === "/api/catalog/search"
     ));
-    await page.locator("#lark-search-query").fill("workspace-results");
-    await page.locator("#lark-search-form").evaluate((form) => form.requestSubmit());
+    await page.locator("#shared-search-query").fill("workspace-results");
+    await page.locator("#shared-search-form").evaluate((form) => form.requestSubmit());
     await sharedResponse;
-    await page.waitForFunction(() => document.querySelectorAll("#lark-search-results .search-result-item").length === 6);
+    await page.waitForFunction(() => document.querySelectorAll("#shared-search-results .search-result-item").length === 6);
     await bringRequestCardIntoView(page);
     states.searchSharedResults = await requestWorkspaceMetrics(page);
     assertWorkspaceGeometry(states.searchSharedResults, "375 Search / Shared results", { requireNoRailOverflow: true });
     await capture(page, paths.searchSharedResults);
     const sharedDetailGeometry = await requestFirstResult(
       page,
-      "#lark-search-results",
+      "#shared-search-results",
       routeState,
       "Shared",
       paths.searchSharedDetail,
@@ -1255,14 +1255,14 @@ async function runPrimaryGate(browser, baseUrl, screenshotPath) {
 
     const retainedNodes = await page.evaluate(() => ({
       quick: window.__stage2Nodes.quick === elements.requestForm,
-      sharedForm: window.__stage2Nodes.sharedForm === elements.larkSearchForm,
-      sharedResults: window.__stage2Nodes.sharedResults === elements.larkSearchResults,
+      sharedForm: window.__stage2Nodes.sharedForm === elements.sharedSearchForm,
+      sharedResults: window.__stage2Nodes.sharedResults === elements.sharedSearchResults,
       localForm: window.__stage2Nodes.localForm === elements.searchForm,
       localResults: window.__stage2Nodes.localResults === elements.searchResults,
       quickValue: elements.urlInput.value,
-      sharedValue: elements.larkSearchQuery.value,
+      sharedValue: elements.sharedSearchQuery.value,
       localValue: elements.searchQuery.value,
-      sharedRows: elements.larkSearchResults.children.length,
+      sharedRows: elements.sharedSearchResults.children.length,
       localRows: elements.searchResults.children.length,
     }));
     assert(

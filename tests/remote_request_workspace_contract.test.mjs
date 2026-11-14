@@ -159,7 +159,7 @@ assert.deepEqual((contains("inert", panel)), ((index !== 0)));
 },
 async test_every_live_form_and_result_surface_has_one_owner() {
 let _, attrs, count, duplicates, element_id, ids, unique_ids;
-unique_ids = ["request-form", "lark-search-form", "lark-search-results", "search-form", "search-results", "remote-discover-categories-panel", "remote-discover-name-panel", "remote-discover-artist-panel", "sources-follow-uid-form", "sources-follow-grid", "sources-follow-results", "sources-favlist-pull-form", "favlist-grid", "favlist-song-results"];
+unique_ids = ["request-form", "shared-search-form", "shared-search-results", "search-form", "search-results", "remote-discover-categories-panel", "remote-discover-name-panel", "remote-discover-artist-panel", "sources-follow-uid-form", "sources-follow-grid", "sources-follow-results", "sources-favlist-pull-form", "favlist-grid", "favlist-song-results"];
 for (const element_id of iterableValues(unique_ids)) {
 assert.deepEqual(countOccurrences(this.markup, ("id=\"" + String(element_id) + "\"")), 1, element_id);
 }
@@ -176,7 +176,7 @@ assert.ok(!contains(obsolete, combined));
 },
 async test_stage_one_and_surrounding_remote_cards_remain_direct() {
 let form_id, retired_gatcha_source_control, sources_panel, stable_id;
-for (const form_id of iterableValues(["request-form", "lark-search-form", "search-form"])) {
+for (const form_id of iterableValues(["request-form", "shared-search-form", "search-form"])) {
 assert.deepEqual(countOccurrences(this.markup, ("id=\"" + String(form_id) + "\"")), 1);
 }
 assert.ok(!contains("id=\"form-message\"", this.markup));
@@ -536,12 +536,12 @@ assert.ok(!contains("fetch(", controller));
 },
 async test_async_forms_have_one_owner_and_busy_guards() {
 let control, element_name, matches;
-for (const element_name of iterableValues(["requestForm", "searchForm", "larkSearchForm", "sourcesFollowUidForm", "sourcesFollowSearchForm", "sourcesFavlistPullForm", "favlistSearchForm"])) {
+for (const element_name of iterableValues(["requestForm", "searchForm", "sharedSearchForm", "sourcesFollowUidForm", "sourcesFollowSearchForm", "sourcesFavlistPullForm", "favlistSearchForm"])) {
 matches = Array.from(this.script.matchAll(new RegExp(("elements\\." + String(element_name) + "\\??\\.addEventListener\\(\"submit\""),"g")), m => m.length === 1 ? m[0] : m.length === 2 ? m[1] : m.slice(1));
 assert.deepEqual(matches.length, 1, element_name);
 }
 assert.deepEqual(countOccurrences(this.script, "elements.remoteRequestDiscoverPanel?.addEventListener(\"click\""), 1);
-for (const control of iterableValues(["larkSearchButton", "searchButton", "sourcesFollowSearchButton", "favlistSearchButton"])) {
+for (const control of iterableValues(["sharedSearchButton", "searchButton", "sourcesFollowSearchButton", "favlistSearchButton"])) {
 assert.match(this.script, new RegExp(("" + String(control) + ".{0,220}aria-busy"),"s"), control);
 }
 },

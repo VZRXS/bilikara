@@ -146,7 +146,7 @@ async function run() {
   const hostPlayerRequests = [];
   const updateCheckRequests = [];
   const updateInstallRequests = [];
-  const larkSearchRequests = [];
+  const sharedSearchRequests = [];
   const localSearchRequests = [];
   const d1BrowseRequests = [];
   const categoryBrowseRequests = [];
@@ -215,7 +215,7 @@ async function run() {
     });
   });
   await page.route("**/api/catalog/search?**", (route) => {
-    larkSearchRequests.push(route.request().url());
+    sharedSearchRequests.push(route.request().url());
     const query = new URL(route.request().url()).searchParams.get("q") || "";
     const items = query === "zero-results" ? [] : Array.from({ length: 36 }, (_, index) => ({
       bvid: `BVHOSTUI${index}`,
@@ -2439,7 +2439,7 @@ async function run() {
 
     const draftAndScroll = await shellPage.evaluate(() => {
       document.querySelector("#url-input").value = "BV-DRAFT-REQUEST";
-      document.querySelector("#lark-search-query").value = "search draft";
+      document.querySelector("#shared-search-query").value = "search draft";
       document.querySelector("#modal-follow-uid-input").value = "source draft";
       document.querySelector("#session-user-input").value = "user draft";
       activateHostWorkspace("random", { inputOrigin: "programmatic" });
@@ -2459,7 +2459,7 @@ async function run() {
         restored,
         drafts: [
           document.querySelector("#url-input").value,
-          document.querySelector("#lark-search-query").value,
+          document.querySelector("#shared-search-query").value,
           document.querySelector("#modal-follow-uid-input").value,
           document.querySelector("#session-user-input").value,
         ],
@@ -5779,14 +5779,14 @@ async function run() {
     await page.locator('[data-request-view="search"]').click();
     assert(await page.locator("#request-search-panel").isVisible(), "Search selection did not expose its panel");
     await page.evaluate(() => {
-      document.querySelector("#lark-search-query").value = "host ui";
-      document.querySelector("#lark-search-form").dispatchEvent(new Event("submit", {
+      document.querySelector("#shared-search-query").value = "host ui";
+      document.querySelector("#shared-search-form").dispatchEvent(new Event("submit", {
         bubbles: true,
         cancelable: true,
       }));
     });
-    await page.waitForSelector("#lark-search-results .search-result-item");
-    const results = page.locator("#lark-search-results");
+    await page.waitForSelector("#shared-search-results .search-result-item");
+    const results = page.locator("#shared-search-results");
     await page.setViewportSize({ width: 1600, height: 900 });
     await page.waitForTimeout(120);
     const requestResultDensityEvidence = await results.evaluate((grid) => {
@@ -5954,18 +5954,18 @@ async function run() {
     );
 
     await page.evaluate(() => {
-      window.__requestSharedNode = elements.larkSearchResults;
+      window.__requestSharedNode = elements.sharedSearchResults;
       window.__requestLocalNode = elements.searchResults;
     });
-    const requestCountBeforeTabs = larkSearchRequests.length + localSearchRequests.length
+    const requestCountBeforeTabs = sharedSearchRequests.length + localSearchRequests.length
       + d1BrowseRequests.length;
     const sourceCountBeforeTabs = sourceBrowseRequests.length;
     await page.locator('[data-search-mode="local"]').click();
     await page.locator("#search-query").fill("local draft");
     await page.locator('[data-search-mode="shared"]').click();
     assert(
-      await page.locator("#lark-search-query").inputValue() === "host ui"
-        && await page.locator("#lark-search-results .search-result-item").count() === 36,
+      await page.locator("#shared-search-query").inputValue() === "host ui"
+        && await page.locator("#shared-search-results .search-result-item").count() === 36,
       "Shared/Local switching lost Shared state",
     );
     await page.locator('[data-search-mode="shared"]').focus();
@@ -5982,26 +5982,26 @@ async function run() {
     await page.locator('[data-request-view="sources"]').click();
     await page.locator('[data-sources-mode="favorites"]').click();
     await page.locator('[data-request-view="search"]').click();
-    const requestCountAfterTabs = larkSearchRequests.length + localSearchRequests.length
+    const requestCountAfterTabs = sharedSearchRequests.length + localSearchRequests.length
       + d1BrowseRequests.length;
     assert(requestCountAfterTabs === requestCountBeforeTabs
         && sourceBrowseRequests.length === sourceCountBeforeTabs + 2,
       "Request tab switching refetched an existing mode or failed to load each direct source list once",
       { requestCountBeforeTabs, requestCountAfterTabs, sourceCountBeforeTabs, sourceBrowseRequests });
     assert(
-      await page.evaluate(() => elements.larkSearchResults === window.__requestSharedNode
+      await page.evaluate(() => elements.sharedSearchResults === window.__requestSharedNode
         && elements.searchResults === window.__requestLocalNode),
       "Request tab switching reconstructed Search results",
     );
-    const larkRequestsBeforeWorkspaceRoundTrip = larkSearchRequests.length;
+    const larkRequestsBeforeWorkspaceRoundTrip = sharedSearchRequests.length;
     await page.locator("#work-rail-queue").click();
     await page.locator("#work-rail-request").click();
     assert(
-      await page.locator("#lark-search-results .search-result-item").count() === 36
-        && await page.locator("#lark-search-query").inputValue() === "host ui"
-        && larkSearchRequests.length === larkRequestsBeforeWorkspaceRoundTrip,
+      await page.locator("#shared-search-results .search-result-item").count() === 36
+        && await page.locator("#shared-search-query").inputValue() === "host ui"
+        && sharedSearchRequests.length === larkRequestsBeforeWorkspaceRoundTrip,
       "Request workspace round trip lost Search state or reran the query",
-      { larkSearchRequests },
+      { sharedSearchRequests },
     );
 
     await page.locator('[data-search-mode="local"]').click();
@@ -6665,7 +6665,7 @@ async function run() {
         await page.locator('[data-request-view="search"]').click();
         await page.locator('[data-search-mode="shared"]').click();
       },
-      resultSelector: "#lark-search-results .search-result-item",
+      resultSelector: "#shared-search-results .search-result-item",
       subview: "search",
       mode: "shared",
       source: "lark",
@@ -6741,7 +6741,7 @@ async function run() {
 
     await page.locator('[data-request-view="search"]').click();
     await page.locator('[data-search-mode="shared"]').click();
-    await page.locator("#lark-search-results .search-result-item").first().evaluate((element) => element.click());
+    await page.locator("#shared-search-results .search-result-item").first().evaluate((element) => element.click());
     await detail.waitFor({ state: "visible" });
     await page.evaluate(() => {
       window.__requestDetailNavigationCloseCount = 0;
@@ -6770,7 +6770,7 @@ async function run() {
     );
     await page.locator('[data-search-mode="shared"]').click();
     assert(
-      await page.locator('#lark-search-results [data-request-result-origin="shared"].is-selected').count() === 1
+      await page.locator('#shared-search-results [data-request-result-origin="shared"].is-selected').count() === 1
         && await detail.evaluate((element) => element.classList.contains("hidden")),
       "returning to Shared did not restore only its selected row without reopening detail",
     );
@@ -6794,7 +6794,7 @@ async function run() {
     );
 
     await page.locator('[data-search-mode="shared"]').click();
-    const layeredDetailOpener = page.locator("#lark-search-results .search-result-item").nth(1);
+    const layeredDetailOpener = page.locator("#shared-search-results .search-result-item").nth(1);
     await layeredDetailOpener.evaluate((element) => element.click());
     await detail.waitFor({ state: "visible" });
     await page.keyboard.press("Escape");
@@ -7800,8 +7800,8 @@ async function run() {
     await page.locator('[data-request-view="search"]').click();
     await page.locator('[data-search-mode="shared"]').click();
     const searchControlGeometry = await page.evaluate(() => {
-      const input = elements.larkSearchQuery;
-      const button = elements.larkSearchButton;
+      const input = elements.sharedSearchQuery;
+      const button = elements.sharedSearchButton;
       const panel = input.closest(".request-mode-panel").getBoundingClientRect();
       return {
         inputHeight: input.getBoundingClientRect().height,
@@ -7814,13 +7814,13 @@ async function run() {
         buttonRightInset: panel.right - button.getBoundingClientRect().right,
       };
     });
-    await page.locator("#lark-search-query").fill("zero-results");
-    await page.locator("#lark-search-form").evaluate((form) => form.requestSubmit());
-    await page.waitForFunction(() => elements.larkSearchMessage.textContent.includes("没有匹配结果"));
+    await page.locator("#shared-search-query").fill("zero-results");
+    await page.locator("#shared-search-form").evaluate((form) => form.requestSubmit());
+    await page.waitForFunction(() => elements.sharedSearchMessage.textContent.includes("没有匹配结果"));
     const sharedEmptyEvidence = await page.evaluate(() => ({
-      message: elements.larkSearchMessage.textContent.trim(),
-      resultHidden: elements.larkSearchResults.classList.contains("hidden"),
-      emptyCards: elements.larkSearchResults.querySelectorAll(".search-empty").length,
+      message: elements.sharedSearchMessage.textContent.trim(),
+      resultHidden: elements.sharedSearchResults.classList.contains("hidden"),
+      emptyCards: elements.sharedSearchResults.querySelectorAll(".search-empty").length,
     }));
     assert(
       sharedEmptyEvidence.message === "bilikara 数据库里没有匹配结果。"
@@ -7853,8 +7853,8 @@ async function run() {
       state.data = { ...(state.data || {}), session_users: ["Toast Tester"] };
       renderRequesterSelect(state.data.session_users);
       elements.requesterSelect.value = "Toast Tester";
-      const existingStatus = t("search.larkFound", { count: 5 });
-      setLarkSearchMessage(existingStatus);
+      const existingStatus = t("search.sharedFound", { count: 5 });
+      setSharedSearchMessage(existingStatus);
       submitAddRequest = async () => { throw new Error("HTTP 412"); };
       try {
         await handleAddByUrl("BV1ToastFailure", "tail", null, "lark");
@@ -7865,7 +7865,7 @@ async function run() {
         toastVisible: !elements.appToast.classList.contains("hidden"),
         toastText: elements.appToast.textContent.trim(),
         toastError: elements.appToast.classList.contains("is-error"),
-        inlineText: elements.larkSearchMessage.textContent.trim(),
+        inlineText: elements.sharedSearchMessage.textContent.trim(),
         existingStatus,
       };
       state.data = { ...(state.data || {}), session_users: [] };

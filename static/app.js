@@ -352,8 +352,8 @@ const state = {
     favorites: { selectedKey: "", origin: null, focusElement: null, closedForNavigation: false },
   },
   activeRequestDetailOriginKey: "",
-  larkSearchLoading: false,
-  larkSearchSeq: 0,
+  sharedSearchLoading: false,
+  sharedSearchSeq: 0,
   followBrowseData: null,
   followBrowseSelectedUid: "",
   followBrowseLoading: false,
@@ -891,11 +891,11 @@ const elements = {
   favlistSearchButton: document.getElementById("favlist-search-button"),
   favlistSongResults: document.getElementById("favlist-song-results"),
   favlistBrowseMessage: document.getElementById("favlist-browse-message"),
-  larkSearchForm: document.getElementById("lark-search-form"),
-  larkSearchQuery: document.getElementById("lark-search-query"),
-  larkSearchButton: document.getElementById("lark-search-button"),
-  larkSearchMessage: document.getElementById("lark-search-message"),
-  larkSearchResults: document.getElementById("lark-search-results"),
+  sharedSearchForm: document.getElementById("shared-search-form"),
+  sharedSearchQuery: document.getElementById("shared-search-query"),
+  sharedSearchButton: document.getElementById("shared-search-button"),
+  sharedSearchMessage: document.getElementById("shared-search-message"),
+  sharedSearchResults: document.getElementById("shared-search-results"),
   refreshGatchaCacheButton: document.getElementById("refresh-gatcha-cache-button"),
   gatchaUidMessage: document.getElementById("gatcha-uid-message"),
 };
@@ -947,8 +947,8 @@ function setMessageForSource(source, message, isError = false) {
     setSearchMessage(message, isError);
     return;
   }
-  if (source === "lark") {
-    setLarkSearchMessage(message, isError);
+  if (source === "shared") {
+    setSharedSearchMessage(message, isError);
     return;
   }
   if (source === "modalFollow") {
@@ -1460,7 +1460,7 @@ function showSessionUsersRequiredToast() {
   [
     elements.formMessage,
     elements.searchMessage,
-    elements.larkSearchMessage,
+    elements.sharedSearchMessage,
     elements.followBrowseMessage,
     elements.favlistBrowseMessage,
     elements.gatchaMessage,
@@ -4219,7 +4219,7 @@ function activeRequestScrollOwner() {
   const subview = normalizeRequestSubview(state.requestSubview);
   if (subview === "search") {
     return normalizeSearchMode(state.searchMode) === "shared"
-      ? elements.larkSearchResults
+      ? elements.sharedSearchResults
       : elements.searchResults;
   }
   if (subview === "discover") {
@@ -4402,7 +4402,7 @@ function syncHostSearchCounts() {
     const total = known ? data.matched_count : search.items.length;
     const label = known ? "pagination.countTotal" : "pagination.countReturned";
     summary.textContent = t(label, {count: total});
-    const container = mode === "shared" ? elements.larkSearchResults : elements.searchResults;
+    const container = mode === "shared" ? elements.sharedSearchResults : elements.searchResults;
     const record = androidBrowsePages.get(container);
     if (record && !record.frame.hidden) record.pager.update(androidBrowseOptions(container, search.items, t("search.empty")));
   }
@@ -4423,7 +4423,7 @@ function syncSearchModeSelection() {
     setRequestPanelVisibility(panel, panel.dataset.searchPanel === activeMode);
   });
   window.BilikaraBrowseSearch?.primary(elements.searchForm, {translate:t});
-  window.BilikaraBrowseSearch?.primary(elements.larkSearchForm, {translate:t});
+  window.BilikaraBrowseSearch?.primary(elements.sharedSearchForm, {translate:t});
   syncRequestSessionUserNoticePlacement();
 }
 
@@ -7067,7 +7067,7 @@ async function searchCatalog(query, {offset = 0, limit = 80} = {}) {
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
+    throw new Error(localizedApiMessage(payload.error) || t("error.sharedSearchFailed"));
   }
   return {...payload.data, items: Array.isArray(payload.data?.items) ? payload.data.items : []};
 }
@@ -7100,7 +7100,7 @@ async function fetchD1Browse({ kind = "name", letter = "", query = "", tag = "",
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
+    throw new Error(localizedApiMessage(payload.error) || t("error.sharedSearchFailed"));
   }
   return payload.data || { kind, letter: normalizedLetter, query: normalizedQuery, tag: normalizedTag, tags: [], items: [] };
 }
@@ -7168,7 +7168,7 @@ async function fetchD1CategoryBrowse({ tags = [], query = "", offset = 0, limit 
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
+    throw new Error(localizedApiMessage(payload.error) || t("error.sharedSearchFailed"));
   }
   return payload.data || {
     tags: normalizedTags,
@@ -7754,13 +7754,13 @@ function hideSearchResults() {
   elements.searchResults.classList.add("hidden");
 }
 
-function hideLarkSearchResults() {
-  hideAndroidBrowsePages(elements.larkSearchResults);
-  if (!elements.larkSearchResults) {
+function hideSharedSearchResults() {
+  hideAndroidBrowsePages(elements.sharedSearchResults);
+  if (!elements.sharedSearchResults) {
     return;
   }
-  elements.larkSearchResults.innerHTML = "";
-  elements.larkSearchResults.classList.add("hidden");
+  elements.sharedSearchResults.innerHTML = "";
+  elements.sharedSearchResults.classList.add("hidden");
 }
 
 function searchResultOwnerName(item) {
@@ -8037,8 +8037,8 @@ function requestDetailOriginForContainer(container, source = "") {
   if (!container) {
     return null;
   }
-  if (container === elements.larkSearchResults || container.closest?.("#request-search-shared")) {
-    return { key: "shared", subview: "search", mode: "shared", source: source || "lark" };
+  if (container === elements.sharedSearchResults || container.closest?.("#request-search-shared")) {
+    return { key: "shared", subview: "search", mode: "shared", source: source || "shared" };
   }
   if (container === elements.searchResults || container.closest?.("#request-search-local")) {
     return { key: "local", subview: "search", mode: "local", source: source || "search" };
@@ -8080,7 +8080,7 @@ function applyRequestResultSelection(row, item, origin) {
 
 function requestResultContainerForOrigin(originKey) {
   const containers = {
-    shared: elements.larkSearchResults,
+    shared: elements.sharedSearchResults,
     local: elements.searchResults,
     categories: elements.discoverCategoriesPanel?.querySelector?.("[data-category-browse-results]"),
     name: elements.discoverNamePanel?.querySelector?.("[data-d1-browse-results]"),
@@ -8267,7 +8267,7 @@ function androidBrowseOptions(container, items, emptyText) {
   if (owner === "shared" || owner === "local") {
     const mode = state.searchModeState[owner];
     data = mode.pageData || {}; loading = mode.loading;
-    key = JSON.stringify([owner, mode.submitted, mode.seq, owner === "shared" ? state.larkSearchSeq : 0]);
+    key = JSON.stringify([owner, mode.submitted, mode.seq, owner === "shared" ? state.sharedSearchSeq : 0]);
     const query = mode.submitted;
     if (typeof data.has_more === "boolean") load = page => (owner === "shared" ? searchCatalog : searchGatchaCache)(query, page);
   } else if (owner === "name" || owner === "artist") {
@@ -8784,7 +8784,7 @@ function renderD1BrowseView() {
   }
   if (results) {
     if (level === "items") {
-      renderSearchResultItems(results, items, state.d1BrowseLoading ? t("search.browseLoading") : t("search.larkNoResults"));
+      renderSearchResultItems(results, items, state.d1BrowseLoading ? t("search.browseLoading") : t("search.sharedNoResults"));
     } else {
       hideAndroidBrowsePages(results);
       results.innerHTML = "";
@@ -9513,7 +9513,7 @@ function renderCategoryBrowseView() {
     });
   }
   if (results) {
-    renderSearchResultItems(results, state.categoryBrowseItems, state.categoryBrowseLoading ? t("search.browseLoading") : t("search.larkNoResults"));
+    renderSearchResultItems(results, state.categoryBrowseItems, state.categoryBrowseLoading ? t("search.browseLoading") : t("search.sharedNoResults"));
   }
   if (message) message.textContent = "";
   window.BilikaraBrowseSearch?.sync(view.querySelector("[data-category-browse-search]"), tabs, {
@@ -10268,12 +10268,12 @@ function setFavlistBrowseMessage(message, isError = false) {
   elements.favlistBrowseMessage.classList.toggle("is-error", Boolean(isError));
 }
 
-function setLarkSearchMessage(message, isError = false) {
-  if (!elements.larkSearchMessage) {
+function setSharedSearchMessage(message, isError = false) {
+  if (!elements.sharedSearchMessage) {
     return;
   }
-  elements.larkSearchMessage.textContent = message || "";
-  elements.larkSearchMessage.classList.toggle("is-error", Boolean(isError));
+  elements.sharedSearchMessage.textContent = message || "";
+  elements.sharedSearchMessage.classList.toggle("is-error", Boolean(isError));
 }
 
 function localizedCacheMessage(message, cacheStatus = "") {
@@ -21279,46 +21279,46 @@ elements.searchResults.addEventListener("click", async (event) => {
   }
 });
 
-async function handleLarkSearchSubmit(event) {
+async function handleSharedSearchSubmit(event) {
   event.preventDefault();
   const modeState = state.searchModeState.shared;
-  if (state.larkSearchLoading || modeState.loading) {
+  if (state.sharedSearchLoading || modeState.loading) {
     return;
   }
-  const query = String(elements.larkSearchQuery?.value || "").trim();
-  modeState.draft = String(elements.larkSearchQuery?.value || "");
+  const query = String(elements.sharedSearchQuery?.value || "").trim();
+  modeState.draft = String(elements.sharedSearchQuery?.value || "");
   if (!query) {
-    hideLarkSearchResults();
+    hideSharedSearchResults();
     modeState.items = [];
     modeState.error = t("search.keywordRequired");
     modeState.message = "";
-    setLarkSearchMessage("");
+    setSharedSearchMessage("");
     setAppMessage(modeState.error, true);
     return;
   }
 
-  state.larkSearchLoading = true;
+  state.sharedSearchLoading = true;
   modeState.loading = true;
   modeState.submitted = query;
   modeState.error = "";
-  if (elements.larkSearchButton) {
-    elements.larkSearchButton.disabled = true;
-    elements.larkSearchButton.setAttribute("aria-busy", "true");
+  if (elements.sharedSearchButton) {
+    elements.sharedSearchButton.disabled = true;
+    elements.sharedSearchButton.setAttribute("aria-busy", "true");
   }
-  const searchSeq = state.larkSearchSeq + 1;
-  state.larkSearchSeq = searchSeq;
+  const searchSeq = state.sharedSearchSeq + 1;
+  state.sharedSearchSeq = searchSeq;
   const seenBvids = new Set();
   const collectedItems = [];
   let partialFailure = false;
-  if (elements.larkSearchResults) {
-    elements.larkSearchResults.innerHTML = "";
-    elements.larkSearchResults.classList.remove("hidden");
+  if (elements.sharedSearchResults) {
+    elements.sharedSearchResults.innerHTML = "";
+    elements.sharedSearchResults.classList.remove("hidden");
   }
-  setLarkSearchMessage(t("search.larkSearching"));
+  setSharedSearchMessage(t("search.sharedSearching"));
   try {
     const page = await searchCatalog(query);
     const poolItems = page.items;
-    if (state.larkSearchSeq !== searchSeq) {
+    if (state.sharedSearchSeq !== searchSeq) {
       return;
     }
     const freshItems = poolItems.filter((item) => {
@@ -21331,43 +21331,43 @@ async function handleLarkSearchSubmit(event) {
     });
     if (freshItems.length) {
       collectedItems.push(...freshItems);
-      if (!androidBrowseEnabled()) appendSearchResultItems(elements.larkSearchResults, freshItems);
+      if (!androidBrowseEnabled()) appendSearchResultItems(elements.sharedSearchResults, freshItems);
     }
-    if (state.larkSearchSeq !== searchSeq) {
+    if (state.sharedSearchSeq !== searchSeq) {
       return;
     }
     if (!collectedItems.length) {
-      hideLarkSearchResults();
+      hideSharedSearchResults();
     }
     modeState.pageData = page;
     modeState.items = collectedItems;
-    if (androidBrowseEnabled() && collectedItems.length) renderSearchResultItems(elements.larkSearchResults, collectedItems);
+    if (androidBrowseEnabled() && collectedItems.length) renderSearchResultItems(elements.sharedSearchResults, collectedItems);
     modeState.message = collectedItems.length
-      ? (partialFailure ? t("search.larkFoundPartial", { count: collectedItems.length }) : "")
+      ? (partialFailure ? t("search.sharedFoundPartial", { count: collectedItems.length }) : "")
       : partialFailure
-        ? t("search.larkPartialNoResults")
-        : t("search.larkNoResults");
+        ? t("search.sharedPartialNoResults")
+        : t("search.sharedNoResults");
     if (partialFailure && collectedItems.length) {
-      setLarkSearchMessage("");
+      setSharedSearchMessage("");
       setAppMessage(modeState.message, false);
     } else {
-      setLarkSearchMessage(modeState.message);
+      setSharedSearchMessage(modeState.message);
     }
   } catch (error) {
-    if (state.larkSearchSeq === searchSeq) {
+    if (state.sharedSearchSeq === searchSeq) {
       modeState.items = [];
       modeState.error = error.message;
-      hideLarkSearchResults();
-      setLarkSearchMessage("");
+      hideSharedSearchResults();
+      setSharedSearchMessage("");
       setAppMessage(modeState.error, true);
     }
   } finally {
-    if (state.larkSearchSeq === searchSeq) {
-      state.larkSearchLoading = false;
+    if (state.sharedSearchSeq === searchSeq) {
+      state.sharedSearchLoading = false;
       modeState.loading = false;
-      if (elements.larkSearchButton) {
-        elements.larkSearchButton.disabled = false;
-        elements.larkSearchButton.removeAttribute("aria-busy");
+      if (elements.sharedSearchButton) {
+        elements.sharedSearchButton.disabled = false;
+        elements.sharedSearchButton.removeAttribute("aria-busy");
       }
       syncHostSearchCounts();
     }
@@ -21376,7 +21376,7 @@ async function handleLarkSearchSubmit(event) {
 
 async function loadMoreHostSearchResults() {
   if (androidBrowseEnabled()) return;
-  for (const [source, container] of [["local", elements.searchResults], ["shared", elements.larkSearchResults]]) {
+  for (const [source, container] of [["local", elements.searchResults], ["shared", elements.sharedSearchResults]]) {
     const mode = state.searchModeState[source];
     const data = mode.pageData;
     if (!container?.getClientRects().length || container.closest("[hidden], .hidden")
@@ -21384,12 +21384,12 @@ async function loadMoreHostSearchResults() {
     const bottom = container.lastElementChild?.getBoundingClientRect().bottom;
     if (!Number.isFinite(bottom) || bottom > Math.min(container.getBoundingClientRect().bottom, window.innerHeight) + 200) continue;
     const query = mode.submitted;
-    const sequence = source === "shared" ? state.larkSearchSeq : mode.seq;
+    const sequence = source === "shared" ? state.sharedSearchSeq : mode.seq;
     mode.pageLoading = true;
     try {
       const page = await (source === "shared" ? searchCatalog : searchGatchaCache)(query,
         {offset:data.next_offset, limit:80});
-      if (sequence !== (source === "shared" ? state.larkSearchSeq : mode.seq)) continue;
+      if (sequence !== (source === "shared" ? state.sharedSearchSeq : mode.seq)) continue;
       if (page.has_more && (!Number.isSafeInteger(page.next_offset) || page.next_offset <= data.next_offset)) {
         throw new Error(t("pagination.invalidResponse"));
       }
@@ -21399,23 +21399,23 @@ async function loadMoreHostSearchResults() {
       mode.items.push(...fresh);
       appendSearchResultItems(container, fresh);
     } catch (error) {
-      if (sequence === (source === "shared" ? state.larkSearchSeq : mode.seq)) setAppMessage(error.message, true);
+      if (sequence === (source === "shared" ? state.sharedSearchSeq : mode.seq)) setAppMessage(error.message, true);
     } finally { mode.pageLoading = false; syncHostSearchCounts(); }
   }
 }
 elements.requestWorkspace?.addEventListener("scroll", loadMoreHostSearchResults, true);
 window.addEventListener("scroll", loadMoreHostSearchResults, {passive:true});
 
-elements.larkSearchForm?.addEventListener("submit", handleLarkSearchSubmit);
-elements.larkSearchQuery?.addEventListener("input", () => {
-  state.searchModeState.shared.draft = elements.larkSearchQuery.value;
+elements.sharedSearchForm?.addEventListener("submit", handleSharedSearchSubmit);
+elements.sharedSearchQuery?.addEventListener("input", () => {
+  state.searchModeState.shared.draft = elements.sharedSearchQuery.value;
 });
 
-elements.larkSearchResults?.addEventListener("click", async (event) => {
-  if (openSearchResultDetail(event, elements.larkSearchResults, "lark")) {
+elements.sharedSearchResults?.addEventListener("click", async (event) => {
+  if (openSearchResultDetail(event, elements.sharedSearchResults, "shared")) {
     return;
   }
-  const target = searchResultRequestTarget(event, elements.larkSearchResults);
+  const target = searchResultRequestTarget(event, elements.sharedSearchResults);
   if (!target) {
     return;
   }
@@ -21430,7 +21430,7 @@ elements.larkSearchResults?.addEventListener("click", async (event) => {
     target.button.textContent = t("search.adding") || "添加中...";
   }
   try {
-    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor), "lark");
+    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor), "shared");
   } finally {
     if (target.button) {
       target.button.disabled = false;

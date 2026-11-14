@@ -609,13 +609,13 @@ test('iOS uses shared result pagination and keeps an asynchronous action busy th
   });
   await go(page,'request');
   await page.locator('[data-request-view="search"]').click();
-  await page.locator('#lark-search-form input').fill('Mobile');
-  await page.locator('#lark-search-button').click();
+  await page.locator('#shared-search-form input').fill('Mobile');
+  await page.locator('#shared-search-button').click();
   const pager=page.locator('#request-search-shared .result-pager');
   await pager.locator('[data-page-input]').waitFor();
   await pager.locator('[data-page-action="next"]').click();
   await page.waitForFunction(()=>document.querySelector('#request-search-shared [data-page-input]').value==='2');
-  assert.notEqual(await page.locator('#lark-search-results .search-result-title').first().textContent(),'Mobile song 1');
+  assert.notEqual(await page.locator('#shared-search-results .search-result-title').first().textContent(),'Mobile song 1');
   const bounds=await pager.boundingBox(),dock=await page.locator('#android-host-dock').boundingBox();
   assert.ok(bounds.y+bounds.height<=dock.y,'Pager stays in its bounded page above navigation');
   await page.locator('#android-request-tabs [data-request-back]').click();

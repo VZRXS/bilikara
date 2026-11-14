@@ -51,6 +51,17 @@ The UI labels it as returned results; it cannot infer a complete match count or
 fetch later pages from a provider that ignores `offset`. Those deployments need
 the paged `/search` response above to enable shared searches beyond the prefix.
 
+## Frontend search contract
+
+Host, local Remote and Internet Remote use the same provider-neutral search UI:
+`sharedSearch*` JavaScript names, `shared-search-*` DOM IDs and
+`search.shared*` / `error.sharedSearchFailed` translation keys. The canonical
+HTTP route is `/api/catalog/search`. Search drafts, request generations, cached
+pages, selection and detail-return focus belong to the existing client state.
+The internal `shared` detail/action source selects UI feedback and return
+context only; it is not sent as a song field or persisted in queue/history.
+Provider response metadata such as `source: sheets` has a separate meaning.
+
 ## Configuration and cache
 
 The default D1 installation (`https://api.kevinx96.icu`) enables the verified

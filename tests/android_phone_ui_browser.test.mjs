@@ -403,9 +403,9 @@ test('Android search and discovery use Remote result pages, swipe, exact jumps a
     return route.fulfill({json:{ok:true,data:{items:items.slice(offset,offset+limit),matched_count:items.length,has_more:offset+limit<items.length,next_offset:Math.min(items.length,offset+limit)}}});
   });
   await go(page,'request');await page.locator('[data-request-view="search"]').click();
-  await page.locator('#lark-search-form input').fill('Fixture');await page.locator('#lark-search-form button[type="submit"]').click();
-  const frame=page.locator('#request-search-shared .android-result-frame'),pager=frame.locator('.result-pager'),results=page.locator('#lark-search-results');
-  await page.waitForFunction(()=>!document.getElementById('lark-search-button').disabled);
+  await page.locator('#shared-search-form input').fill('Fixture');await page.locator('#shared-search-form button[type="submit"]').click();
+  const frame=page.locator('#request-search-shared .android-result-frame'),pager=frame.locator('.result-pager'),results=page.locator('#shared-search-results');
+  await page.waitForFunction(()=>!document.getElementById('shared-search-button').disabled);
   const pageSize=await assertFittedBrowsePage(results,frame.locator('.result-page-viewport'),'.search-result-item',3);assert.equal(await pager.locator('[data-page-input]').inputValue(),'1');
   assert.equal(await results.locator('.search-result-title').first().textContent(),'Fixture song 1');
   const cdp=await page.context().newCDPSession(page);t.after(()=>cdp.detach().catch(()=>{}));
@@ -419,8 +419,8 @@ test('Android search and discovery use Remote result pages, swipe, exact jumps a
   await pager.locator('[data-page-action="last"]').click();await page.waitForFunction(last=>document.querySelector('#request-search-shared [data-page-input]').value===String(last),lastPage);
   assert.equal(await results.locator('.search-result-title').first().textContent(),`Fixture song ${lastOffset+1}`);assert.ok(requests.some(r=>r.offset<=lastOffset&&r.offset+r.limit>lastOffset),'the exact last page is covered by an actual direct or prefetched read');
   const viewport=await frame.locator('.result-page-viewport').boundingBox(),footer=await pager.boundingBox();assert.ok(footer.y>=viewport.y+viewport.height-1);assert.ok(footer.y+footer.height<=(await page.locator('#android-host-dock').boundingBox()).y,'Page controls stay above phone navigation');
-  await page.locator('#lark-search-form input').fill('Recovery');await page.locator('#lark-search-form button[type="submit"]').click();
-  await page.waitForFunction(()=>!document.getElementById('lark-search-button').disabled);assert.equal(await pager.locator('[data-page-input]').inputValue(),'1');
+  await page.locator('#shared-search-form input').fill('Recovery');await page.locator('#shared-search-form button[type="submit"]').click();
+  await page.waitForFunction(()=>!document.getElementById('shared-search-button').disabled);assert.equal(await pager.locator('[data-page-input]').inputValue(),'1');
   await page.locator('#android-request-tabs [data-request-back]').click();await page.locator('[data-request-view="discover"]').click();
   const tags=Array.from({length:25},(_,i)=>({tag:`Artist ${i+1}`,count:120}));
   await page.route('**/api/d1/browse?**',route=>{

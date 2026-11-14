@@ -767,14 +767,14 @@ assert.ok(contains("display: flex", source_panel));
 assert.ok(contains("flex-direction: column", source_panel));
 source_messages = this.script.slice(sourceIndex(this.script, "function setMessageForSource"), sourceIndex(this.script, "function setAppMessage"));
 assert.ok(contains("setAppMessage(message, true)", source_messages));
-lark_search = this.script.slice(sourceIndex(this.script, "async function handleLarkSearchSubmit"), sourceIndex(this.script, "elements.larkSearchForm?.addEventListener"));
-assert.ok(contains("hideLarkSearchResults()", lark_search));
-assert.ok(!contains("t(\"search.larkNoResultsLong\")", lark_search));
+lark_search = this.script.slice(sourceIndex(this.script, "async function handleSharedSearchSubmit"), sourceIndex(this.script, "elements.sharedSearchForm?.addEventListener"));
+assert.ok(contains("hideSharedSearchResults()", lark_search));
+assert.ok(!contains("t(\"search.sharedNoResultsLong\")", lark_search));
 local_search = this.script.slice(sourceIndex(this.script, "elements.searchForm?.addEventListener(\"submit\""), sourceIndex(this.script, "elements.searchQuery?.addEventListener(\"input\""));
 assert.ok(contains("hideSearchResults()", local_search));
 for (const values of iterableValues(Object.values(this.translations["languages"]))) {
-assert.ok(hasContent(values["search.larkNoResults"]));
-assert.notDeepEqual(values["search.larkPartialNoResults"], values["search.larkNoResults"]);
+assert.ok(hasContent(values["search.sharedNoResults"]));
+assert.notDeepEqual(values["search.sharedPartialNoResults"], values["search.sharedNoResults"]);
 }
 discover_controls = this.styles.match(new RegExp("\\.request-discover-view \\.tag-browser-search input,\\s*\\.request-discover-view \\.tag-browser-search button\\s*\\{([^}]*)\\}",""))[1];
 assert.ok(contains("height: var(--host-control-height)", discover_controls));
