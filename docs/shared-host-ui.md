@@ -86,9 +86,8 @@ playback is observed; it shares a feedback slot with seek and play/pause.
 
 Desktop workspace and scroll ownership remain explicit:
 
-Sources use their shared Request parent's measured row-gap between list and
-tools; Session Users retain their 8px gap. Desktop keeps each surface's platform
-panel inset. Every Host/Remote result pager uses one
+Sources and Session Users keep the same 8px list-to-tool spacing; desktop also
+shares their platform panel inset. Every Host/Remote result pager uses one
 52px outer slot: 44px controls with 4px above and below. Host keeps that slot
 outside list scrolling at the same bottom anchor; Remote keeps document flow.
 Arrow targets are separate 44px squares. Below a 375px viewport, previous/next

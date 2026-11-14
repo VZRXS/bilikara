@@ -26,14 +26,22 @@ async function pagerTargets(pager) {
   const value=await pager.evaluate(node=>{
     const rect=node=>{const r=node.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height};};
     const owns=(button,x,y)=>button.contains(document.elementFromPoint(x,y));
+    function hitAxisSamples(start,end) {
+      const points=[];
+      for(let point=Math.ceil(start+1);point<=Math.floor(end-1);point++)points.push(point);
+      return points;
+    }
     const arrows=[...node.querySelectorAll('[data-page-action]')].filter(button=>button.getClientRects().length).map(button=>{
       const box=rect(button),x=(box.left+box.right)/2,y=(box.top+box.bottom)/2;
-      // Probe both complete center axes, including the expanded target edges.
-      // Rounded corners are deliberately not treated as rectangular ink.
-      const horizontal=Array.from({length:Math.ceil(box.width)},(_,i)=>owns(button,box.left+i+.25,y));
-      const vertical=Array.from({length:Math.ceil(box.height)},(_,i)=>owns(button,x,box.top+i+.25));
-      return {action:button.dataset.pageAction,...box,hitWidth:horizontal.every(Boolean)?box.width:0,
-        hitHeight:vertical.every(Boolean)?box.height:0};
+      // Browser hit testing snaps fractional edges to pixels. Probe integer
+      // CSS coordinates at least 1px inside both edges, on both center axes.
+      // The reported hit extent allows only that 1px per-edge tolerance;
+      // the independent >=44px box and non-overlap assertions stay strict.
+      const horizontal=hitAxisSamples(box.left,box.right).map(point=>owns(button,point,y));
+      const vertical=hitAxisSamples(box.top,box.bottom).map(point=>owns(button,x,point));
+      return {action:button.dataset.pageAction,...box,hitEdgeInset:1,
+        hitWidth:horizontal.length&&horizontal.every(Boolean)?box.width:0,
+        hitHeight:vertical.length&&vertical.every(Boolean)?box.height:0};
     });
     const controls=rect(node.querySelector('.result-pager-controls')),input=node.querySelector('[data-page-input]');
     const frame=node.closest('.android-result-frame,.source-mode-panel')||node.parentElement;
@@ -50,7 +58,7 @@ async function pagerTargets(pager) {
   assert.ok(value.controls.left>=value.slot.left-.5&&value.controls.right<=value.slot.right+.5,'all page controls fit inside the slot');
   for(const arrow of value.arrows){
     assert.ok(arrow.width>=44&&arrow.height>=44,JSON.stringify(arrow));
-    assert.ok(arrow.hitWidth>=44&&arrow.hitHeight>=44,'each arrow has its own complete hit target: '+JSON.stringify(arrow));
+    assert.ok(arrow.hitWidth>=44&&arrow.hitHeight>=44,'each >=44px target owns its interior with only 1px per-edge hit-test tolerance: '+JSON.stringify(arrow));
     for(const viewport of value.contentViewports){
       const overlapWidth=Math.min(arrow.right,viewport.right)-Math.max(arrow.left,viewport.left);
       const overlapHeight=Math.min(arrow.bottom,viewport.bottom)-Math.max(arrow.top,viewport.top);
@@ -100,8 +108,17 @@ for(const engine of [chromium,webkit])for(const client of ['android','ios','remo
     await page.evaluate(()=>{fetchState=async()=>{};state.eventSource?.close();});
     if(!remote)await page.locator('[data-android-page="request"]').click();
     const request=async view=>{
-      if(!remote){const back=page.locator('[data-request-back]:visible');if(await back.count())await back.click();}
-      await page.locator(`[${remote?'data-remote-request-view':'data-request-view'}="${view}"]`).click();
+      if(remote){
+        await page.locator('.request-panel').scrollIntoViewIfNeeded();
+        // Search/Discover/Sources replace the primary tabs with contextual
+        // navigation. Return through the visible UI before choosing a peer.
+        const back=page.locator('#remote-request-secondary-back');
+        if(await back.isVisible()){await back.scrollIntoViewIfNeeded();await back.click();}
+        await page.locator('#remote-request-primary-tabs').waitFor({state:'visible'});
+      }else{const back=page.locator('[data-request-back]:visible');if(await back.count())await back.click();}
+      const tab=page.locator(`[${remote?'data-remote-request-view':'data-request-view'}="${view}"]`);
+      await tab.scrollIntoViewIfNeeded();await tab.click();
+      if(remote)await page.locator(`[data-remote-request-panel="${view}"]`).waitFor({state:'visible'});
     };
     const capture=async scenario=>{
       const pager=page.locator('.result-pager:visible');await pager.waitFor({state:'visible'});

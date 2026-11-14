@@ -612,7 +612,7 @@ const geometry={columns:3,itemHeight:72,gap:10,padding:4};
 assert.equal(fittedPageSize({...geometry,height:321}),9);
 assert.equal(fittedPageSize({...geometry,height:322}),12);
 // Available content height is measured after the Request parent's gaps;
-// these boundaries do not assume the former 8px Source/12px Remote gaps.
+// these boundaries do not assume any fixed toolbar or list-to-tools gap.
 assert.equal(fittedPageSize({...geometry,height:403}),12);
 assert.equal(fittedPageSize({...geometry,height:404}),15);
 `);
