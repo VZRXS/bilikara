@@ -651,7 +651,7 @@ class AppContext:
             self._startup_gatcha_refresh_bypass_available = False
         return refresh_gatcha_cache_in_background(
             use_global_lock=False,
-            upload_default_uids_to_lark=False,
+            upload_default_uids_to_shared_catalog=False,
             startup_schema_rebuild=True,
             _owner=getattr(self, "_gatcha_refresh_owner", 0),
         )

@@ -1418,14 +1418,16 @@ def refresh_gatcha_cache_in_background(
     on_start: callable | None = None,
     on_done: callable | None = None,
     use_global_lock: bool = True,
-    upload_default_uids_to_lark: bool = True,
+    upload_default_uids_to_shared_catalog: bool = True,
     startup_schema_rebuild: bool = False,
     _owner: int = 0,
 ) -> bool:
     """Start the shared Rust task; callbacks only notify existing observers.
 
-    The historical upload_default_uids_to_lark parameter remains accepted. It
-    already had no effect: Rust indexes only this refresh's eligible new rows.
+    upload_default_uids_to_shared_catalog is a retained no-op keyword. It does
+    not control uploads: Rust indexes only this refresh's eligible new rows.
+    Source callers must migrate the former provider-specific keyword to this
+    name; it is not a public HTTP or Rust service option.
     """
     from . import gatcha_refresh
     from .shared_catalog import catalog_append_configuration

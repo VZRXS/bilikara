@@ -1860,10 +1860,27 @@ class BilibiliParserTest(unittest.TestCase):
             self.assertEqual(fixture.provider.posts, [])
 
 
+    def test_catalog_refresh_keyword_does_not_change_rust_request(self):
+        with (
+            patch("bilikara.gatcha_refresh.start", return_value=True) as start,
+            patch("bilikara.shared_catalog.catalog_append_configuration", return_value={"enabled": True}),
+            patch.object(bilibili_module, "effective_bilibili_cookie", return_value=""),
+            patch.object(bilibili_module, "_default_gatcha_uids", return_value=["1"]),
+        ):
+            self.assertTrue(bilibili_module.refresh_gatcha_cache_in_background(
+                upload_default_uids_to_shared_catalog=True,
+            ))
+            self.assertTrue(bilibili_module.refresh_gatcha_cache_in_background(
+                upload_default_uids_to_shared_catalog=False,
+            ))
+            self.assertEqual(start.call_count, 2)
+            self.assertEqual(start.call_args_list[0], start.call_args_list[1])
+            self.assertNotIn("upload_default_uids_to_shared_catalog", start.call_args.args[0])
+
     def test_startup_gatcha_refresh_does_not_upload_when_no_uid_added_entries(self):
         with ConfiguredRefreshFixture() as fixture:
             fixture.videos["1"] = []
-            self.assertTrue(fixture.start(use_global_lock=False, upload_default_uids_to_lark=False))
+            self.assertTrue(fixture.start(use_global_lock=False, upload_default_uids_to_shared_catalog=False))
             self.assertEqual(fixture.wait()["last_status"], "success")
             self.assertEqual(fixture.provider.posts, [])
 
@@ -1871,7 +1888,7 @@ class BilibiliParserTest(unittest.TestCase):
     def test_startup_gatcha_refresh_uploads_only_new_uid_entries(self):
         with ConfiguredRefreshFixture() as fixture:
             fixture.write("cache", {"schema_version": 3, "uids": {"1": [{"bvid":"BVOLD", "title":"old"}]}, "profiles":{}})
-            self.assertTrue(fixture.start(use_global_lock=False, upload_default_uids_to_lark=False))
+            self.assertTrue(fixture.start(use_global_lock=False, upload_default_uids_to_shared_catalog=False))
             self.assertEqual(fixture.wait()["last_status"], "success")
             self.assertEqual(fixture.appended_bvids(1), ["BVNEW0000001"])
             self.assertEqual([v["bvid"] for v in fixture.read("cache")["uids"]["1"]], ["BVNEW0000001", "BVOLD"])
