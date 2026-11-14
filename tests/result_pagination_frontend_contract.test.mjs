@@ -588,3 +588,32 @@ pages.update({...options,key:'other',positionKey:'other',items:items(100,60),pag
 assert.equal(pages.items[0].id,100,'changing the source resets its anchor');
 `);
 });
+
+test('Host and Remote share one padded pager slot and disjoint arrow boxes [B2-G1-G2]', () => {
+  const css=readFileSync(path.join(ROOT,'static/result-pagination.css'),'utf8');
+  assert.deepEqual([...css.matchAll(/--host-result-pager-block-size:\s*([^;]+);/g)].map(match=>match[1]),['52px']);
+  const slot=css.match(/\n\.result-pager\s*\{([^}]+)\}/)[1];
+  assert.match(slot,/height: var\(--host-result-pager-block-size\)/);
+  assert.match(slot,/box-sizing: border-box/);
+  assert.match(slot,/padding-block: 4px/);
+  assert.doesNotMatch(css,/\.source-frame-footer\s*>\s*\.host-result-pager/);
+  const arrows=css.match(/\.result-pager \[data-page-action\]\s*\{([^}]+)\}/)[1];
+  assert.match(arrows,/width: 44px/);
+  assert.match(arrows,/min-width: 44px/);
+  assert.match(arrows,/flex: 0 0 44px/);
+  assert.doesNotMatch(arrows,/position: absolute|margin:\s*-/);
+  assert.match(css,/@media \(max-width: 374px\)[\s\S]*\[data-page-action="first"\][\s\S]*\[data-page-action="last"\][^}]*display: none/);
+  assert.match(css,/\.category-browser-home\s*\{\s*padding-bottom: 0/);
+});
+
+test('source capacity admits a complete fourth row at the measured boundary [B2-G7]', async () => {
+  const instance=Object.create(ResultPaginationFrontendTest);await instance.setUpClass();await instance.run_case(`
+const geometry={columns:3,itemHeight:72,gap:10,padding:4};
+assert.equal(fittedPageSize({...geometry,height:321}),9);
+assert.equal(fittedPageSize({...geometry,height:322}),12);
+// Available content height is measured after the Request parent's gaps;
+// these boundaries do not assume any fixed toolbar or list-to-tools gap.
+assert.equal(fittedPageSize({...geometry,height:403}),12);
+assert.equal(fittedPageSize({...geometry,height:404}),15);
+`);
+});
