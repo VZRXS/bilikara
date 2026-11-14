@@ -56,7 +56,7 @@
     "test:playback-sheet": "node --test tests/playback_sheet_gestures.test.mjs tests/playback_sheet_gestures_browser.test.mjs tests/playback_sheet_columns_browser.test.mjs tests/remote_empty_playback_browser.test.mjs",
     "test:purek": "node --test tests/purek_room.test.mjs tests/ktv_scanner.test.mjs tests/ktv_assistance.test.mjs tests/ktv_assistance_browser.test.mjs",
     "test:purek-output": "node --test tests/purek_output.test.mjs tests/purek_monitor.test.mjs",
-    "test:media-output": "node --test tests/media_output_browser.test.mjs tests/media_output_transport.test.mjs",
+    "test:media-output": "node --test tests/media_output.test.mjs tests/media_output_browser.test.mjs tests/media_output_transport.test.mjs",
     "test:purek-controller": "node --test tests/purek_controller.test.mjs tests/purek_compatibility.test.mjs",
     "test:dlna": "node --test --test-name-pattern=\"ordinary DLNA\" tests/purek_controller.test.mjs",
     "test:purek-l1": "node --test tests/purek_l1.test.mjs tests/native_output_browser.test.mjs",
