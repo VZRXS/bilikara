@@ -10896,7 +10896,9 @@ if (window.BilikaraSubTabSwipe) {
   };
   const panel = () => [...elements.remoteRequestViewPanels].find(node => !node.hidden);
   window.BilikaraSubTabSwipe.bind(document.querySelector('.request-panel'),{scope:()=>'request',tree,current,panel,
-    fixedZones:()=>[...document.querySelectorAll('.remote-request-head,.remote-request-tabs-viewport,.browse-search-bar')],
+    // Match Host ownership: fixed navigation and entire query/tool rows
+    // exclude their blank space as well as their interactive controls.
+    fixedZones:()=>[...document.querySelectorAll('.remote-request-head,.remote-request-tabs-viewport,.remote-request-secondary-home,.browse-search-bar,.request-panel form')],
     commit:([,view,child])=>{
       if(view==='search') state.remoteSearchMode=child;
       if(view==='discover') state.remoteDiscoverMode=child;

@@ -945,16 +945,18 @@ Cancellation and document retirement remain independent; no POST is replayed.
 Background recovery requires separate physical iOS qualification.
 
 Phone Request sub-tab motion uses the complete measured page width with
-14px inner content gutters and temporary ancestor clip release. Fixed text
-inputs and ordinary buttons can start a horizontal sub-tab gesture; sliders,
-pagers, overflowing strips and active composition retain ownership. Primary
+14px inner content gutters and temporary ancestor clip release. Only
+noninteractive space inside the active content panel can start a sub-tab
+gesture. Fixed headings, navigation, query and tool rows exclude all their
+descendants and blank space, with no preview, animation or click suppression.
+Controls, pagers, overflowing strips and active composition retain ownership. Primary
 sections still require direct activation. Song grids fit at least three rows
 per page, scrolling those rows on shorter screens. Fit samples persist across
 page changes and update on real size/font changes. Local catalog pages prefetch
 two pages; API batch caching is retained. The pager's dock track comes from
 measured native/fallback geometry, without a second bottom gutter.
 Landscape iPads retain the shared Host shell and the same section-local touch
-routes, including fixed Random toolbar controls. Mouse drags preserve ordinary
+routes from content space; fixed Random toolbar controls remain excluded. Mouse drags preserve ordinary
 selection; Pointer-only engines admit touch/pen rather than mouse navigation.
 The approved light phone backdrop adds a viewport-wide white gradient, from
 0% at the top to 60% at the bottom, behind the content. Cards/text retain their
