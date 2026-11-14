@@ -22,7 +22,9 @@
   overflow-y: auto;
 }
 #purek-modal .purek-card {
-  --ktv-scanner-radius: 14px;
+  /* IOS-09-04: shared outer radius minus the shared 20px content inset.
+     The current 18px shell therefore has a square inset scanner. */
+  --ktv-scanner-radius: max(0px, calc(var(--floating-panel-radius, 18px) - 20px));
   width: min(440px, 100%);
   max-height: calc(var(--legacy-vh, 1vh) * 100 - var(--purek-top-inset) - var(--purek-bottom-inset));
   max-height: calc(100dvh - var(--purek-top-inset) - var(--purek-bottom-inset));

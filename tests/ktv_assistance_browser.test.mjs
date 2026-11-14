@@ -25,6 +25,29 @@ async function shot(page,name){if(evidence){
   await page.evaluate(()=>Promise.all(document.getAnimations().filter(a=>a.effect?.getTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{}))));
   mkdirSync(evidence,{recursive:true});await page.screenshot({path:path.join(evidence,name+'.png')});
 }}
+async function checkScannerGeometry(page) {
+  await settleLayout(page);
+  const g=await page.locator('#purek-modal').evaluate(modal=>{
+    const card=modal.querySelector('.purek-card'),body=card.querySelector('.purek-body'),view=card.querySelector('.ktv-scan-view');
+    const c=card.getBoundingClientRect(),b=body.getBoundingClientRect(),v=view.getBoundingClientRect(),h=card.querySelector('.selection-modal-head').getBoundingClientRect();
+    const cs=getComputedStyle(card),ms=getComputedStyle(modal),vs=getComputedStyle(view),bs=getComputedStyle(body);
+    const number=(style,key)=>parseFloat(style[key])||0;
+    return {padding:['paddingTop','paddingRight','paddingBottom','paddingLeft'].map(k=>number(cs,k)),
+      inset:v.left-c.left-number(cs,'borderLeftWidth'),outer:number(cs,'borderTopLeftRadius'),inner:number(vs,'borderTopLeftRadius'),
+      axes:[b.left-c.left-number(cs,'borderLeftWidth'),c.right-b.right-number(cs,'borderRightWidth')],
+      scanWidth:v.width,bodyWidth:body.clientWidth,headerGap:b.top-h.bottom,minHeight:number(vs,'minHeight'),height:v.height,
+      overflow:bs.overflowY,top:c.top-number(ms,'paddingTop'),bottom:innerHeight-number(ms,'paddingBottom')-c.bottom,
+      viewport:c.left>=0&&c.right<=innerWidth+1&&c.top>=0&&c.bottom<=innerHeight+1,
+      targets:[...view.querySelectorAll('button')].filter(n=>n.getClientRects().length).map(n=>{const r=n.getBoundingClientRect();return [r.width,r.height];})};
+  });
+  assert.deepEqual(g.padding,[20,20,20,20],'IOS-09-04 shared content axis');
+  assert.ok(g.axes.every(n=>Math.abs(n-20)<1),JSON.stringify(g));
+  assert.ok(Math.abs(g.inner-Math.max(0,g.outer-g.inset))<1,'IOS-09-04 inset scanner uses concentric radius');
+  assert.ok(Math.abs(g.scanWidth-g.bodyWidth)<1&&g.headerGap>=11&&g.height>=g.minHeight-1,JSON.stringify(g));
+  assert.equal(g.overflow,'auto');assert.equal(g.viewport,true);
+  assert.ok(g.top>=-1&&g.bottom>=-1&&Math.abs(g.top-g.bottom)<2,'IOS-09-04 centers in the usable viewport after dock/safe-area/IME insets: '+JSON.stringify(g));
+  assert.ok(g.targets.length&&g.targets.every(([w,h])=>w>=44&&h>=44),'scanner touch targets stay full size');
+}
 async function browserContext(t,engine,server,{host=false,ios=false,phone=false}={}){
   const browser=await engine.launch();t.after(()=>browser.close());const context=await browser.newContext({viewport:{width:host&&!phone?700:393,height:host&&!phone?700:844},hasTouch:true});
   if(host)await context.addCookies([...server.cookies].map(([name,value])=>({name,value,url:server.base})));
@@ -167,11 +190,16 @@ for(const engine of [chromium,webkit])for(const platform of ['android','ios'])te
     assert.equal(await host.locator('#purek-cancel').isVisible(),false,'no orphan Cancel footer');
     assert.equal(await host.locator('#purek-settings [aria-describedby="purek-info"]').count(),1);
     assert.equal(await host.locator('[data-media-output="settings"] .media-output-help').count(),0);
+    for(const size of [{width:393,height:844},{width:393,height:520},{width:844,height:393},{width:1024,height:768}]){
+      await host.setViewportSize(size);await checkScannerGeometry(host);
+    }
+    await host.setViewportSize({width:393,height:844});
     if(live){
       // Observe WebKit's actual native denial, without relying on a replaced
       // WebIDL method surviving between browser tasks. Chromium also counts calls.
       await host.locator('#purek-error:not([hidden])').waitFor();
       assert.equal(await host.locator('#purek-error').innerText(),await host.evaluate(()=>t('ktv.error.camera_permission')));
+      await checkScannerGeometry(host);
       assert.equal(pickerCalls,0);
       if(engine===chromium)assert.equal(await host.evaluate(()=>__ktvCameraCalls),1,'the outer Scan button opens the camera directly');
     }else assert.equal(pickerCalls,1,'the outer Scan button opens the system picker without live camera');
