@@ -108,17 +108,16 @@ for(const engine of [chromium,webkit])for(const client of ['android','ios','remo
     await page.evaluate(()=>{fetchState=async()=>{};state.eventSource?.close();});
     if(!remote)await page.locator('[data-android-page="request"]').click();
     const request=async view=>{
-      if(remote){
-        await page.locator('.request-panel').scrollIntoViewIfNeeded();
-        // Search/Discover/Sources replace the primary tabs with contextual
-        // navigation. Return through the visible UI before choosing a peer.
-        const back=page.locator('#remote-request-secondary-back');
-        if(await back.isVisible()){await back.scrollIntoViewIfNeeded();await back.click();}
-        await page.locator('#remote-request-primary-tabs').waitFor({state:'visible'});
-      }else{const back=page.locator('[data-request-back]:visible');if(await back.count())await back.click();}
-      const tab=page.locator(`[${remote?'data-remote-request-view':'data-request-view'}="${view}"]`);
-      await tab.scrollIntoViewIfNeeded();await tab.click();
-      if(remote)await page.locator(`[data-remote-request-panel="${view}"]`).waitFor({state:'visible'});
+      if(remote)await page.locator('.request-panel').scrollIntoViewIfNeeded();
+      const tabSelector=`[${remote?'data-remote-request-view':'data-request-view'}="${view}"]`;
+      const backSelector=remote?'#remote-request-secondary-back':'[data-request-back]';
+      // A re-render can replace contextual Back with the primary tabs. Resolve
+      // the available entry on every auto-wait retry, never count then click a
+      // previously visible Back. click() also waits for an enabled target.
+      await page.locator(`${backSelector}:visible,${tabSelector}:visible`).first().click();
+      const active=await page.evaluate(remote=>remote?state.remoteRequestView:state.requestSubview,remote);
+      if(active!==view)await page.locator(tabSelector).click();
+      await page.locator(`[${remote?'data-remote-request-panel':'data-request-panel'}="${view}"]`).waitFor({state:'visible'});
     };
     const capture=async scenario=>{
       const pager=page.locator('.result-pager:visible');await pager.waitFor({state:'visible'});
@@ -127,11 +126,17 @@ for(const engine of [chromium,webkit])for(const client of ['android','ios','remo
       await settlePager(page);
       if(remote){await pager.evaluate(node=>node.scrollIntoView({block:'center'}));await settlePager(page);}
       const geometry=await pagerTargets(pager);
-      const dockTop=await page.evaluate(()=>{
-        const dock=document.getElementById('android-host-dock');
-        return dock?.getClientRects().length?dock.getBoundingClientRect().top:innerHeight;
+      const edge=await pager.evaluate(node=>{
+        const dock=document.getElementById('android-host-dock'),bounds=dock?.getBoundingClientRect();
+        // UIKit hides the Web presentation but retains a real reserved track.
+        // A display:none dock in a wide layout has no track at all.
+        if(dock?.getClientRects().length&&bounds.width>0&&bounds.height>0)return {dockTop:bounds.top};
+        const panel=node.closest('.request-mode-panel,.source-mode-panel,.request-panel'),style=getComputedStyle(panel);
+        return {dockTop:null,panelInnerBottom:panel.getBoundingClientRect().bottom
+          -(parseFloat(style.paddingBottom)||0)-(parseFloat(style.borderBottomWidth)||0)};
       });
-      return {scenario,bottom:geometry.slot.bottom,dockGap:dockTop-geometry.slot.bottom};
+      return {scenario,bottom:geometry.slot.bottom,dockGap:edge.dockTop===null?null:edge.dockTop-geometry.slot.bottom,
+        panelGap:edge.dockTop===null?edge.panelInnerBottom-geometry.slot.bottom:null};
     };
     for(const [width,height] of remote?[[320,844],[393,844]]:[[393,844],[1024,768]]){
       await page.setViewportSize({width,height});const samples=[];
@@ -199,7 +204,11 @@ for(const engine of [chromium,webkit])for(const client of ['android','ios','remo
       }
       if(!remote)for(const sample of samples){
         assert.ok(Math.abs(sample.bottom-samples[0].bottom)<=1,'every Host pager uses the same bottom anchor: '+JSON.stringify({width,height,client,samples}));
-        assert.ok(Math.abs(sample.dockGap-samples[0].dockGap)<=1,'every Host pager keeps the same dock clearance: '+JSON.stringify({width,height,client,samples}));
+        assert.equal(sample.dockGap===null,samples[0].dockGap===null,'dock presence stays consistent within one layout');
+        if(sample.dockGap!==null){
+          assert.ok(sample.dockGap>=0,'the pager stays above the rendered or native reserved dock');
+          assert.ok(Math.abs(sample.dockGap-samples[0].dockGap)<=1,'every Host pager keeps the same dock clearance: '+JSON.stringify({width,height,client,samples}));
+        }else assert.ok(Math.abs(sample.panelGap)<=1,'without a dock the pager meets its panel inner bottom: '+JSON.stringify({width,height,client,samples}));
       }
       if(width===320){
         const pager=page.locator('.result-pager:visible'),input=pager.locator('[data-page-input]');
@@ -570,8 +579,11 @@ for(const engine of [chromium,webkit])for(const [client,nativeDock] of [['androi
             await settle();
             const sample=await panel.evaluate(n=>{
               const rect=n=>{const r=n.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,height:r.height};};
-              const q=s=>rect(n.querySelector(s)),grid=n.querySelector('.follow-up-grid'),style=getComputedStyle(grid);
-              return {panel:rect(n),scroll:q('.source-browse-scroll'),viewport:q('.result-page-viewport'),grid:rect(grid),footer:q('.source-frame-footer'),tools:q('.source-tools'),pager:q('.host-result-pager'),dock:rect(document.getElementById('android-host-dock')),
+              const q=s=>rect(n.querySelector(s)),grid=n.querySelector('.follow-up-grid'),style=getComputedStyle(grid),panelStyle=getComputedStyle(n);
+              const dock=document.getElementById('android-host-dock'),dockBox=dock?.getBoundingClientRect();
+              const hasDock=Boolean(dock?.getClientRects().length&&dockBox.width>0&&dockBox.height>0);
+              return {panel:rect(n),panelInnerBottom:n.getBoundingClientRect().bottom-(parseFloat(panelStyle.paddingBottom)||0)-(parseFloat(panelStyle.borderBottomWidth)||0),
+                scroll:q('.source-browse-scroll'),viewport:q('.result-page-viewport'),grid:rect(grid),footer:q('.source-frame-footer'),tools:q('.source-tools'),pager:q('.host-result-pager'),dock:hasDock?rect(dock):null,
                 cards:[...grid.children].map(rect),fitHeight:n.querySelector('.source-browse-scroll').clientHeight,columns:style.gridTemplateColumns.split(' ').length,gap:parseFloat(style.rowGap),padding:parseFloat(style.paddingTop)+parseFloat(style.paddingBottom),pageSize:Number(n.querySelector('.host-result-pager').dataset.pageSize),
                 targets:[...n.querySelectorAll('.source-tools button,.source-trash-slot,.host-result-pager button')].filter(n=>n.getClientRects().length).map(rect)};
             });
@@ -584,7 +596,14 @@ for(const engine of [chromium,webkit])for(const [client,nativeDock] of [['androi
             assert.equal(sample.pageSize,capacity,'every complete fitting row contributes capacity: '+JSON.stringify({width,height,font,mode,...sample}));
             if(sample.cards.length<count)assert.ok(sample.scroll.bottom-sample.grid.bottom<sample.cards[0].height+sample.gap,'the remaining space cannot hold another complete row');
             assert.ok(rows>=(previousRows.get(width)||0),'a taller viewport at the same width cannot lose a grid row');previousRows.set(width,rows);
-            assert.ok(sample.scroll.bottom<=sample.footer.top&&sample.footer.bottom<=sample.dock.top,'cards and footer stay above the dock');
+            if(sample.dock){
+              // Preserve the original IOS-09-10 phone/dock assertion exactly.
+              assert.ok(sample.scroll.bottom<=sample.footer.top&&sample.footer.bottom<=sample.dock.top,'cards and footer stay above the dock');
+            }else{
+              assert.ok(sample.scroll.bottom<=sample.footer.top,'cards stay above the fixed footer without a dock');
+              assert.ok(sample.footer.bottom<=sample.panelInnerBottom+1,'the footer stays within its panel without a dock');
+              assert.ok(Math.abs(sample.pager.bottom-sample.panelInnerBottom)<=1,'without a dock the pager meets the panel inner bottom');
+            }
             assert.ok(sample.targets.every(r=>r.height>=44&&r.right<=sample.panel.right+.5&&r.left>=sample.panel.left-.5),'full tool and pager targets retain their bounds');
             assert.equal(sample.tools.height,52,'the approved trash slot is preserved');
             assert.equal(sample.pager.top-sample.tools.bottom,0,'the two inner insets replace the old footer gap');
