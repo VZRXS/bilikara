@@ -287,6 +287,8 @@ Android APK 使用 NDK 构建同一 libav/companion 与原生 DSP，复用 L0/L1
 
 探测使用授权时选择的本机网卡，不跟随 HTTP 重定向，不向 `GetProtocolInfo` 发送房间 Token。SOAP 响应必须是唯一的匹配命名空间的 `GetProtocolInfoResponse`，包含各一个 `Source` 与 `Sink`；拒绝 Fault、DTD、嵌套伪造字段及过大响应。HTTP 正文限制 1 MiB，Sink 限制 64 KiB 和 128 项，XML 节点数限制 8192。
 
+所有网络 XML（二维码或手填地址的设备描述、SSDP LOCATION 描述、授权 SOAP/Fault、能力查询与媒体控制/状态响应）统一经过 `protocol::xml()`。解析前按现有 HTTP 正文预算检查 1 MiB 字节上限，并以线性、固定空间预扫描限制元素嵌套至 64 层（根为第 1 层，自闭合元素也占一层），避免递归 XML 解析器栈溢出。扫描识别注释、CDATA、处理指令及属性引号，拒绝 DTD、未闭合或无法安全识别的标签；完整语法仍由 XML 解析器验证。超限返回现有结构化 `ApiError`，不截断后继续解析，也不在错误信息中回显原始 XML；调用方保留现有阶段错误分类。
+
 媒体端点绑定接收端可达的本机 IPv4 和系统临时端口，每次 start 使用新的 128 bit 随机 capability。仅授权接收端源 IP 可访问；其他 IP 返回 403 并只累计计数，不记录 URL。URI 不出现在状态投影或日志中，取消后监听器和已连接发送线程结束。最多四条并发探测连接、一个 GET 消费者，请求头上限 8 KiB/两秒。
 
 HEAD 与 GET 返回相同媒体头；无 Content-Length，Range 统一返回 200 全流，`Content-Type` 使用本次选定的 `video/MP2T` 或 `video/mpeg`，DLNA Streaming 头。支持 close 和 chunked 两种分帧用于 G2 比较。发送按时间轴一倍速、每条连接开头最多两秒突发；队列同时受四秒跨度和 16 MiB 限制，满时可取消地暂停生产，单 GOP 同受 16 MiB 限制。重连只从下一个未发送的关键帧开始，丢弃此前非关键帧，不重放旧数据。接收端暂停读取（例如正在打开解码器）时按 TCP 背压等待，不因短时阻塞断开；连续 15 秒没有写入进展才断开该连接，取消输出则立即结束发送。Windows 接受的连接显式恢复为阻塞模式读取请求，媒体写入使用非阻塞循环，不依赖发送超时。
