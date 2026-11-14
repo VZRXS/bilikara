@@ -774,7 +774,9 @@ local_search = this.script.slice(sourceIndex(this.script, "elements.searchForm?.
 assert.ok(contains("hideSearchResults()", local_search));
 for (const values of iterableValues(Object.values(this.translations["languages"]))) {
 assert.ok(hasContent(values["search.sharedNoResults"]));
-assert.notDeepEqual(values["search.sharedPartialNoResults"], values["search.sharedNoResults"]);
+assert.equal(Object.hasOwn(values, "search.sharedPartialNoResults"), false);
+assert.equal(Object.hasOwn(values, "search.larkPartialNoResults"), false);
+assert.ok(hasContent(values["search.sharedSearching"]));
 }
 discover_controls = this.styles.match(new RegExp("\\.request-discover-view \\.tag-browser-search input,\\s*\\.request-discover-view \\.tag-browser-search button\\s*\\{([^}]*)\\}",""))[1];
 assert.ok(contains("height: var(--host-control-height)", discover_controls));

@@ -1,10 +1,39 @@
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
+import {readFileSync, mkdtempSync, writeFileSync, rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
+import {readUniqueJson} from './frontend_contract_support.mjs';
 
 const read = name => readFileSync(new URL('../' + name, import.meta.url), 'utf8');
-const translations = JSON.parse(read('static/i18n.json')).languages;
+const translations = readUniqueJson(new URL('../static/i18n.json', import.meta.url)).languages;
+
+test('i18n source rejects duplicate keys before JSON parsing can hide them', t => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'catalog-i18n-'));
+  t.after(() => rmSync(directory, {recursive: true, force: true}));
+  const file = path.join(directory, 'duplicate.json');
+  const source = read('static/i18n.json');
+  assert.doesNotThrow(() => readUniqueJson(new URL('../static/i18n.json', import.meta.url)));
+  writeFileSync(file, source.replace(/("search.sharedPlaceholder": "[^"]*",)/,
+    '$1\n      "search.sharedPlaceholder": "duplicate fixture",'), 'utf8');
+  assert.throws(() => readUniqueJson(file), /Duplicate JSON key: search.sharedPlaceholder/);
+});
+
+test('Host and Remote retain their original three-language placeholder copy', () => {
+  const original = {
+    zh: ['在 bilikara 共享数据库中搜索', '在 bilikara 共享数据库中搜索'],
+    en: ['Search the bilikara shared database', 'Search in bilikara shared database'],
+    ja: ['bilikara 共有データベースを検索', 'bilikara共有データベースから検索'],
+  };
+  for (const [language, [host, remote]] of Object.entries(original)) {
+    assert.equal(translations[language]['search.sharedPlaceholder'], host);
+    assert.equal(translations[language]['search.sharedCatalogPlaceholder'], remote);
+    assert.equal(translations[language]['search.larkPlaceholder'], undefined);
+  }
+  assert.match(read('static/index.html'), /data-i18n-placeholder="search.sharedPlaceholder"/);
+  assert.match(read('static/remote.html'), /data-i18n-placeholder="search.sharedCatalogPlaceholder"/);
+});
 
 for (const [entry, script] of [['index.html', 'app.js'], ['remote.html', 'remote.js']]) {
   test(`${entry} shared search binds the same DOM, translations and canonical endpoint`, () => {
@@ -21,7 +50,7 @@ for (const [entry, script] of [['index.html', 'app.js'], ['remote.html', 'remote
     assert.match(js, /openSearchResultDetail\(event, elements\.sharedSearchResults, "shared"\)/);
     assert.doesNotMatch(html + js, /larkSearch|LarkSearch|lark-search|search\.lark|error\.lark|"lark"/);
     for (const language of ['zh', 'en', 'ja']) {
-      for (const key of ['search.sharedPlaceholder', 'search.sharedSearching', 'search.sharedNoResults', 'search.sharedFound', 'error.sharedSearchFailed']) {
+      for (const key of ['search.sharedPlaceholder', 'search.sharedCatalogPlaceholder', 'search.sharedSearching', 'search.sharedNoResults', 'search.sharedFound', 'error.sharedSearchFailed']) {
         assert.ok(translations[language][key]?.trim(), `${language}: ${key}`);
       }
     }

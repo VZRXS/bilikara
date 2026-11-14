@@ -61,6 +61,10 @@ pages, selection and detail-return focus belong to the existing client state.
 The internal `shared` detail/action source selects UI feedback and return
 context only; it is not sent as a song field or persisted in queue/history.
 Provider response metadata such as `source: sheets` has a separate meaning.
+Host's `search.sharedPlaceholder` and Remote's
+`search.sharedCatalogPlaceholder` retain their respective localized copy.
+Translation catalogs must have unique keys in each object; frontend checks scan
+the JSON source before parsing so duplicate keys cannot silently replace text.
 Loading text makes no fixed network-duration promise. Valid empty results use
 the empty-state message; request errors follow the existing error path. There is
 no client-invented multi-table partial-failure state or partial-failure message.
