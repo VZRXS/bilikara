@@ -121,11 +121,13 @@ table probing and search code are retired. Existing protocol fields such as
 `feishu_queued` retain their upstream meanings.
 
 The retained Python source helper `refresh_gatcha_cache_in_background` accepts
-the keyword `upload_default_uids_to_shared_catalog` (default `True`). Source
-integrations using `upload_default_uids_to_lark` must rename that keyword;
-the old spelling is no longer accepted. This is a Python caller migration,
-not an HTTP/Worker schema change. As before, either boolean has no effect on
-the refresh request: Rust selects eligible new rows for catalog indexing.
+the keyword `upload_default_uids_to_shared_catalog`. Source integrations using
+`upload_default_uids_to_lark` remain supported through a compatibility alias.
+Supplying both spellings raises a clear `TypeError` before starting a task,
+even if their values agree. Neither keyword controls the refresh request;
+passing either boolean, or omitting both, preserves the historical behavior:
+Rust selects eligible new rows for catalog indexing. This alias is confined to
+the Python calling surface, not an HTTP/Worker schema change.
 It does not enable provider uploads or writes to the read-only Sheets snapshot.
 
 The developer smoke surface checks cover both clients' `shared-search-*`

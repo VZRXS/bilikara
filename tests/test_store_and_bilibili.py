@@ -1867,15 +1867,36 @@ class BilibiliParserTest(unittest.TestCase):
             patch.object(bilibili_module, "effective_bilibili_cookie", return_value=""),
             patch.object(bilibili_module, "_default_gatcha_uids", return_value=["1"]),
         ):
-            self.assertTrue(bilibili_module.refresh_gatcha_cache_in_background(
-                upload_default_uids_to_shared_catalog=True,
-            ))
-            self.assertTrue(bilibili_module.refresh_gatcha_cache_in_background(
-                upload_default_uids_to_shared_catalog=False,
-            ))
-            self.assertEqual(start.call_count, 2)
-            self.assertEqual(start.call_args_list[0], start.call_args_list[1])
+            variants = [
+                {},
+                {"upload_default_uids_to_shared_catalog": True},
+                {"upload_default_uids_to_shared_catalog": False},
+                {"upload_default_uids_to_lark": True},
+                {"upload_default_uids_to_lark": False},
+            ]
+            for kwargs in variants:
+                with self.subTest(kwargs=kwargs):
+                    self.assertTrue(bilibili_module.refresh_gatcha_cache_in_background(**kwargs))
+                    self.assertEqual(start.call_args, start.call_args_list[0])
+            self.assertEqual(start.call_count, len(variants))
             self.assertNotIn("upload_default_uids_to_shared_catalog", start.call_args.args[0])
+            self.assertNotIn("upload_default_uids_to_lark", start.call_args.args[0])
+
+    def test_catalog_refresh_rejects_both_upload_keywords_before_start(self):
+        with patch("bilikara.gatcha_refresh.start") as start:
+            for shared in [True, False]:
+                for legacy in [True, False]:
+                    with self.subTest(shared=shared, legacy=legacy):
+                        with self.assertRaisesRegex(
+                            TypeError,
+                            "Specify only one of upload_default_uids_to_shared_catalog and "
+                            "upload_default_uids_to_lark",
+                        ):
+                            bilibili_module.refresh_gatcha_cache_in_background(
+                                upload_default_uids_to_shared_catalog=shared,
+                                upload_default_uids_to_lark=legacy,
+                            )
+            start.assert_not_called()
 
     def test_startup_gatcha_refresh_does_not_upload_when_no_uid_added_entries(self):
         with ConfiguredRefreshFixture() as fixture:
