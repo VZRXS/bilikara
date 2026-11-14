@@ -10558,7 +10558,8 @@ body.is-presentation-stage-only .left-column {
 .request-sources-view .source-browse-scroll.is-detail-view > :is(.follow-browser, .favlist-browser) {
   height: 100%;
   grid-template-rows: minmax(0, 1fr) auto;
-  overflow: hidden;
+  /* Let header hover paint reach the outer scrollport's reserved inset. */
+  overflow: visible;
 }
 
 .request-sources-view .source-browse-scroll.is-detail-view .follow-up-items-view {
@@ -10566,7 +10567,7 @@ body.is-presentation-stage-only .left-column {
   padding-top: 0;
   box-sizing: border-box;
   grid-template-rows: auto minmax(0, 1fr);
-  overflow: hidden;
+  overflow: visible;
 }
 
 .request-sources-view .source-browse-scroll.is-detail-view :is(#follow-song-results, #favlist-song-results) {

@@ -40,3 +40,18 @@ test('Host and Remote share TopSlot spacing without overriding source footer or 
   assert.match(read('styles.css'),/margin-top: calc\(-1 \* var\(--request-content-paint-inset\)\);\s*padding-top: var\(--request-content-paint-inset\);/);
   assert.match(read('styles.css'),/\.source-browse-scroll\.is-detail-view \.follow-up-items-view \{\s*height: 100%;\s*padding-top: 0;/);
 });
+
+test('source detail wrappers pass header hover paint to the outer inset while only results scroll',()=>{
+  const css=read('styles.css');
+  for(const selector of [
+    '.request-sources-view .source-browse-scroll.is-detail-view > :is(.follow-browser, .favlist-browser)',
+    '.request-sources-view .source-browse-scroll.is-detail-view .follow-up-items-view',
+  ]) {
+    const rule=css.slice(css.indexOf(selector+' {')).split('}',1)[0];
+    assert.match(rule,/overflow: visible;/,selector);
+    assert.match(rule,/height: 100%;/,selector);
+    assert.match(rule,/grid-template-rows:/,selector);
+  }
+  assert.match(css,/\.source-browse-scroll\.is-detail-view \{\s*overflow-y: hidden;/);
+  assert.match(css,/\.source-browse-scroll\.is-detail-view :is\(#follow-song-results, #favlist-song-results\) \{[^}]*overflow-y: auto;/);
+});
