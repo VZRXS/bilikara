@@ -33,7 +33,7 @@ async function checkScannerGeometry(page) {
     const cs=getComputedStyle(card),ms=getComputedStyle(modal),vs=getComputedStyle(view),bs=getComputedStyle(body);
     const number=(style,key)=>parseFloat(style[key])||0;
     return {padding:['paddingTop','paddingRight','paddingBottom','paddingLeft'].map(k=>number(cs,k)),
-      inset:v.left-c.left-number(cs,'borderLeftWidth'),outer:number(cs,'borderTopLeftRadius'),inner:number(vs,'borderTopLeftRadius'),
+      inner:number(vs,'borderTopLeftRadius'),
       axes:[b.left-c.left-number(cs,'borderLeftWidth'),c.right-b.right-number(cs,'borderRightWidth')],
       scanWidth:v.width,bodyWidth:body.clientWidth,headerGap:b.top-h.bottom,minHeight:number(vs,'minHeight'),height:v.height,
       overflow:bs.overflowY,top:c.top-number(ms,'paddingTop'),bottom:innerHeight-number(ms,'paddingBottom')-c.bottom,
@@ -42,7 +42,7 @@ async function checkScannerGeometry(page) {
   });
   assert.deepEqual(g.padding,[20,20,20,20],'IOS-09-04 shared content axis');
   assert.ok(g.axes.every(n=>Math.abs(n-20)<1),JSON.stringify(g));
-  assert.ok(Math.abs(g.inner-Math.max(0,g.outer-g.inset))<1,'IOS-09-04 inset scanner uses concentric radius');
+  assert.equal(g.inner,14,'IOS-09-04 scanner retains its approved role radius independently of the dialog corners');
   assert.ok(Math.abs(g.scanWidth-g.bodyWidth)<1&&g.headerGap>=11&&g.height>=g.minHeight-1,JSON.stringify(g));
   assert.equal(g.overflow,'auto');assert.equal(g.viewport,true);
   assert.ok(g.top>=-1&&g.bottom>=-1&&Math.abs(g.top-g.bottom)<2,'IOS-09-04 centers in the usable viewport after dock/safe-area/IME insets: '+JSON.stringify(g));
@@ -137,6 +137,10 @@ for(const engine of [chromium,webkit])for(const platform of ['desktop','android'
   await remote.locator('#ktv-invitation').waitFor({state:'visible'});
   assert.equal(await remote.evaluate(()=>__ktvCameraCalls),0);
   await remote.locator('#ktv-accept').click();await remote.locator('#ktv-scanner').waitFor({state:'visible'});
+  if(platform!=='desktop'){
+    const radius=n=>getComputedStyle(n).borderTopLeftRadius;
+    assert.deepEqual(await Promise.all([host.locator('#ktv-host-scan-view').evaluate(radius),remote.locator('#ktv-scan-view').evaluate(radius)]),['14px','14px'],'IOS-09-04 Host and Remote share the approved scanner radius');
+  }
   assert.equal(await remote.evaluate(()=>__ktvCameraCalls),0,'an invitation/acceptance never starts the camera');
   assert.equal(await remote.locator('#ktv-session-status').isVisible(),false,'Host invitations need no redundant approval status');
   await remote.locator('#ktv-cancel-session').click();await remote.locator('#ktv-remote-modal').waitFor({state:'hidden'});
