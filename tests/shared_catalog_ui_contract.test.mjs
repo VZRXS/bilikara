@@ -58,6 +58,8 @@ for (const [entry, script] of [['index.html', 'app.js'], ['remote.html', 'remote
 }
 
 test('shared search translations describe real loading, empty and error states', () => {
+  assert.equal(translations.zh['search.sharedSearching'], '正在搜索 bilikara 共享数据库…');
+  assert.equal(translations.ja['search.sharedSearching'], 'bilikara 共有データベースを検索しています…');
   for (const language of ['zh', 'en', 'ja']) {
     const values = translations[language];
     assert.doesNotMatch(values['search.sharedSearching'], /3\s*[-–〜]\s*15/);

@@ -68,6 +68,8 @@ the JSON source before parsing so duplicate keys cannot silently replace text.
 Loading text makes no fixed network-duration promise. Valid empty results use
 the empty-state message; request errors follow the existing error path. There is
 no client-invented multi-table partial-failure state or partial-failure message.
+Chinese and Japanese loading copy follows the existing database terminology in
+their search placeholders and empty states (`共享数据库` / `共有データベース`).
 
 ## Configuration and cache
 
