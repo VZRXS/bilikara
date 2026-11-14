@@ -86,8 +86,9 @@ playback is observed; it shares a feedback slot with seek and play/pause.
 
 Desktop workspace and scroll ownership remain explicit:
 
-Sources and Session Users keep the same 8px list-to-tool spacing; desktop also
-shares their platform panel inset. Every Host/Remote result pager uses one
+Sources use their shared Request parent's measured row-gap between list and
+tools; Session Users retain their 8px gap. Desktop keeps each surface's platform
+panel inset. Every Host/Remote result pager uses one
 52px outer slot: 44px controls with 4px above and below. Host keeps that slot
 outside list scrolling at the same bottom anchor; Remote keeps document flow.
 Arrow targets are separate 44px squares. Below a 375px viewport, previous/next
@@ -98,6 +99,8 @@ and the pager's 4px upper inset preserve 8px between visible controls. The two
 slots occupy 104px together. Hiding tools collapses their slot without moving
 the pager's bottom edge. A source page filled by the pager's content remains
 within that pager's gesture ownership; change source tabs by tapping (N1).
+Only the result viewport supports swipe paging. Dragging the footer or its
+arrows does not turn pages or switch sub-tabs; short arrow presses turn pages.
 Session-user name actions retain horizontal ellipsis and a 20px
 line with vertical paint room, so descenders such as `g` fit without increasing
 the badge's height.

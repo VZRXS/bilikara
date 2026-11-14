@@ -378,7 +378,9 @@ for(const android of [false,true])test(`${android?'phone':'desktop'} resident So
     assert.equal(await footer.isVisible(),true);assert.equal(await trash.isVisible(),true);assert.equal(await trash.getAttribute('aria-disabled'),'true');
     await footerBounds(page);await assertNativeSourceFrame(page);if(android)await assertFullSourceCapacity(page);
     const spacing=await footerSpacing(page,false,`${width}x${height}`);
-    assert.equal(spacing.listToTools,8,'Sources share Session Users list-to-footer spacing');
+    const parentGap=parseFloat(spacing.owner.gap);
+    assert.ok(Number.isFinite(parentGap)&&parentGap>0,'the Request parent owns a measured row gap');
+    assert.ok(Math.abs(spacing.listToTools-parentGap)<=.5,'Sources use the Request parent row gap without another list-to-footer inset');
     if(android){assert.equal(spacing.toolsToPager,0);assert.equal(spacing.buttonToPagerTargets,8,'the trash slot inset and pager padding supply the full control gap');assert.equal(spacing.pagerHeight,52);assert.equal(spacing.pagerToPanelBottom,4);}
     else {
       const columns=await page.evaluate(()=>document.documentElement.dataset.hostColumns);

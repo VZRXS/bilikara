@@ -36,18 +36,26 @@ async function pagerTargets(pager) {
         hitHeight:vertical.every(Boolean)?box.height:0};
     });
     const controls=rect(node.querySelector('.result-pager-controls')),input=node.querySelector('[data-page-input]');
+    const frame=node.closest('.android-result-frame,.source-mode-panel')||node.parentElement;
+    const contentViewports=[...frame.querySelectorAll('.result-page-viewport')].filter(viewport=>viewport.getClientRects().length).map(rect);
     const style=getComputedStyle(node);
     return {slot:rect(node),controls,arrows,input:rect(input),inputTarget:rect(input.parentElement),
-      padding:[style.paddingTop,style.paddingBottom],viewport:innerWidth};
+      contentViewports,padding:[style.paddingTop,style.paddingBottom],viewport:innerWidth};
   });
   assert.equal(value.slot.height,52,JSON.stringify(value));
   assert.deepEqual(value.padding,['4px','4px']);
   assert.deepEqual(value.arrows.map(arrow=>arrow.action),value.viewport<375?['previous','next']:['first','previous','next','last']);
   assert.equal(value.input.height,32);assert.equal(value.inputTarget.height,44);
+  assert.equal(value.contentViewports.length,1,'a visible pager has one active result viewport');
   assert.ok(value.controls.left>=value.slot.left-.5&&value.controls.right<=value.slot.right+.5,'all page controls fit inside the slot');
   for(const arrow of value.arrows){
     assert.ok(arrow.width>=44&&arrow.height>=44,JSON.stringify(arrow));
     assert.ok(arrow.hitWidth>=44&&arrow.hitHeight>=44,'each arrow has its own complete hit target: '+JSON.stringify(arrow));
+    for(const viewport of value.contentViewports){
+      const overlapWidth=Math.min(arrow.right,viewport.right)-Math.max(arrow.left,viewport.left);
+      const overlapHeight=Math.min(arrow.bottom,viewport.bottom)-Math.max(arrow.top,viewport.top);
+      assert.ok(overlapWidth<=.01||overlapHeight<=.01,'expanded arrow targets cannot intrude into the result viewport swipe region: '+JSON.stringify({arrow,viewport}));
+    }
     for(const other of [...value.arrows.filter(other=>other!==arrow),value.inputTarget]){
       const overlap=Math.min(arrow.right,other.right)-Math.max(arrow.left,other.left);
       assert.ok(overlap<=.01,'arrow targets cannot overlap adjacent controls: '+JSON.stringify({arrow,other}));
@@ -145,6 +153,20 @@ for(const engine of [chromium,webkit])for(const client of ['android','ios','remo
         await pager.locator('[data-page-action="next"]').click({position:{x:2,y:22}});await expectPage(2);
         await pager.locator('[data-page-action="previous"]').click({position:{x:2,y:22}});await expectPage(1);
         assert.equal(await route(),owner,'expanded arrow clicks do not activate another tab');
+        for(const target of [pager,pager.locator('[data-page-action="next"]')])for(const distance of [-84,84]){
+          assert.equal(await dragPageTarget(target,distance),false,'footer drags do not acquire viewport paging');
+          await settlePager(page);assert.equal(await pager.getAttribute('data-page'),'1','footer drags never turn a page');
+          assert.equal(await route(),owner,'footer drags never switch a sub-tab');
+        }
+        // Exercise real pointer input too: releasing a drag outside an arrow
+        // must not synthesize its ordinary short-press click.
+        const next=await pager.locator('[data-page-action="next"]').boundingBox();
+        for(const distance of [-84,84]){
+          const x=next.x+next.width/2,y=next.y+next.height/2;
+          await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x+distance,y,{steps:6});await page.mouse.up();
+          await settlePager(page);assert.equal(await pager.getAttribute('data-page'),'1','real footer pointer drags do not turn a page');
+          assert.equal(await route(),owner,'real footer pointer drags do not switch a sub-tab');
+        }
         assert.equal(await dragPageTarget(grid.locator('.follow-up-button').first()),true,'a short horizontal card drag belongs to the pager');
         await expectPage(2);assert.equal(await route(),owner,'the pager never transfers a content drag to a parent tab');
         assert.equal(await sourceBack.isVisible(),false,'dragging a browse button cannot also open its detail');

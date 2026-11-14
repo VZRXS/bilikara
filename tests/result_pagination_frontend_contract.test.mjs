@@ -611,9 +611,9 @@ test('source capacity admits a complete fourth row at the measured boundary [B2-
 const geometry={columns:3,itemHeight:72,gap:10,padding:4};
 assert.equal(fittedPageSize({...geometry,height:321}),9);
 assert.equal(fittedPageSize({...geometry,height:322}),12);
-// At the intermediate 720px viewport, reclaiming the old 4px footer gap
-// leaves 332px instead of 328px after growing the pager from 44 to 52.
-assert.equal(fittedPageSize({...geometry,height:336-8+4}),12);
+// Available content height is measured after the Request parent's gaps;
+// these boundaries do not assume the former 8px Source/12px Remote gaps.
+assert.equal(fittedPageSize({...geometry,height:403}),12);
 assert.equal(fittedPageSize({...geometry,height:404}),15);
 `);
 });
