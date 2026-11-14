@@ -145,6 +145,12 @@ source lists and source details use this same contract on Host and Remote;
 only visible status/notice content adds an intermediate row. Contextual category
 strips use the ordinary 44px control track with no extra vertical padding or
 scrollbar track; horizontal scrolling still exposes every category.
+Desktop name/artist browsing keeps its persistent alphabet filter as separate
+navigation above the contextual TopSlot. Its multi-row height is excluded from
+TopSlot equal-height and cross-page y comparisons, without hiding or collapsing
+the filter. The alphabet-to-TopSlot sequence remains in normal flow, and the
+following TopSlot's lower edge to the first card still measures the shared 12px
+gap. This exception does not apply to native/Remote contextual levels.
 Category pagination uses the server's exact matched count when supplied; when
 the provider omits it, keep navigation available without displaying a guessed
 total. Phone category switches use ordinary 44px controls and 16px text, with

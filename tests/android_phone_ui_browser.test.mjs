@@ -445,10 +445,17 @@ for(const engine of [chromium,webkit]) for(const [client,width,height] of [
       await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
     });
     const value=await page.evaluate(({topSelector,cardSelector})=>{
-      const top=document.querySelector(topSelector).getBoundingClientRect(),card=document.querySelector(cardSelector).getBoundingClientRect();
+      const topNode=document.querySelector(topSelector),top=topNode.getBoundingClientRect(),card=document.querySelector(cardSelector).getBoundingClientRect();
+      const alphabet=topNode.closest('.tag-browser')?.querySelector('.tag-browser-alphabet');
+      const alphabetRect=alphabet?.getBoundingClientRect();
       return {x:top.x,y:top.y,width:top.width,height:top.height,gap:card.y-top.bottom,
+        alphabet:alphabetRect?{height:alphabetRect.height,bottom:alphabetRect.bottom}:null,
         expectedGap:parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--request-top-content-gap'))};
     },{topSelector,cardSelector});
+    if(separateAlphabet){
+      assert.ok(value.alphabet?.height>0,'desktop alphabet navigation remains visible');
+      assert.ok(value.alphabet.bottom<=value.y+1,'desktop alphabet remains above the contextual TopSlot in normal flow');
+    }
     assert.ok(Math.abs(value.gap-value.expectedGap)<=1,JSON.stringify({name,...value}));
     for(const key of ['x','y','width','height'])if(measurements.length&&!(key==='y'&&separateAlphabet))assert.ok(Math.abs(value[key]-measurements[0][key])<=1,JSON.stringify({name,key,value,reference:measurements[0]}));
     measurements.push({name,...value});
@@ -464,8 +471,10 @@ for(const engine of [chromium,webkit]) for(const [client,width,height] of [
   const category=remote?'#remote-discover-categories-panel':'#request-discover-categories';
   await page.locator(category+' [data-category-browser-home] [data-category-id]').first().click();
   await sample('category-results',category+' .browse-search-bar',category+' .search-result-item');
-  // Desktop retains its separate persistent alphabet navigation; native and
-  // Remote contextual levels have one TopSlot above both tags and song cards.
+  // Approved desktop exception: the persistent alphabet is separate navigation,
+  // excluded from TopSlot height and cross-page y comparisons. Its following
+  // TopSlot still participates in the same lower-edge-to-first-card gap check.
+  // Native/Remote contextual levels compare all four TopSlot bounds normally.
   for(const kind of ['name','artist']){
     await activate('discover',kind);
     const view=remote?`#remote-discover-${kind}-panel`:`#request-discover-${kind}`;
