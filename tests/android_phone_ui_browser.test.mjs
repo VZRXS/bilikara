@@ -395,6 +395,52 @@ async function assertFittedBrowsePage(grid, viewport, selector, minimumRows=1) {
   return cards.length;
 }
 
+for (const engine of [chromium, webkit]) test(`${engine.name()} Request search fills the frame and landscape tag navigation stays above content`, {timeout:120000,skip:process.platform!=='linux'}, async t=>{
+  const {page}=await open(t,engine);
+  const items=Array.from({length:60},(_,i)=>({bvid:`BV${String(i+1).padStart(10,'0')}`,title:`Song ${i+1}`,owner_name:'Fixture'}));
+  await page.route('**/api/catalog/search?**',route=>route.fulfill({json:{ok:true,data:{items,matched_count:60,has_more:false}}}));
+  await page.route('**/api/d1/browse?**',route=>route.fulfill({json:{ok:true,data:{tags:Array.from({length:30},(_,i)=>({tag:`Artist ${i+1}`,count:60})),items,matched_count:60,has_more:false}}}));
+  await go(page,'request');
+  await page.locator('[data-request-view="search"]').click();
+  await page.locator('#shared-search-form input').fill('Fixture');
+  await page.locator('#shared-search-form button[type="submit"]').click();
+  await page.locator('#shared-search-results .search-result-item').first().waitFor();
+  for (const [width,height] of [[393,844],[844,393],[1024,768],[1180,820]]) {
+    await page.setViewportSize({width,height});
+    for (const status of ['', 'Visible status']) for (const notice of [false,true]) {
+      await page.locator('#request-search-shared').evaluate((panel,{status,notice})=>{
+        panel.querySelector('.search-message').textContent=status;
+        panel.querySelector('.request-session-user-notice')?.remove();
+        panel.classList.toggle('has-request-session-user-notice',notice);
+        if(notice){const n=document.createElement('p');n.className='request-session-user-notice';n.textContent='Visible singer notice';panel.querySelector('form').after(n);}
+      },{status,notice});
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+      const bounds=await page.locator('#request-search-shared').evaluate(panel=>{
+        const s=getComputedStyle(panel),r=panel.getBoundingClientRect(),frame=panel.querySelector('.android-result-frame').getBoundingClientRect();
+        const status=panel.querySelector('.search-message').getBoundingClientRect();
+        return {contentBottom:r.bottom-parseFloat(s.paddingBottom)-parseFloat(s.borderBottomWidth),frameBottom:frame.bottom,statusHeight:status.height};
+      });
+      assert.ok(Math.abs(bounds.frameBottom-bounds.contentBottom)<=1,JSON.stringify({width,height,status,notice,bounds}));
+      if(!status)assert.equal(bounds.statusHeight,0,'empty status contributes neither a track nor a gap');
+    }
+  }
+  await page.setViewportSize({width:393,height:844});
+  await page.locator('#android-request-tabs [data-request-back]').click();
+  await page.locator('[data-request-view="discover"]').click();
+  for(const kind of ['name','artist']) {
+    await page.locator(`[data-discover-mode="${kind}"]`).click();
+    await page.locator(`#request-discover-${kind} [data-letter="A"]`).click();
+    for(const [width,height] of [[393,844],[844,393],[1024,768],[1180,820]]) {
+      await page.setViewportSize({width,height});
+      const view=page.locator(`#request-discover-${kind}`);
+      await view.locator('[data-d1-browse-tags] button').first().waitFor();
+      const top=await view.locator('.browse-search-bar').boundingBox(),grid=await view.locator('[data-d1-browse-tags]').boundingBox();
+      assert.ok(top.y+top.height<=grid.y,JSON.stringify({kind,width,height,top,grid}));
+    }
+    await page.setViewportSize({width:393,height:844});
+  }
+});
+
 test('Android search and discovery use Remote result pages, swipe, exact jumps and query recovery',{timeout:90000,skip:process.platform!=='linux'},async t=>{
   const {page}=await open(t,chromium),requests=[];
   const items=Array.from({length:120},(_,i)=>({bvid:'BV'+String(i+1).padStart(10,'0'),title:`Fixture song ${i+1}`,owner_name:'Fixture',source_url:'https://www.bilibili.com/video/BV'+String(i+1).padStart(10,'0')}));

@@ -8500,31 +8500,22 @@ body {
 }
 
 .request-search-view > .request-mode-panel {
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   gap: 10px;
   padding: 14px 16px 16px;
   overflow: hidden;
 }
 
-.request-search-view > .request-mode-panel.has-request-session-user-notice {
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+.request-search-view > .request-mode-panel > :is(.request-query-form, .request-session-user-notice, .search-message) {
+  flex: 0 0 auto;
 }
 
-.request-search-view > .request-mode-panel.has-request-session-user-notice > .request-query-form {
-  grid-row: 1;
-}
-
-.request-search-view > .request-mode-panel.has-request-session-user-notice > .request-session-user-notice {
-  grid-row: 2;
-}
-
-.request-search-view > .request-mode-panel.has-request-session-user-notice > .search-message {
-  grid-row: 3;
-}
-
-.request-search-view > .request-mode-panel.has-request-session-user-notice > .search-results {
-  grid-row: 4;
+/* Only visible status content takes space. The actual result owner fills the
+   remainder, whether it is the desktop grid or a native paginated frame. */
+.request-search-view > .request-mode-panel > :is(.search-results, .android-result-frame) {
+  flex: 1 1 0;
+  min-height: 0;
 }
 
 .request-query-form {

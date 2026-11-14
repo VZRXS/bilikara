@@ -133,6 +133,10 @@ Android and iOS source lists share horizontal pagination and selection tools.
 Their browse pages measure the available viewport and fit complete card rows;
 desktop retains its existing workspace layout. Background source metadata that
 does not change visible card content must retain the card's image nodes.
+Search results fill the panel's remaining height after visible query/status
+content; empty status nodes leave neither a track nor a gap. Native name/artist
+contextual navigation stays above its result frame in portrait, landscape and
+two-column tablet layouts, including when a session-user notice is visible.
 Category pagination uses the server's exact matched count when supplied; when
 the provider omits it, keep navigation available without displaying a guessed
 total. Phone category switches use ordinary 44px controls and 16px text, with
