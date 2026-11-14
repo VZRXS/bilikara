@@ -45,10 +45,24 @@ async function swipe(page,{direction=1,target='',dx,dy=2,cancel=false,multi=fals
 
 async function fixedSwipe(page,options) {
   // Let any previous *content* transition finish before comparing the fixed
-  // origin. Inspect the move itself, not just the restored end state.
-  await page.waitForFunction(()=>!document.documentElement.dataset.hostSubtabMotion&&
-    ![...document.querySelectorAll('.host-workspace-region,[data-request-panel],[data-search-panel],[data-discover-panel],[data-sources-panel],.remote-request-view')]
-      .some(node=>node.getAnimations().some(animation=>animation.playState==='running'&&animation.effect.getKeyframes().some(frame=>'transform' in frame))));
+  // origin, including Queue/History panels and their outgoing transitions.
+  // Wait for settlement/cleanup and a layout frame, not a sampled playState.
+  await page.evaluate(async selector=>{
+    const origin=document.querySelector(selector);
+    const panels='.host-workspace-region,[data-host-workspace-panel],[data-request-panel],[data-search-panel],[data-discover-panel],[data-sources-panel],.remote-request-view';
+    const pending=()=>document.getAnimations().filter(animation=>{
+      const node=animation.effect?.target;
+      return animation.effect?.getTiming().iterations!==Infinity
+        && (animation.pending||animation.playState==='running')
+        && (node?.matches?.(panels)||(origin&&node?.contains?.(origin)));
+    });
+    do {
+      await Promise.allSettled(pending().map(animation=>animation.finished));
+      await new Promise(resolve=>requestAnimationFrame(resolve));
+    } while(pending().length);
+  },options.target);
+  await page.waitForFunction(()=>!document.documentElement.dataset.hostSubtabMotion);
+  // Inspect the move itself, not just the restored end state.
   const result=await swipe(page,options);
   assert.ok(result.initial.originRect[2]>0&&result.initial.originRect[3]>0,options.target+': exercise a rendered fixed origin');
   assert.equal(result.initial.motion,'',options.target+': no prior content motion remains');
