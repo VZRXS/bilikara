@@ -74,8 +74,10 @@
     state.catalogAdvancedTool = '';
     if (state.activeHostWorkspace === 'request') syncRequestSubviewSelection();
   }
+  // Fixed headings, navigation and tool rows exclude every descendant,
+  // including blank space. Only the active content panel can start a swipe.
   const fixedZones = () => [...document.querySelectorAll(
-    '#android-page-heading,#android-page-tools,.request-workspace-head,.request-mode-head,.queue-card-head,.gatcha-head,.gatcha-actions,.browse-search-bar,.request-query-form,#add-form,.source-action-row')];
+    '#android-page-heading,#android-page-tools,.request-workspace-head,.request-mode-head,.queue-card-head,.gatcha-head,.gatcha-actions,.browse-search-bar,.request-query-form,#add-form,.source-action-row,.follow-search-form,[role="tablist"]')];
   function motion(node) {
     if (!window.BilikaraHostLayout?.isPortrait()) return null;
     const frame = document.querySelector('.shell-body').getBoundingClientRect(), bounds = node.getBoundingClientRect();

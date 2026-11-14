@@ -102,39 +102,95 @@ for(const [engineName,engine]of Object.entries({chromium,webkit})) {
       playing:!pair.video.paused&&!pair.audio.paused})),{same:true,playing:true});
   });
 
-  test(`${engineName} iOS: quality and downloader use the same picker surface and retain the real select value`,{skip:process.platform!=='linux',timeout:90000},async t=>{
+  test(`${engineName} iOS: quality and downloader keep native selects, pill geometry and original value/change ownership`,{skip:process.platform!=='linux',timeout:90000},async t=>{
     const {page,host}=await open(t,engine,'ios');
     await page.locator('[data-android-page="my"]').click();
-    const styles=[];
-    for(const id of ['cache-quality-select','cache-download-source-select']) {
-      const button=page.locator('#'+id+'-trigger');await button.waitFor({state:'visible'});
-      assert.equal(await page.locator('#'+id).evaluate(n=>n.hidden),true);
-      const hit=await button.evaluate(n=>{
-        const r=n.getBoundingClientRect(),target=document.elementFromPoint(r.x+r.width/2,r.bottom+4);
-        const before=getComputedStyle(n,'::before');
-        return {available:n.contains(target),target:target?.tagName+'.'+target?.className,
-          fieldOverflow:getComputedStyle(n).overflow,shellOverflow:getComputedStyle(n.parentElement).overflow,
-          content:before.content,pointer:before.pointerEvents,inset:before.inset,height:before.height};
-      });
-      assert.ok(hit.available,'the 34px runtime field retains its unclipped 44px effective target: '+JSON.stringify(hit));
-      await button.click();
-      const menu=page.locator('#'+id+'-listbox');await menu.waitFor({state:'visible'});
-      assert.equal(await button.getAttribute('aria-expanded'),'true');
-      styles.push(await menu.evaluate(n=>{const s=getComputedStyle(n);return [s.backgroundColor,s.backdropFilter,s.webkitBackdropFilter,s.borderRadius,s.boxShadow];}));
-      const bounds=await menu.boundingBox();assert.ok(bounds.x>=14&&bounds.x+bounds.width<=393-14+1);
-      await page.keyboard.press('Escape');assert.equal(await menu.count(),0);
-      await button.focus();await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');
-      assert.equal(await button.getAttribute('aria-expanded'),'false');
+    const ids=['cache-quality-select','cache-download-source-select'];
+    await page.evaluate(ids=>{
+      window.nativeRuntimeSelects=ids.map(id=>document.getElementById(id));
+      window.runtimeSelectEvents={};
+      for(const select of nativeRuntimeSelects) {
+        runtimeSelectEvents[select.id]={input:0,change:0};
+        for(const type of ['input','change']) select.addEventListener(type,()=>runtimeSelectEvents[select.id][type]++);
+      }
+    },ids);
+    const saved=await page.evaluate(()=>nativeRuntimeSelects.map(select=>select.value));
+    for(const [width,height,theme,language] of [[393,852,'light','zh'],[320,568,'dark','en'],[430,932,'blue','ja']]) {
+      await page.setViewportSize({width,height});
+      await page.evaluate(({theme,language})=>{applyTheme(theme);setLanguage(language);},{theme,language});
+      await settle(page);
+      const paint=[];
+      for(const id of ids) {
+        const select=page.locator('#'+id);await select.waitFor({state:'visible'});await select.scrollIntoViewIfNeeded();
+        assert.equal(await select.count(),1,'one original native input per setting');
+        const hit=await select.evaluate(n=>{
+          const r=n.getBoundingClientRect(),shell=n.parentElement,s=getComputedStyle(shell),b=shell.getBoundingClientRect();
+          return {tag:n.tagName,hidden:n.hidden,role:n.getAttribute('role'),label:n.labels?.[0]?.htmlFor,
+            height:r.height,shellHeight:b.height,centerDelta:Math.abs((r.top+r.bottom-b.top-b.bottom)/2),
+            edgeHits:[b.top-4,b.bottom+4].map(y=>document.elementFromPoint(r.x+r.width/2,y)===n),
+            bounds:[r.left,r.right,innerWidth],overflow:s.overflow,radius:s.borderRadius,
+            font:[getComputedStyle(n).fontSize,getComputedStyle(n).fontWeight],
+            paint:[s.backgroundColor,s.boxShadow,s.borderRadius]};
+        });
+        assert.equal(hit.tag,'SELECT');assert.equal(hit.hidden,false);assert.equal(hit.role,null);assert.equal(hit.label,id);
+        assert.equal(hit.shellHeight,34);assert.equal(hit.height,44);assert.ok(hit.centerDelta<1);
+        assert.deepEqual(hit.edgeHits,[true,true],'the original native select owns both extended hit edges: '+JSON.stringify(hit));
+        assert.equal(hit.overflow,'visible');assert.equal(hit.radius,'999px');assert.deepEqual(hit.font,['13px','700']);
+        assert.ok(hit.bounds[0]>=14&&hit.bounds[1]<=width-14+1,'native target stays inside the page gutters');
+        paint.push(hit.paint);
+        await select.focus();
+        assert.equal(await select.evaluate(n=>document.activeElement===n),true,'keyboard focus reaches the native control');
+        assert.equal(await select.evaluate(n=>getComputedStyle(n.parentElement).outlineWidth),'2px','the shell keeps a visible focus ring');
+        await page.keyboard.press('Escape');
+        assert.equal(await page.locator('.runtime-select-trigger,.runtime-select-menu,.runtime-select-option').count(),0,
+          'keyboard/cancellation never constructs a CSS Picker');
+      }
+      assert.deepEqual(paint[0],paint[1],'the two closed pills still share their painted surface');
+      assert.deepEqual(await page.evaluate(()=>nativeRuntimeSelects.map(select=>select.value)),saved,'theme/language/size never reset a selection');
+      assert.equal(await page.evaluate(()=>nativeRuntimeSelects.every(select=>document.getElementById(select.id)===select)),true);
+      const geometry=await page.evaluate(()=>nativeRuntimeSelects.map(select=>{
+        const r=select.getBoundingClientRect(),row=select.closest('.cache-panel-row');
+        const controls=[...row.querySelectorAll('button,input,select,textarea,a[href],summary,[role="button"],[role="switch"],[tabindex]')];
+        const peers=controls.filter(control=>control!==select&&!control.contains(select)&&!select.contains(control)).map(control=>{
+          // Labels also activate their associated inputs. Include their full
+          // hit regions, especially when a checkbox's own box is clipped.
+          const targets=[...new Set([control,...(control.labels||[])])].filter(node=>!node.contains(select));
+          const rects=targets.filter(node=>getComputedStyle(node).visibility!=='hidden').flatMap(node=>[...node.getClientRects()])
+            .filter(b=>b.width>0&&b.height>0);
+          return {id:control.id||control.tagName,rects:rects.map(b=>[b.left,b.top,b.width,b.height]),
+            overlap:rects.some(b=>Math.min(r.right,b.right)>Math.max(r.left,b.left)&&Math.min(r.bottom,b.bottom)>Math.max(r.top,b.top))};
+        }).filter(peer=>peer.rects.length);
+        return {select:select.id,peers};
+      }));
+      assert.equal(geometry.length,ids.length);
+      for(const sample of geometry) {
+        assert.ok(sample.peers.length>0,sample.select+': measure actual neighboring interactive hit regions');
+        assert.ok(sample.peers.every(peer=>!peer.overlap),
+          `44px native target overlaps another control in its row at ${width}x${height}/${theme}/${language}: `+JSON.stringify(sample));
+      }
     }
-    assert.deepEqual(styles[0],styles[1],'shared material does not vary by option content');
-    const quality=page.locator('#cache-quality-select-trigger');await quality.click();
+    const quality=page.locator('#cache-quality-select');
     const value=await page.locator('#cache-quality-select').evaluate(n=>n.options[n.options.length-1].value);
-    await page.locator('#cache-quality-select-listbox [role="option"]').last().click();
+    await quality.selectOption(value);
     await page.waitForFunction(value=>document.querySelector('#cache-quality-select').value===value&&state.data.cache_policy.video_quality===value&&!state.cachePolicySaving,value);
     assert.equal((await host.api('/api/state')).cache_policy.video_quality,value);
-    await page.locator('#cache-download-source-select-trigger').click();await page.locator('#android-my-title').click();
-    assert.equal(await page.locator('.runtime-select-menu').count(),0,'outside activation closes the anchored picker');
+    assert.deepEqual(await page.evaluate(()=>runtimeSelectEvents['cache-quality-select']),{input:1,change:1},'one native selection delivers one change');
+    // Re-selecting the current downloader preserves its backend preference,
+    // without preparing/installing an unrelated downloader in this UI fixture.
+    await page.locator('#cache-download-source-select').selectOption(saved[1]);
+    assert.deepEqual(await page.evaluate(()=>runtimeSelectEvents['cache-download-source-select']),{input:1,change:1});
+    assert.equal((await host.api('/api/state')).cache_policy.download_source,saved[1]);
+    await page.evaluate(()=>{state.cachePolicySaving=true;renderCachePolicyControls(state.data.cache_policy);});
+    for(const id of ids) assert.equal(await page.locator('#'+id).isDisabled(),true,'pending writes disable the actual input');
+    await page.evaluate(()=>{state.cachePolicySaving=false;renderCachePolicyControls(state.data.cache_policy);});
+    await page.locator('[data-android-page="playback"]').click();await page.locator('[data-android-page="my"]').click();
+    assert.equal(await page.evaluate(()=>nativeRuntimeSelects.every(select=>document.getElementById(select.id)===select&&!select.hidden&&!select.disabled)),true);
+    assert.equal(await quality.inputValue(),value);
+    await page.locator('#android-my-title').click();
+    assert.equal(await page.locator('.runtime-select-trigger,.runtime-select-menu').count(),0,'outside activation leaves native ownership intact');
     assert.equal(await page.evaluate(()=>state.hostPlaybackSession.video===pair.video&&state.hostPlaybackSession.audio===pair.audio),true);
+    // Physical WKWebView Picker opening/selection/cancellation and VoiceOver
+    // remain device gates; Linux browser CSS/DOM evidence does not qualify them.
   });
 
   test(`${engineName} iOS: local video policy, theme identifiers, scanner corners and fullscreen QR fit logical viewports`,{

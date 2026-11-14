@@ -16,19 +16,47 @@ async function swipe(page,{direction=1,target='',dx,dy=2,cancel=false,multi=fals
   return page.evaluate(({direction,target,dx,dy,cancel,multi,edge,preview,remote})=>{
     const current=()=>remote?`request.${state.remoteRequestView}${({search:state.remoteSearchMode,discover:state.remoteDiscoverMode,sources:state.remoteSourcesMode}[state.remoteRequestView])?'.'+({search:state.remoteSearchMode,discover:state.remoteDiscoverMode,sources:state.remoteSourcesMode}[state.remoteRequestView]):''}`:BilikaraHostSubTabs.current();
     const key=current(),[scope,view,child]=key.split('.');
-    const element=target?document.querySelector(target):scope==='queue'?document.querySelector(`[data-host-workspace-panel="${view}"]`)
+    const content=remote?[...elements.remoteRequestViewPanels].find(node=>!node.hidden):scope==='queue'?document.querySelector(`[data-host-workspace-panel="${view}"]`)
       :view==='random'?document.getElementById('gatcha-panel'):document.querySelector(child?`[data-${view}-panel="${child}"]`:`[data-request-panel="${view}"]`);
+    const element=target?document.querySelector(target):content;
     if(!element)throw Error('No gesture target for '+key);
+    const frame=!remote&&BilikaraHostLayout.isPortrait()?elements.hostWorkspaceRegion:content;
+    const sample=()=>{
+      const rect=node=>{const b=node.getBoundingClientRect();return [b.x,b.y,b.width,b.height];};
+      return {transform:getComputedStyle(frame).transform,inline:frame.style.transform,rect:rect(frame),originRect:rect(element),
+        scroll:[document.scrollingElement.scrollTop,frame.scrollTop,element.scrollTop],
+        motion:document.documentElement.dataset.hostSubtabMotion||'',focus:document.activeElement?.id,
+        animations:[...new Set([frame,element])].reduce((n,node)=>n+node.getAnimations().length,0),
+        selected:[...document.querySelectorAll('[role="tab"]')].map(node=>node.getAttribute('aria-selected'))};
+    };
     const bounds=element.getBoundingClientRect(),x=edge?8:Math.min(innerWidth-32,bounds.right-32),y=Math.max(0,bounds.y+Math.min(140,bounds.height/2));
     const emit=(type,x,y,count=1)=>{
       const touches=Array.from({length:count},(_,identifier)=>({identifier,target:element,clientX:x+identifier*10,clientY:y}));
-      const event=new Event(type,{bubbles:true,cancelable:true});Object.defineProperties(event,{touches:{value:type==='touchend'||type==='touchcancel'?[]:touches},changedTouches:{value:touches}});element.dispatchEvent(event);
+      const event=new Event(type,{bubbles:true,cancelable:true});Object.defineProperties(event,{touches:{value:type==='touchend'||type==='touchcancel'?[]:touches},changedTouches:{value:touches}});element.dispatchEvent(event);return event.defaultPrevented;
     };
-    emit('touchstart',x,y);emit('touchmove',x-direction*16,y+dy/4);
-    emit('touchmove',x+(dx??-direction*120),y+dy,multi?2:1);
+    const initial=sample();
+    emit('touchstart',x,y);const prevented=[emit('touchmove',x-direction*16,y+dy/4),
+      emit('touchmove',x+(dx??-direction*120),y+dy,multi?2:1)];
+    const during=sample();
     if(!preview)emit(cancel?'touchcancel':'touchend',x+(dx??-direction*120),y+dy);
-    return {before:key,after:current(),transform:remote?element.style.transform:(document.documentElement.dataset.hostLayout==='portrait'?elements.hostWorkspaceRegion.style.transform:element.style.transform)};
+    return {before:key,after:current(),transform:frame.style.transform,initial,during,finished:sample(),prevented};
   },{direction,target,dx,dy,cancel,multi,edge,preview,remote});
+}
+
+async function fixedSwipe(page,options) {
+  // Let any previous *content* transition finish before comparing the fixed
+  // origin. Inspect the move itself, not just the restored end state.
+  await page.waitForFunction(()=>!document.documentElement.dataset.hostSubtabMotion&&
+    ![...document.querySelectorAll('.host-workspace-region,[data-request-panel],[data-search-panel],[data-discover-panel],[data-sources-panel],.remote-request-view')]
+      .some(node=>node.getAnimations().some(animation=>animation.playState==='running'&&animation.effect.getKeyframes().some(frame=>'transform' in frame))));
+  const result=await swipe(page,options);
+  assert.ok(result.initial.originRect[2]>0&&result.initial.originRect[3]>0,options.target+': exercise a rendered fixed origin');
+  assert.equal(result.initial.motion,'',options.target+': no prior content motion remains');
+  assert.equal(result.after,result.before,options.target+': fixed origin cannot navigate');
+  assert.deepEqual(result.during,result.initial,options.target+': zero transform, animations, geometry, selection, focus or scroll changes during move');
+  assert.deepEqual(result.finished,result.initial,options.target+': fixed origin leaves no motion or state changes');
+  assert.deepEqual(result.prevented,[false,false],options.target+': fixed origin does not capture native gestures');
+  return result;
 }
 
 for(const [name,engine]of Object.entries({chromium,webkit}))test(`${name}: intra-section leaf traversal never selects a primary tab or rebuilds playing media`,{
@@ -53,23 +81,22 @@ for(const [name,engine]of Object.entries({chromium,webkit}))test(`${name}: intra
   await page.evaluate(()=>{window.pair={video:state.hostPlaybackSession.video,audio:state.hostPlaybackSession.audio};window.dockSelections=0;window.addEventListener('bilikara:ios-dock-select',()=>dockSelections++);});
   await page.locator('[data-android-page="request"]').click();
   await page.evaluate(()=>activateRequestSubview('quick'));
-  assert.equal((await swipe(page,{target:'#android-page-heading'})).after,'request.search.shared',
-    'the fixed section heading stays available when a card pager owns the content');
-  assert.equal((await swipe(page,{target:'[data-search-mode="shared"]'})).after,'request.search.local',
-    'a fitting fixed segmented bar accepts a drag, including one starting on a tab label');
-  await page.locator('[data-search-mode="shared"]').dispatchEvent('click',{detail:1});
+  await fixedSwipe(page,{target:'#android-page-heading'});
+  await page.evaluate(()=>activateRequestSubview('search'));
+  await fixedSwipe(page,{target:'[data-search-mode="local"]'});
+  await page.locator('[data-search-mode="local"]').dispatchEvent('click',{detail:1});
   assert.equal(await page.evaluate(()=>BilikaraHostSubTabs.current()),'request.search.local',
-    'the drag must not also click its starting tab');
+    'a fixed-origin drag does not install click suppression');
   await page.locator('[data-search-mode="shared"]').click();
   assert.equal(await page.evaluate(()=>BilikaraHostSubTabs.current()),'request.search.shared','a subsequent direct tap still works');
-  assert.equal((await swipe(page,{target:'[data-search-mode="local"]',direction:-1})).after,'request.quick');
-  await page.locator('[data-request-view="search"]').click();
-  assert.equal((await swipe(page,{target:'[data-search-mode="local"]',dx:-18})).after,'request.search.shared');
+  await fixedSwipe(page,{target:'[data-search-mode="local"]',direction:-1});
+  await page.evaluate(()=>activateRequestSubview('search'));
+  await fixedSwipe(page,{target:'[data-search-mode="local"]',dx:-18});
   await page.locator('[data-search-mode="local"]').dispatchEvent('click',{detail:1});
-  assert.equal(await page.evaluate(()=>BilikaraHostSubTabs.current()),'request.search.shared',
-    'a short horizontal drag cannot click a different tab');
-  await page.locator('[data-search-mode="local"]').dispatchEvent('click',{detail:0});
-  assert.equal(await page.evaluate(()=>BilikaraHostSubTabs.current()),'request.search.local','keyboard activation is never swallowed');
+  assert.equal(await page.evaluate(()=>BilikaraHostSubTabs.current()),'request.search.local',
+    'a short fixed-origin drag leaves ordinary tab activation available');
+  await page.locator('[data-search-mode="shared"]').dispatchEvent('click',{detail:0});
+  assert.equal(await page.evaluate(()=>BilikaraHostSubTabs.current()),'request.search.shared','keyboard activation is never swallowed');
   await page.evaluate(()=>activateRequestSubview('quick'));
   const length=await page.evaluate(()=>history.length);
   const sequence=['request.quick','request.search.shared','request.search.local','request.discover.categories','request.discover.name','request.discover.artist','request.sources.uids','request.sources.favorites','request.random'];
@@ -109,11 +136,13 @@ for(const [name,engine]of Object.entries({chromium,webkit}))test(`${name}: intra
     const pager=document.createElement('div');pager.className='result-page-viewport';pager.id='last-page-owner';pager.style.height='60px';area.append(pager);
   });
   assert.equal((await swipe(page,{target:'#last-page-owner'})).after,'request.search.shared');
-  assert.equal((await swipe(page,{target:'#shared-search-query'})).after,'request.search.local',
-    'a fixed text field accepts a horizontal gesture while an ordinary tap still edits');
+  await fixedSwipe(page,{target:'#shared-search-query'});
+  await page.locator('#shared-search-query').tap();
+  assert.equal(await page.locator('#shared-search-query').evaluate(node=>node===document.activeElement),true,
+    'a fixed field still accepts focus for editing');
   await page.evaluate(()=>activateSearchMode('shared'));
   // Exercise the shipped pager, not just its ownership class. Card swipes
-  // page results; a fixed heading remains a separate route gesture zone.
+  // page results; a fixed heading never becomes a route gesture zone.
   await page.evaluate(()=>{
     const area=document.querySelector('[data-search-panel="shared"]'),cards=document.createElement('div');
     cards.id='gesture-result-cards';cards.style.height='70px';area.prepend(cards);
@@ -125,9 +154,9 @@ for(const [name,engine]of Object.entries({chromium,webkit}))test(`${name}: intra
   await page.waitForFunction(()=>document.getElementById('gesture-result-cards').textContent==='second card');
   assert.equal((await swipe(page,{target:'#gesture-result-cards'})).after,'request.search.shared',
     'the final result page does not hand the same drag to a tab');
-  assert.equal((await swipe(page,{target:'#android-page-heading'})).after,'request.search.local');
+  await fixedSwipe(page,{target:'#android-page-heading'});
   await page.evaluate(()=>{gesturePager.hide();activateSearchMode('shared');});
-  // Actual overflow owns the fixed bar even when it is explicitly admitted.
+  // Actual overflow retains its own gesture in a fixed bar as well.
   await page.evaluate(()=>{
     const bar=document.querySelector('[data-search-mode="shared"]').parentElement;
     window.gestureBar=bar;window.gestureBarStyle=bar.getAttribute('style');
@@ -135,14 +164,21 @@ for(const [name,engine]of Object.entries({chromium,webkit}))test(`${name}: intra
     for(const child of bar.children){child.dataset.oldStyle=child.getAttribute('style')||'';child.style.cssText+=';flex:0 0 160px;';}
   });
   assert.equal(await page.evaluate(()=>gestureBar.scrollWidth>gestureBar.clientWidth+1),true);
-  assert.equal((await swipe(page,{target:'[data-search-mode="shared"]'})).after,'request.search.shared',
-    'horizontal scrolling wins from the start, including on a fixed tab');
+  await fixedSwipe(page,{target:'[data-search-mode="shared"]'});
   await page.evaluate(()=>{
     for(const child of gestureBar.children){child.setAttribute('style',child.dataset.oldStyle);delete child.dataset.oldStyle;}
     if(gestureBarStyle===null)gestureBar.removeAttribute('style');else gestureBar.setAttribute('style',gestureBarStyle);
   });
-  assert.equal((await swipe(page,{target:'#shared-search-button'})).after,'request.search.local',
-    'fixed ordinary toolbar actions also admit horizontal gestures');
+  await fixedSwipe(page,{target:'#shared-search-button'});
+  // The screenshot's Sources/Favorites fixed layer includes both blank space
+  // and nested navigation/query controls. None may even preview a new leaf.
+  await page.evaluate(()=>{activateRequestSubview('sources');activateSourcesMode('favorites');});
+  for(const target of ['#android-page-heading','#android-page-tools','#android-request-tabs > .request-mode-head',
+    '#android-request-tabs [data-request-back]','[data-sources-mode="uids"]','[data-sources-mode="favorites"]',
+    '[data-sources-panel="favorites"] .source-action-row','#modal-favlist-uid-input']) await fixedSwipe(page,{target});
+  await page.locator('[data-sources-mode="uids"]').tap();
+  assert.equal(await page.evaluate(()=>BilikaraHostSubTabs.current()),'request.sources.uids');
+  await page.evaluate(()=>activateRequestSubview('search'));
   await page.evaluate(()=>activateSearchMode('shared'));
   await page.locator('[data-android-page="users"]').click();
   await page.goBack();
@@ -156,7 +192,7 @@ for(const [name,engine]of Object.entries({chromium,webkit}))test(`${name}: intra
   assert.equal(await page.locator('[data-search-panel="local"]').evaluate(n=>n.getAnimations().length),0);
   await page.emulateMedia({reducedMotion:'no-preference'});
   await page.locator('[data-android-page="queue"]').click();
-  assert.equal((await swipe(page,{target:'#android-page-heading'})).after,'queue.history');
+  await fixedSwipe(page,{target:'#android-page-heading'});
   assert.equal((await swipe(page)).after,'queue.history');
   assert.equal((await swipe(page,{direction:-1})).after,'queue.queue');
   for(const primary of ['playback','users','my']) {
@@ -173,7 +209,7 @@ for(const [name,engine]of Object.entries({chromium,webkit}))test(`${name}: intra
   assert.deepEqual(await page.evaluate(()=>({same:state.hostPlaybackSession.video===pair.video&&state.hostPlaybackSession.audio===pair.audio,
     playing:!pair.video.paused&&!pair.audio.paused,errors:dockSelections})),{same:true,playing:true,errors:0});
   // Remote uses the same resolver with its own eight-leaf scope and fixed
-  // heading/contextual tabs. It cannot invoke Host primary navigation.
+  // exclusions. It cannot invoke Host primary navigation.
   await host.api('/api/session-users/add',{name:'Swipe visitor'});
   const remoteContext=await browser.newContext({viewport:{width:393,height:844},hasTouch:true});
   const client=new HttpClient(host.base);await client.request('/remote');
@@ -187,18 +223,28 @@ for(const [name,engine]of Object.entries({chromium,webkit}))test(`${name}: intra
     state.eventSource?.close();fetchState=async()=>{};
   });
   await remote.locator('#remote-identity-modal').waitFor({state:'hidden'});
-  assert.equal((await swipe(remote,{remote:true,target:'#remote-request-search-tab',direction:-1})).after,'request.quick');
+  await fixedSwipe(remote,{remote:true,target:'#remote-request-search-tab',direction:-1});
   await remote.locator('#remote-request-search-tab').dispatchEvent('click',{detail:1});
-  assert.equal(await remote.evaluate(()=>state.remoteRequestView),'quick',
-    'a drag at the first leaf must not become an unrelated tab activation');
-  assert.equal((await swipe(remote,{remote:true,target:'.remote-request-head'})).after,'request.search.shared');
-  assert.equal((await swipe(remote,{remote:true,target:'#remote-search-shared-tab'})).after,'request.search.local');
-  await remote.locator('#remote-search-shared-tab').dispatchEvent('click',{detail:1});
+  assert.equal(await remote.evaluate(()=>state.remoteRequestView),'search',
+    'a fixed-origin boundary drag does not suppress subsequent tab activation');
+  await fixedSwipe(remote,{remote:true,target:'.remote-request-head'});
+  await fixedSwipe(remote,{remote:true,target:'#remote-search-local-tab'});
+  await remote.locator('#remote-search-local-tab').dispatchEvent('click',{detail:1});
   assert.equal(await remote.evaluate(()=>state.remoteSearchMode),'local');
   await remote.locator('#remote-search-shared-tab').click();
   assert.equal(await remote.evaluate(()=>state.remoteSearchMode),'shared');
-  assert.equal((await swipe(remote,{remote:true,target:'#remote-request-secondary-back'})).after,'request.search.local',
-    'a fixed Back action admits a swipe while a stationary tap retains Back');
+  await fixedSwipe(remote,{remote:true,target:'#remote-request-secondary-back'});
+  await remote.locator('#remote-request-secondary-back').tap();
+  assert.equal(await remote.evaluate(()=>state.remoteRequestView),'quick','a stationary Back tap retains its action');
+  await remote.evaluate(()=>{activateRemoteRequestView('sources');activateRemoteSourcesMode('favorites');});
+  for(const target of ['.remote-request-head','.remote-request-tabs-viewport','#remote-request-secondary-back',
+    '#remote-sources-uids-tab','#sources-favlist-pull-form','#sources-favlist-uid-input']) await fixedSwipe(remote,{remote:true,target});
+  await remote.evaluate(()=>activateRemoteRequestView('quick'));
+  const remoteSequence=sequence.slice(0,-1);
+  for(const expected of remoteSequence.slice(1)) assert.equal((await swipe(remote,{remote:true})).after,expected);
+  assert.equal((await swipe(remote,{remote:true})).after,'request.sources.favorites');
+  for(const expected of remoteSequence.slice(0,-1).reverse()) assert.equal((await swipe(remote,{remote:true,direction:-1})).after,expected);
+  assert.equal((await swipe(remote,{remote:true,direction:-1})).after,'request.quick');
   await remoteContext.close();
   assert.deepEqual(errors,[]);
 });
@@ -234,8 +280,10 @@ for (const [name, engine] of Object.entries({chromium, webkit})) test(`${name}: 
   assert.equal(await page.evaluate(() => BilikaraHostLayout.isPortrait()), false);
   await page.locator('[data-host-workspace="request"]').click();
   await page.evaluate(() => activateRequestSubview('quick'));
-  assert.equal((await swipe(page, {target: '#workspace-request-heading'})).after, 'request.search.shared');
-  assert.equal((await swipe(page, {target: '#shared-search-query'})).after, 'request.search.local');
+  await fixedSwipe(page, {target: '#workspace-request-heading'});
+  assert.equal((await swipe(page)).after, 'request.search.shared');
+  await fixedSwipe(page, {target: '#shared-search-query'});
+  assert.equal((await swipe(page)).after, 'request.search.local');
   await page.evaluate(() => {
     const cards = document.createElement('div');
     cards.id = 'tablet-page-owner'; cards.style.height = '64px';
@@ -249,9 +297,10 @@ for (const [name, engine] of Object.entries({chromium, webkit})) test(`${name}: 
   assert.equal((await swipe(page, {target: '#tablet-page-owner'})).after, 'request.search.local');
   await page.locator('[data-host-workspace="random"]').click();
   assert.equal(await page.locator('#gatcha-pool-config-toggle').isEnabled(), true);
-  assert.equal((await swipe(page, {target: '#gatcha-pool-config-toggle', direction: -1})).after,
-    'request.sources.favorites', 'landscape fixed toolbar buttons remain a gesture zone when cards own the content');
+  await fixedSwipe(page, {target: '#gatcha-pool-config-toggle', direction: -1});
   assert.equal(await page.locator('#gatcha-pool-config-modal').isVisible(), false);
+  assert.equal((await swipe(page, {direction: -1})).after, 'request.sources.favorites',
+    'landscape content space retains adjacent navigation when fixed tools are excluded');
   await page.locator('[data-host-workspace="random"]').click();
   await page.locator('#gatcha-pool-config-toggle').tap();
   await page.locator('#gatcha-pool-config-modal').waitFor({state: 'visible'});
@@ -259,8 +308,10 @@ for (const [name, engine] of Object.entries({chromium, webkit})) test(`${name}: 
   await page.locator('#gatcha-pool-config-modal-close').click();
   await page.locator('#gatcha-pool-config-modal').waitFor({state: 'hidden'});
   await page.locator('[data-host-workspace="queue"]').click();
-  assert.equal((await swipe(page, {target: '#workspace-queue-heading'})).after, 'queue.history');
-  assert.equal((await swipe(page, {target: '#workspace-history-heading', direction: -1})).after, 'queue.queue');
+  await fixedSwipe(page, {target: '#workspace-queue-heading'});
+  assert.equal((await swipe(page)).after, 'queue.history');
+  await fixedSwipe(page, {target: '#workspace-history-heading', direction: -1});
+  assert.equal((await swipe(page, {direction: -1})).after, 'queue.queue');
   assert.deepEqual(errors, []);
 
   // Touch-capable layouts do not turn mouse text selection into navigation.
@@ -276,12 +327,27 @@ for (const [name, engine] of Object.entries({chromium, webkit})) test(`${name}: 
   await desktop.mouse.move(x, y); await desktop.mouse.down();
   await desktop.mouse.move(x - 140, y + 2, {steps: 5}); await desktop.mouse.up();
   assert.equal(await desktop.evaluate(() => BilikaraHostSubTabs.current()), 'request.quick');
-  await desktop.evaluate(() => {
-    const target = document.querySelector('#workspace-request-heading'), box = target.getBoundingClientRect();
+  const pointerSwipe = targetSelector => desktop.evaluate(targetSelector => {
+    const target = document.querySelector(targetSelector), box = target.getBoundingClientRect();
+    const panel = document.querySelector('[data-request-panel="quick"]');
+    const sample = () => {
+      const bounds = panel.getBoundingClientRect();
+      return {route: BilikaraHostSubTabs.current(), transform: getComputedStyle(panel).transform,
+        animations: panel.getAnimations().length, motion: document.documentElement.dataset.hostSubtabMotion || '',
+        rect: [bounds.x, bounds.y, bounds.width, bounds.height], scroll: panel.scrollTop};
+    };
+    const initial = sample();
     const x = box.right - 24, y = box.y + box.height / 2;
-    for (const [type, dx] of [['pointerdown', 0], ['pointermove', -140], ['pointerup', -140]])
+    for (const [type, dx] of [['pointerdown', 0], ['pointermove', -140]])
       target.dispatchEvent(new PointerEvent(type, {bubbles: true, cancelable: true, pointerId: 62,
         pointerType: 'touch', isPrimary: true, button: 0, clientX: x + dx, clientY: y}));
-  });
+    const during = sample();
+    target.dispatchEvent(new PointerEvent('pointerup', {bubbles: true, pointerId: 62, pointerType: 'touch', isPrimary: true}));
+    return {initial, during, route: BilikaraHostSubTabs.current()};
+  }, targetSelector);
+  const fixedPointer = await pointerSwipe('#workspace-request-heading');
+  assert.deepEqual(fixedPointer.during, fixedPointer.initial, 'fixed pointer origin never previews or moves the content');
+  assert.equal(fixedPointer.route, 'request.quick');
+  await pointerSwipe('#request-quick-panel');
   assert.equal(await desktop.evaluate(() => BilikaraHostSubTabs.current()), 'request.search.shared');
 });
