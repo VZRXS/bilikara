@@ -5,22 +5,28 @@ import path from 'node:path';
 import {chromium, webkit} from 'playwright';
 import {root} from './desktop_construction_support.mjs';
 import {ownedDirectory} from './libav_prerequisite_support.mjs';
-import {buildNativeAlpha} from './native_runtime_artifacts.mjs';
+import {buildNativeAlpha,buildNativeHost} from './native_runtime_artifacts.mjs';
 import {RunningHost, isolatedEnvironment} from './native_host_support.mjs';
 
-let alpha;
+let alpha,desktopHost;
 before(async () => { if (process.platform !== 'linux') return; alpha = process.env.BILIKARA_TEST_NATIVE_ALPHA_BINARY || await buildNativeAlpha(); }, {timeout:300000});
-async function open(t, engine, {sessionUser = true} = {}) {
+async function open(t, engine, {sessionUser = true,platform = 'android',viewport = {width:393,height:736}} = {}) {
   const home = ownedDirectory('Android phone UI');
   t.after(() => rmSync(home, {recursive:true,force:true}));
-  const host = await RunningHost.start(alpha, home, [home,path.join(root,'static')], isolatedEnvironment(home), true);
+  const desktop=platform==='desktop';
+  if(desktop)desktopHost ||= process.env.BILIKARA_TEST_NATIVE_HOST_BINARY || await buildNativeHost();
+  const host = await RunningHost.start(desktop?desktopHost:alpha, home,
+    desktop?['--headless','--port','0','--data-dir',path.join(home,'data'),'--static-dir',path.join(root,'static')]:[home,path.join(root,'static')],
+    isolatedEnvironment(home), !desktop);
   t.after(() => host.close());
   if (sessionUser) await host.api('/api/session-users/add', {name:'Fixture singer'});
   const browser = await engine.launch({headless:true}); t.after(() => browser.close());
-  const context = await browser.newContext({viewport:{width:393,height:736},hasTouch:true});
+  const context = await browser.newContext({viewport,hasTouch:!desktop});
   await context.addCookies([...host.cookies].map(([name,value])=>({name,value,url:host.base})));
   await context.addInitScript(() => {
     localStorage.setItem('bilikara.update.automatic','false');
+  });
+  if(!desktop)await context.addInitScript(() => {
     window.BilikaraHostWindow = {postMessage(raw) {
       if (['enter','exit'].includes(raw)) return;
       const {id}=JSON.parse(raw);
@@ -47,6 +53,29 @@ async function open(t, engine, {sessionUser = true} = {}) {
 const settle = page => page.evaluate(()=>Promise.allSettled([...document.querySelectorAll('#android-my-page,#host-workspace-region')]
   .flatMap(n=>n.getAnimations().map(a=>a.finished))));
 const go = async (page,name) => {await page.locator(`[data-android-page="${name}"]`).click();await settle(page);};
+
+// Resizing into a compact layout can close the tool sheet. Use the same entry
+// as a user, only when it is closed; clicking an already open rail toggles it.
+async function openRequestWorkspace(page) {
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  if(await page.locator('#host-workspace-region').getAttribute('aria-hidden')==='true'||!await page.locator('#host-workspace-request').isVisible()) {
+    const dock=page.locator('[data-android-page="request"]');
+    await (await dock.isVisible()?dock:page.locator('[data-host-workspace="request"]')).click();
+  }
+  await page.locator('#host-workspace-request').waitFor({state:'visible'});
+  await page.waitForFunction(()=>!document.getElementById('host-workspace-region').inert);
+}
+
+async function openRequestMode(page,remote,view,mode) {
+  if(!remote)await openRequestWorkspace(page);
+  const modeButton=page.locator(`[data-${remote?'remote-':''}${view}-mode="${mode}"]`);
+  if(!await modeButton.isVisible()){
+    const primary=page.locator(`[data-${remote?'remote-':''}request-view="${view}"]`);
+    if(!await primary.isVisible())await page.locator(remote?'#remote-request-secondary-back':'#android-request-tabs [data-request-back]').click();
+    await primary.click();
+  }
+  await modeButton.click();
+}
 
 for(const engine of [chromium,webkit])test(`${engine.name()} touch Host gates hover and keeps the QR action accessible`, {timeout:90000,skip:process.platform!=='linux'}, async t=>{
   const {page}=await open(t,engine);await go(page,'my');
@@ -394,6 +423,163 @@ async function assertFittedBrowsePage(grid, viewport, selector, minimumRows=1) {
   assert.ok(Math.max(...cards.map(c=>c.bottom))+cards[0].height+gap>bounds.y+bounds.height-1,'another complete row must not fit below the page');
   return cards.length;
 }
+
+async function installTopSlotFixtures(page) {
+  const items=Array.from({length:60},(_,i)=>({bvid:`BV${String(i+1).padStart(10,'0')}`,title:`Fixture song ${i+1}`,owner_name:'Fixture UP'}));
+  const tags=Array.from({length:30},(_,i)=>({tag:`Artist ${i+1}`,count:60}));
+  await page.route(/\/api\/(?:catalog\/search|gatcha\/search|d1\/(?:browse|category-browse)|gatcha\/(?:favlist\/)?browse)(?:\?|$)/,route=>{
+    const url=new URL(route.request().url()),offset=Number(url.searchParams.get('offset')||0),limit=Number(url.searchParams.get('limit')||100);
+    const uid=url.searchParams.get('uid')||'',folder=url.searchParams.get('folder_id')||'';
+    return route.fulfill({json:{ok:true,data:{items:items.slice(offset,offset+limit),tags,
+      owners:[{uid:'42',name:'Fixture UP',count:60}],folders:[{id:'42:7',folder_id:'7',title:'Fixture favorites',count:60}],
+      selected_uid:uid,selected_folder_id:folder,query:url.searchParams.get('q')||'',matched_count:60,
+      has_more:offset+limit<60,next_offset:Math.min(60,offset+limit)}}});
+  });
+}
+
+for(const engine of [chromium,webkit]) for(const [client,width,height] of [
+  ['desktop',1440,900],['desktop',700,800],['android',393,844],['android',844,393],
+  ['android',1024,768],['android',1180,820],['remote',393,844],['remote',360,740],
+]) test(`${engine.name()} ${client} ${width}x${height} Request TopSlots share bounds and first-card spacing`,{
+  timeout:120000,
+  // b2-measure.md G9 and b2-steps23-review.md §3c S3-3 (bilikara-next-10 artifacts):
+  // the merged source footer leaves no hittable card area at 844x393.
+  // Keep every assertion for re-enabling after the step 5 scroll-owner decision.
+  skip:client==='android'&&width===844&&height===393
+    ?'B2-G9 landscape phone scroll owner pending user decision':process.platform!=='linux',
+},async t=>{
+  const {page,host}=await open(t,engine,{platform:client==='desktop'?'desktop':'android',viewport:{width,height}});
+  await installTopSlotFixtures(page);
+  const remote=client==='remote';
+  if(remote){
+    await page.goto(host.base+'/remote');
+    await page.waitForFunction(()=>typeof state!=='undefined'&&state.data?.session_user_entries?.length);
+    await page.locator('#remote-identity-input').fill('TopSlot tester');
+    await page.locator('#remote-identity-submit').click();
+    await page.locator('#remote-identity-modal').waitFor({state:'hidden'});
+  }else await openRequestWorkspace(page);
+  await page.evaluate(()=>setLanguage('zh'));
+  const activate=(view,mode)=>openRequestMode(page,remote,view,mode);
+  const measurements=[];
+  const sample=async(name,topSelector,cardSelector,{separateAlphabet=false,coverStrip=false}={})=>{
+    await page.locator(cardSelector).first().waitFor({state:'visible'});
+    await page.evaluate(async()=>{
+      await document.fonts.ready;
+      await Promise.allSettled(document.getAnimations().filter(a=>a.effect?.getTiming().iterations!==Infinity).map(a=>a.finished));
+      window.scrollTo(0,0);
+      await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+    });
+    const value=await page.evaluate(({topSelector,cardSelector})=>{
+      const topNode=document.querySelector(topSelector),top=topNode.getBoundingClientRect(),card=document.querySelector(cardSelector).getBoundingClientRect();
+      const alphabet=topNode.closest('.tag-browser')?.querySelector('.tag-browser-alphabet');
+      const alphabetRect=alphabet?.getBoundingClientRect();
+      return {x:top.x,y:top.y,width:top.width,height:top.height,gap:card.y-top.bottom,
+        alphabet:alphabetRect?{height:alphabetRect.height,bottom:alphabetRect.bottom}:null,
+        expectedGap:parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--request-top-content-gap'))};
+    },{topSelector,cardSelector});
+    if(separateAlphabet){
+      assert.ok(value.alphabet?.height>0,'desktop alphabet navigation remains visible');
+      assert.ok(value.alphabet.bottom<=value.y+1,'desktop alphabet remains above the contextual TopSlot in normal flow');
+    }
+    assert.ok(Math.abs(value.gap-value.expectedGap)<=1,JSON.stringify({name,...value}));
+    for(const key of ['x','y','width','height'])if(measurements.length&&!(key==='y'&&separateAlphabet)&&!(key==='height'&&coverStrip))assert.ok(Math.abs(value[key]-measurements[0][key])<=1,JSON.stringify({name,key,value,reference:measurements[0]}));
+    measurements.push({name,...value});
+  };
+  for(const mode of ['shared','local']){
+    await activate('search',mode);
+    const form=mode==='shared'?'#shared-search-form':'#search-form',grid=mode==='shared'?'#shared-search-results':'#search-results';
+    await page.locator(form+' input').fill('Fixture');
+    await page.locator(form+' button[type="submit"]').click();
+    await sample(`search-${mode}`,form,grid+' .search-result-item');
+  }
+  await activate('discover','categories');
+  const category=remote?'#remote-discover-categories-panel':'#request-discover-categories';
+  await page.locator(category+' [data-category-browser-home] [data-category-id]').first().click();
+  await page.locator(category+' .search-result-item').first().waitFor({state:'visible'});
+  const phoneStrip=await page.evaluate(()=>document.documentElement.dataset.hostLayout==='portrait');
+  const categoryHeight=remote?64:phoneStrip?44:width<=760?64:74;
+  const categoryTab=await page.locator(category+' .category-browser-tab').first().boundingBox();
+  assert.ok(Math.abs(categoryTab.height-categoryHeight)<=1,'category cover/text track preserves its approved platform height');
+  if(client==='desktop')assert.notEqual(await page.locator(category+' .category-browser-tabs').evaluate(n=>getComputedStyle(n).scrollbarWidth),'none','desktop retains its horizontal scrollbar cue');
+  await sample('category-results',category+' .browse-search-bar',category+' .search-result-item',{coverStrip:remote||!phoneStrip});
+  // Approved desktop exception: the persistent alphabet is separate navigation,
+  // excluded from TopSlot height and cross-page y comparisons. Its following
+  // TopSlot still participates in the same lower-edge-to-first-card gap check.
+  // Native/Remote contextual levels compare all four TopSlot bounds normally.
+  for(const kind of ['name','artist']){
+    await activate('discover',kind);
+    const view=remote?`#remote-discover-${kind}-panel`:`#request-discover-${kind}`;
+    await page.locator(view+' [data-letter="A"]').click();
+    await sample(`${kind}-tags`,view+' .browse-search-bar',view+' .tag-browser-tag',{separateAlphabet:client==='desktop'});
+    await page.locator(view+' .tag-browser-tag').first().click();
+    await sample(`${kind}-results`,view+' .browse-search-bar',view+' .search-result-item',{separateAlphabet:client==='desktop'});
+  }
+  for(const mode of ['uids','favorites']){
+    const favorite=mode==='favorites';
+    await activate('sources',mode);
+    const panel=remote?`#remote-sources-${mode}-panel`:`#request-sources-${mode}`;
+    const grid=favorite?'#favlist-grid':remote?'#sources-follow-grid':'#follow-up-grid';
+    const results=favorite?'#favlist-song-results':remote?'#sources-follow-results':'#follow-song-results';
+    await sample(`${mode}-list`,panel+' .source-uid-form',grid+' .follow-up-button');
+    if(!remote){
+      const gap=await page.locator(panel).evaluate(n=>n.querySelector('.source-frame-footer').getBoundingClientRect().top-n.querySelector('.source-browse-scroll').getBoundingClientRect().bottom);
+      assert.ok(Math.abs(gap-8)<=1,'Sources retain the approved 8px list-to-tools gap');
+    }
+    await page.locator(grid+' .follow-up-button').first().click();
+    await sample(`${mode}-detail`,panel+' .browse-search-bar',results+' .search-result-item');
+  }
+});
+
+for (const engine of [chromium, webkit]) test(`${engine.name()} Request search fills the frame and landscape tag navigation stays above content`, {timeout:120000,skip:process.platform!=='linux'}, async t=>{
+  const {page}=await open(t,engine);
+  const items=Array.from({length:60},(_,i)=>({bvid:`BV${String(i+1).padStart(10,'0')}`,title:`Song ${i+1}`,owner_name:'Fixture'}));
+  await page.route('**/api/catalog/search?**',route=>route.fulfill({json:{ok:true,data:{items,matched_count:60,has_more:false}}}));
+  await page.route('**/api/d1/browse?**',route=>route.fulfill({json:{ok:true,data:{tags:Array.from({length:30},(_,i)=>({tag:`Artist ${i+1}`,count:60})),items,matched_count:60,has_more:false}}}));
+  await go(page,'request');
+  await page.locator('[data-request-view="search"]').click();
+  await page.locator('#shared-search-form input').fill('Fixture');
+  await page.locator('#shared-search-form button[type="submit"]').click();
+  await page.locator('#shared-search-results .search-result-item').first().waitFor();
+  for (const [width,height] of [[393,844],[844,393],[1024,768],[1180,820]]) {
+    await page.setViewportSize({width,height});
+    await openRequestWorkspace(page);
+    await page.locator('#shared-search-form input').waitFor({state:'visible'});
+    for (const status of ['', 'Visible status']) for (const notice of [false,true]) {
+      await page.locator('#request-search-shared').evaluate((panel,{status,notice})=>{
+        panel.querySelector('.search-message').textContent=status;
+        panel.querySelector('.request-session-user-notice')?.remove();
+        panel.classList.toggle('has-request-session-user-notice',notice);
+        if(notice){const n=document.createElement('p');n.className='request-session-user-notice';n.textContent='Visible singer notice';panel.querySelector('form').after(n);}
+      },{status,notice});
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+      const bounds=await page.locator('#request-search-shared').evaluate(panel=>{
+        const s=getComputedStyle(panel),r=panel.getBoundingClientRect(),frame=panel.querySelector('.android-result-frame').getBoundingClientRect();
+        const status=panel.querySelector('.search-message').getBoundingClientRect();
+        return {contentBottom:r.bottom-parseFloat(s.paddingBottom)-parseFloat(s.borderBottomWidth),frameBottom:frame.bottom,statusHeight:status.height};
+      });
+      assert.ok(Math.abs(bounds.frameBottom-bounds.contentBottom)<=1,JSON.stringify({width,height,status,notice,bounds}));
+      if(!status)assert.equal(bounds.statusHeight,0,'empty status contributes neither a track nor a gap');
+    }
+  }
+  await page.setViewportSize({width:393,height:844});
+  await openRequestWorkspace(page);
+  await page.locator('#android-request-tabs [data-request-back]').click();
+  await page.locator('[data-request-view="discover"]').click();
+  for(const kind of ['name','artist']) {
+    await page.locator(`[data-discover-mode="${kind}"]`).click();
+    await page.locator(`#request-discover-${kind} [data-letter="A"]`).click();
+    for(const [width,height] of [[393,844],[844,393],[1024,768],[1180,820]]) {
+      await page.setViewportSize({width,height});
+      await openRequestWorkspace(page);
+      const view=page.locator(`#request-discover-${kind}`);
+      await view.locator('[data-d1-browse-tags] button').first().waitFor();
+      const top=await view.locator('.browse-search-bar').boundingBox(),grid=await view.locator('[data-d1-browse-tags]').boundingBox();
+      assert.ok(top.y+top.height<=grid.y,JSON.stringify({kind,width,height,top,grid}));
+    }
+    await page.setViewportSize({width:393,height:844});
+    await openRequestWorkspace(page);
+  }
+});
 
 test('Android search and discovery use Remote result pages, swipe, exact jumps and query recovery',{timeout:90000,skip:process.platform!=='linux'},async t=>{
   const {page}=await open(t,chromium),requests=[];

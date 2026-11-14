@@ -133,6 +133,32 @@ Android and iOS source lists share horizontal pagination and selection tools.
 Their browse pages measure the available viewport and fit complete card rows;
 desktop retains its existing workspace layout. Background source metadata that
 does not change visible card content must retain the card's image nodes.
+Search results fill the panel's remaining height after visible query/status
+content; empty status nodes leave neither a track nor a gap. Native name/artist
+contextual navigation stays above its result frame in portrait, landscape and
+two-column tablet layouts, including when a session-user notice is visible.
+The complete contextual bar, including its search toggle, shares the outer
+query/source-form axis. RequestTopSlot spacing is owned by `request-tabs.css`:
+`--request-top-content-gap` is 12px from the bar's bottom to the first card,
+including the grid's 2px `--request-content-paint-inset`. Search, discovery,
+source lists and source details use this same contract on Host and Remote;
+only visible status/notice content adds an intermediate row. Sources add any
+extra top spacing at the TopSlot, retaining the independent 8px list-to-tools
+gap. Header hover paint room extends outside the measured TopSlot/content gap
+without shifting the header.
+Category cover strips preserve their Preview 2 geometry and scroll cues: Host
+74px covers (64px at widths up to 760px), Remote 64px, with their existing
+padding and scrollbar behavior. Their content-role height is an explicit
+exception to ordinary TopSlot height equality; their lower-edge-to-first-card
+gap remains 12px. Only the existing phone text-button strip uses the ordinary
+44px control track. Do not shrink covers or hide desktop horizontal scrollbars
+to make the entire strip match an ordinary query row.
+Desktop name/artist browsing keeps its persistent alphabet filter as separate
+navigation above the contextual TopSlot. Its multi-row height is excluded from
+TopSlot equal-height and cross-page y comparisons, without hiding or collapsing
+the filter. The alphabet-to-TopSlot sequence remains in normal flow, and the
+following TopSlot's lower edge to the first card still measures the shared 12px
+gap. This exception does not apply to native/Remote contextual levels.
 Category pagination uses the server's exact matched count when supplied; when
 the provider omits it, keep navigation available without displaying a guessed
 total. Phone category switches use ordinary 44px controls and 16px text, with

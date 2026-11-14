@@ -747,7 +747,7 @@ html[data-native-host="true"][data-host-layout="portrait"] .app-shell .category-
 html[data-host-layout="portrait"] .category-browser-tabs { padding: 0; gap: 6px; scrollbar-width: none; }
 html[data-host-layout="portrait"] .request-mode-head { padding: 8px 10px; }
 html[data-host-layout="portrait"] :is(.request-discover-view, .request-search-view, .request-sources-view) > .request-mode-panel { padding: 0; }
-html[data-host-layout="portrait"] .category-browser-detail { gap: 8px; --category-browser-tab-height: 40px; }
+html[data-host-layout="portrait"] .category-browser-detail { --category-browser-tab-height: var(--host-control-height); }
 html[data-host-layout="portrait"] #host-workspace-request .search-results { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 /* Phone feed density: desktop's 118/150px minimum distorts narrow covers.
    Keep one renderer for category/search/source cards, including missing art. */
@@ -933,16 +933,16 @@ html:is([data-host-platform="android"], [data-host-platform="ios"]) .player-pane
   backdrop-filter: none;
   opacity: 1;
 }
-html[data-host-layout="portrait"] .request-discover-view .tag-browser.is-browsing-tags {
+html:is([data-host-platform="android"], [data-host-platform="ios"]) .request-discover-view .tag-browser.is-browsing-tags {
   grid-template-rows: auto minmax(0, 1fr);
 }
-html[data-host-layout="portrait"] .request-discover-view .tag-browser.is-browsing-tags > .browse-search-bar { grid-row: 1; }
-html[data-host-layout="portrait"] .request-discover-view .tag-browser.is-browsing-tags > :is(.tag-browser-tags, [data-d1-browse-results]) { grid-row: 2; }
-html[data-host-layout="portrait"] .request-discover-view .tag-browser.is-browsing-tags.has-request-session-user-notice {
+html:is([data-host-platform="android"], [data-host-platform="ios"]) .request-discover-view .tag-browser.is-browsing-tags > .browse-search-bar { grid-row: 1; }
+html:is([data-host-platform="android"], [data-host-platform="ios"]) .request-discover-view .tag-browser.is-browsing-tags > :is(.tag-browser-tags, [data-d1-browse-results]) { grid-row: 2; }
+html:is([data-host-platform="android"], [data-host-platform="ios"]) .request-discover-view .tag-browser.is-browsing-tags.has-request-session-user-notice {
   grid-template-rows: auto auto minmax(0, 1fr);
 }
-html[data-host-layout="portrait"] .request-discover-view .tag-browser.is-browsing-tags.has-request-session-user-notice > .request-session-user-notice { grid-row: 2; }
-html[data-host-layout="portrait"] .request-discover-view .tag-browser.is-browsing-tags.has-request-session-user-notice > :is(.tag-browser-tags, [data-d1-browse-results]) { grid-row: 3; }
+html:is([data-host-platform="android"], [data-host-platform="ios"]) .request-discover-view .tag-browser.is-browsing-tags.has-request-session-user-notice > .request-session-user-notice { grid-row: 2; }
+html:is([data-host-platform="android"], [data-host-platform="ios"]) .request-discover-view .tag-browser.is-browsing-tags.has-request-session-user-notice > :is(.tag-browser-tags, [data-d1-browse-results]) { grid-row: 3; }
 html[data-host-layout="portrait"] .settings-workspace-head .host-peer-heading { display: grid; gap: 3px; }
 html[data-host-layout="portrait"] .android-settings-back { gap: 6px; }
 html:is([data-host-platform="android"], [data-host-platform="ios"]) .player-panel:is(:fullscreen, .is-tauri-fullscreen) #android-fullscreen-remote-button > svg { width: 20px; height: 20px; }
@@ -984,8 +984,8 @@ html:is([data-host-platform="android"], [data-host-platform="ios"]) .android-res
 html:is([data-host-platform="android"], [data-host-platform="ios"]) .android-result-frame[hidden] { display: none; }
 html:is([data-host-platform="android"], [data-host-platform="ios"]) .android-result-frame > .result-page-viewport { flex: 1; min-height: 0; overflow-y: auto; }
 html:is([data-host-platform="android"], [data-host-platform="ios"]) #host-workspace-request .android-result-frame > .result-page-viewport > :is(.search-results, .tag-browser-tags, .category-browser-home-grid) { height: auto; max-height: none; overflow: visible; }
-html[data-host-layout="portrait"] .request-discover-view .tag-browser.is-browsing-tags > .android-result-frame:not([hidden]) { grid-row: 2; }
-html[data-host-layout="portrait"] .request-discover-view .tag-browser.is-browsing-tags.has-request-session-user-notice > .android-result-frame:not([hidden]) { grid-row: 3; }
+html:is([data-host-platform="android"], [data-host-platform="ios"]) .request-discover-view .tag-browser.is-browsing-tags > .android-result-frame:not([hidden]) { grid-row: 2; }
+html:is([data-host-platform="android"], [data-host-platform="ios"]) .request-discover-view .tag-browser.is-browsing-tags.has-request-session-user-notice > .android-result-frame:not([hidden]) { grid-row: 3; }
 
 /* WKWebView exposes remaining safe areas through env(); an already-inset
    native view reports zero. Keep this separate from Android's native insets. */
