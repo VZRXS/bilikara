@@ -93,8 +93,9 @@ for(const [engine,android] of [[chromium,false],[webkit,false],[chromium,true],[
     failOutput=true;
     await settings.locator('.media-output-targets').click();
     await page.waitForFunction(()=>document.querySelector('[data-media-output="settings"] .media-output-status').textContent===t('mediaOutput.actionFailed'));
-    await page.evaluate(()=>{state.data.state_revision++;state.data.media_output.position++;render();});
+    const previousPosition=await page.evaluate(()=>{const position=state.data.media_output.position;state.data.state_revision++;state.data.media_output.position++;render();return position;});
     assert.equal(await settings.locator('.media-output-status').innerText(),await page.evaluate(()=>t('mediaOutput.actionFailed')));
+    await page.evaluate(position=>{state.data.media_output.position=position;render();},previousPosition);
     await page.locator(android?'[data-android-page="playback"]':'#work-rail-request').click();
     await settings.waitFor({state:'hidden'});await goSettings();
     assert.equal(await settings.locator('.media-output-status').isVisible(),false,'re-entering clears temporary action failure');

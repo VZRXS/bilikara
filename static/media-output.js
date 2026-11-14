@@ -93,7 +93,7 @@
       current = data;
       const output = data?.media_output, network = selected(data), t = options.t;
       root.hidden = !output || (!options.host && !network) || (root.dataset.mediaOutput === "console" && !network);
-      if (root.hidden) { clearError(); return; }
+      if (root.hidden) { actionEpoch++; clearError(); return; }
       const host = options.host && output.can_manage;
       const phase = network || ["unsupported","error","probing","unverified"].includes(output.status) ? output.status : output.authorized ? "authorized" : "local";
       text(nodes.heading, t("mediaOutput.title"));

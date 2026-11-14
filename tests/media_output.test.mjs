@@ -18,7 +18,7 @@ function fixture() {
   }
   const root=new Node(),page=new Node(),errors=[],observers=new Set();root.parentElement=page;root.dataset.mediaOutput='settings';
   root.querySelector('select').options=[new Node(),new Node()];root.querySelector('.media-output-mode').firstElementChild=new Node();
-  const context={document:{querySelectorAll:()=>[root],getElementById:()=>null,createElement:()=>new Node()},getComputedStyle:()=>({visibility:'visible'}),
+  const context={document:{querySelectorAll:selector=>selector==='[data-media-output]'?[root]:[],getElementById:()=>null,createElement:()=>new Node()},getComputedStyle:()=>({visibility:'visible'}),
     MutationObserver:class{constructor(fn){this.fn=fn;}observe(){observers.add(this);}disconnect(){observers.delete(this);}}};
   context.window=context;vm.runInNewContext(readFileSync(new URL('../static/media-output.js',import.meta.url),'utf8'),context);
   const options={host:true,t:key=>key,onError:key=>errors.push(key),request:async()=>{throw Error('request failed');}};
@@ -61,5 +61,17 @@ test('IOS-R2-04b a pending failure after closing/re-entering still reaches the t
   toggle.listeners.change();f.page.hidden=true;f.visibility();f.page.hidden=false;f.sync();
   reject({code:'purek_output_backend_unavailable'});await new Promise(resolve=>setImmediate(resolve));
   assert.deepEqual(f.errors,['mediaOutput.backendUnavailable']);assert.equal(toggle.disabled,false);assert.equal(toggle.hasAttribute('aria-busy'),false);
+  assert.equal(f.node('.media-output-error').hidden,true);assert.notEqual(f.status(),'mediaOutput.actionFailed');
+});
+
+test('IOS-R2-04b data hiding a pending group retires late failure before subsequent navigation',async()=>{
+  const f=fixture();let reject;f.options.request=()=>new Promise((_,r)=>{reject=r;});
+  f.node('.media-output-toggle').listeners.change();
+  f.sync({media_output:null});assert.equal(f.root.hidden,true);
+  f.output({target:'local',requested_target:'local',status:'authorized',authorized:true,available:true,can_manage:true,busy:false});
+  assert.equal(f.root.hidden,false);
+  reject(Error('late failure'));await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(f.errors,['mediaOutput.error'],'the failure still reaches its toast owner');
+  f.page.hidden=true;f.visibility();f.page.hidden=false;f.sync();
   assert.equal(f.node('.media-output-error').hidden,true);assert.notEqual(f.status(),'mediaOutput.actionFailed');
 });
