@@ -712,10 +712,11 @@ Phone title bars retain their title/subtitle geometry and add a theme-aware
 12px gap before every active subview, including contextual tabs, independently
 of the removed card padding.
 Playback's single-line brand centers with its action row; other sections retain
-the shared title/subtitle axes. On iOS, default quality and downloader share
-the same accessible CSS picker
-and floating-panel material; their original selects retain value/event ownership.
-Other platforms retain native selects.
+the shared title/subtitle axes. On iOS, default quality and downloader use
+their original visible HTML selects and the WKWebView system Picker. Their
+closed fields retain the 34px pill appearance; the real select owns a 44px
+hit target, native focus, value/change events and disabled state. Other
+platforms retain their existing native select treatment.
 
 Playback keeps its media stage and track selector fixed and scrolls only the
 inline controls. Playback, Queue/History, My and Settings extend beneath the
@@ -963,9 +964,11 @@ The approved light phone backdrop adds a viewport-wide white gradient, from
 colors and page frames stay transparent; dark/blue and landscape Host keep
 their existing backdrop. It adds no overlay node or backdrop-filter layer.
 
-Both iOS runtime selects use one accessible CSS picker with a shared
-floating material, keyboard operation and outside dismissal. Their original
-selects remain value/event owners. Android/Desktop treatment is unchanged.
+Both iOS runtime settings use their native HTML selects without an overlaid
+combobox, mirrored value or custom popover. The OS owns keyboard/assistive
+input and Picker opening, selection and cancellation. Closed-field CSS keeps
+the existing pill; platform picker materials may differ. System Picker,
+VoiceOver, 200% text and ZH/EN/JA theme acceptance remain device-unverified.
 Only the owned iOS 26+ scroll view's public `topEdgeEffect.hidden` is set to
 remove its status-area shade; no private selector or global appearance rule is
 used. UIKit appearance remains device-unverified. After initial activation,

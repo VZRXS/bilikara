@@ -458,7 +458,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
    pill rather than an AppKit bezel that ignores the CSS corner radius. */
 :root[data-tauri-platform="macos"] .runtime-settings-select-shell { overflow: visible; position: relative; }
 :root[data-tauri-platform="macos"] .runtime-settings-select-shell::after,
-.runtime-settings-select-shell.has-runtime-select::after {
+:root[data-host-platform="ios"] .cache-quality-field > .runtime-settings-select-shell::after {
   content: "";
   position: absolute;
   top: 12px;
@@ -525,6 +525,31 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   appearance: none;
   -webkit-appearance: none;
 }
+/* iOS keeps the real select as its sole hit/focus/event owner. Paint the
+   existing 34px closed pill on its shell, with a 44px native target extending
+   5px at each edge. Appearance changes only the closed field, not the system
+   picker. No overlaid button, duplicate input or custom popup is involved. */
+:root[data-host-platform="ios"] .cache-quality-field > .runtime-settings-select-shell {
+  position: relative;
+  overflow: visible;
+  background: var(--quality-select-bg, var(--input-bg));
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+:root[data-host-platform="ios"] .cache-quality-field > .runtime-settings-select-shell > select {
+  position: absolute;
+  top: -5px;
+  left: 0;
+  height: 44px;
+  min-height: 44px;
+  padding: 0 33px 0 13px;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+/* The shell owns the complete focus ring inside the scrollport. */
+:root[data-host-platform="ios"] .cache-quality-field > .runtime-settings-select-shell > select:focus-visible { outline: none; }
 
 /* Experimental markers share one quiet inline label on both clients. */
 :root .experimental-label { color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.2; white-space: nowrap; }
@@ -635,7 +660,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   .session-user-rename-panel, .confirm-popover, .selection-modal-card, .app-shell .song-detail-card,
   .song-detail-card, .rating-card, .volume-adjust-popover, .audio-variant-popover,
   .remote-access-card, .remote-identity-card, .binding-sheet-panel, .history-export-dialog,
-  .playback-sheet-panel, .remote-menu-panel, .menu-content, .runtime-select-menu, .topbar .cache-panel,
+  .playback-sheet-panel, .remote-menu-panel, .menu-content, .topbar .cache-panel,
   .presentation-feedback-card,
   .app-shell[data-stage-controls-layout="popup"] .stage-control-tray) {
   background: var(--modal-card-bg);
@@ -1518,24 +1543,3 @@ html:is([data-host-platform="android"], [data-host-platform="ios"]) .request-mod
   -webkit-user-select: text;
   -webkit-touch-callout: default;
 }
-
-/* One iOS runtime-select adapter for quality and downloader. Both use the
-   shared ordinary CSS surface; UIKit owns only the actual native dock. */
-.runtime-settings-select-shell.has-runtime-select { position:relative;overflow:visible; }
-.runtime-settings-select-shell > .runtime-select-trigger {
-  position:relative;box-sizing:border-box;width:100%;height:34px;min-height:34px;
-  padding:0 32px 0 12px;border:1px solid var(--line);border-radius:999px;
-  background:var(--quality-select-bg,var(--input-bg));color:var(--ink);line-height:1.2;
-  font-family:inherit;font-size:13px;font-weight:700;text-align:left;
-}
-.runtime-select-trigger::before {content:"";position:absolute;inset:-6px 0;}
-.runtime-select-trigger:focus-visible {outline:var(--field-focus-outline);outline-offset:var(--field-focus-outline-offset);}
-.runtime-select-menu {
-  position:fixed;box-sizing:border-box;inset:auto;margin:0;padding:8px;
-  border:1px solid var(--line);color:var(--ink);overflow-y:auto;overscroll-behavior:contain;
-}
-.runtime-select-menu:not(:popover-open) {display:none;}
-.runtime-select-option {box-sizing:border-box;display:block;width:100%;min-height:44px;padding:8px 12px;border:0;
-  border-radius:10px;background:transparent;color:inherit;text-align:left;font:inherit;}
-.runtime-select-option[aria-selected="true"] {background:var(--btn-secondary-bg);color:var(--accent-deep);font-weight:700;}
-.runtime-select-option:focus-visible {outline:2px solid var(--accent);outline-offset:-2px;}
