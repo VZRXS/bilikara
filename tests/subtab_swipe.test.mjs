@@ -82,12 +82,13 @@ function gestureFixture(family) {
   const start = target => family === 'touch'
     ? root.emit('touchstart', {target, touches: [point(target, 200)]})
     : root.emit('pointerdown', {target, pointerId: 1, pointerType: 'pen', isPrimary: true, button: 0, ...point(target, 200)});
-  const move = target => family === 'touch'
-    ? root.emit('touchmove', {target, touches: [point(target, 80)]})
-    : window.emit('pointermove', {target, pointerId: 1, ...point(target, 80)});
+  const move = (target, x = 80) => family === 'touch'
+    ? root.emit('touchmove', {target, touches: [point(target, x)]})
+    : window.emit('pointermove', {target, pointerId: 1, ...point(target, x)});
   const finish = () => family === 'touch' ? root.emit('touchend') : window.emit('pointerup', {pointerId: 1});
+  const cancel = () => family === 'touch' ? root.emit('touchcancel') : window.emit('pointercancel', {pointerId: 1});
   const snapshot = () => ({key, transform: panel.style.transform, motions, releases, animations});
-  return {root, panel, fixed, nestedFixed, content, window, binding, start, move, finish, snapshot,
+  return {root, panel, fixed, nestedFixed, content, window, binding, start, move, finish, cancel, snapshot,
     child: (selectors, parent = panel) => new Element(selectors, parent)};
 }
 
@@ -133,6 +134,57 @@ for (const family of ['touch', 'pointer']) {
     f.start(f.content); f.move(f.content);
     f.window.emit('blur'); f.finish();
     assert.deepEqual(f.snapshot(), {key: 'request.quick', transform: '', motions: 1, releases: 1, animations: 0});
+    f.binding.destroy();
+  });
+  test(`${family}: content drags suppress the following click after navigation, below navigation distance and at a leaf boundary`, () => {
+    for (const [label, x, expected] of [
+      ['completed navigation', 80, 'request.search'],
+      ['below navigation distance', 182, 'request.quick'],
+      ['first leaf boundary', 320, 'request.quick'],
+    ]) {
+      const f = gestureFixture(family);
+      let clicks = 0;
+      f.root.addEventListener('click', () => { clicks++; });
+      f.start(f.content);
+      assert.equal(f.move(f.content, x).defaultPrevented, true, label + ': horizontal drag is owned');
+      f.finish();
+      assert.equal(f.snapshot().key, expected, label + ': correct route');
+      const click = f.root.emit('click', {target: f.content, detail: 1});
+      assert.equal(click.defaultPrevented, true, label + ': prevent the post-drag click');
+      assert.equal(click.stopped, true, label + ': stop activation handlers');
+      assert.equal(clicks, 0, label + ': original content action must not run');
+      f.binding.destroy();
+    }
+  });
+  test(`${family}: short content taps retain activation, including a new tap during a previous drag guard`, () => {
+    for (const x of [null, 194]) {
+      const f = gestureFixture(family);
+      let clicks = 0;
+      f.root.addEventListener('click', () => { clicks++; });
+      f.start(f.content);
+      if (x !== null) assert.equal(f.move(f.content, x).defaultPrevented, false, 'small tap jitter stays unclaimed');
+      f.finish();
+      assert.equal(f.snapshot().key, 'request.quick');
+      assert.equal(f.snapshot().transform, '');
+      assert.equal(f.root.emit('click', {target: f.content, detail: 1}).defaultPrevented, false);
+      assert.equal(clicks, 1, 'short tap reaches its ordinary activation handler');
+      f.binding.destroy();
+    }
+    const f = gestureFixture(family);
+    f.start(f.content); f.move(f.content); f.finish();
+    f.start(f.content); f.finish();
+    assert.equal(f.root.emit('click', {target: f.content, detail: 1}).defaultPrevented, false,
+      'a new stationary tap clears the previous drag guard immediately');
+    f.binding.destroy();
+  });
+  test(`${family}: cancelling a content drag clears presentation and leaves no stale click guard`, () => {
+    const f = gestureFixture(family);
+    let clicks = 0;
+    f.root.addEventListener('click', () => { clicks++; });
+    f.start(f.content); f.move(f.content); f.cancel(); f.finish();
+    assert.deepEqual(f.snapshot(), {key: 'request.quick', transform: '', motions: 1, releases: 1, animations: 0});
+    assert.equal(f.root.emit('click', {target: f.content, detail: 1}).defaultPrevented, false);
+    assert.equal(clicks, 1, 'cancelled touch/pointer does not leave a stale activation guard');
     f.binding.destroy();
   });
 }

@@ -148,12 +148,27 @@ for(const [engineName,engine]of Object.entries({chromium,webkit})) {
       assert.deepEqual(paint[0],paint[1],'the two closed pills still share their painted surface');
       assert.deepEqual(await page.evaluate(()=>nativeRuntimeSelects.map(select=>select.value)),saved,'theme/language/size never reset a selection');
       assert.equal(await page.evaluate(()=>nativeRuntimeSelects.every(select=>document.getElementById(select.id)===select)),true);
+      const geometry=await page.evaluate(()=>nativeRuntimeSelects.map(select=>{
+        const r=select.getBoundingClientRect(),row=select.closest('.cache-panel-row');
+        const controls=[...row.querySelectorAll('button,input,select,textarea,a[href],summary,[role="button"],[role="switch"],[tabindex]')];
+        const peers=controls.filter(control=>control!==select&&!control.contains(select)&&!select.contains(control)).map(control=>{
+          // Labels also activate their associated inputs. Include their full
+          // hit regions, especially when a checkbox's own box is clipped.
+          const targets=[...new Set([control,...(control.labels||[])])].filter(node=>!node.contains(select));
+          const rects=targets.filter(node=>getComputedStyle(node).visibility!=='hidden').flatMap(node=>[...node.getClientRects()])
+            .filter(b=>b.width>0&&b.height>0);
+          return {id:control.id||control.tagName,rects:rects.map(b=>[b.left,b.top,b.width,b.height]),
+            overlap:rects.some(b=>Math.min(r.right,b.right)>Math.max(r.left,b.left)&&Math.min(r.bottom,b.bottom)>Math.max(r.top,b.top))};
+        }).filter(peer=>peer.rects.length);
+        return {select:select.id,peers};
+      }));
+      assert.equal(geometry.length,ids.length);
+      for(const sample of geometry) {
+        assert.ok(sample.peers.length>0,sample.select+': measure actual neighboring interactive hit regions');
+        assert.ok(sample.peers.every(peer=>!peer.overlap),
+          `44px native target overlaps another control in its row at ${width}x${height}/${theme}/${language}: `+JSON.stringify(sample));
+      }
     }
-    const geometry=await page.evaluate(()=>nativeRuntimeSelects.map(select=>{
-      const r=select.getBoundingClientRect(),label=select.closest('label'),peer=label.nextElementSibling.getBoundingClientRect();
-      return {overlap:Math.min(r.right,peer.right)>Math.max(r.left,peer.left)&&Math.min(r.bottom,peer.bottom)>Math.max(r.top,peer.top)};
-    }));
-    assert.ok(geometry.every(sample=>!sample.overlap),'44px native targets do not overlap their neighboring switches');
     const quality=page.locator('#cache-quality-select');
     const value=await page.locator('#cache-quality-select').evaluate(n=>n.options[n.options.length-1].value);
     await quality.selectOption(value);
