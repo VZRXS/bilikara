@@ -142,9 +142,17 @@ query/source-form axis. RequestTopSlot spacing is owned by `request-tabs.css`:
 `--request-top-content-gap` is 12px from the bar's bottom to the first card,
 including the grid's 2px `--request-content-paint-inset`. Search, discovery,
 source lists and source details use this same contract on Host and Remote;
-only visible status/notice content adds an intermediate row. Contextual category
-strips use the ordinary 44px control track with no extra vertical padding or
-scrollbar track; horizontal scrolling still exposes every category.
+only visible status/notice content adds an intermediate row. Sources add any
+extra top spacing at the TopSlot, retaining the independent 8px list-to-tools
+gap. Header hover paint room extends outside the measured TopSlot/content gap
+without shifting the header.
+Category cover strips preserve their Preview 2 geometry and scroll cues: Host
+74px covers (64px at widths up to 760px), Remote 64px, with their existing
+padding and scrollbar behavior. Their content-role height is an explicit
+exception to ordinary TopSlot height equality; their lower-edge-to-first-card
+gap remains 12px. Only the existing phone text-button strip uses the ordinary
+44px control track. Do not shrink covers or hide desktop horizontal scrollbars
+to make the entire strip match an ordinary query row.
 Desktop name/artist browsing keeps its persistent alphabet filter as separate
 navigation above the contextual TopSlot. Its multi-row height is excluded from
 TopSlot equal-height and cross-page y comparisons, without hiding or collapsing

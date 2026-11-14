@@ -6616,6 +6616,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 }
 
 .category-browser-detail {
+  --category-browser-tab-height: 74px;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   gap: 12px;
@@ -6942,6 +6943,10 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
     gap: 12px;
   }
 
+
+  .category-browser-detail {
+    --category-browser-tab-height: 64px;
+  }
 
   .category-browser-tabs {
     padding-right: 40px;
@@ -10541,6 +10546,11 @@ body.is-presentation-stage-only .left-column {
    remain fixed and the outer Sources scrollbar is suppressed. */
 .request-sources-view .source-browse-scroll.is-detail-view {
   overflow-y: hidden;
+  /* Extend the clipping edge above the fixed header for its hover lift,
+     without moving the TopSlot or adding to its first-card gap. */
+  margin-top: calc(-1 * var(--request-content-paint-inset));
+  padding-top: var(--request-content-paint-inset);
+  box-sizing: border-box;
   padding-right: 0;
   scrollbar-gutter: auto;
 }

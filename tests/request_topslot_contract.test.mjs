@@ -18,16 +18,25 @@ test('native contextual tag ordering covers landscape and tablet layouts',()=>{
     assert.ok(css.includes(`html:is([data-host-platform="android"], [data-host-platform="ios"]) .request-discover-view .tag-browser.is-browsing-tags > ${child} { grid-row: ${row}; }`));
   }
 });
-test('Host and Remote use one TopSlot gap and category-height owner',()=>{
+test('Host and Remote share TopSlot spacing without overriding source footer or cover-strip roles',()=>{
   const shared=read('request-tabs.css');
   assert.match(shared,/--request-top-content-gap: 12px;/);
   assert.match(shared,/--request-content-paint-inset: 2px;/);
   assert.match(shared,/row-gap: calc\(var\(--request-top-content-gap\) - var\(--request-content-paint-inset\)\);/);
   assert.match(shared,/padding-top: var\(--request-content-paint-inset\);/);
-  assert.match(shared,/--category-browser-tab-height: var\(--host-peer-action-height, var\(--remote-peer-action-height\)\);/);
+  const gapRule=shared.match(/([^{}]+)\{\s*row-gap: calc\(var\(--request-top-content-gap\) - var\(--request-content-paint-inset\)\);\s*\}/)[1];
+  assert.doesNotMatch(gapRule,/source-mode-panel/,'the source footer keeps its independently specified gap');
+  assert.match(shared,/\.source-mode-panel > \.source-action-row \{\s*margin-bottom: calc\(var\(--request-top-content-gap\) - var\(--request-content-paint-inset\) - 8px\);/);
+  assert.match(read('source-removal.css'),/\.source-mode-panel \{[^}]*row-gap: 8px;/);
+  assert.doesNotMatch(shared,/--category-browser-tab-height\s*:/);
+  assert.doesNotMatch(shared,/scrollbar-width\s*:/);
+  assert.match(read('styles.css'),/--category-browser-tab-height: 74px/);
+  assert.match(read('styles.css'),/--category-browser-tab-height: 64px/);
+  assert.match(read('remote.css'),/--category-browser-tab-height: 64px/);
+  assert.match(read('remote.css'),/\.search-results \{[^}]*margin-top: 0;/);
   for(const name of ['styles.css','host-layout.css','remote.css']) {
     assert.doesNotMatch(read(name),/--request-top-content-gap\s*:/,name);
-    assert.doesNotMatch(read(name),/--category-browser-tab-height\s*:/,name);
   }
+  assert.match(read('styles.css'),/margin-top: calc\(-1 \* var\(--request-content-paint-inset\)\);\s*padding-top: var\(--request-content-paint-inset\);/);
   assert.match(read('styles.css'),/\.source-browse-scroll\.is-detail-view \.follow-up-items-view \{\s*height: 100%;\s*padding-top: 0;/);
 });

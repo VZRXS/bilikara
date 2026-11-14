@@ -150,24 +150,24 @@ html[data-host-layout="portrait"] .request-mode-tabs {
    Keep the complete contextual bar (including its search toggle) on the same
    axis as query/source forms. Optional status rows still take their own space. */
 :root #host-workspace-request .request-search-view > .request-mode-panel,
-:root #host-workspace-request :is(.source-mode-panel, .tag-browser, .category-browser-detail, .follow-up-items-view),
+:root #host-workspace-request :is(.tag-browser, .category-browser-detail, .follow-up-items-view),
 :root .remote-shell .request-panel :is(.remote-search-mode-panel, .tag-browser, .category-browser-detail,
   #favlist-list-view, #favlist-items-view, #sources-follow-list-view, #sources-follow-items-view) {
   row-gap: calc(var(--request-top-content-gap) - var(--request-content-paint-inset));
 }
+/* source-removal.css owns the 8px list-to-tools gap. Add only the TopSlot's
+   remaining spacing here; do not change the source panel's other row gaps. */
+:root #host-workspace-request .source-mode-panel > .source-action-row {
+  margin-bottom: calc(var(--request-top-content-gap) - var(--request-content-paint-inset) - 8px);
+}
 :root :is(#host-workspace-request, .request-panel) :is(.search-results, .tag-browser-tags, .follow-up-grid) {
   padding-top: var(--request-content-paint-inset);
 }
-:root :is(#host-workspace-request, .request-panel) .category-browser-detail {
-  --category-browser-tab-height: var(--host-peer-action-height, var(--remote-peer-action-height));
-}
-:root :is(#host-workspace-request, .request-panel) .browse-search-bar {
+/* Only the existing phone text-button strip has the ordinary control track.
+   Desktop/tablet and Remote retain their cover-strip height and scroll cues. */
+:root[data-host-layout="portrait"] #host-workspace-request .browse-search-bar {
   --browse-track-inset: 0px;
 }
-:root :is(#host-workspace-request, .request-panel) .browse-search-bar > .category-browser-tabs {
+:root[data-host-layout="portrait"] #host-workspace-request .browse-search-bar > .category-browser-tabs {
   padding-block: 0;
-  scrollbar-width: none;
-}
-:root :is(#host-workspace-request, .request-panel) .category-browser-tabs::-webkit-scrollbar {
-  display: none;
 }

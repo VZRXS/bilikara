@@ -5,22 +5,28 @@ import path from 'node:path';
 import {chromium, webkit} from 'playwright';
 import {root} from './desktop_construction_support.mjs';
 import {ownedDirectory} from './libav_prerequisite_support.mjs';
-import {buildNativeAlpha} from './native_runtime_artifacts.mjs';
+import {buildNativeAlpha,buildNativeHost} from './native_runtime_artifacts.mjs';
 import {RunningHost, isolatedEnvironment} from './native_host_support.mjs';
 
-let alpha;
+let alpha,desktopHost;
 before(async () => { if (process.platform !== 'linux') return; alpha = process.env.BILIKARA_TEST_NATIVE_ALPHA_BINARY || await buildNativeAlpha(); }, {timeout:300000});
-async function open(t, engine, {sessionUser = true} = {}) {
+async function open(t, engine, {sessionUser = true,platform = 'android',viewport = {width:393,height:736}} = {}) {
   const home = ownedDirectory('Android phone UI');
   t.after(() => rmSync(home, {recursive:true,force:true}));
-  const host = await RunningHost.start(alpha, home, [home,path.join(root,'static')], isolatedEnvironment(home), true);
+  const desktop=platform==='desktop';
+  if(desktop)desktopHost ||= process.env.BILIKARA_TEST_NATIVE_HOST_BINARY || await buildNativeHost();
+  const host = await RunningHost.start(desktop?desktopHost:alpha, home,
+    desktop?['--headless','--port','0','--data-dir',home,'--static-dir',path.join(root,'static')]:[home,path.join(root,'static')],
+    isolatedEnvironment(home), !desktop);
   t.after(() => host.close());
   if (sessionUser) await host.api('/api/session-users/add', {name:'Fixture singer'});
   const browser = await engine.launch({headless:true}); t.after(() => browser.close());
-  const context = await browser.newContext({viewport:{width:393,height:736},hasTouch:true});
+  const context = await browser.newContext({viewport,hasTouch:!desktop});
   await context.addCookies([...host.cookies].map(([name,value])=>({name,value,url:host.base})));
   await context.addInitScript(() => {
     localStorage.setItem('bilikara.update.automatic','false');
+  });
+  if(!desktop)await context.addInitScript(() => {
     window.BilikaraHostWindow = {postMessage(raw) {
       if (['enter','exit'].includes(raw)) return;
       const {id}=JSON.parse(raw);
@@ -47,6 +53,29 @@ async function open(t, engine, {sessionUser = true} = {}) {
 const settle = page => page.evaluate(()=>Promise.allSettled([...document.querySelectorAll('#android-my-page,#host-workspace-region')]
   .flatMap(n=>n.getAnimations().map(a=>a.finished))));
 const go = async (page,name) => {await page.locator(`[data-android-page="${name}"]`).click();await settle(page);};
+
+// Resizing into a compact layout can close the tool sheet. Use the same entry
+// as a user, only when it is closed; clicking an already open rail toggles it.
+async function openRequestWorkspace(page) {
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  if(await page.locator('#host-workspace-region').getAttribute('aria-hidden')==='true'||!await page.locator('#host-workspace-request').isVisible()) {
+    const dock=page.locator('[data-android-page="request"]');
+    await (await dock.isVisible()?dock:page.locator('[data-host-workspace="request"]')).click();
+  }
+  await page.locator('#host-workspace-request').waitFor({state:'visible'});
+  await page.waitForFunction(()=>!document.getElementById('host-workspace-region').inert);
+}
+
+async function openRequestMode(page,remote,view,mode) {
+  if(!remote)await openRequestWorkspace(page);
+  const modeButton=page.locator(`[data-${remote?'remote-':''}${view}-mode="${mode}"]`);
+  if(!await modeButton.isVisible()){
+    const primary=page.locator(`[data-${remote?'remote-':''}request-view="${view}"]`);
+    if(!await primary.isVisible())await page.locator(remote?'#remote-request-secondary-back':'#android-request-tabs [data-request-back]').click();
+    await primary.click();
+  }
+  await modeButton.click();
+}
 
 for(const engine of [chromium,webkit])test(`${engine.name()} touch Host gates hover and keeps the QR action accessible`, {timeout:90000,skip:process.platform!=='linux'}, async t=>{
   const {page}=await open(t,engine);await go(page,'my');
@@ -412,7 +441,7 @@ for(const engine of [chromium,webkit]) for(const [client,width,height] of [
   ['desktop',1440,900],['desktop',700,800],['android',393,844],['android',844,393],
   ['android',1024,768],['android',1180,820],['remote',393,844],['remote',360,740],
 ]) test(`${engine.name()} ${client} ${width}x${height} Request TopSlots share bounds and first-card spacing`,{timeout:120000,skip:process.platform!=='linux'},async t=>{
-  const {page,host}=await open(t,engine);
+  const {page,host}=await open(t,engine,{platform:client==='desktop'?'desktop':'android',viewport:{width,height}});
   await installTopSlotFixtures(page);
   const remote=client==='remote';
   if(remote){
@@ -421,22 +450,11 @@ for(const engine of [chromium,webkit]) for(const [client,width,height] of [
     await page.locator('#remote-identity-input').fill('TopSlot tester');
     await page.locator('#remote-identity-submit').click();
     await page.locator('#remote-identity-modal').waitFor({state:'hidden'});
-  }else{
-    await page.evaluate(client=>{document.documentElement.dataset.hostPlatform=client;activateHostWorkspace('request');},client);
-  }
-  await page.setViewportSize({width,height});
+  }else await openRequestWorkspace(page);
   await page.evaluate(()=>setLanguage('zh'));
-  const activate=async(view,mode)=>page.evaluate(({remote,view,mode})=>{
-    if(remote){
-      activateRemoteRequestView(view);
-      ({search:activateRemoteSearchMode,discover:activateRemoteDiscoverMode,sources:activateRemoteSourcesMode})[view](mode);
-    }else{
-      activateRequestSubview(view);
-      ({search:activateSearchMode,discover:activateDiscoverMode,sources:activateSourcesMode})[view](mode);
-    }
-  },{remote,view,mode});
+  const activate=(view,mode)=>openRequestMode(page,remote,view,mode);
   const measurements=[];
-  const sample=async(name,topSelector,cardSelector,{separateAlphabet=false}={})=>{
+  const sample=async(name,topSelector,cardSelector,{separateAlphabet=false,coverStrip=false}={})=>{
     await page.locator(cardSelector).first().waitFor({state:'visible'});
     await page.evaluate(async()=>{
       await document.fonts.ready;
@@ -457,7 +475,7 @@ for(const engine of [chromium,webkit]) for(const [client,width,height] of [
       assert.ok(value.alphabet.bottom<=value.y+1,'desktop alphabet remains above the contextual TopSlot in normal flow');
     }
     assert.ok(Math.abs(value.gap-value.expectedGap)<=1,JSON.stringify({name,...value}));
-    for(const key of ['x','y','width','height'])if(measurements.length&&!(key==='y'&&separateAlphabet))assert.ok(Math.abs(value[key]-measurements[0][key])<=1,JSON.stringify({name,key,value,reference:measurements[0]}));
+    for(const key of ['x','y','width','height'])if(measurements.length&&!(key==='y'&&separateAlphabet)&&!(key==='height'&&coverStrip))assert.ok(Math.abs(value[key]-measurements[0][key])<=1,JSON.stringify({name,key,value,reference:measurements[0]}));
     measurements.push({name,...value});
   };
   for(const mode of ['shared','local']){
@@ -470,7 +488,13 @@ for(const engine of [chromium,webkit]) for(const [client,width,height] of [
   await activate('discover','categories');
   const category=remote?'#remote-discover-categories-panel':'#request-discover-categories';
   await page.locator(category+' [data-category-browser-home] [data-category-id]').first().click();
-  await sample('category-results',category+' .browse-search-bar',category+' .search-result-item');
+  await page.locator(category+' .search-result-item').first().waitFor({state:'visible'});
+  const phoneStrip=await page.evaluate(()=>document.documentElement.dataset.hostLayout==='portrait');
+  const categoryHeight=remote?64:phoneStrip?44:width<=760?64:74;
+  const categoryTab=await page.locator(category+' .category-browser-tab').first().boundingBox();
+  assert.ok(Math.abs(categoryTab.height-categoryHeight)<=1,'category cover/text track preserves its approved platform height');
+  if(client==='desktop')assert.notEqual(await page.locator(category+' .category-browser-tabs').evaluate(n=>getComputedStyle(n).scrollbarWidth),'none','desktop retains its horizontal scrollbar cue');
+  await sample('category-results',category+' .browse-search-bar',category+' .search-result-item',{coverStrip:remote||!phoneStrip});
   // Approved desktop exception: the persistent alphabet is separate navigation,
   // excluded from TopSlot height and cross-page y comparisons. Its following
   // TopSlot still participates in the same lower-edge-to-first-card gap check.
@@ -490,6 +514,10 @@ for(const engine of [chromium,webkit]) for(const [client,width,height] of [
     const grid=favorite?'#favlist-grid':remote?'#sources-follow-grid':'#follow-up-grid';
     const results=favorite?'#favlist-song-results':remote?'#sources-follow-results':'#follow-song-results';
     await sample(`${mode}-list`,panel+' .source-uid-form',grid+' .follow-up-button');
+    if(!remote){
+      const gap=await page.locator(panel).evaluate(n=>n.querySelector('.source-frame-footer').getBoundingClientRect().top-n.querySelector('.source-browse-scroll').getBoundingClientRect().bottom);
+      assert.ok(Math.abs(gap-8)<=1,'Sources retain the approved 8px list-to-tools gap');
+    }
     await page.locator(grid+' .follow-up-button').first().click();
     await sample(`${mode}-detail`,panel+' .browse-search-bar',results+' .search-result-item');
   }
@@ -507,6 +535,8 @@ for (const engine of [chromium, webkit]) test(`${engine.name()} Request search f
   await page.locator('#shared-search-results .search-result-item').first().waitFor();
   for (const [width,height] of [[393,844],[844,393],[1024,768],[1180,820]]) {
     await page.setViewportSize({width,height});
+    await openRequestWorkspace(page);
+    await page.locator('#shared-search-form input').waitFor({state:'visible'});
     for (const status of ['', 'Visible status']) for (const notice of [false,true]) {
       await page.locator('#request-search-shared').evaluate((panel,{status,notice})=>{
         panel.querySelector('.search-message').textContent=status;
@@ -525,6 +555,7 @@ for (const engine of [chromium, webkit]) test(`${engine.name()} Request search f
     }
   }
   await page.setViewportSize({width:393,height:844});
+  await openRequestWorkspace(page);
   await page.locator('#android-request-tabs [data-request-back]').click();
   await page.locator('[data-request-view="discover"]').click();
   for(const kind of ['name','artist']) {
@@ -532,12 +563,14 @@ for (const engine of [chromium, webkit]) test(`${engine.name()} Request search f
     await page.locator(`#request-discover-${kind} [data-letter="A"]`).click();
     for(const [width,height] of [[393,844],[844,393],[1024,768],[1180,820]]) {
       await page.setViewportSize({width,height});
+      await openRequestWorkspace(page);
       const view=page.locator(`#request-discover-${kind}`);
       await view.locator('[data-d1-browse-tags] button').first().waitFor();
       const top=await view.locator('.browse-search-bar').boundingBox(),grid=await view.locator('[data-d1-browse-tags]').boundingBox();
       assert.ok(top.y+top.height<=grid.y,JSON.stringify({kind,width,height,top,grid}));
     }
     await page.setViewportSize({width:393,height:844});
+    await openRequestWorkspace(page);
   }
 });
 
