@@ -13,6 +13,169 @@ before(async()=>{if(process.platform==='linux')binary=process.env.BILIKARA_TEST_
 const posts=Array.from({length:612},(_,i)=>({bvid:'BV'+String(i+1).padStart(10,'0'),title:`Post ${i+1}`,
   owner_name:'Fixture UP',source_url:'https://www.bilibili.com/video/BV'+String(i+1).padStart(10,'0')}));
 
+async function settlePager(page) {
+  await page.evaluate(async()=>{
+    await document.fonts.ready;
+    await Promise.all(document.getAnimations().filter(animation=>animation.effect?.getTiming().iterations!==Infinity)
+      .map(animation=>animation.finished.catch(()=>{})));
+    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  });
+}
+
+async function pagerTargets(pager) {
+  const value=await pager.evaluate(node=>{
+    const rect=node=>{const r=node.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height};};
+    const owns=(button,x,y)=>button.contains(document.elementFromPoint(x,y));
+    const arrows=[...node.querySelectorAll('[data-page-action]')].filter(button=>button.getClientRects().length).map(button=>{
+      const box=rect(button),x=(box.left+box.right)/2,y=(box.top+box.bottom)/2;
+      // Probe both complete center axes, including the expanded target edges.
+      // Rounded corners are deliberately not treated as rectangular ink.
+      const horizontal=Array.from({length:Math.ceil(box.width)},(_,i)=>owns(button,box.left+i+.25,y));
+      const vertical=Array.from({length:Math.ceil(box.height)},(_,i)=>owns(button,x,box.top+i+.25));
+      return {action:button.dataset.pageAction,...box,hitWidth:horizontal.every(Boolean)?box.width:0,
+        hitHeight:vertical.every(Boolean)?box.height:0};
+    });
+    const controls=rect(node.querySelector('.result-pager-controls')),input=node.querySelector('[data-page-input]');
+    const style=getComputedStyle(node);
+    return {slot:rect(node),controls,arrows,input:rect(input),inputTarget:rect(input.parentElement),
+      padding:[style.paddingTop,style.paddingBottom],viewport:innerWidth};
+  });
+  assert.equal(value.slot.height,52,JSON.stringify(value));
+  assert.deepEqual(value.padding,['4px','4px']);
+  assert.deepEqual(value.arrows.map(arrow=>arrow.action),value.viewport<375?['previous','next']:['first','previous','next','last']);
+  assert.equal(value.input.height,32);assert.equal(value.inputTarget.height,44);
+  assert.ok(value.controls.left>=value.slot.left-.5&&value.controls.right<=value.slot.right+.5,'all page controls fit inside the slot');
+  for(const arrow of value.arrows){
+    assert.ok(arrow.width>=44&&arrow.height>=44,JSON.stringify(arrow));
+    assert.ok(arrow.hitWidth>=44&&arrow.hitHeight>=44,'each arrow has its own complete hit target: '+JSON.stringify(arrow));
+    for(const other of [...value.arrows.filter(other=>other!==arrow),value.inputTarget]){
+      const overlap=Math.min(arrow.right,other.right)-Math.max(arrow.left,other.left);
+      assert.ok(overlap<=.01,'arrow targets cannot overlap adjacent controls: '+JSON.stringify({arrow,other}));
+    }
+  }
+  return value;
+}
+
+async function dragPageTarget(target, distance=-84) {
+  return target.evaluate((node,distance)=>{
+    const box=node.getBoundingClientRect(),x=box.left+box.width*.8,y=box.top+box.height/2;
+    const emit=(type,dx)=>{
+      const points=[{identifier:1,target:node,clientX:x+dx,clientY:y+2}];
+      const event=new Event(type,{bubbles:true,cancelable:true});
+      Object.defineProperties(event,{touches:{value:type==='touchend'?[]:points},changedTouches:{value:points}});
+      node.dispatchEvent(event);return event.defaultPrevented;
+    };
+    emit('touchstart',0);emit('touchmove',Math.sign(distance)*16);
+    const owned=emit('touchmove',distance);emit('touchend',distance);return owned;
+  },distance);
+}
+
+for(const engine of [chromium,webkit])for(const client of ['android','ios','remote'])test(
+  `${engine.name()} ${client} request pages share pager slots and Host bottom anchors [B2-G1-G2-G3]`,
+  {skip:process.platform!=='linux',timeout:120000},async t=>{
+    const {page}=await open(t,client,engine),remote=client==='remote';
+    const owners=Array.from({length:60},(_,i)=>({uid:String(i+42),name:`Fixture UP ${i+1}`,count:posts.length}));
+    const folders=owners.map(owner=>({...owner,id:`${owner.uid}:7`,folder_id:'7',title:`Fixture favorites ${owner.uid}`}));
+    const tags=owners.map((owner,i)=>({tag:`A tag ${i+1}`,count:posts.length}));
+    await page.context().route(/\/api\/(?:catalog\/search|gatcha\/search|d1\/(?:category-browse|browse)|gatcha\/(?:favlist\/)?browse)(?:\?|$)/,route=>{
+      const url=new URL(route.request().url()),params=url.searchParams;
+      const offset=Number(params.get('offset')||0),limit=Number(params.get('limit')||100);
+      const source=url.pathname.endsWith('/browse')&&url.pathname.includes('/gatcha/');
+      const selected=params.get(url.pathname.includes('/favlist/')?'folder_id':'uid')||'';
+      const tagList=url.pathname==='/api/d1/browse'&&!params.get('tag');
+      const items=tagList||source&&!selected?[]:posts.slice(offset,offset+limit);
+      return route.fulfill({json:{ok:true,data:{owners,folders,tags,items,query:params.get('q')||'',
+        kind:params.get('kind'),letter:params.get('letter'),tag:params.get('tag'),selected_uid:selected,selected_folder_id:selected,
+        matched_count:posts.length,offset,next_offset:offset+items.length,has_more:Boolean(items.length&&offset+items.length<posts.length),
+        source_order_version:'a'.repeat(64),source_order_editable:true,source_order_count:owners.length}}});
+    });
+    await page.evaluate(()=>{fetchState=async()=>{};state.eventSource?.close();});
+    if(!remote)await page.locator('[data-android-page="request"]').click();
+    const request=async view=>{
+      if(!remote){const back=page.locator('[data-request-back]:visible');if(await back.count())await back.click();}
+      await page.locator(`[${remote?'data-remote-request-view':'data-request-view'}="${view}"]`).click();
+    };
+    const capture=async scenario=>{
+      const pager=page.locator('.result-pager:visible');await pager.waitFor({state:'visible'});
+      await page.waitForFunction(()=>[...document.querySelectorAll('.result-pager')].filter(node=>node.getClientRects().length)
+        .every(node=>node.getAttribute('aria-busy')==='false'));
+      await settlePager(page);
+      if(remote){await pager.evaluate(node=>node.scrollIntoView({block:'center'}));await settlePager(page);}
+      const geometry=await pagerTargets(pager);
+      const dockTop=await page.evaluate(()=>{
+        const dock=document.getElementById('android-host-dock');
+        return dock?.getClientRects().length?dock.getBoundingClientRect().top:innerHeight;
+      });
+      return {scenario,bottom:geometry.slot.bottom,dockGap:dockTop-geometry.slot.bottom};
+    };
+    for(const [width,height] of remote?[[320,844],[393,844]]:[[393,844],[1024,768]]){
+      await page.setViewportSize({width,height});const samples=[];
+      await request('search');
+      for(const mode of ['shared','local']){
+        await page.locator(`[${remote?'data-remote-search-mode':'data-search-mode'}="${mode}"]`).click();
+        const input=page.locator(mode==='shared'?'#shared-search-query':'#search-query');
+        await input.fill('fixture');await input.press('Enter');samples.push(await capture(`search-${mode}`));
+      }
+      await request('discover');
+      await page.locator(`[${remote?'data-remote-discover-mode':'data-discover-mode'}="categories"]`).click();
+      // The prior size may have left a category detail selected.
+      const categoryBack=page.locator('[data-category-browse-back]:visible');if(await categoryBack.count())await categoryBack.click();
+      samples.push(await capture('categories-home'));
+      await page.locator('[data-category-id]:visible').first().click();samples.push(await capture('categories-results'));
+      for(const kind of ['name','artist']){
+        await page.locator(`[${remote?'data-remote-discover-mode':'data-discover-mode'}="${kind}"]`).click();
+        // Restore alphabet navigation when repeating at another size.
+        const back=page.locator('[data-d1-browse-back]:visible');
+        for(let i=0;i<2&&await back.count();i++)await back.click();
+        await page.locator('[data-letter="A"]:visible').click();samples.push(await capture(`${kind}-tags`));
+        await page.locator('[data-d1-browse-tags]:visible .tag-browser-tag').first().click();samples.push(await capture(`${kind}-results`));
+      }
+      await request('sources');
+      for(const mode of ['uids','favorites']){
+        await page.locator(`[${remote?'data-remote-sources-mode':'data-sources-mode'}="${mode}"]`).click();
+        const sourceBack=page.locator(mode==='favorites'?'#favlist-browse-back':remote?'#sources-follow-back':'#follow-browse-back');
+        if(await sourceBack.isVisible())await sourceBack.click();
+        samples.push(await capture(`sources-${mode}`));
+        const grid=page.locator(mode==='favorites'?'#favlist-grid':remote?'#sources-follow-grid':'#follow-up-grid');
+        const pager=page.locator('.result-pager:visible');
+        const expectPage=async value=>{await waitFor(async()=>await pager.getAttribute('data-page')===String(value),`source page ${value}`);await settlePager(page);};
+        const route=()=>page.evaluate(remote=>remote?`${state.remoteRequestView}.${state.remoteSourcesMode}`:BilikaraHostSubTabs.current(),remote);
+        const owner=await route();
+        // Click near the new 44px target's edge, outside its centered 20px icon.
+        await pager.locator('[data-page-action="next"]').click({position:{x:2,y:22}});await expectPage(2);
+        await pager.locator('[data-page-action="previous"]').click({position:{x:2,y:22}});await expectPage(1);
+        assert.equal(await route(),owner,'expanded arrow clicks do not activate another tab');
+        assert.equal(await dragPageTarget(grid.locator('.follow-up-button').first()),true,'a short horizontal card drag belongs to the pager');
+        await expectPage(2);assert.equal(await route(),owner,'the pager never transfers a content drag to a parent tab');
+        assert.equal(await sourceBack.isVisible(),false,'dragging a browse button cannot also open its detail');
+        await pager.locator('[data-page-action="previous"]').click();await expectPage(1);
+        if(!remote){
+          const tools=pager.locator('..').locator('.source-tools');await tools.locator('.source-select-mode').click();
+          assert.equal(await dragPageTarget(grid.locator('.source-select-target').first()),false,'ignoreSwipe preserves the selection target owner');
+          await settlePager(page);assert.equal(await pager.getAttribute('data-page'),'1');assert.equal(await route(),owner);
+          await tools.locator('.source-select-mode').click();
+        }
+        await grid.locator('.follow-up-button').first().click();samples.push(await capture(`${mode}-detail`));
+        await sourceBack.click();
+      }
+      if(!remote)for(const sample of samples){
+        assert.ok(Math.abs(sample.bottom-samples[0].bottom)<=1,'every Host pager uses the same bottom anchor: '+JSON.stringify({width,height,client,samples}));
+        assert.ok(Math.abs(sample.dockGap-samples[0].dockGap)<=1,'every Host pager keeps the same dock clearance: '+JSON.stringify({width,height,client,samples}));
+      }
+      if(width===320){
+        const pager=page.locator('.result-pager:visible'),input=pager.locator('[data-page-input]');
+        const expectPage=async value=>{await waitFor(async()=>await pager.getAttribute('data-page')===String(value),`compact page ${value}`);await settlePager(page);};
+        await input.fill('3');await pager.locator('[data-page-go]').click();await expectPage(3);
+        await pager.locator('[data-page-action="next"]').click();await expectPage(4);
+        await pager.locator('[data-page-action="previous"]').click();await expectPage(3);
+        const last=Math.ceil(owners.length/Number(await pager.getAttribute('data-page-size')));
+        await pager.focus();await page.keyboard.press('End');await expectPage(last);
+        await pager.focus();await page.keyboard.press('Home');await expectPage(1);
+        await pagerTargets(pager);
+      }
+    }
+  });
+
 for(const engine of [chromium,webkit])for(const client of ['ios','remote'])test(
   `${engine.name()} ${client} cached result images survive turns and uncached pages commit after decode [IOS-09-11]`,
   {skip:process.platform!=='linux',timeout:90000},async t=>{
@@ -334,7 +497,7 @@ async function open(t,client,engine=chromium,{nativeDock=false}={}) {
 }
 
 for(const engine of [chromium,webkit])for(const [client,nativeDock] of [['android',false],['ios',false],['ios',true]])test(
-  `${engine.name()} ${client} ${nativeDock?'native':'web'} source grid fits complete rows and retains record anchors [IOS-09-10]`,
+  `${engine.name()} ${client} ${nativeDock?'native':'web'} source grid fits complete rows and retains record anchors [IOS-09-10] [B2-G7]`,
   {skip:process.platform!=='linux',timeout:90000},async t=>{
     const {page}=await open(t,client,engine,{nativeDock});
     let count=27;
@@ -358,8 +521,8 @@ for(const engine of [chromium,webkit])for(const [client,nativeDock] of [['androi
         await pager.waitFor({state:'visible'});await settle();
         if(await pager.locator('[data-page-action="first"]').isEnabled()){await pager.locator('[data-page-action="first"]').click();await settle();}
         for(const font of [16,20]){
-          let previousRows=0;
-          for(const [width,height]of [[320,568],[375,667],[393,852],[393,932],[430,1024]]){
+          const previousRows=new Map();
+          for(const [width,height]of [[320,568],[375,667],[393,640],[393,720],[393,844],[393,852],[393,932],[430,1024],[1024,768]]){
             await page.setViewportSize({width,height});
             await page.evaluate(({client,font})=>{
               document.documentElement.style.fontSize=font+'px';
@@ -370,21 +533,34 @@ for(const engine of [chromium,webkit])for(const [client,nativeDock] of [['androi
               const rect=n=>{const r=n.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,height:r.height};};
               const q=s=>rect(n.querySelector(s)),grid=n.querySelector('.follow-up-grid'),style=getComputedStyle(grid);
               return {panel:rect(n),scroll:q('.source-browse-scroll'),viewport:q('.result-page-viewport'),grid:rect(grid),footer:q('.source-frame-footer'),tools:q('.source-tools'),pager:q('.host-result-pager'),dock:rect(document.getElementById('android-host-dock')),
-                cards:[...grid.children].map(rect),columns:style.gridTemplateColumns.split(' ').length,gap:parseFloat(style.rowGap),padding:parseFloat(style.paddingTop)+parseFloat(style.paddingBottom),pageSize:Number(n.querySelector('.host-result-pager').dataset.pageSize),
+                cards:[...grid.children].map(rect),fitHeight:n.querySelector('.source-browse-scroll').clientHeight,columns:style.gridTemplateColumns.split(' ').length,gap:parseFloat(style.rowGap),padding:parseFloat(style.paddingTop)+parseFloat(style.paddingBottom),pageSize:Number(n.querySelector('.host-result-pager').dataset.pageSize),
                 targets:[...n.querySelectorAll('.source-tools button,.source-trash-slot,.host-result-pager button')].filter(n=>n.getClientRects().length).map(rect)};
             });
             const rows=new Set(sample.cards.map(r=>Math.round(r.top))).size;
             samples.push({mode,count,font,width,height,rows,...sample});
             if(evidence){mkdirSync(evidence,{recursive:true});writeFileSync(path.join(evidence,`source-capacity-${engine.name()}-${client}-${nativeDock?'native':'web'}.json`),JSON.stringify(samples,null,2));}
             assert.ok(sample.cards.every(r=>r.top>=sample.viewport.top-.5&&r.bottom<=Math.min(sample.viewport.bottom,sample.scroll.bottom)+.5),'all rendered source cards fit completely: '+JSON.stringify({mode,count,font,width,height,...sample}));
-            assert.ok(sample.scroll.bottom-sample.grid.bottom<sample.cards[0].height+sample.gap,'the remaining space cannot hold another complete row');
-            assert.ok(rows>=previousRows,'a taller viewport cannot lose a grid row');previousRows=rows;
+            const fittingRows=Math.max(1,Math.floor((sample.fitHeight-sample.padding+sample.gap+.5)/(sample.cards[0].height+sample.gap)));
+            const capacity=sample.columns*Math.min(fittingRows,Math.floor(48/sample.columns));
+            assert.equal(sample.pageSize,capacity,'every complete fitting row contributes capacity: '+JSON.stringify({width,height,font,mode,...sample}));
+            if(sample.cards.length<count)assert.ok(sample.scroll.bottom-sample.grid.bottom<sample.cards[0].height+sample.gap,'the remaining space cannot hold another complete row');
+            assert.ok(rows>=(previousRows.get(width)||0),'a taller viewport at the same width cannot lose a grid row');previousRows.set(width,rows);
             assert.ok(sample.scroll.bottom<=sample.footer.top&&sample.footer.bottom<=sample.dock.top,'cards and footer stay above the dock');
             assert.ok(sample.targets.every(r=>r.height>=44&&r.right<=sample.panel.right+.5&&r.left>=sample.panel.left-.5),'full tool and pager targets retain their bounds');
+            assert.equal(sample.tools.height,52,'the approved trash slot is preserved');
+            assert.equal(sample.pager.top-sample.tools.bottom,0,'the two inner insets replace the old footer gap');
+            assert.equal(sample.footer.height,104,'52px tools and 52px pager have no extra gap');
+            await pagerTargets(pager);
             if(sample.columns===3&&sample.scroll.height>=sample.cards[0].height*5+sample.gap*4+sample.padding)assert.ok(sample.pageSize>=15,'five fitting rows require at least 15 records per page');
             if(evidence&&font===16&&width===393)await page.screenshot({path:path.join(evidence,`sources-${engine.name()}-${client}-${nativeDock?'native':'web'}-${mode}-${height}.png`)});
           }
         }
+        const bottom=(await pager.boundingBox()).y+52,tools=panel.locator('.source-tools');
+        await tools.evaluate(node=>node.style.display='none');await settle();
+        assert.equal(await tools.evaluate(node=>node.getBoundingClientRect().height),0,'an absent optional action slot consumes no height');
+        assert.ok(Math.abs((await pager.boundingBox()).y+52-bottom)<=1,'hiding tools preserves the pager bottom anchor');
+        await tools.evaluate(node=>node.style.removeProperty('display'));await settle();
+        assert.ok(Math.abs((await pager.boundingBox()).y+52-bottom)<=1,'restoring tools preserves the pager bottom anchor');
         await pager.locator('[data-page-action="next"]').click();await settle();
         const anchor=await panel.locator('.source-removal-card').first().getAttribute('data-source-id');
         await panel.locator('.source-select-mode').click();
