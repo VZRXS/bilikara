@@ -21309,7 +21309,6 @@ async function handleSharedSearchSubmit(event) {
   state.sharedSearchSeq = searchSeq;
   const seenBvids = new Set();
   const collectedItems = [];
-  let partialFailure = false;
   if (elements.sharedSearchResults) {
     elements.sharedSearchResults.innerHTML = "";
     elements.sharedSearchResults.classList.remove("hidden");
@@ -21342,17 +21341,8 @@ async function handleSharedSearchSubmit(event) {
     modeState.pageData = page;
     modeState.items = collectedItems;
     if (androidBrowseEnabled() && collectedItems.length) renderSearchResultItems(elements.sharedSearchResults, collectedItems);
-    modeState.message = collectedItems.length
-      ? (partialFailure ? t("search.sharedFoundPartial", { count: collectedItems.length }) : "")
-      : partialFailure
-        ? t("search.sharedPartialNoResults")
-        : t("search.sharedNoResults");
-    if (partialFailure && collectedItems.length) {
-      setSharedSearchMessage("");
-      setAppMessage(modeState.message, false);
-    } else {
-      setSharedSearchMessage(modeState.message);
-    }
+    modeState.message = collectedItems.length ? "" : t("search.sharedNoResults");
+    setSharedSearchMessage(modeState.message);
   } catch (error) {
     if (state.sharedSearchSeq === searchSeq) {
       modeState.items = [];

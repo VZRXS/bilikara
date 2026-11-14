@@ -61,6 +61,9 @@ pages, selection and detail-return focus belong to the existing client state.
 The internal `shared` detail/action source selects UI feedback and return
 context only; it is not sent as a song field or persisted in queue/history.
 Provider response metadata such as `source: sheets` has a separate meaning.
+Loading text makes no fixed network-duration promise. Valid empty results use
+the empty-state message; request errors follow the existing error path. There is
+no client-invented multi-table partial-failure state or partial-failure message.
 
 ## Configuration and cache
 
