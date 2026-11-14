@@ -44,13 +44,31 @@
       header.classList.add("purek-settings-controls");
     }
     options.bindHelp?.(header);
-    let current = null, errorKey = "";
+    let current = null, errorKey = "", errorContext = "", actionEpoch = 0;
+    // Progress, latency and unrelated snapshot revisions do not retire a failure.
+    const context = data => JSON.stringify(["target","requested_target","status","authorized","available","offset_mode","last_error"].map(key=>data?.media_output?.[key]));
+    const visible = () => root.getClientRects().length > 0 && getComputedStyle(root).visibility !== "hidden";
+    const clearError = () => { errorKey = ""; errorContext = ""; visibilityObserver.disconnect(); };
+    // Observe only while an action/error belongs to this visible group. Navigation
+    // can hide an ancestor without another state snapshot (including modal close).
+    const visibilityObserver = new MutationObserver(() => {
+      if (!visible()) { actionEpoch++; clearError(); render(current); }
+    });
+    function watchVisibility() {
+      for (let node=root;node;node=node.parentElement) visibilityObserver.observe(node,{attributes:true,attributeFilter:["hidden","class","style"]});
+    }
     async function act(control, work) {
       if (pending || control.disabled) return;
-      pending = true; errorKey = ""; control.setAttribute("aria-busy", "true");
+      clearError(); const epoch=++actionEpoch; watchVisibility();
+      pending = true; control.setAttribute("aria-busy", "true");
       const disabled = control.disabled; control.disabled = true; refresh(); options.onBusy?.();
-      try { await work(); }
-      catch (error) { errorKey = error?.outputKey || (error?.code==="purek_output_backend_unavailable"?"mediaOutput.backendUnavailable":"mediaOutput.error"); options.onError?.(options.t(errorKey)); }
+      try { await work(); clearError(); }
+      catch (error) {
+        const key = error?.outputKey || (error?.code==="purek_output_backend_unavailable"?"mediaOutput.backendUnavailable":"mediaOutput.error");
+        if(epoch===actionEpoch&&visible()){errorKey=key;errorContext=context(current);}
+        else clearError();
+        options.onError?.(options.t(key));
+      }
       finally { pending = false; control.disabled = disabled; control.removeAttribute("aria-busy"); refresh(); options.onBusy?.(); }
     }
     const post = async body => {
@@ -71,10 +89,11 @@
     nodes.retry.addEventListener("click", () => act(nodes.retry,start));
     nodes.select.addEventListener("change", () => {const mode=nodes.select.value;act(nodes.select, () => post({offset_mode:mode}));});
     function render(data) {
+      if(errorKey&&errorContext!==context(data))clearError();
       current = data;
       const output = data?.media_output, network = selected(data), t = options.t;
       root.hidden = !output || (!options.host && !network) || (root.dataset.mediaOutput === "console" && !network);
-      if (root.hidden) return;
+      if (root.hidden) { clearError(); return; }
       const host = options.host && output.can_manage;
       const phase = network || ["unsupported","error","probing","unverified"].includes(output.status) ? output.status : output.authorized ? "authorized" : "local";
       text(nodes.heading, t("mediaOutput.title"));
