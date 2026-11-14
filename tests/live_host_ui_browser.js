@@ -5993,13 +5993,13 @@ async function run() {
         && elements.searchResults === window.__requestLocalNode),
       "Request tab switching reconstructed Search results",
     );
-    const larkRequestsBeforeWorkspaceRoundTrip = sharedSearchRequests.length;
+    const sharedRequestsBeforeWorkspaceRoundTrip = sharedSearchRequests.length;
     await page.locator("#work-rail-queue").click();
     await page.locator("#work-rail-request").click();
     assert(
       await page.locator("#shared-search-results .search-result-item").count() === 36
         && await page.locator("#shared-search-query").inputValue() === "host ui"
-        && sharedSearchRequests.length === larkRequestsBeforeWorkspaceRoundTrip,
+        && sharedSearchRequests.length === sharedRequestsBeforeWorkspaceRoundTrip,
       "Request workspace round trip lost Search state or reran the query",
       { sharedSearchRequests },
     );
@@ -6668,7 +6668,7 @@ async function run() {
       resultSelector: "#shared-search-results .search-result-item",
       subview: "search",
       mode: "shared",
-      source: "lark",
+      source: "shared",
     });
     await verifyDetailOrigin({
       key: "local",
@@ -7857,7 +7857,7 @@ async function run() {
       setSharedSearchMessage(existingStatus);
       submitAddRequest = async () => { throw new Error("HTTP 412"); };
       try {
-        await handleAddByUrl("BV1ToastFailure", "tail", null, "lark");
+        await handleAddByUrl("BV1ToastFailure", "tail", null, "shared");
       } finally {
         submitAddRequest = originalSubmitAddRequest;
       }
