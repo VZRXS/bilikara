@@ -261,7 +261,7 @@ assert.ok(contains("overscroll-behavior-y: auto", quick_rule[1]));
 assert.notEqual(this.markup.match(new RegExp("id=\"sources-follow-uid-form\".*?id=\"sources-add-follow-uid-button\".*?id=\"refresh-gatcha-cache-button\".*?</form>","s")), null);
 source_form_rule = this.request_styles.match(/:root \.source-uid-form:is\(:has\(> \.source-refresh-button\), :where\(\[data-legacy-has~="r24"\]\)\)\s*\{([^}]*)\}/u);
 assert.notEqual(source_form_rule, null);
-assert.ok(contains("grid-template-columns: minmax(0, 1fr) auto auto", source_form_rule[1]));
+assert.ok(contains("grid-template-columns: minmax(var(--source-uid-input-min-width, 0px), 1fr) auto auto", source_form_rule[1]));
 document_layout_styles = this.styles.slice(0, sourceIndex(this.styles, "/* Remote playback dock and responsive bottom sheet */"));
 assert.ok(!contains("height: 100dvh", document_layout_styles));
 assert.ok(!contains("--remote-search-stage-height", this.styles));
