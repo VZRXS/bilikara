@@ -545,6 +545,12 @@ for (const engine of engines) for (const name of ['uid-detail', 'source-list']) 
     for (const [width, height] of [[844, 393], [393, 844]]) {
       await page.setViewportSize({width, height});
       await page.evaluate(([w, h]) => { Object.assign(visualViewport, {width: w, height: h}); visualViewport.dispatchEvent(new Event('resize')); }, [width, height]);
+      // A compact landscape overlay starts closed after the layout change; reopen the Request sheet as a user would.
+      await settle(page);
+      if (!await page.evaluate(card => [...document.querySelectorAll(card)].some(n => n.getClientRects().length), card)) {
+        await page.evaluate(() => activateHostWorkspace('request'));
+        await page.waitForFunction(card => [...document.querySelectorAll(card)].some(n => n.getClientRects().length), card, {timeout: 10000}).catch(() => {});
+      }
       history = await g11Check(page, card, `rotate ${width}x${height}`, history, sourceFit);
     }
     await step('IME open', () => { visualViewport.height = 520; visualViewport.dispatchEvent(new Event('resize')); });
