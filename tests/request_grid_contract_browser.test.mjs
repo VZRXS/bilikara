@@ -303,6 +303,29 @@ for (const engine of engines) {
   });
 }
 
+// A panel whose fit region has no height (short landscape, B2-G9 geometry still open) must not wait forever:
+// the pager settles and the list still shows its entries. G9's own layout assertions remain skipped elsewhere.
+for (const engine of engines) {
+  test(`${engine.name()} 844x393 source lists still render a page when the fit region has no height [B2 G10]`, {skip: !linux, timeout: 180000}, async t => {
+    const browser = await engine.launch({headless: true}); t.after(() => browser.close());
+    for (const [mode, card] of [['uids', '#follow-up-grid [data-uid]'], ['favorites', '#favlist-grid [data-folder-id]']]) {
+      const {page, errors} = await openSession(t, browser, {kind: 'alpha', viewport: [844, 393], touch: true});
+      await page.evaluate(() => { activateHostWorkspace('request'); activateRequestSubview('sources'); });
+      await page.evaluate(m => document.querySelector(`[data-sources-mode="${m}"]`).click(), mode);
+      await page.waitForFunction(s => document.querySelectorAll(s).length >= 2, card, {timeout: 10000}).catch(() => {});
+      const shown = await page.evaluate(s => {
+        const pager = [...document.querySelectorAll('.result-pager')].find(p => p.getClientRects().length);
+        return {cards: document.querySelectorAll(s).length, busy: pager?.getAttribute('aria-busy') ?? null, pageSize: pager?.dataset.pageSize ?? null};
+      }, card);
+      assert.ok(shown.cards >= 2, `${mode}: source entries render, not ${JSON.stringify(shown)}`);
+      assert.notEqual(shown.busy, 'true', `${mode}: the pager settles: ${JSON.stringify(shown)}`);
+      assert.ok(Number(shown.pageSize) >= 1, `${mode}: a page size is committed: ${JSON.stringify(shown)}`);
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  });
+}
+
 // ---------- G12: equal song-card heights within one grid ----------
 const heightLayouts = [
   {id: 'desktop-1440x900', kind: 'desktop', viewport: [1440, 900]},
