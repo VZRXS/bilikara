@@ -337,9 +337,6 @@ for (const engine of [chromium, webkit]) for (const layout of layouts) {
         // D1 (decided, b3-measure.md §4): phone My/Settings/Queue/History scrollports end at the dock top, so the
         // native indicator never crosses it; only the background shows behind the dock.
         if (layout.id.startsWith('android-') && ['my', 'settings', 'queue', 'history'].includes(name)) {
-          // Without a current song, the Queue grid keeps an empty 1fr track and its 10px gap below #playlist
-          // (.host-workspace-region .list-stage, present since 6944f87), so that owner ends 10px early.
-          const emptyQueueTrack = name === 'queue' && sample.queueFrame?.currentHidden;
           await st.test('phone page scrollports stop exactly at the dock top [D1]', () => {
             assert.ok(sample.dock, 'the phone dock is rendered');
             const owners = sample.owners.filter(owner => owner.underDock !== null);
@@ -347,15 +344,16 @@ for (const engine of [chromium, webkit]) for (const layout of layouts) {
             for (const owner of owners) {
               assert.ok(owner.underDock <= 1, `${owner.el} ends at the dock top, not ${owner.underDock}px under it`);
               // Lower bound: the owner must not end early either (wasted space, indicator stopping short).
-              if (!(emptyQueueTrack && owner.el === '#playlist')) assert.ok(owner.underDock >= -1, `${owner.el} reaches the dock top, not ${-owner.underDock}px above it`);
+              assert.ok(owner.underDock >= -1, `${owner.el} reaches the dock top, not ${-owner.underDock}px above it`);
             }
-            if (name === 'queue') assert.ok(Math.abs(sample.queueFrame.bottom - sample.dock.y) <= 1, 'the Queue frame reaches exactly the dock top: ' + JSON.stringify(sample.queueFrame));
-          });
-          if (emptyQueueTrack) await st.test('the Queue scroll owner reaches the dock top without a current song [D1]', {
-            todo: 'pre-existing empty grid track: .list-stage keeps "auto minmax(0, 1fr)" with a 10px gap when #queue-current is hidden',
-          }, () => {
-            const owner = sample.owners.find(owner => owner.el === '#playlist');
-            assert.ok(owner && Math.abs(owner.underDock) <= 1, '#playlist ends exactly at the dock top: ' + JSON.stringify(owner));
+            if (name === 'queue') {
+              assert.ok(Math.abs(sample.queueFrame.bottom - sample.dock.y) <= 1, 'the Queue frame reaches exactly the dock top: ' + JSON.stringify(sample.queueFrame));
+              // This fixture has no current song: #playlist must take the whole list stage, with no empty
+              // trailing grid track and gap left below it.
+              assert.equal(sample.queueFrame.currentHidden, true, 'the queue page fixture has no current song');
+              const owner = sample.owners.find(owner => owner.el === '#playlist');
+              assert.ok(owner && Math.abs(owner.underDock) <= 1, 'without a current song #playlist ends exactly at the dock top: ' + JSON.stringify(owner));
+            }
           });
         }
 
@@ -532,6 +530,38 @@ test('chromium desktop announcements reserve classic scrollbar width only when c
   }
   assert.deepEqual(errors, []);
 });
+
+// ---------- D1: the phone Queue owner reaches the dock top with and without a current song ----------
+// The list stage drops its empty second track when no current song is visible; switching the current card on
+// and off must keep #playlist on the dock top and the final song reachable 12px above it.
+for (const engine of [chromium, webkit]) for (const height of [640, 844]) {
+  test(`${engine.name()} 393x${height} Queue keeps its owner on the dock top as the current song appears and disappears [D1]`, {skip: !linux, timeout: 120000}, async t => {
+    const browser = await engine.launch({headless: true}); t.after(() => browser.close());
+    const {page, errors} = await openSession(t, browser, {id: `android-393x${height}`, kind: 'alpha', viewport: [393, height], touch: true});
+    await visit(page, pages.queue.host);
+    const sample = label => page.evaluate(label => {
+      const list = document.getElementById('playlist'), current = document.getElementById('queue-current');
+      const dock = document.getElementById('android-host-dock').getBoundingClientRect().top;
+      const before = list.scrollTop; list.scrollTop = list.scrollHeight;
+      const last = list.lastElementChild.getBoundingClientRect().bottom, bottom = list.getBoundingClientRect().bottom;
+      list.scrollTop = before;
+      return {label, currentShown: Boolean(current?.getClientRects().length), bottom, dock, last, clearance: dock - last};
+    }, label);
+    const check = value => {
+      assert.ok(Math.abs(value.bottom - value.dock) <= 1, `${value.label}: #playlist ends exactly at the dock top ` + JSON.stringify(value));
+      assert.ok(value.clearance >= 12, `${value.label}: the final song stays 12px above the dock ` + JSON.stringify(value));
+    };
+    const empty = await sample('no current song'); assert.equal(empty.currentShown, false); check(empty);
+    await page.evaluate(() => { state.data.current_item = {id: 'scroll-current', display_title: '当前歌曲：保持自然高度的两行标题', title: '当前歌曲',
+      requester_name: 'Scroll singer', cache_status: 'pending'}; render(); });
+    await settle(page);
+    const shown = await sample('current song shown'); assert.equal(shown.currentShown, true, 'the current card is visible'); check(shown);
+    await page.evaluate(() => { state.data.current_item = null; render(); });
+    await settle(page);
+    const hidden = await sample('current song removed again'); assert.equal(hidden.currentShown, false); check(hidden);
+    assert.deepEqual(errors, []);
+  });
+}
 
 // ---------- D2: Remote queue dragging scrolls the document at the visible edges ----------
 for (const engine of [chromium, webkit]) {
