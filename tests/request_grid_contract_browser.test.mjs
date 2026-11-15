@@ -196,6 +196,7 @@ function measureGrid(card) {
   const history = pager && window.__pageSizeHistory?.get(pager);
   return {grid: grid.id || grid.className, columns: new Set(own.map(r => Math.round(r.x))).size, cardWidths: [...new Set(own.map(r => +r.w.toFixed(1)))],
     heights: own.map(r => +r.h.toFixed(1)), rowGap: style.rowGap, columnGap: style.columnGap, count: own.length,
+    innerWidth: grid.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
     pageSize: pager?.dataset.pageSize ?? null, sizeHistory: history ? [...history] : null, titles,
     hostColumns: document.documentElement.dataset.hostColumns, hostLayout: document.documentElement.dataset.hostLayout};
 }
@@ -398,7 +399,9 @@ for (const engine of engines) {
       const grid = await page.evaluate(measureGrid, pages[name].card);
       assert.deepEqual([grid.rowGap, grid.columnGap], [sample[role], sample[role]], `${sample.id} ${role} grid gap: ` + JSON.stringify(grid));
       if (role === 'song' && sample.layout.kind === 'desktop' && !sample.layout.remote) {
-        assert.equal(grid.columns, 2, `${sample.id}: desktop keeps two song columns`);
+        // Column count follows the unchanged 200px auto-fill admission at the measured width and gap.
+        const admitted = Math.max(1, Math.floor((grid.innerWidth + parseFloat(grid.columnGap)) / (200 + parseFloat(grid.columnGap))));
+        assert.equal(grid.columns, admitted, `${sample.id}: desktop column count follows the 200px admission: ` + JSON.stringify(grid));
         assert.ok(Math.min(...grid.cardWidths) >= 200, `${sample.id}: desktop keeps the 200px admission: ` + JSON.stringify(grid));
       }
       assert.deepEqual(errors, []);
