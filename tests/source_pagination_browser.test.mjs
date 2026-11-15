@@ -601,8 +601,19 @@ for(const engine of [chromium,webkit])for(const [client,nativeDock] of [['androi
                 'only the compact layout may close the Request panel: '+JSON.stringify({width,height,font}));
               await page.locator('[data-host-workspace="request"]').click();
               await panel.waitFor({state:'visible'});
-              // Measure the settled sheet, not its entry transform.
-              await page.evaluate(()=>Promise.allSettled(document.getAnimations().filter(a=>a.effect?.getTiming().iterations!==Infinity).map(a=>a.finished)));
+              // Measure the settled sheet, not its entry transform. Wait only for
+              // finite animations on rendered nodes of that sheet (or the wrappers
+              // carrying it): WebKit can keep unresolved transitions on hidden nodes.
+              await panel.evaluate(node=>{
+                const sheet=node.closest('#host-workspace-region')||node;
+                const relevant=document.getAnimations().filter(animation=>{
+                  const target=animation.effect?.target;
+                  return animation.effect?.getTiming().iterations!==Infinity&&target
+                    &&(sheet.contains(target)||target.contains(sheet))
+                    &&target.checkVisibility?.({contentVisibilityAuto:true})!==false;
+                });
+                return Promise.allSettled(relevant.map(animation=>animation.finished));
+              });
               await settle();
             }
             const sample=await panel.evaluate(n=>{
