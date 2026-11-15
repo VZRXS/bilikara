@@ -1202,6 +1202,12 @@ html[data-host-layout="portrait"] .queue-card > .is-whole-list-scrollable > .pla
      overflowing rows then extend beyond, rather than before, its end padding. */
   height: max-content;
 }
+/* No current song means no first track or inter-track gap. A visible current
+   keeps the original natural-height row and pending-list split unchanged. */
+html[data-host-layout="portrait"] .queue-card > .list-stage:not(:is(:has(> #queue-current:not(.hidden):not([hidden])), :where([data-legacy-has~="r31"]))) {
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0;
+}
 
 html[data-host-layout="portrait"] .request-quick-view { padding: 0; }
 

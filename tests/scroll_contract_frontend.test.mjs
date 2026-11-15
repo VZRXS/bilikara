@@ -215,3 +215,18 @@ test('collapsed phone account status has a 44px minimum without clipping expande
   const relations = JSON.parse(/var relations = (\[[\s\S]*?\n\]);/.exec(load('webview-compat.js'))[1]);
   assert.deepEqual(relations.find(([key]) => key === 'r30'), ['r30', '#android-account-slot', '.bbdown-login-panel.hidden']);
 });
+
+test('phone pending list uses one track without a hidden or absent current song [B3-D1]', () => {
+  const css = load('host-layout.css').replace(/\r\n/g, '\n');
+  const selector = 'html[data-host-layout="portrait"] .queue-card > .list-stage:not(:is(:has(> #queue-current:not(.hidden):not([hidden])), :where([data-legacy-has~="r31"])))';
+  assert.ok(css.includes(selector + ' {\n  grid-template-rows: minmax(0, 1fr);\n  gap: 0;\n}'));
+  const relations = JSON.parse(/var relations = (\[[\s\S]*?\n\]);/.exec(load('webview-compat.js'))[1]);
+  assert.deepEqual(relations.find(([key]) => key === 'r31'),
+    ['r31', '.queue-card > .list-stage', '> #queue-current:not(.hidden):not([hidden])']);
+  const legacy = load('compat83/host-layout.css');
+  assert.match(legacy, /\.queue-card > \.list-stage:not\(\[data-legacy-has~="r31"\]\)\s*\{\s*grid-template-rows: minmax\(0, 1fr\);\s*gap: 0;/);
+  // Existing visible-current grid declarations remain the shared baseline.
+  const stage = load('styles.css').match(/(?:^|\n)\.list-stage\s*\{([^}]+)\}/)?.[1];
+  assert.match(stage || '', /grid-template-rows: auto minmax\(0, 1fr\)/);
+  assert.match(stage || '', /gap: 10px/);
+});
