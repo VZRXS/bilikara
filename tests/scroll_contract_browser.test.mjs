@@ -179,9 +179,31 @@ function measureScroll() {
     && candidates[owners.indexOf(o)].contains(candidates[owners.indexOf(owner)])).map(o => o.el);
   const stableIdle = [...document.querySelectorAll('body *')].filter(n => shown(n) && /stable/.test(getComputedStyle(n).scrollbarGutter)
     && n.scrollHeight <= n.clientHeight + 1 && !n.closest('[inert],[hidden],[aria-hidden="true"]')).map(label);
-  const groups = sel => [...document.querySelectorAll(sel)].filter(shown).map(n => { const s = getComputedStyle(n); return {el: label(n), box: rect(n), padding: s.padding, radius: s.borderRadius}; });
-  return {owners, document: {scrolls: doc.scrollHeight > innerHeight + 1, overflow: doc.scrollHeight - innerHeight},
+  const groups = sel => [...document.querySelectorAll(sel)].filter(shown).map(n => {
+    const s = getComputedStyle(n), box = rect(n);
+    // Nothing inside a group may be cut off by the group's own box.
+    const clipped = n.scrollHeight > n.clientHeight + 1 || n.scrollWidth > n.clientWidth + 1
+      || [...n.querySelectorAll('*')].filter(c => shown(c) && c.getBoundingClientRect().width > 0 && c.getBoundingClientRect().height > 0).some(c => {
+        const r = c.getBoundingClientRect(); return r.left < box.x - 0.5 || r.right > box.r + 0.5 || r.top < box.y - 0.5 || r.bottom > box.b + 0.5; });
+    const heading = n.querySelector(':scope > .settings-section-heading, :scope > .android-my-section-heading, :scope > h3');
+    const headingBox = heading ? rect(heading) : null;
+    return {el: label(n), box, padding: s.padding, inline: [s.paddingLeft, s.paddingRight], radius: s.borderRadius, border: s.borderTopWidth,
+      filled: s.backgroundColor !== 'rgba(0, 0, 0, 0)' && s.backgroundColor !== 'transparent', clipped,
+      headingInside: headingBox ? headingBox.y >= box.y - 0.5 && headingBox.b <= box.b + 0.5 && headingBox.x >= box.x - 0.5 && headingBox.r <= box.r + 0.5 : null};
+  });
+  // Remote document reach (D2): scroll the page to its end and compare the final queue/history row with the dock.
+  let listReach = null;
+  const list = [...document.querySelectorAll('#queue-list,#history-list')].find(shown);
+  if (list && list.lastElementChild && dock) {
+    // Only the document scrolls: D2 requires the final row without scrolling a nested list first.
+    const before = doc.scrollTop; doc.scrollTop = doc.scrollHeight;
+    const last = list.lastElementChild.getBoundingClientRect(), dockTop = dockNode.getBoundingClientRect().top;
+    listReach = {list: label(list), lastBottom: last.bottom, dockTop, clearance: dockTop - last.bottom};
+    doc.scrollTop = before;
+  }
+  return {owners, document: {scrolls: doc.scrollHeight > innerHeight + 1, overflow: doc.scrollHeight - innerHeight}, listReach,
     dock, stableIdle, myGroups: groups('.android-my-scroll > .android-my-card, .android-my-scroll > .android-menu-row'),
+    settingsGroups: groups('#host-workspace-settings .settings-workspace-body > .settings-section'),
     layout: document.documentElement.dataset.hostLayout, platform: document.documentElement.dataset.hostPlatform};
 }
 
@@ -266,9 +288,7 @@ for (const engine of [chromium, webkit]) for (const layout of layouts) {
         const scrolling = sample.owners.filter(owner => owner.scrolls);
         const remoteList = layout.remote && ['queue', 'history'].includes(name);
 
-        await st.test('one actually overflowing vertical owner, not nested', {
-          todo: remoteList ? 'D2 pending (b3-measure.md §4): Remote queue/history scroll a bounded list inside the scrolling document' : false,
-        }, () => {
+        await st.test('one actually overflowing vertical owner, not nested [R2-04, D2]', () => {
           const all = scrolling.map(owner => owner.el).concat(sample.document.scrolls ? ['document'] : []);
           if (layout.remote) {
             // Remote keeps document scrolling (AGENTS §5.8); no element owner may scroll in addition.
@@ -297,9 +317,7 @@ for (const engine of [chromium, webkit]) for (const layout of layouts) {
           assert.deepEqual(sample.stableIdle, [], 'no rendered element holds a stable gutter while not overflowing');
         });
 
-        await st.test('the final item can be scrolled into view [R2-01]', {
-          todo: remoteList ? 'D2 pending (b3-measure.md §4): the bounded Remote list ends below the viewport until the document scrolls' : false,
-        }, () => {
+        await st.test('the final item can be scrolled into view [R2-01]', () => {
           for (const owner of scrolling.filter(owner => owner.reach?.last !== null)) {
             // Owners that reach the dock keep the final item 12px above it (AGENTS §5.1); others show it completely.
             const minimum = owner.reach.dockLimited ? 12 : -1;
@@ -307,27 +325,56 @@ for (const engine of [chromium, webkit]) for (const layout of layouts) {
           }
         });
 
-        await st.test('owners stop at the dock top [D1]', {
-          todo: 'D1 pending (b3-measure.md §4): AGENTS §5.1 dock underlap vs SCROLL-R2-01 indicator intersection',
-        }, () => {
-          for (const owner of scrolling) if (owner.underDock !== null) assert.ok(owner.underDock <= 1, `${owner.el} extends ${owner.underDock}px under the dock`);
+        // D2 (decided, b3-measure.md §4): Remote queue/history follow document scrolling as the single owner,
+        // and the final row scrolls directly above the fixed playback dock.
+        if (remoteList) await st.test('the final Remote row scrolls above the playback dock with the document [D2]', () => {
+          assert.ok(sample.listReach, 'a visible queue/history list and playback dock');
+          assert.ok(sample.listReach.clearance >= 12, 'document scrolling alone brings the final row 12px above the dock: ' + JSON.stringify(sample.listReach));
         });
 
-        if (name === 'my') await st.test('My groups use 14px gutters, 12px spacing, 14px insets and corners [AGENTS §5.1]', () => {
+        // D1 (decided, b3-measure.md §4): phone My/Settings/Queue/History scrollports end at the dock top, so the
+        // native indicator never crosses it; only the background shows behind the dock.
+        if (layout.id.startsWith('android-') && ['my', 'settings', 'queue', 'history'].includes(name)) {
+          await st.test('phone page scrollports stop at the dock top [D1]', () => {
+            assert.ok(sample.dock, 'the phone dock is rendered');
+            const owners = sample.owners.filter(owner => owner.underDock !== null);
+            assert.ok(owners.length >= 1, 'the page has a scroll owner: ' + JSON.stringify(sample.owners.map(owner => owner.el)));
+            for (const owner of owners) assert.ok(owner.underDock <= 1, `${owner.el} ends at the dock top, not ${owner.underDock}px under it`);
+          });
+        }
+
+        if (name === 'my') await st.test('My groups use 14px gutters, 12px spacing, 14px insets and corners [AGENTS §5.1, D4]', () => {
           const groups = sample.myGroups;
           assert.ok(groups.length >= 3, JSON.stringify(groups));
+          // D4: one-line status cards (logged-out Bilibili login) and the Settings entry share a 44px row with
+          // 14px inline insets; multi-row groups keep 14px on every side.
+          const singleRow = ['#android-account-slot', '#android-open-settings'];
           for (const group of groups) {
             assert.ok(Math.abs(group.box.x - 14) <= 0.5 && Math.abs(layout.viewport[0] - group.box.r - 14) <= 0.5, `${group.el} keeps 14px page gutters`);
             assert.equal(group.radius, '14px', `${group.el} corner`);
-            if (group.el !== '#android-open-settings') assert.equal(group.padding, '14px', `${group.el} inner inset`);
+            assert.equal(group.clipped, false, `${group.el} content is not cut off`);
+            if (singleRow.includes(group.el)) {
+              assert.ok(Math.abs(group.box.h - 44) <= 0.5, `${group.el} is a 44px single-row card, not ${group.box.h}px [D4]`);
+              assert.deepEqual(group.inline, ['14px', '14px'], `${group.el} inline inset`);
+            } else assert.equal(group.padding, '14px', `${group.el} inner inset`);
           }
           for (let i = 1; i < groups.length; i++) assert.ok(Math.abs(groups[i].box.y - groups[i - 1].box.b - 12) <= 0.5, `12px between ${groups[i - 1].el} and ${groups[i].el}`);
         });
 
-        if (name === 'settings' && layout.id.startsWith('android-')) await st.test('Settings uses the My group treatment [D4]', {
-          todo: 'D4 pending (b3-measure.md §4): Settings headings sit outside 14px-spaced cards; My uses in-card headings and 12px spacing',
-        }, async () => {
-          assert.fail('awaiting the D4 Settings grouping decision before encoding its geometry');
+        // D4 (decided, b3-measure.md §4): phone Settings uses the My group treatment.
+        if (name === 'settings' && layout.id.startsWith('android-')) await st.test('Settings uses the My group treatment [D4]', () => {
+          const groups = sample.settingsGroups;
+          assert.ok(groups.length >= 2, JSON.stringify(groups));
+          for (const group of groups) {
+            assert.ok(Math.abs(group.box.x - 14) <= 0.5 && Math.abs(layout.viewport[0] - group.box.r - 14) <= 0.5, `${group.el} keeps 14px page gutters`);
+            assert.equal(group.filled, true, `${group.el} is itself the filled card`);
+            assert.equal(group.border, '1px', `${group.el} outline`);
+            assert.equal(group.radius, '14px', `${group.el} corner`);
+            assert.equal(group.padding, '14px', `${group.el} inner inset`);
+            assert.equal(group.headingInside, true, `${group.el} heading sits inside its card`);
+            assert.equal(group.clipped, false, `${group.el} content is not cut off`);
+          }
+          for (let i = 1; i < groups.length; i++) assert.ok(Math.abs(groups[i].box.y - groups[i - 1].box.b - 12) <= 0.5, `12px between ${groups[i - 1].el} and ${groups[i].el}`);
         });
       });
     }

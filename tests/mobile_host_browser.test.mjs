@@ -831,7 +831,9 @@ for(const platform of ['android','ios'])test(`${platform} unframed phone pages k
       const end=last.getBoundingClientRect();
       return {bottom:r.bottom,dockTop:dock.top,dockBottom:dock.bottom,scroll:n.scrollTop,lastBottom:end.bottom,overflow:n.scrollHeight-n.clientHeight};
     },name);
-    if(name==='my')assert.ok(result.bottom>=result.dockBottom-1,'My scroller continues behind the floating dock: '+JSON.stringify(result));
+    // B3 D1 (user decision, b3-measure.md §4): the My scrollport ends at the dock top so the native indicator
+    // never crosses the dock; only the background shows behind it. Playback keeps its dock underlap below.
+    if(name==='my')assert.ok(result.bottom<=result.dockTop+1,'My scroller stops at the dock top [B3 D1]: '+JSON.stringify(result));
     else {
       assert.ok(result.bottom>=result.dockBottom-1,'Playback scroll content extends behind the dock: '+JSON.stringify(result));
       const frameAfter=await page.locator('#player-frame').boundingBox();
@@ -969,7 +971,8 @@ for(const [platform,nativeDock] of [['android',false],['ios',false],['ios',true]
       const required=sample.current.height+sample.currentToPending+sample.firstTwo[0].height+sample.gap+sample.firstTwo[1].height;
       if(sample.dock.top-sample.stage.top>=required)assert.ok(sample.complete>=3,JSON.stringify(sample));
       else assert.ok(height<=667,'only physically constrained phones may require scrolling for the third row');
-      assert.ok(Math.abs(sample.port.bottom-sample.dock.bottom)<1,JSON.stringify(sample));
+      // B3 D1: the queue scrollport ends at the dock top (formerly the viewport bottom behind the dock).
+      assert.ok(Math.abs(sample.port.bottom-sample.dock.top)<1,'queue scrollport stops at the dock top [B3 D1]: '+JSON.stringify(sample));
       assert.ok(Math.abs(sample.port.left)<1&&Math.abs(sample.port.right-width)<1,'queue scrollbar belongs at the page edge: '+JSON.stringify(sample));
       assert.equal(sample.scrollable,true,'overflow must become scrollable after resize');
       await page.locator('#playlist').evaluate(n=>{n.scrollTop=n.scrollHeight;});
@@ -1005,6 +1008,7 @@ for(const [platform,nativeDock] of [['android',false],['ios',false],['ios',true]
     await page.locator('[data-android-workspace="history"]').click();
     await page.locator('#history-list').evaluate(n=>{n.scrollTop=n.scrollHeight;});
     assert.equal(await page.locator('#history-list').evaluate(n=>{const r=n.getBoundingClientRect(),last=n.lastElementChild.getBoundingClientRect(),dock=document.getElementById('android-host-dock').getBoundingClientRect();return Math.abs(r.left)<1&&Math.abs(r.right-innerWidth)<1&&last.top>=r.top-.5&&last.bottom<=Math.min(r.bottom,dock.top)+.5;}),true,'History shares the outer scrollbar and fully reachable last row');
+    assert.ok(await page.locator('#history-list').evaluate(n=>n.getBoundingClientRect().bottom<=document.getElementById('android-host-dock').getBoundingClientRect().top+1),'history scrollport stops at the dock top [B3 D1]');
     assert.equal(await page.evaluate(()=>queueCapacityMedia.session===state.hostPlaybackSession&&queueCapacityMedia.video===state.hostPlaybackSession.video&&queueCapacityMedia.audio===state.hostPlaybackSession.audio),true,'capacity changes retain live media ownership');
   });
 
