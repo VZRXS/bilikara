@@ -198,6 +198,74 @@ for(const [engineName,engine]of Object.entries({chromium,webkit})) {
     assert.deepEqual(await page.evaluate(()=>({same:state.hostPlaybackSession.video===pair.video&&state.hostPlaybackSession.audio===pair.audio})),{same:true});
   });
 
+  // B5b R2 (AGENTS §5.3): the explicit standalone pipeline test has its own action in the output group.
+  // Native Alpha ships no live-TS companion, so "companion available" is a fixture snapshot (available:true with
+  // SSE closed) and decoder availability is a wrapped BilikaraNativeOutput.decoderKind(); the real adapter is kept.
+  for(const platform of ['desktop','android','ios'])test(`${engineName} ${platform}: the standalone pipeline test action is explicit and conditional [B5b R2]`,{
+    skip:process.platform!=='linux',timeout:150000,
+  },async t=>{
+    const {page}=await open(t,engine,platform),outputPosts=[],mobile=platform!=='desktop';let release=null,gate=null;
+    await page.route('**/api/player/output',async route=>{
+      const body=route.request().postDataJSON();outputPosts.push(body);if(gate)await gate;
+      const data=await page.evaluate(body=>{const d=structuredClone(state.data);d.state_revision++;
+        Object.assign(d.media_output,{target:body.target,requested_target:body.target,status:body.target==='local'?'stopped':'streaming',busy:false,desired_playing:true});return d;},body);
+      return route.fulfill({json:{ok:true,data}});
+    });
+    await page.locator(mobile?'[data-android-page="my"]':'#work-rail-settings').click();
+    const group=page.locator('[data-media-output="settings"]'),action=group.locator('.media-output-pipeline-test'),toggle=group.locator('.media-output-toggle');
+    await page.evaluate(()=>{state.eventSource?.close();fetchState=async()=>{};window.realNativeOutput=window.BilikaraNativeOutput;});
+    const snapshot=patch=>page.evaluate(patch=>{state.data.state_revision++;Object.assign(state.data.media_output,patch);render();},patch);
+    const decoder=kind=>page.evaluate(kind=>{window.BilikaraNativeOutput=Object.assign(Object.create(realNativeOutput),{decoderKind:()=>kind});render();},kind);
+    const local={target:'local',requested_target:'local',status:'local',busy:false};
+    // Visibility matrix: only disconnected local playback with a companion and a native/MSE decoder shows the action.
+    for(const [label,patch,kind,shown] of [
+      ['no companion',{...local,available:false,authorized:false},'mse',false],
+      ['companion, no decoder',{...local,available:true,authorized:false},'unavailable',false],
+      ['companion and MSE decoder',{...local,available:true,authorized:false},'mse',true],
+      ['companion and native decoder',{...local,available:true,authorized:false},'native',true],
+      ['connected device',{...local,available:true,authorized:true,status:'authorized'},'native',false],
+    ]){
+      await decoder(kind);await snapshot(patch);
+      assert.equal(await action.isVisible(),shown,`${label}: the test action is ${shown?'shown':'hidden'}`);
+      assert.equal(await toggle.isDisabled(),!patch.authorized,`${label}: the switch follows device connection only`);
+    }
+    await decoder('mse');await snapshot({...local,available:true,authorized:false});
+    // Ordinary control geometry and narrow layouts in three languages.
+    for(const [width,height] of mobile?[[360,780]]:[[1024,768],[700,700]])for(const language of ['zh','en','ja']){
+      await page.setViewportSize({width,height});await page.evaluate(language=>setLanguage(language),language);await settle(page);
+      if(!mobile&&!await page.locator('#purek-settings').isVisible()){await page.locator('#work-rail-settings').click();await settle(page);}
+      await action.scrollIntoViewIfNeeded();
+      const label=`${width}x${height} ${language}`;
+      assert.equal(await action.innerText(),await page.evaluate(()=>t('mediaOutput.pipelineTest')));
+      const g=await group.evaluate(n=>{const a=n.querySelector('.media-output-pipeline-test'),r=a.getBoundingClientRect(),b=n.getBoundingClientRect(),s=getComputedStyle(a);
+        return {height:r.height,font:s.fontSize,radius:s.borderRadius,inside:r.left>=b.left-0.5&&r.right<=b.right+0.5,overflow:n.scrollWidth-n.clientWidth,textFits:a.scrollWidth<=a.clientWidth+1};});
+      assert.ok(g.height>=44,`${label}: 44px ordinary action `+JSON.stringify(g));
+      assert.deepEqual([g.font,g.radius],['16px','14px'],`${label}: ordinary control typography and corners (AGENTS §5.3) `+JSON.stringify(g));
+      assert.equal(g.inside,true,`${label}: stays inside the group`);assert.ok(g.overflow<=1&&g.textFits,`${label}: no overflow `+JSON.stringify(g));
+      assert.equal(await toggle.isDisabled(),true,`${label}: the switch stays disabled`);
+    }
+    await page.evaluate(()=>setLanguage('zh'));await settle(page);
+    // Busy guard: one request, disabled and aria-busy while pending; the switch never becomes the entry.
+    gate=new Promise(resolve=>release=resolve);
+    await action.click();
+    await page.waitForFunction(()=>document.querySelector('.media-output-pipeline-test').getAttribute('aria-busy')==='true');
+    assert.equal(await action.isDisabled(),true);assert.equal(await action.innerText(),await page.evaluate(()=>t('mediaOutput.working')));
+    await action.dispatchEvent('click');await action.dispatchEvent('click');
+    assert.deepEqual(outputPosts,[{target:'native',experimental:true}],'duplicate activation is rejected while pending');
+    assert.equal(await toggle.isDisabled(),true,'the switch stays disabled while the test starts');
+    assert.equal(await page.locator('#purek-modal').isVisible(),false,'the test never opens Scan/Manage');
+    release();gate=null;
+    await page.waitForFunction(()=>state.data.media_output.target==='native'&&!BilikaraMediaOutput.busy());
+    assert.equal(await action.isVisible(),false,'a running pipeline hides the start action');
+    assert.equal(await toggle.isChecked(),true);assert.equal(await toggle.isEnabled(),true,'the running pipeline can return to local');
+    await group.locator('.media-output-targets').click();
+    await page.waitForFunction(()=>state.data.media_output.target==='local'&&!BilikaraMediaOutput.busy());
+    assert.deepEqual(outputPosts,[{target:'native',experimental:true},{target:'local'}]);
+    assert.equal(await toggle.isDisabled(),true,'back at local without a device the switch is disabled again');
+    assert.equal(await action.isVisible(),true,'the test can be started again');
+    assert.equal(await page.evaluate(()=>state.hostPlaybackSession.video===pair.video&&state.hostPlaybackSession.audio===pair.audio),true,'media identity is preserved');
+  });
+
   test(`${engineName} iOS: quality and downloader keep native selects, pill geometry and original value/change ownership`,{skip:process.platform!=='linux',timeout:90000},async t=>{
     const {page,host}=await open(t,engine,'ios');
     await page.locator('[data-android-page="my"]').click();
