@@ -145,3 +145,35 @@ test('announcement content leaves scrollbar reservation to actual native overflo
     assert.doesNotMatch(css, /scrollbar-gutter:\s*stable/);
   }
 });
+
+test('Remote Queue/History follow document scrolling without bounded list gutters [B3-D2]', () => {
+  const css = load('remote.css'), script = load('remote-queue.js');
+  assert.doesNotMatch(css, /\.queue-panel \.list[^{}]*\{[^}]*\b(?:max-height|overflow(?:-y)?|scrollbar|padding-right)\s*:/);
+  assert.doesNotMatch(script, /has-scroll-inset|new ResizeObserver|new MutationObserver/);
+  assert.match(css, /\.remote-shell\.has-playback-dock\s*\{\s*padding-bottom: calc\(96px \+ max\(12px, env\(safe-area-inset-bottom, 0px\)\)\)/);
+});
+
+test('Remote queue dragging scrolls the document at visible edges above the dock [B3-D2]', () => {
+  const source = load('remote-queue.js');
+  const start = source.indexOf('  function maybeAutoScrollQueue(');
+  const end = source.indexOf('  function reorderTargetIndex(', start);
+  const scroll = {scrollTop: 100};
+  let rect = {top: -500, bottom: 1500}, dockVisible = true, dockTop = 776;
+  const context = vm.createContext({document: {scrollingElement: scroll}, window: {innerHeight: 844},
+    elements: {queueList: {getBoundingClientRect: () => rect}, playbackDock: {
+      getClientRects: () => dockVisible ? [{}] : [], getBoundingClientRect: () => ({top: dockTop}),
+    }}});
+  assert.ok(start >= 0 && end > start);
+  vm.runInContext('const dragScrollThresholdPx = 56, dragScrollStepPx = 18;\n' + source.slice(start, end), context);
+  const move = y => vm.runInContext(`maybeAutoScrollQueue(${y})`, context);
+  move(300); assert.equal(scroll.scrollTop, 100, 'middle of the visible list');
+  move(30); assert.equal(scroll.scrollTop, 82, 'top edge remains usable after the list top leaves the viewport');
+  move(740); assert.equal(scroll.scrollTop, 100, 'bottom edge is above the floating dock');
+  dockVisible = false;
+  move(740); assert.equal(scroll.scrollTop, 100, 'without a dock the viewport owns the lower boundary');
+  move(820); assert.equal(scroll.scrollTop, 118);
+  rect = {top: 150, bottom: 400};
+  move(370); assert.equal(scroll.scrollTop, 136, 'a short list uses its visible bottom');
+  rect = {top: 900, bottom: 1500};
+  move(740); assert.equal(scroll.scrollTop, 136, 'an offscreen list does not initiate scrolling');
+});
