@@ -401,8 +401,11 @@ for (const engine of [chromium, webkit]) {
     await search(songs.length);
     await page.setViewportSize({width: 393, height: 1000}); await settle(page); consistent(await inset(), 'taller viewport');
     await page.setViewportSize({width: 393, height: 844}); await settle(page); consistent(await inset(), 'restored viewport');
-    // Sweep the overflow threshold one CSS pixel at a time. Toggling the 4px inset narrows the cards; a
-    // ResizeObserver feedback loop would keep flipping the class after layout has settled.
+    // Sweep the overflow threshold one CSS pixel at a time. Toggling the 4px inset narrows the cards and can
+    // remove the very overflow that requested it (393x847: 5px without the inset, 1px with it), so near the
+    // threshold the decision must follow the overflow measured *without* the inset. The test measures that
+    // baseline independently: an inline padding override is read and restored in the same task, so no
+    // frame (and no ResizeObserver delivery) ever sees it.
     const flips = [];
     for (let height = 836; height <= 872; height++) {
       await page.setViewportSize({width: 393, height}); await settle(page);
@@ -411,15 +414,28 @@ for (const engine of [chromium, webkit]) {
         let changes = 0, frames = 0;
         const observer = new MutationObserver(records => { changes += records.length; });
         observer.observe(viewport, {attributes: true, attributeFilter: ['class']});
-        const tick = () => { if (++frames < 30) requestAnimationFrame(tick); else { observer.disconnect();
-          resolve({changes, inset: viewport.classList.contains('has-scroll-inset'), overflow: viewport.scrollHeight - viewport.clientHeight,
-            padding: getComputedStyle(viewport).paddingRight}); } };
+        const tick = () => { if (++frames < 30) { requestAnimationFrame(tick); return; }
+          observer.disconnect();
+          const inset = viewport.classList.contains('has-scroll-inset'), padding = getComputedStyle(viewport).paddingRight;
+          const overflow = viewport.scrollHeight - viewport.clientHeight;
+          const previous = viewport.style.getPropertyValue('padding-right'), priority = viewport.style.getPropertyPriority('padding-right');
+          viewport.style.setProperty('padding-right', '0px', 'important');
+          const baseOverflow = viewport.scrollHeight - viewport.clientHeight;
+          if (previous) viewport.style.setProperty('padding-right', previous, priority); else viewport.style.removeProperty('padding-right');
+          resolve({changes, inset, padding, overflow, baseOverflow, restored: getComputedStyle(viewport).paddingRight === padding});
+        };
         requestAnimationFrame(tick);
       }));
       flips.push({height, ...value});
-      assert.equal(value.changes, 0, `the inset is stable once settled at 393x${height}: ` + JSON.stringify(value));
-      consistent(value, `393x${height}`);
+      assert.equal(value.restored, true, 'the baseline measurement restores the viewport');
+      assert.equal(value.changes, 0, `the inset is stable for 30 settled frames at 393x${height}: ` + JSON.stringify(value));
+      assert.equal(value.inset, value.baseOverflow > 1, `393x${height}: the inset follows the overflow without the inset ` + JSON.stringify(value));
+      assert.equal(value.padding, value.inset ? '4px' : '0px', `393x${height}: 4px only while scrolling ` + JSON.stringify(value));
+      if (value.baseOverflow <= 0) assert.equal(value.padding, '0px', `393x${height}: a page that fits keeps no inset`);
+      if (value.baseOverflow > 8) assert.equal(value.padding, '4px', `393x${height}: a clearly overflowing page keeps the inset`);
     }
+    assert.ok(flips.some(v => v.baseOverflow > 8) && flips.some(v => v.baseOverflow <= 0),
+      'the sweep covers fitting and clearly overflowing heights: ' + JSON.stringify(flips.map(v => [v.height, v.baseOverflow])));
     assert.ok(flips.some(v => v.inset) && flips.some(v => !v.inset), 'the sweep crosses the overflow threshold: ' + JSON.stringify(flips.map(v => [v.height, v.inset])));
     assert.deepEqual(errors, []);
   });
