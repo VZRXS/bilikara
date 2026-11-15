@@ -118,10 +118,11 @@ for (const platform of ['android','ios']) test(`${platform} phone pages use view
     assert.ok(controls.padding>=dock.height+14&&controls.scroll>0);
     assert.ok(Math.abs((await page.locator('#player-frame').boundingBox()).y-frame.y)<1,'only the controls scroll');
     await go(page,'queue');
-    assert.ok(await page.locator('#host-workspace-region').evaluate(n=>n.getBoundingClientRect().bottom>=innerHeight-1),
-      'Queue continues beneath the floating dock');
+    // B3 D1 (user decision, b3-measure.md §4): Queue and My end at the dock top; only Playback keeps the underlap.
+    assert.ok(await page.locator('#host-workspace-region').evaluate(n=>Math.abs(n.getBoundingClientRect().bottom-document.getElementById('android-host-dock').getBoundingClientRect().top)<=1),
+      'Queue stops exactly at the dock top [B3 D1]');
     await go(page,'my');
-    assert.ok(await page.locator('#android-my-scroll').evaluate(n=>n.getBoundingClientRect().bottom>=innerHeight-1));
+    assert.ok(await page.locator('#android-my-scroll').evaluate(n=>Math.abs(n.getBoundingClientRect().bottom-document.getElementById('android-host-dock').getBoundingClientRect().top)<=1),'My stops exactly at the dock top [B3 D1]');
     const fields=await page.locator('#cache-quality-select,#cache-download-source-select').evaluateAll(nodes=>nodes.map(n=>{
       const s=getComputedStyle(n);return ['appearance','backgroundColor','backdropFilter','webkitBackdropFilter','borderRadius','fontSize','fontWeight','height','boxShadow'].map(k=>s[k]);
     }));
@@ -135,7 +136,8 @@ for (const platform of ['android','ios']) test(`${platform} phone pages use view
       await progress('began',0);await progress('changed',.5);
       const motion=await page.evaluate(()=>{
         const node=document.getElementById('host-workspace-region'),r=node.getBoundingClientRect();
-        const group=document.querySelector('#host-workspace-settings .settings-section-card').getBoundingClientRect();
+        // B3 D4: on phone the Settings section itself is the group surface (its inner card is transparent).
+        const group=document.querySelector('#host-workspace-settings .settings-workspace-body > .settings-section').getBoundingClientRect();
         return{width:r.width,left:r.left,viewport:innerWidth,gutter:group.left-r.left,
           header:document.querySelector('.mobile-navigation-header[data-page="settings"]').getBoundingClientRect().width,
           overflow:getComputedStyle(node.parentElement).overflow};
@@ -831,7 +833,9 @@ for(const platform of ['android','ios'])test(`${platform} unframed phone pages k
       const end=last.getBoundingClientRect();
       return {bottom:r.bottom,dockTop:dock.top,dockBottom:dock.bottom,scroll:n.scrollTop,lastBottom:end.bottom,overflow:n.scrollHeight-n.clientHeight};
     },name);
-    if(name==='my')assert.ok(result.bottom>=result.dockBottom-1,'My scroller continues behind the floating dock: '+JSON.stringify(result));
+    // B3 D1 (user decision, b3-measure.md §4): the My scrollport ends at the dock top so the native indicator
+    // never crosses the dock; only the background shows behind it. Playback keeps its dock underlap below.
+    if(name==='my')assert.ok(Math.abs(result.bottom-result.dockTop)<=1,'My scroller stops exactly at the dock top [B3 D1]: '+JSON.stringify(result));
     else {
       assert.ok(result.bottom>=result.dockBottom-1,'Playback scroll content extends behind the dock: '+JSON.stringify(result));
       const frameAfter=await page.locator('#player-frame').boundingBox();
@@ -843,9 +847,11 @@ for(const platform of ['android','ios'])test(`${platform} unframed phone pages k
     if(name==='my'){
       for(const theme of ['light','dark','blue']){
         await page.evaluate(theme=>applyTheme(theme),theme);
-        const groups=await page.locator('.android-my-scroll > .android-my-card').evaluateAll(nodes=>nodes.filter(n=>n.getClientRects().length).map(n=>{const s=getComputedStyle(n);return {border:s.borderTopWidth,bg:s.backgroundColor,radius:s.borderRadius,padding:s.padding,margin:s.marginBottom};}));
+        const groups=await page.locator('.android-my-scroll > .android-my-card').evaluateAll(nodes=>nodes.filter(n=>n.getClientRects().length).map(n=>{const s=getComputedStyle(n);return {id:n.id,height:n.getBoundingClientRect().height,border:s.borderTopWidth,bg:s.backgroundColor,radius:s.borderRadius,padding:s.padding,inline:s.paddingLeft+' '+s.paddingRight,margin:s.marginBottom};}));
         assert.ok(groups.length>=3);
-        assert.ok(groups.every(g=>g.border==='1px'&&g.bg!=='rgba(0, 0, 0, 0)'&&g.radius==='14px'&&g.padding==='14px'&&g.margin==='0px'),JSON.stringify(groups));
+        // B3 D4: the collapsed one-row login card is 44px with 14px inline insets; other groups keep 14px on every side.
+        assert.ok(groups.every(g=>g.border==='1px'&&g.bg!=='rgba(0, 0, 0, 0)'&&g.radius==='14px'&&g.margin==='0px'
+          &&(g.id==='android-account-slot'?g.inline==='14px 14px'&&Math.abs(g.height-44)<=0.5:g.padding==='14px')),JSON.stringify(groups));
         const rows=await page.locator('#cache-panel > .cache-panel-row').evaluateAll(nodes=>nodes.filter(n=>n.getClientRects().length).map(n=>{const s=getComputedStyle(n);return {border:s.borderTopWidth,top:s.paddingTop,bottom:s.paddingBottom};}));
         assert.ok(rows.length>=4);assert.equal(rows[0].border,'0px');assert.equal(rows[0].top,'0px');assert.equal(rows.at(-1).bottom,'0px');
         assert.ok(rows.slice(1).every(r=>r.border==='1px'),'only internal functional rows have dividers');
@@ -969,7 +975,8 @@ for(const [platform,nativeDock] of [['android',false],['ios',false],['ios',true]
       const required=sample.current.height+sample.currentToPending+sample.firstTwo[0].height+sample.gap+sample.firstTwo[1].height;
       if(sample.dock.top-sample.stage.top>=required)assert.ok(sample.complete>=3,JSON.stringify(sample));
       else assert.ok(height<=667,'only physically constrained phones may require scrolling for the third row');
-      assert.ok(Math.abs(sample.port.bottom-sample.dock.bottom)<1,JSON.stringify(sample));
+      // B3 D1: the queue scrollport ends at the dock top (formerly the viewport bottom behind the dock).
+      assert.ok(Math.abs(sample.port.bottom-sample.dock.top)<1,'queue scrollport stops at the dock top [B3 D1]: '+JSON.stringify(sample));
       assert.ok(Math.abs(sample.port.left)<1&&Math.abs(sample.port.right-width)<1,'queue scrollbar belongs at the page edge: '+JSON.stringify(sample));
       assert.equal(sample.scrollable,true,'overflow must become scrollable after resize');
       await page.locator('#playlist').evaluate(n=>{n.scrollTop=n.scrollHeight;});
@@ -1005,6 +1012,7 @@ for(const [platform,nativeDock] of [['android',false],['ios',false],['ios',true]
     await page.locator('[data-android-workspace="history"]').click();
     await page.locator('#history-list').evaluate(n=>{n.scrollTop=n.scrollHeight;});
     assert.equal(await page.locator('#history-list').evaluate(n=>{const r=n.getBoundingClientRect(),last=n.lastElementChild.getBoundingClientRect(),dock=document.getElementById('android-host-dock').getBoundingClientRect();return Math.abs(r.left)<1&&Math.abs(r.right-innerWidth)<1&&last.top>=r.top-.5&&last.bottom<=Math.min(r.bottom,dock.top)+.5;}),true,'History shares the outer scrollbar and fully reachable last row');
+    assert.ok(await page.locator('#history-list').evaluate(n=>Math.abs(n.getBoundingClientRect().bottom-document.getElementById('android-host-dock').getBoundingClientRect().top)<=1),'history scrollport stops exactly at the dock top [B3 D1]');
     assert.equal(await page.evaluate(()=>queueCapacityMedia.session===state.hostPlaybackSession&&queueCapacityMedia.video===state.hostPlaybackSession.video&&queueCapacityMedia.audio===state.hostPlaybackSession.audio),true,'capacity changes retain live media ownership');
   });
 
