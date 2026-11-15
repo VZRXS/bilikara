@@ -87,10 +87,20 @@ playback is observed; it shares a feedback slot with seek and play/pause.
 Desktop workspace and scroll ownership remain explicit:
 
 Sources and Session Users keep the same 8px list-to-tool spacing; desktop also
-shares their platform panel inset. Android Source pagination uses Remote's
-44px track and 4px bottom inset, in one native footer frame below the tools.
-The tools' reserved trash slot and the frame's 4px gap supply 8px between visible
-controls. Session-user name actions retain horizontal ellipsis and a 20px
+shares their platform panel inset. Every Host/Remote result pager uses one
+52px outer slot: 44px controls with 4px above and below. Host keeps that slot
+outside list scrolling at the same bottom anchor; Remote keeps document flow.
+Arrow targets are separate 44px squares. Below a 375px viewport, previous/next
+and numeric entry remain visible; numeric entry and Home/End reach boundaries.
+Source tools retain their approved 52px trash slot and 1.15 drag enlargement.
+There is no extra gap between tools and pager: the trash slot's 4px lower inset
+and the pager's 4px upper inset preserve 8px between visible controls. The two
+slots occupy 104px together. Hiding tools collapses their slot without moving
+the pager's bottom edge. A source page filled by the pager's content remains
+within that pager's gesture ownership; change source tabs by tapping (N1).
+Only the result viewport supports swipe paging. Dragging the footer or its
+arrows does not turn pages or switch sub-tabs; short arrow presses turn pages.
+Session-user name actions retain horizontal ellipsis and a 20px
 line with vertical paint room, so descenders such as `g` fit without increasing
 the badge's height.
 

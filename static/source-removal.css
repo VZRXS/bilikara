@@ -1,13 +1,14 @@
 /* The resident tools share Session User geometry, outside list scrolling. */
 .source-mode-panel { position: relative; display: flex; flex-direction: column; row-gap: 8px; }
-/* Android keeps the frame's controls 8px apart. The grid needs 2px of paint room
-   at each edge; old browse padding must not cost a complete extra row. */
+/* The grid needs 2px of paint room at each edge; old browse padding must not
+   cost a complete extra row. */
 :root:is([data-host-platform="android"], [data-host-platform="ios"]) .source-mode-panel:is(:has(> .source-frame-footer > .host-result-pager:not([hidden])), :where([data-legacy-has~="r26"])) .follow-up-grid.has-result-pages { padding-block: 2px; }
 /* The phone page footer uses Remote's 4px outer inset. Other views retain
    the platform panel padding, including the Session User tool row. */
 :root:is([data-host-platform="android"], [data-host-platform="ios"]) .source-mode-panel:is(:has(> .source-frame-footer > .host-result-pager:not([hidden])), :where([data-legacy-has~="r26"])) { padding-bottom: 4px; }
+/* The 52px trash slot leaves 4px below its 44px control; the pager adds its own
+   4px top inset. No extra gap is needed for the existing 8px control clearance. */
 .source-frame-footer { display: flex; flex-direction: column; flex: 0 0 auto; min-width: 0; gap: 0; }
-:root:is([data-host-platform="android"], [data-host-platform="ios"]) .source-frame-footer:is(:has(> .host-result-pager:not([hidden])), :where([data-legacy-has~="r27"])) { gap: 4px; }
 .source-frame-footer[hidden] { display: none; }
 .source-tools {
   flex: 0 0 52px;

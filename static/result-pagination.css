@@ -75,11 +75,16 @@
 }
 
 .result-pager {
+  --host-result-pager-block-size: 52px;
+  box-sizing: border-box;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   gap: 4px;
   min-width: 0;
+  height: var(--host-result-pager-block-size);
+  min-height: var(--host-result-pager-block-size);
+  padding-block: 4px;
   /* Lists have no trailing padding: 12px grid gap - 8px leaves 4px. */
   margin-top: -8px;
   color: var(--muted);
@@ -87,37 +92,35 @@
   font-variant-numeric: tabular-nums;
 }
 .result-pager[hidden] { display: none; }
-/* Native panel chrome stays outside the scrolling body, with one 4px inset
-   above/below the existing 44px controls. Remote retains document scrolling. */
+/* One 52px slot on every client: 44px controls and 4px paint room at each edge.
+   Native panel chrome stays outside the body; Remote keeps document scrolling. */
 .host-result-pager {
-  --host-result-pager-block-size: 52px;
-  box-sizing: border-box;
   flex: 0 0 var(--host-result-pager-block-size);
-  min-height: var(--host-result-pager-block-size);
   margin: 0;
-  padding-block: 4px;
 }
-/* Android Sources retain the native bottom frame, with Remote's compact
-   44px track rather than another padded 52px row. */
-:root:is([data-host-platform="android"], [data-host-platform="ios"]) .source-frame-footer > .host-result-pager {
-  --host-result-pager-block-size: 44px;
-  padding-block: 0;
+/* The category home's old trailing paint inset must not lift its framed pager.
+   Card focus/hover paint stays inside the result viewport. */
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) .request-discover-view .category-browser-home {
+  padding-bottom: 0;
 }
 .result-pager-count, .result-pager-items-total {
   min-width: 0;
   max-width: 100%;
   width: max-content;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   line-height: 1.4;
 }
-/* Keep one layout at every width, including a 360px Remote viewport. Equal
-   side columns center the page controls independently of the item total. */
+/* Equal side columns center the controls independently of item totals.
+   Exact counts remain in the accessible labels when their visual text clips. */
 .result-pager-count { grid-column: 1; justify-self: start; font-size: 12px; }
 .result-pager-items-total { grid-column: 3; justify-self: end; text-align: right; font-size: 12px; }
 .result-pager-controls {
   grid-column: 2;
   display: flex;
   align-items: center;
+  min-width: 0;
 }
 .result-pager-position {
   display: grid;
@@ -137,7 +140,13 @@
   touch-action: manipulation;
 }
 .result-pager button:disabled { cursor: default; }
-.result-pager [data-page-action] { width: 24px; display: grid; place-items: center; }
+.result-pager [data-page-action] {
+  width: 44px;
+  min-width: 44px;
+  flex: 0 0 44px;
+  display: grid;
+  place-items: center;
+}
 .result-pager [data-page-action] svg { width: 20px; height: 20px; }
 .result-pager [data-page-action]:disabled { opacity: .3; }
 .result-pager:focus-visible, .result-pager button:focus-visible, .result-pager input:focus-visible {
@@ -215,7 +224,7 @@
   text-align: center;
 }
 .result-pager-total, .result-pager [data-page-go] {
-  min-width: 32px;
+  min-width: 44px;
   width: var(--page-total-width);
   white-space: nowrap;
 }
@@ -229,6 +238,11 @@
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;
+}
+/* A 320px Remote has only 258px inside its panel. Keep previous/next and the
+   exact page editor; Home/End and numeric entry still reach either boundary. */
+@media (max-width: 374px) {
+  .result-pager :is([data-page-action="first"], [data-page-action="last"]) { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   .result-pager .result-pager-editor, .result-pager .result-pager-dots { transition: none; }
