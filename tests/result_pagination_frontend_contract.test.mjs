@@ -3,6 +3,7 @@ import { readSourceText as readFileSync } from './frontend_contract_support.mjs'
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import path from 'node:path';
+import {transform as cssTransform} from 'lightningcss';
 import { root, runNative } from './desktop_construction_support.mjs';
 const ROOT = root;
 import { concatenate } from './frontend_contract_support.mjs';
@@ -671,4 +672,19 @@ assert.deepEqual(probes,[1],'refresh does not restart bootstrap measurement');
 const {documentPageSize}=require('./static/result-pagination.js');
 assert.deepEqual(documentPageSize,{song:6,compact:12});assert.ok(Object.isFrozen(documentPageSize));
 `);
+});
+
+
+test('grid gap tokens have one shared owner for Host and Remote [B2-G13]', () => {
+  const tokens=['--request-song-grid-gap','--request-compact-grid-gap'],owners=[];
+  for(const file of ['styles.css','remote.css','host-layout.css','ui-surfaces.css']) {
+    const source=readFileSync(path.join(ROOT,'static',file),'utf8');
+    cssTransform({filename:file,code:Buffer.from(source),visitor:{Declaration(declaration){
+      if(declaration.property==='custom'&&tokens.includes(declaration.value.name))owners.push([file,declaration.value.name]);
+    }}});
+  }
+  assert.deepEqual(owners,tokens.map(name=>['ui-surfaces.css',name]),'client sheets cannot create independent gap policies');
+  const shared=readFileSync(path.join(ROOT,'static/ui-surfaces.css'),'utf8');
+  assert.match(shared,/--request-song-grid-gap: 8px;/);
+  assert.match(shared,/--request-compact-grid-gap: 10px;/);
 });

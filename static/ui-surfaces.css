@@ -4,6 +4,8 @@
   color-scheme: light;
   /* Controls retain app pressed/focus feedback instead of WebKit's tap tint. */
   -webkit-tap-highlight-color: transparent;
+  --request-song-grid-gap: 8px;
+  --request-compact-grid-gap: 10px;
   --settings-group-bg: #ffffff;
   --queue-order-bg: rgba(255, 255, 255, 0.96);
   --queue-order-border: 1.4px solid rgba(109, 98, 88, 0.18);

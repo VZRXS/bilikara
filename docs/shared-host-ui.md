@@ -179,6 +179,15 @@ TopSlot equal-height and cross-page y comparisons, without hiding or collapsing
 the filter. The alphabet-to-TopSlot sequence remains in normal flow, and the
 following TopSlot's lower edge to the first card still measures the shared 12px
 gap. This exception does not apply to native/Remote contextual levels.
+Song results and large category covers use `--request-song-grid-gap: 8px`;
+UP/favorites and name/artist entry grids use `--request-compact-grid-gap: 10px`.
+Both tokens have one definition in `ui-surfaces.css`, consumed by Host and
+Remote. This keeps Remote song gaps at 8px and compact gaps at 10px.
+Host song grids retain a 200px minimum by default. In a workspace already
+admitted as `data-host-columns="two"`, CSS may yield toward 178px only when
+the actual grid width can hold two cards plus the shared SongGrid gap. Wider
+tracks retain 200px, while insufficient width keeps one column. This follows
+measured stage/workspace admission, never a device name or 1180px threshold.
 Equal-width song cards use nonshrinking 16:9 covers and the existing two-line
 title box. `ui-surfaces.css` reserves a 16px metadata row whether or not an
 owner is present, keeping complete card heights equal without truncating more
@@ -281,6 +290,12 @@ blocker.
 Bounded result grids measure layout border boxes rather than animated paint
 bounds. The first card is observed alongside viewport/content/font changes.
 Headings, footer, safe area and native dock occupy their existing layout tracks
-once. Complete rows are selected with the existing floor policy, never a forced
-three-row rule. Numeric recent geometry is available through the shared pager's
+once. The first native page measures an unpainted real card before committing
+capacity; hidden or unmeasured panels wait instead of publishing a guessed page.
+Loading and refresh retain fitted capacity. Complete rows follow the measured
+floor policy; phone song pages keep their approved minimum of three rows and
+scroll within the same viewport when those rows cannot fit. Remote uses shared
+document-flow budgets of 6 songs or 12 compact/category entries, because its
+content itself expands the document height. Numeric recent geometry is available
+through the shared pager's
 bounded diagnostic snapshot; no query or source identity is recorded.
