@@ -13,6 +13,9 @@
     root.innerHTML = heading+'<span class="media-output-status" role="status"></span><p class="media-output-note"></p><label class="cache-preview-field media-output-targets"><span>DLNA</span><input type="checkbox" role="switch" class="media-output-toggle" /><span class="cache-preview-switch" aria-hidden="true"><span class="cache-preview-switch-thumb"></span></span></label><button type="button" class="media-output-retry" hidden></button><label class="media-output-mode"><span></span><span class="runtime-settings-select-shell"><select class="runtime-settings-select"><option value="splice"></option><option value="gradual"></option></select></span></label><p class="media-output-error" role="alert" hidden></p>';
     const find = s => root.querySelector(s);
     const nodes = {heading:find(".media-output-heading"),status:find(".media-output-status"),note:find(".media-output-note"),targets:find(".media-output-targets"),toggle:find(".media-output-toggle"),retry:find(".media-output-retry"),mode:find(".media-output-mode"),select:find("select"),error:find(".media-output-error")};
+    nodes.pipeline=document.createElement("button");nodes.pipeline.type="button";
+    nodes.pipeline.className="media-output-pipeline-test";nodes.pipeline.hidden=true;
+    root.append(nodes.pipeline);
     const header = document.createElement("div"), help = document.createElement("span");
     const helpId = `media-output-help-${++nextHelpId}`;
     header.className = `media-output-header ${options.host?"cache":"remote"}-contextual-info-region`;
@@ -78,8 +81,7 @@
       const response = await options.request("/api/player/output", body);
       options.accept?.(response);
     };
-    const start = async () => {
-      const target=current?.media_output?.authorized?"purek":"native";
+    const start = async (target=current?.media_output?.authorized?"purek":"native") => {
       if(target==="purek")await options.beforeNetwork?.();
       else if(current?.media_output?.available&&(!window.BilikaraNativeOutput||window.BilikaraNativeOutput.decoderKind()==='unavailable'))throw {outputKey:'mediaOutput.decoderUnavailable'};
       await post({target,experimental:true});
@@ -90,6 +92,22 @@
       act(nodes.toggle,()=>enabled?start():post({target:"local"}));
     });
     nodes.retry.addEventListener("click", () => act(nodes.retry,start));
+    let decoderBackend, decoderAvailable=false;
+    const canDecode = () => {
+      // Decoder support is stable for a loaded adapter; avoid creating probe
+      // video elements on progress snapshots. Recheck if the adapter is replaced.
+      if(decoderBackend!==window.BilikaraNativeOutput){
+        decoderBackend=window.BilikaraNativeOutput;
+        decoderAvailable=["native","mse"].includes(decoderBackend?.decoderKind?.());
+      }
+      return decoderAvailable;
+    };
+    const canTestPipeline = () => options.host&&root.dataset.mediaOutput==="settings"
+      &&current?.media_output?.available&&!current.media_output.authorized&&!selected(current)&&canDecode();
+    nodes.pipeline.addEventListener("click",()=>{
+      if(!canTestPipeline())return;
+      act(nodes.pipeline,()=>start("native"));
+    });
     nodes.select.addEventListener("change", () => {const mode=nodes.select.value;act(nodes.select, () => post({offset_mode:mode}));});
     function render(data) {
       if(errorKey&&errorContext!==context(data))clearError();
@@ -107,7 +125,11 @@
       text(nodes.experimental,t("purek.experimental"));
       nodes.help.setAttribute("aria-label",t("common.moreInfo"));
       text(nodes.status, t(`mediaOutput.status.${["local","notConnected","authorized","probing","unverified","ready","unsupported","starting","streaming","paused","pausing","stopping","waiting","error","stopped"].includes(phase)?phase:"stopped"}`));
-      text(nodes.note, t(output.target==="native" ? "mediaOutput.standaloneHint" : network ? (Number.isFinite(output.measured_adjust_latency_ms)?"mediaOutput.experimentalHintMeasured":"mediaOutput.experimentalHint") : !output.available ? "mediaOutput.backendUnavailable" : noDevice ? "purek.help" : phase==="unverified" ? "purek.output.unverified" : "mediaOutput.chooseHint"));
+      text(nodes.note, t(output.target==="native" ? "mediaOutput.standaloneHint" : network ? (Number.isFinite(output.measured_adjust_latency_ms)?"mediaOutput.experimentalHintMeasured":"mediaOutput.experimentalHint") : !output.available ? "mediaOutput.backendUnavailable" : noDevice ? (canDecode()?"purek.help":"mediaOutput.decoderUnavailable") : phase==="unverified" ? "purek.output.unverified" : "mediaOutput.chooseHint"));
+      nodes.pipeline.hidden=!canTestPipeline();
+      nodes.pipeline.disabled=pending||output.busy;
+      nodes.pipeline.title=t("mediaOutput.standaloneHint");
+      text(nodes.pipeline,t(nodes.pipeline.hasAttribute("aria-busy")?"mediaOutput.working":"mediaOutput.pipelineTest"));
       nodes.targets.hidden = !host;
       nodes.toggle.checked=network;
       nodes.toggle.setAttribute("aria-label",t("mediaOutput.dlna")+(!network&&noDevice?` · ${t("mediaOutput.status.notConnected")}`:""));
