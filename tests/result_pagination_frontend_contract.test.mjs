@@ -628,7 +628,7 @@ const fs=require('node:fs');
 const source=fs.readFileSync('static/result-pagination.js','utf8').replace(/\r\n/g,'\n');
 const section=(start,end)=>{const a=source.indexOf(start),b=source.indexOf(end,a);assert.ok(a>=0&&b>a);return source.slice(a,b);};
 // Exercise the production controller with measured inputs; WSL verifies CSS.
-const fitting=section('    function measureCapacity(', '    function layout()');
+const fitting=section('    function itemBlockSize(', '    function layout()');
 const publishing=section('    function publishPageSize()', '    function commitPaint(');
 const updating=section('      update(value) {', '      localize(language) {');
 const hiding=section('      hide() {', '\n    };\n  }');
@@ -643,7 +643,7 @@ function fixture(minimumRows=1) {
   const item={classList:{contains:()=>false}};
   const itemStyle={height:'72px',boxSizing:'border-box',fontFamily:'fixture',fontSize:'14px',lineHeight:'16px'};
   const probe={style:{},removeAttribute(){},setAttribute(){},remove(){this.removed=true;},firstElementChild:item};
-  const container={inert:true,clientWidth:365,classList:{contains:()=>false},getClientRects:()=>flags.visible?[{}]:[],cloneNode:()=>probe,removeAttribute(){}};
+  const container={inert:true,closest:()=>null,clientWidth:365,classList:{contains:()=>false},getClientRects:()=>flags.visible?[{}]:[],cloneNode:()=>probe,removeAttribute(){}};
   const viewport={style:{},getClientRects:()=>flags.visible?[{}]:[],closest:()=>flags.blocked?{}:null,append:node=>assert.equal(node,probe)};
   const pager={classList:{remove(){}},getClientRects:()=>flags.visible?[{}]:[],dataset:new Proxy({}, {set(target,key,value){if(key==='pageSize')writes.push(value);target[key]=value;return true;}})};
   const getComputedStyle=node=>node===container?{...style,visibility:flags.visibility}:itemStyle;
@@ -785,4 +785,112 @@ test('grid gap owner preserves desktop spacing without selecting native tablets 
   const feature=queries[0].condition.value;
   assert.equal(feature.type,'range');assert.equal(feature.name,'width');assert.equal(feature.operator,'less-than-equal');
   assert.deepEqual(feature.value.value.value,{unit:'px',value:760});
+});
+
+
+test('whole-panel admission uses a bounded uninset baseline and restores owner state [B2-G9-R1]', async () => {
+  const instance=Object.create(ResultPaginationFrontendTest);await instance.setUpClass();await instance.run_case(String.raw`
+const fs=require('node:fs'),source=fs.readFileSync('static/result-pagination.js','utf8');
+const start=source.indexOf('    function itemBlockSize('),end=source.indexOf('    function fitPanelVisible()',start);
+assert.ok(start>=0&&end>start);
+const state={candidate:true,boundedHeight:72,naturalHeight:1000,throwItem:false};
+const attributes=new Map(),widths=[];
+const mode=()=>attributes.get('data-result-scroll-owner')==='panel';
+function inline(value='',priority='') {
+  const properties=new Map(value?[['padding-right',{value,priority}]]:[]);
+  return {getPropertyValue:name=>properties.get(name)?.value||'',getPropertyPriority:name=>properties.get(name)?.priority||'',
+    setProperty(name,value,priority=''){properties.set(name,{value,priority});},removeProperty:name=>properties.delete(name)};
+}
+const panel={scrollTop:0,getAttribute:name=>attributes.get(name)??null,setAttribute:(name,value)=>attributes.set(name,value),removeAttribute:name=>attributes.delete(name)};
+const viewport={scrollTop:0,style:inline('4px','important')};
+viewport.style.setProperty('overflow-y','auto','important');
+const fit={clientWidth:365,scrollTop:0,style:inline('5px'),get clientHeight(){
+  if(mode())return state.naturalHeight;
+  // A temporary bounded reflow may clamp the old owner's scroll offset.
+  panel.scrollTop=0;viewport.scrollTop=0;this.scrollTop=0;return state.boundedHeight;
+}};
+const container={clientWidth:365,style:inline(),closest:()=>panel};
+const probe={style:{width:'old-width'}},item={classList:{contains:()=>false}};
+const zeroInset=()=>[viewport,fit,container].every(node=>node.style.getPropertyValue('padding-right')==='0px'
+  &&node.style.getPropertyValue('overflow-x')==='hidden'&&node.style.getPropertyValue('overflow-y')==='hidden');
+const getComputedStyle=node=>{
+  if(node===panel)return {getPropertyValue:()=>state.candidate?'1':''};
+  if(node===container)return {width:mode()?'716px':zeroInset()?'704px':'700px',gridTemplateColumns:'115px 115px 115px',
+    rowGap:'10px',paddingTop:'2px',paddingBottom:'2px',getPropertyValue:()=>mode()?'panel':''};
+  if(state.throwItem)throw new Error('measure failed');
+  widths.push(probe.style.width);
+  return {height:String(mode()?80:zeroInset()?72:70)+'px',boxSizing:'border-box',fontFamily:'fixture',fontSize:'14px',lineHeight:'16px'};
+};
+const minimumRows=1,measurements=[];let fittedGeometry=null;
+const measure=eval('(()=>{'+source.slice(start,end)+'return measureCapacity;})()');
+assert.equal(measure(item,probe),3,'a genuinely short bounded region admits a complete minimum row');
+assert.equal(mode(),true);assert.deepEqual(widths.slice(0,2),['704px','716px'],'probe follows baseline and final widths');
+assert.equal(measurements.at(-1).height,1000,'diagnostics retain the final geometry, not the admission snapshot');
+assert.equal(measurements.at(-1).itemHeight,80);
+const restored=()=>{
+  assert.equal(viewport.style.getPropertyValue('padding-right'),'4px');
+  assert.equal(viewport.style.getPropertyPriority('padding-right'),'important');
+  assert.equal(viewport.style.getPropertyValue('overflow-y'),'auto');assert.equal(viewport.style.getPropertyPriority('overflow-y'),'important');
+  assert.equal(viewport.style.getPropertyValue('overflow-x'),'');assert.equal(fit.style.getPropertyValue('overflow-y'),'');
+  assert.equal(container.style.getPropertyValue('overflow-x'),'');
+  assert.equal(fit.style.getPropertyValue('padding-right'),'5px');
+  assert.equal(fit.style.getPropertyPriority('padding-right'),'');
+  assert.equal(container.style.getPropertyValue('padding-right'),'');
+};
+for(let index=0;index<30;index++) {
+  state.naturalHeight=[80,300,900][index%3];panel.scrollTop=90;viewport.scrollTop=7;fit.scrollTop=8;
+  assert.equal(measure(item,probe),3);assert.equal(mode(),true,'expanded whole-panel height cannot reverse admission');
+  assert.deepEqual([panel.scrollTop,viewport.scrollTop,fit.scrollTop],[90,7,8],'measurement preserves owner position');restored();
+}
+state.boundedHeight=200;measure(item,probe);
+assert.equal(mode(),false,'a tall reopened overlay restores the bounded owner');assert.equal(panel.scrollTop,0);
+state.boundedHeight+=52;measure(item,probe);
+assert.equal(mode(),false,'hiding tools in a fitting panel retains its pager anchor');
+for(const height of [74,75,76,77,78,77,76,75,74,76]) {
+  state.boundedHeight=height;state.naturalHeight=900;measure(item,probe);
+  assert.equal(mode(),height+.5<76,'both directions use the same uninset one-row boundary');restored();
+}
+state.boundedHeight=120;measure(item,probe);assert.equal(mode(),false);
+state.boundedHeight-=52;measure(item,probe);assert.equal(mode(),true,'a real footer-size change may cross admission');
+state.boundedHeight+=52;measure(item,probe);assert.equal(mode(),false,'removing that footer space restores bounded fitting');
+state.boundedHeight=0;measure(item,probe);assert.equal(mode(),true,'visible zero-height regions keep the R1 minimum-row fallback');
+state.throwItem=true;panel.scrollTop=80;
+assert.throws(()=>measure(item,probe),/measure failed/);assert.equal(mode(),true);assert.equal(panel.scrollTop,80);restored();
+state.throwItem=false;state.candidate=false;measure(item,probe);
+assert.equal(mode(),false,'portrait/two-column/desktop ineligibility cannot retain panel mode');
+assert.equal(panel.scrollTop,0);
+const frames=[],observed=new Set(),header={},body={},pager={},document={};
+panel.children=[header,body];let layoutFrame=null;
+const requestAnimationFrame=callback=>{frames.push(callback);return frames.length;};
+const layout=()=>measure(item,probe);
+class ResizeObserver {constructor(callback){this.callback=callback;}observe(node){observed.add(node);}}
+const scheduleStart=source.indexOf('    function scheduleLayout()'),scheduleEnd=source.indexOf('    function needsScrollInset()',scheduleStart);
+const observeStart=source.indexOf('    const resizeObserver = new ResizeObserver(scheduleLayout);'),observeEnd=source.indexOf('    function animate(',observeStart);
+assert.ok(scheduleStart>=0&&scheduleEnd>scheduleStart&&observeStart>=0&&observeEnd>observeStart);
+const observer=eval('(()=>{'+source.slice(scheduleStart,scheduleEnd)+source.slice(observeStart,observeEnd)+'return resizeObserver;})()');
+for(const node of [panel,header,body])assert.ok(observed.has(node),'panel and chrome tracks must invalidate height-only admission');
+state.candidate=true;state.boundedHeight=72;state.naturalHeight=80;measure(item,probe);assert.equal(mode(),true);
+state.boundedHeight=200;
+observer.callback([{target:panel}]);observer.callback([{target:body}]);assert.equal(frames.length,1,'panel/toolbar changes coalesce');
+frames.shift()();assert.equal(mode(),false,'a panel-only height increase exits whole-panel mode');
+state.boundedHeight=68;observer.callback([{target:body}]);frames.shift()();
+assert.equal(mode(),true,'toolbar-only growth can admit a short panel');assert.equal(frames.length,0,'no polling is scheduled');
+`);
+});
+
+
+test('whole-panel CSS requires the measured admission flag [B2-G9-R1]', () => {
+  const css=readFileSync(path.join(ROOT,'static/host-layout.css'),'utf8');
+  const start=css.indexOf('/* A short landscape compact overlay'),end=css.indexOf('/* WKWebView exposes',start);
+  assert.ok(start>=0&&end>start);
+  const rules=[];
+  cssTransform({code:Buffer.from(css.slice(start,end)),visitor:{Rule(rule){if(rule.type==='style')rules.push(rule.value);}}});
+  assert.equal(rules.length,4);
+  assert.deepEqual(rules[0].declarations.declarations.map(d=>[d.property,d.value.name]),[['custom','--result-page-panel-scroll-candidate']],
+    'compact/overlay eligibility alone changes no geometry');
+  assert.equal(rules[0].declarations.declarations[0].value.value[0].value.value,1);
+  for(const rule of rules.slice(1))for(const selector of rule.selectors) {
+    assert.ok(selector.some(part=>part.type==='attribute'&&part.name==='data-result-scroll-owner'
+      &&part.operation?.operator==='equal'&&part.operation.value==='panel'),'all owner and inner-wrapper overrides require measured admission');
+  }
 });

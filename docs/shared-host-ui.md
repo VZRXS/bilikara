@@ -296,12 +296,22 @@ suppresses selection; inputs, copyable links, user prose and diagnostic/error
 details retain native copying. This does not install a document-wide gesture
 blocker.
 
-In a short landscape mobile Host admitted to compact columns and an overlay
-tool sheet, the complete Request tool panel is the sole vertical scroll owner.
+Compact columns and an overlay tool sheet make a landscape mobile Host eligible
+for whole-panel scrolling. Admission additionally requires that the bounded
+layout cannot fit one complete card row after its TopSlot and full footer,
+including the visible 52px tools and 52px Pager, reserve their normal space.
+Overlays with enough height retain their internal owner and Pager bottom anchor,
+including when tools hide. Pagination temporarily restores the bounded layout
+at uninset width with content-dependent scrollbars suppressed to measure that
+budget, then restores styles and scroll offsets
+before paint. This same baseline governs entry and exit, so natural whole-panel
+height cannot feed back into admission. The existing observer also watches the
+panel and its header/body tracks for height and toolbar changes; no polling is
+added. No device or viewport-size breakpoint selects this mode, and portrait,
+two-column and desktop geometry stay unchanged.
+When admitted, the complete Request tool panel is the sole vertical scroll owner.
 Its header, active content, source tools and Pager scroll together. Internal
-source/list/result wrappers use natural height and visible overflow. This state
-uses existing measured column/overlay admission, with no device or viewport-size
-breakpoint, and leaves portrait, two-column and desktop geometry unchanged.
+source/list/result wrappers use natural height and visible overflow.
 Each page retains its configured minimum rows (at least one complete row),
 measured from real columns; natural content height cannot increase capacity.
 The same outer frame retains safe-area clearance; the scrollport adds 12px
