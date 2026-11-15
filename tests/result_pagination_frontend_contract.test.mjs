@@ -622,7 +622,7 @@ assert.equal(fittedPageSize({...geometry,height:404}),15);
 });
 
 
-test('first panel capacity measures once, retains refresh and renders visible short panels [B2-G10-R1]', async () => {
+test('panel capacity retains its first commit and follows current geometry [B2-G10-R1-G9-G11]', async () => {
   const instance=Object.create(ResultPaginationFrontendTest);await instance.setUpClass();await instance.run_case(String.raw`
 const fs=require('node:fs');
 const source=fs.readFileSync('static/result-pagination.js','utf8').replace(/\r\n/g,'\n');
@@ -631,9 +631,11 @@ const section=(start,end)=>{const a=source.indexOf(start),b=source.indexOf(end,a
 const fitting=section('    function measureCapacity(', '    function layout()');
 const publishing=section('    function publishPageSize()', '    function commitPaint(');
 const updating=section('      update(value) {', '      localize(language) {');
+const hiding=section('      hide() {', '\n    };\n  }');
 function fixture(minimumRows=1) {
   let options={},capacityReady=false,fittedGeometry=null;
-  let layoutFrame=null,idleTimer=null,visibleDots=[];
+  let layoutFrame=null,idleTimer=null,visibleDots=[],renderedItems=null,observedItem=null;
+  const unobserved=[],resizeObserver={unobserve:item=>unobserved.push(item)};
   const flags={visible:false,blocked:false,visibility:'visible',scrollOwner:''};
   const rows=0,retainPages=false,measurements=[],writes=[],probes=[];
   const fit={clientHeight:0,clientWidth:365};
@@ -641,7 +643,7 @@ function fixture(minimumRows=1) {
   const item={classList:{contains:()=>false}};
   const itemStyle={height:'72px',boxSizing:'border-box',fontFamily:'fixture',fontSize:'14px',lineHeight:'16px'};
   const probe={style:{},removeAttribute(){},setAttribute(){},remove(){this.removed=true;},firstElementChild:item};
-  const container={inert:true,clientWidth:365,classList:{contains:()=>false},getClientRects:()=>flags.visible?[{}]:[],cloneNode:()=>probe};
+  const container={inert:true,clientWidth:365,classList:{contains:()=>false},getClientRects:()=>flags.visible?[{}]:[],cloneNode:()=>probe,removeAttribute(){}};
   const viewport={style:{},getClientRects:()=>flags.visible?[{}]:[],closest:()=>flags.blocked?{}:null,append:node=>assert.equal(node,probe)};
   const pager={classList:{remove(){}},getClientRects:()=>flags.visible?[{}]:[],dataset:new Proxy({}, {set(target,key,value){if(key==='pageSize')writes.push(value);target[key]=value;return true;}})};
   const getComputedStyle=node=>node===container?{...style,visibility:flags.visibility}:itemStyle;
@@ -649,8 +651,8 @@ function fixture(minimumRows=1) {
   const cancelNavigation=()=>{},closeEditor=()=>{},retirePaint=()=>{};
   let api;
   const model=new Pages(()=>api.publish());
-  api=eval('(()=>{'+fitting+publishing+'return {controller:{'+updating+'},initialize:commitInitialCapacity,publish:publishPageSize,measure:measureCapacity};})()');
-  return {api,flags,model,fit,writes,probes,probe,measurements,measure:()=>api.measure(probe.firstElementChild)};
+  api=eval('(()=>{'+fitting+publishing+'return {controller:{'+updating+hiding+'},initialize:commitInitialCapacity,publish:publishPageSize,measure:measureCapacity,track:()=>{observedItem=item;}};})()');
+  return {api,flags,model,fit,writes,probes,probe,measurements,style,itemStyle,container,unobserved,measure:()=>api.measure(probe.firstElementChild)};
 }
 const records=items(0,60),value={key:'owners',positionKey:'owners',items:records,total:60,hasMore:false};
 const {api,flags,model,fit,writes,probes,probe,measurements}=fixture();
@@ -697,6 +699,34 @@ for(const minimum of [1,()=>3]) {
   flow.flags.scrollOwner='';flow.fit.clientHeight=404;
   assert.equal(flow.measure(),15,'leaving the overlay restores bounded complete-row fitting');
 }
+let rowFloor=1;
+const dynamic=fixture(()=>rowFloor);dynamic.flags.visible=true;dynamic.fit.clientHeight=404;
+dynamic.api.controller.update(value);
+for(const [itemHeight,height,expected] of [[73,404,12],[144,404,6],[144,150,3],[144,650,12],[72,322,12],[72,270,9],[72,322,12]]) {
+  dynamic.itemStyle.height=String(itemHeight)+'px';dynamic.fit.clientHeight=height;
+  assert.equal(dynamic.measure(),expected,'card height, 200% scaling, dock/IME and toolbar changes use current fit');
+  assert.equal(dynamic.measurements.at(-1).itemHeight,itemHeight,'same font strings cannot retain an old card height');
+  assert.equal(dynamic.measurements.at(-1).height,height);
+}
+dynamic.itemStyle.boxSizing='content-box';dynamic.itemStyle.height='60px';
+Object.assign(dynamic.itemStyle,{paddingTop:'4px',paddingBottom:'4px',borderTopWidth:'1px',borderBottomWidth:'1px'});
+dynamic.fit.clientHeight=404;
+assert.equal(dynamic.measure(),15);assert.equal(dynamic.measurements.at(-1).itemHeight,70,'padding/borders belong to the measured layout height');
+const count=dynamic.measurements.length;dynamic.measure();
+assert.equal(dynamic.measurements.length,count,'unchanged geometry does not churn diagnostics');
+dynamic.api.track();dynamic.api.controller.hide();
+assert.deepEqual(dynamic.unobserved,[dynamic.probe.firstElementChild],'navigation releases the old first-card observer');
+dynamic.flags.visible=false;dynamic.api.initialize();
+assert.equal(dynamic.measurements.length,count,'hidden pages do not publish a new fit');
+dynamic.style.gridTemplateColumns='175px 175px';dynamic.container.clientWidth=365;dynamic.fit.clientWidth=365;
+dynamic.itemStyle.boxSizing='border-box';dynamic.itemStyle.height='212px';dynamic.fit.clientHeight=212;
+dynamic.flags.scrollOwner='panel';dynamic.flags.visible=true;
+assert.equal(dynamic.measure(),2,'landscape whole-panel rotation keeps one complete row');
+rowFloor=3;dynamic.flags.scrollOwner='';dynamic.fit.clientHeight=510;dynamic.itemStyle.height='168px';
+dynamic.api.controller.update(value);
+assert.equal(dynamic.measure(),6,'portrait return restores minimum three rows using fresh geometry');
+assert.equal(dynamic.measurements.at(-1).itemHeight,168);assert.equal(dynamic.measurements.at(-1).height,510);
+assert.equal(dynamic.measurements.at(-1).minimumRows,3);assert.equal(dynamic.measurements.at(-1).scrollOwner,'viewport');
 const {documentPageSize}=require('./static/result-pagination.js');
 assert.deepEqual(documentPageSize,{song:6,compact:12});assert.ok(Object.isFrozen(documentPageSize));
 `);

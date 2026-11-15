@@ -450,20 +450,23 @@
       const borderBox = parseFloat(itemStyle.height) + (itemStyle.boxSizing === 'border-box' ? 0
         : (parseFloat(itemStyle.paddingTop)||0)+(parseFloat(itemStyle.paddingBottom)||0)
           +(parseFloat(itemStyle.borderTopWidth)||0)+(parseFloat(itemStyle.borderBottomWidth)||0));
-      // Capacity belongs to the grid geometry, never to the first song on
-      // each page. Titles and last-page contents must not invalidate caches.
+      const availableHeight = fit.clientHeight;
+      const rowFloor = typeof minimumRows === "function" ? minimumRows() : minimumRows;
+      const panelScroll = style.getPropertyValue("--result-page-scroll-owner").trim() === "panel";
+      // Card identity alone cannot invalidate fit. Actual border-box or frame
+      // height changes must, including font scaling, rotation and tool insets.
       const geometryKey = JSON.stringify([container.clientWidth, style.gridTemplateColumns,
-        style.rowGap, itemStyle.fontFamily, itemStyle.fontSize, itemStyle.lineHeight]);
+        style.rowGap, style.paddingTop, style.paddingBottom, itemStyle.fontFamily,
+        itemStyle.fontSize, itemStyle.lineHeight, borderBox, availableHeight, rowFloor, panelScroll]);
       if (fittedGeometry?.key !== geometryKey) fittedGeometry = {key:geometryKey, itemHeight:borderBox};
       const geometry = {columns:style.gridTemplateColumns.split(" ").length,
-        height:fit.clientHeight, itemHeight:fittedGeometry.itemHeight,
-        minimumRows:typeof minimumRows === "function" ? minimumRows() : minimumRows,
+        height:availableHeight, itemHeight:fittedGeometry.itemHeight,
+        minimumRows:rowFloor,
         gap:parseFloat(style.rowGap) || 0,
         padding:(parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0)};
       // A visible panel with no measurable height still displays one page.
       // Preserve its actual height in diagnostics; the fit floor selects the
       // configured minimumRows (at least one) rather than a guessed item count.
-      const panelScroll = style.getPropertyValue("--result-page-scroll-owner").trim() === "panel";
       // A whole-panel scrollport gives the grid natural content height. It is
       // not a fit budget: feeding it back would grow a page on every paint.
       const size = fittedPageSize({...geometry, height:panelScroll ? 1 : Math.max(1, geometry.height)});
@@ -1006,6 +1009,8 @@
       },
       hide() {
         if (layoutFrame !== null) { cancelAnimationFrame(layoutFrame); layoutFrame = null; }
+        fittedGeometry = null;
+        if (observedItem) { resizeObserver.unobserve(observedItem); observedItem = null; }
         model.version += 1;
         cancelNavigation();
         if (retainPages) retirePaint();

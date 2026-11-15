@@ -317,6 +317,13 @@ capacity. Hidden, inert or inactive panels wait until visible. A visible panel
 with no measurable height still displays one page: its real grid columns and
 configured minimum rows (at least one) determine capacity even when no full row
 fits. Short-screen scroll ownership remains a separate layout decision.
+Fit cache keys include the actual card border-box height and available fit
+height, along with columns, spacing, fonts, minimum rows and scroll-owner policy.
+The existing coalesced ResizeObserver and font events remeasure current geometry
+after text scaling, rotation, dock/keyboard or tool-row changes. Hiding a page
+clears fit geometry and releases its observed card; re-entry's existing render
+lifecycle observes the new card and schedules a fresh measurement. No timer or
+polling is added. B3's uninset-width overflow decision stays unchanged.
 Loading and refresh retain fitted capacity. Complete rows follow the measured
 floor policy; phone song pages keep their approved minimum of three rows and
 scroll within the same viewport when those rows cannot fit. Remote uses shared
