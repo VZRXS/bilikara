@@ -1,4 +1,5 @@
 use super::*;
+use crate::show_host_process::ShowHostProcess;
 use crate::{AppStateSeed, execute_app_state};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, TcpStream};
@@ -142,14 +143,20 @@ fn fixture_context() -> (FixtureDirectory, HostContext) {
     (cleanup, context)
 }
 
-fn open_receiver(port: u16) -> BufReader<TcpStream> {
-    let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+fn open_receiver(uri: &str) -> BufReader<TcpStream> {
+    let uri = url::Url::parse(uri).unwrap();
+    assert_eq!(uri.scheme(), "http");
+    assert_eq!(uri.host_str(), Some("127.0.0.1"));
+    let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, uri.port().unwrap())).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(6)))
         .unwrap();
-    stream
-        .write_all(b"GET /cast/stage.ts HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-        .unwrap();
+    write!(
+        stream,
+        "GET {} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        uri.path()
+    )
+    .unwrap();
     let mut receiver = BufReader::new(stream);
     let mut header = String::new();
     receiver.read_line(&mut header).unwrap();
@@ -224,6 +231,166 @@ fn cast_keeps_original_track_bytes_and_never_uses_the_local_copy() {
 }
 
 #[test]
+fn cast_sends_only_the_requested_playback_indicators() {
+    struct RecordingBackend {
+        state: PlaybackState,
+        actions: Vec<PlaybackAction>,
+    }
+
+    impl CastBackend for RecordingBackend {
+        fn start_output(&mut self, _: Ipv4Addr) -> Result<String, BackendError> {
+            unreachable!("this test starts with a connected backend")
+        }
+        fn has_served_output(&mut self) -> Result<bool, BackendError> {
+            Ok(true)
+        }
+        fn load_media(&mut self, _: &MediaPaths) -> Result<(), BackendError> {
+            self.state = PlaybackState::Idle;
+            Ok(())
+        }
+        fn prepare_media(&mut self, _: &MediaPaths) -> Result<(), BackendError> {
+            Ok(())
+        }
+        fn set_audio_track(&mut self, _: AudioSlot) -> Result<(), BackendError> {
+            Ok(())
+        }
+        fn resync_audio(&mut self) -> Result<(), BackendError> {
+            Ok(())
+        }
+        fn set_queue_hud(&mut self, _: u64, _: &QueueHud) -> Result<(), BackendError> {
+            Ok(())
+        }
+        fn notify_action(&mut self, action: PlaybackAction) -> Result<(), BackendError> {
+            self.actions.push(action);
+            Ok(())
+        }
+        fn play(&mut self) -> Result<(), BackendError> {
+            self.state = PlaybackState::Playing;
+            Ok(())
+        }
+        fn pause(&mut self) -> Result<(), BackendError> {
+            self.state = PlaybackState::Paused;
+            Ok(())
+        }
+        fn stop(&mut self) -> Result<(), BackendError> {
+            self.state = PlaybackState::Stopped;
+            Ok(())
+        }
+        fn seek(&mut self, _: f64) -> Result<(), BackendError> {
+            Ok(())
+        }
+        fn set_volume(&mut self, _: i32) -> Result<(), BackendError> {
+            Ok(())
+        }
+        fn set_key(&mut self, _: i32) -> Result<(), BackendError> {
+            Ok(())
+        }
+        fn playback_status(&mut self) -> Result<PlaybackStatus, BackendError> {
+            Ok(PlaybackStatus {
+                state: self.state,
+                position: 1.0,
+                duration: 4.0,
+                buffering: false,
+            })
+        }
+        fn close(&mut self) -> Result<(), BackendError> {
+            Ok(())
+        }
+    }
+
+    let _global = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (_cleanup, context) = fixture_context();
+    let source = context.directory.join("source.mp4");
+    std::fs::write(&source, b"fixture").unwrap();
+    add_programme(
+        &context.cache_root,
+        "alpha",
+        "Alice",
+        &source,
+        &[(1, &source), (2, &source)],
+    );
+    add_programme(&context.cache_root, "beta", "Bob", &source, &[(1, &source)]);
+    with_app(|app| {
+        app.native().show_cast.phase = Phase::Active;
+        app.native().show_cast.owns_playback = true;
+        app.native().host_token = "test-token".into();
+        Ok(())
+    })
+    .unwrap();
+    let mut active = Active::new(
+        RecordingBackend {
+            state: PlaybackState::Idle,
+            actions: vec![],
+        },
+        SessionFiles::new(&context).unwrap(),
+        fixture_renderer(),
+        None,
+    );
+    let control = |action: &str| {
+        with_app(|app| {
+            let snapshot = app.native_cast_input()?;
+            app.native_control(
+                &Identity { token: "test-token".into(), client: "test".into(), loopback: true },
+                &json!({"item_id": "alpha", "playback_generation": snapshot.playback_generation, "action": action}),
+                now(),
+            )
+        }).unwrap();
+    };
+    let volume = |volume_percent| {
+        with_app(|app| {
+            app.native_execute(AppStateRequest::SetVolume {
+                schema_version: 1,
+                volume_percent,
+                expected_item_incarnation_id: None,
+                now: now(),
+            })
+        })
+        .unwrap();
+    };
+    volume(40);
+    active.tick(&context).unwrap();
+    assert!(active.backend.actions.is_empty());
+    control("pause");
+    active.tick(&context).unwrap();
+    volume(50);
+    active.tick(&context).unwrap();
+    volume(30);
+    active.tick(&context).unwrap();
+    control("play");
+    active.tick(&context).unwrap();
+    control("play");
+    active.tick(&context).unwrap();
+    with_app(|app| {
+        let item = app.native_cast_input()?.current_item.unwrap();
+        app.native_execute(AppStateRequest::SetAudioVariant {
+            schema_version: 1,
+            item_id: item.id,
+            expected_item_incarnation_id: item.item_incarnation_id,
+            variant_id: "p2_original".into(),
+            now: now(),
+        })
+    })
+    .unwrap();
+    active.tick(&context).unwrap();
+    control("next-track");
+    active.tick(&context).unwrap();
+    active.tick(&context).unwrap();
+    assert_eq!(active.programme.as_ref().unwrap().item_id, "beta");
+    assert_eq!(
+        active.backend.actions,
+        [
+            PlaybackAction::Pause,
+            PlaybackAction::VolumeUp,
+            PlaybackAction::VolumeDown,
+            PlaybackAction::Play,
+            PlaybackAction::Skip,
+        ]
+    );
+}
+
+#[test]
 #[ignore = "requires a real Windows Show DLL, Host executable, and short H.264/AAC fixtures"]
 fn show_cast_real_dll_advances_over_the_same_http_connection() {
     let video = required("BILIKARA_TEST_SHOW_VIDEO");
@@ -264,9 +431,10 @@ fn show_cast_real_dll_advances_over_the_same_http_connection() {
         }
     }
     let mut native = open_native();
-    let port = native.start_stream().unwrap();
+    let uri = native.start_output(Ipv4Addr::LOCALHOST).unwrap();
+    let port = native.port().unwrap();
     assert_eq!(native.served_streams().unwrap(), 0);
-    let mut receiver = open_receiver(port);
+    let mut receiver = open_receiver(&uri);
     let mut initial_ts = [0; 188 * 8];
     receiver.read_exact(&mut initial_ts).unwrap();
     assert!(initial_ts.chunks_exact(188).all(|packet| packet[0] == 0x47));
@@ -294,7 +462,7 @@ fn show_cast_real_dll_advances_over_the_same_http_connection() {
         fixture_renderer(),
         None,
     );
-    let pid = active.native.id();
+    let pid = active.backend.id();
     active.tick(&context).unwrap();
     let hud = active.last_hud.as_ref().unwrap();
     assert_eq!(hud.current.as_ref().unwrap().title, "Parsed Alpha");
@@ -323,14 +491,14 @@ fn show_cast_real_dll_advances_over_the_same_http_connection() {
         assert!(
             Instant::now() < deadline,
             "Show did not naturally advance: {:?}",
-            active.native.status()
+            active.backend.status()
         );
         thread::sleep(Duration::from_millis(60));
     };
     assert!(second > first);
     assert!(received > 188 * 100);
-    assert_eq!(active.native.port().unwrap(), port);
-    assert_eq!(active.native.id(), pid);
+    assert_eq!(active.backend.port().unwrap(), port);
+    assert_eq!(active.backend.id(), pid);
     let snapshot = with_app(|app| app.native_snapshot(true)).unwrap();
     assert_eq!(snapshot["current_item"]["id"], "beta");
     assert_eq!(snapshot["player_status"]["position_source"], "show_sender");
@@ -356,8 +524,8 @@ fn show_cast_real_dll_advances_over_the_same_http_connection() {
     .unwrap();
     active.tick(&context).unwrap();
     active.tick(&context).unwrap();
-    assert_eq!(active.native.status().unwrap().state, 2);
-    active.native.close().unwrap();
+    assert_eq!(active.backend.status().unwrap().state, 2);
+    active.backend.close().unwrap();
     with_app(|app| {
         app.native_return_cast_playback()?;
         let snapshot = app.native_snapshot(true)?;
@@ -428,8 +596,9 @@ fn show_cast_real_dll_switches_three_parts_over_the_same_http_connection() {
         assert_eq!(selected["found"], true);
     };
     let mut native = open_native();
-    let port = native.start_stream().unwrap();
-    let mut receiver = open_receiver(port);
+    let uri = native.start_output(Ipv4Addr::LOCALHOST).unwrap();
+    let port = native.port().unwrap();
+    let mut receiver = open_receiver(&uri);
     receiver.get_ref().set_nonblocking(true).unwrap();
     let mut active = Active::new(
         native,
@@ -437,10 +606,10 @@ fn show_cast_real_dll_switches_three_parts_over_the_same_http_connection() {
         fixture_renderer(),
         None,
     );
-    let pid = active.native.id();
+    let pid = active.backend.id();
     let mut capture = Vec::new();
     let mut chunk = [0_u8; 64 * 1024];
-    let mut poll = |active: &mut Active, position| {
+    let mut poll = |active: &mut Active<ShowHostProcess>, position| {
         let deadline = Instant::now() + Duration::from_secs(8);
         loop {
             active.tick(&context).unwrap();
@@ -452,7 +621,7 @@ fn show_cast_real_dll_switches_three_parts_over_the_same_http_connection() {
                     Err(error) => panic!("receiver read: {error}"),
                 }
             }
-            let status = active.native.status().unwrap();
+            let status = active.backend.status().unwrap();
             if status.position >= position && !status.buffering {
                 return status;
             }
@@ -480,7 +649,7 @@ fn show_cast_real_dll_switches_three_parts_over_the_same_http_connection() {
     assert_eq!(active.loaded_at, initial_load);
     select(3);
     active.tick(&context).unwrap();
-    let after_load = active.native.status().unwrap();
+    let after_load = active.backend.status().unwrap();
     assert!(after_load.position >= 6.15, "{after_load:?}");
     let replacement = active.programme.as_ref().unwrap();
     assert_eq!(replacement.audio().id, "p3_original");
@@ -513,12 +682,12 @@ fn show_cast_real_dll_switches_three_parts_over_the_same_http_connection() {
     let ended = poll(&mut active, 11.99);
     assert_eq!(ended.state, 3, "{ended:?}");
     assert!((ended.duration - 12.0).abs() < 0.1, "{ended:?}");
-    assert_eq!(active.native.port().unwrap(), port);
-    assert_eq!(active.native.id(), pid);
-    assert_eq!(active.native.served_streams().unwrap(), 1);
+    assert_eq!(active.backend.port().unwrap(), port);
+    assert_eq!(active.backend.id(), pid);
+    assert_eq!(active.backend.served_streams().unwrap(), 1);
     assert!(capture.len() > 188 * 100);
     if let Some(path) = std::env::var_os("BILIKARA_TEST_SHOW_TRACK_CAPTURE") {
         std::fs::write(path, &capture).unwrap();
     }
-    active.native.close().unwrap();
+    active.backend.close().unwrap();
 }

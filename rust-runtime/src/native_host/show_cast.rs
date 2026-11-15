@@ -1,16 +1,18 @@
 //! Windows Cast is a playback owner, not a mirror of a running WebView.
 //! AppState owns the queue, commands and observations. One joined worker owns
-//! the receiver connection and one Show process/TS endpoint until disconnect.
+//! the receiver connection and one media backend until disconnect.
 use super::*;
 use crate::app_state::{AppStateRequest, PlaylistItem};
+use crate::cast_backend::{
+    AudioSlot, CastBackend, Error as BackendError, HudRow, MediaPaths, PlaybackAction,
+    PlaybackState, PlaybackStatus, QueueHud,
+};
 use crate::show_dlna::{self, Renderer};
-use crate::show_host_process::ShowHostProcess;
-use crate::windows_show_host::{AudioSlot, HudRow, QueueHud, Status};
 use serde::Deserialize;
 use std::time::Instant;
 
 mod media;
-use media::{AudioTrack, MediaKey, MediaPaths, SessionFiles};
+use media::{AudioTrack, MediaKey, SessionFiles};
 
 #[cfg(all(test, windows, target_arch = "x86_64"))]
 mod tests;
@@ -101,34 +103,31 @@ impl CastState {
     }
 }
 
-fn dll_path() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("BILIKARA_SHOW_HOST_DLL") {
-        let path = PathBuf::from(path);
-        return (path.is_absolute() && path.is_file()).then_some(path);
-    }
-    let path = std::env::current_exe()
-        .ok()?
-        .parent()?
-        .join("vendor/show-host/libshow_host.dll");
-    path.is_file().then_some(path)
-}
-
-pub(super) fn start(context: Arc<HostContext>) -> Result<(), ApiError> {
+pub(super) fn start<B, F>(
+    context: Arc<HostContext>,
+    discover_backend: impl FnOnce() -> Option<F>,
+) -> Result<(), ApiError>
+where
+    B: CastBackend,
+    F: Fn() -> Result<B, BackendError> + Send + 'static,
+{
     if !cfg!(all(windows, target_arch = "x86_64")) || !context.desktop {
         return Ok(());
     }
-    let dll = dll_path();
+    let open_backend = discover_backend();
     with_app(|app| {
         let session = app.native();
         session.show_cast.supported = true;
-        session.show_cast.available = dll.is_some();
+        session.show_cast.available = open_backend.is_some();
         session.revision += 1;
         Ok(())
     })?;
-    if let Some(dll) = dll {
+    if let Some(open_backend) = open_backend {
         let worker_context = context.clone();
         context
-            .spawn("windows-show-cast", move || worker(&worker_context, &dll))
+            .spawn("windows-show-cast", move || {
+                worker(&worker_context, open_backend)
+            })
             .map_err(|_| ApiError::new(503, "cast_worker", "无法启动投屏服务"))?;
     }
     Ok(())
@@ -270,7 +269,7 @@ fn queue_hud(snapshot: &CastInput, titles: Option<&Titles>) -> QueueHud {
     }
 }
 
-fn native_error(error: crate::windows_show_host::Error) -> ApiError {
+fn backend_error(error: BackendError) -> ApiError {
     ApiError::new(502, &error.code, error.message)
 }
 
@@ -289,15 +288,21 @@ impl Programme {
     }
 }
 
-struct Active {
-    // The process must exit before the private cache names are removed.
-    native: ShowHostProcess,
+struct AppliedSettings {
+    volume: i32,
+    key: i32,
+    muted: bool,
+}
+
+struct Active<B> {
+    // Drop the backend and its media readers before releasing the private files.
+    backend: B,
     files: SessionFiles,
     renderer: Renderer,
     programme: Option<Programme>,
     initial: Option<Value>,
     want_play: bool,
-    last_settings: Option<(i32, i32)>,
+    last_settings: Option<AppliedSettings>,
     last_hud: Option<QueueHud>,
     hud_revision: u64,
     prepared: Option<MediaKey>,
@@ -307,15 +312,10 @@ struct Active {
     saw_playback: bool,
 }
 
-impl Active {
-    fn new(
-        native: ShowHostProcess,
-        files: SessionFiles,
-        renderer: Renderer,
-        initial: Option<Value>,
-    ) -> Self {
+impl<B: CastBackend> Active<B> {
+    fn new(backend: B, files: SessionFiles, renderer: Renderer, initial: Option<Value>) -> Self {
         Self {
-            native,
+            backend,
             files,
             renderer,
             programme: None,
@@ -334,32 +334,32 @@ impl Active {
 
     fn connect(
         context: &HostContext,
-        dll: &Path,
+        open_backend: &impl Fn() -> Result<B, BackendError>,
         renderer: Renderer,
         operation: u64,
     ) -> Result<Self, ApiError> {
         let files = SessionFiles::new(context)?;
-        let mut native = ShowHostProcess::open(dll).map_err(native_error)?;
-        // Open Cast first. Show provides its idle programme while Bilikara
+        let mut backend = open_backend().map_err(backend_error)?;
+        // Open Cast first. The backend provides its idle programme while bilikara
         // waits for the receiver and keeps local playback available.
-        let port = native.start_stream().map_err(native_error)?;
+        let uri = backend
+            .start_output(renderer.local_address)
+            .map_err(backend_error)?;
         if !operation_current(context, operation) {
             return Err(ApiError::new(409, "cast_cancelled", "投屏已取消"));
         }
-        let uri = format!("http://{}:{port}/cast/stage.ts", renderer.local_address);
         if let Err(error) = show_dlna::connect(&renderer, &uri, "Bilikara") {
             let _ = show_dlna::stop(&renderer);
             return Err(ApiError::new(502, "CAST_FAILED", error));
         }
         let initial = (|| {
-            // SOAP success alone is insufficient. Wait for the new Show HTTP
-            // server to send its first payload, without querying TV playback.
+            // Wait for the sender to serve its first payload after SOAP succeeds.
             let deadline = Instant::now() + Duration::from_secs(8);
             loop {
                 if !operation_current(context, operation) {
                     return Err(ApiError::new(409, "cast_cancelled", "投屏已取消"));
                 }
-                if native.served_streams().map_err(native_error)? > 0 {
+                if backend.has_served_output().map_err(backend_error)? {
                     break;
                 }
                 if Instant::now() >= deadline {
@@ -393,12 +393,12 @@ impl Active {
                 return Err(error);
             }
         };
-        Ok(Self::new(native, files, renderer, initial))
+        Ok(Self::new(backend, files, renderer, initial))
     }
 
     fn close(mut self) -> Result<(), ApiError> {
         // A receiver is allowed to reject Stop. The native endpoint still closes.
-        let result = self.native.close().map_err(native_error);
+        let result = self.backend.close().map_err(backend_error);
         let _ = show_dlna::stop(&self.renderer);
         result
     }
@@ -410,19 +410,50 @@ impl Active {
         } else {
             settings.volume_percent.clamp(0, 100)
         };
-        if self.last_settings.is_none_or(|old| old.0 != volume) {
-            self.native.set_volume(volume).map_err(native_error)?;
+        if self
+            .last_settings
+            .as_ref()
+            .is_none_or(|old| old.volume != volume)
+        {
+            self.backend.set_volume(volume).map_err(backend_error)?;
+            if let Some(old) = &self.last_settings
+                && !old.muted
+                && !settings.is_muted
+                && self
+                    .programme
+                    .as_ref()
+                    .zip(settings.current_item.as_ref())
+                    .is_some_and(|(programme, item)| {
+                        programme.incarnation == item.item_incarnation_id
+                    })
+            {
+                let action = if volume > old.volume {
+                    PlaybackAction::VolumeUp
+                } else {
+                    PlaybackAction::VolumeDown
+                };
+                self.notify_action(action)?;
+            }
         }
         if self
             .last_settings
-            .is_none_or(|old| old.1 != settings.key_shift)
+            .as_ref()
+            .is_none_or(|old| old.key != settings.key_shift)
         {
-            self.native
+            self.backend
                 .set_key(settings.key_shift)
-                .map_err(native_error)?;
+                .map_err(backend_error)?;
         }
-        self.last_settings = Some((volume, settings.key_shift));
+        self.last_settings = Some(AppliedSettings {
+            volume,
+            key: settings.key_shift,
+            muted: settings.is_muted,
+        });
         Ok(())
+    }
+
+    fn notify_action(&mut self, action: PlaybackAction) -> Result<(), ApiError> {
+        self.backend.notify_action(action).map_err(backend_error)
     }
 
     fn load(
@@ -447,18 +478,22 @@ impl Active {
                 }
                 if slot != old.audio_slot {
                     let audio_end = self.files.audio_duration(old.audio());
-                    let position = self.native.status().map_err(native_error)?.position;
-                    if let Err(error) = self.native.set_audio_track(slot) {
+                    let position = self
+                        .backend
+                        .playback_status()
+                        .map_err(backend_error)?
+                        .position;
+                    if let Err(error) = self.backend.set_audio_track(slot) {
                         if error.code == "TRACK_SWITCH_FAILED" {
-                            return self.reject_audio_switch(generation, native_error(error));
+                            return self.reject_audio_switch(generation, backend_error(error));
                         }
-                        return Err(native_error(error));
+                        return Err(backend_error(error));
                     }
                     if audio_end.is_none_or(|end| position + 0.25 >= end) {
                         // The shorter track can exhaust its PCM worker while
                         // the video clock keeps running. Re-anchor only audio
                         // to the current Cast clock before leaving that tail.
-                        self.native.set_audio_offset(0.0).map_err(native_error)?;
+                        self.backend.resync_audio().map_err(backend_error)?;
                     }
                 }
                 let loaded = self.programme.as_mut().expect("resident audio programme");
@@ -485,6 +520,7 @@ impl Active {
             media.second = None;
         }
 
+        let clear_pause = previous.is_some() && same_item.is_none() && !self.want_play;
         let mut position = 0.0;
         if let Some(initial) = self
             .initial
@@ -496,7 +532,11 @@ impl Active {
                 initial["is_paused"] != true || initial["observed_phase"] == "starting";
         } else if let Some(old) = same_item {
             if snapshot.restart_generation <= old.generation {
-                position = self.native.status().map_err(native_error)?.position;
+                position = self
+                    .backend
+                    .playback_status()
+                    .map_err(backend_error)?
+                    .position;
             }
         } else if previous.is_some() {
             self.want_play = true;
@@ -528,6 +568,9 @@ impl Active {
         self.saw_playback = false;
         self.loaded_at = Instant::now();
         self.last_report = None;
+        if clear_pause {
+            self.notify_action(PlaybackAction::Clear)?;
+        }
         // Record the physical programme even if another selection arrived
         // while Show was loading. The next tick must see the actual slots.
         owns_programme(generation)
@@ -539,24 +582,26 @@ impl Active {
         slot: AudioSlot,
         position: f64,
     ) -> Result<(), ApiError> {
-        self.native
-            .load_pair(&paths.video, &paths.first, paths.second.as_deref())
-            .map_err(native_error)?;
+        self.backend.load_media(paths).map_err(backend_error)?;
         if slot == AudioSlot::Second {
-            self.native.set_audio_track(slot).map_err(native_error)?;
+            self.backend.set_audio_track(slot).map_err(backend_error)?;
         }
         // Load has a separate source clock; no Cast HTTP/encoder reset.
         if position > 0.0 {
-            let duration = self.native.status().map_err(native_error)?.duration;
+            let duration = self
+                .backend
+                .playback_status()
+                .map_err(backend_error)?
+                .duration;
             let target = if duration > 0.0 {
                 position.min(duration)
             } else {
                 position
             };
-            self.native.seek(target).map_err(native_error)?;
+            self.backend.seek(target).map_err(backend_error)?;
         }
         if self.want_play {
-            self.native.play().map_err(native_error)?;
+            self.backend.play().map_err(backend_error)?;
         }
         Ok(())
     }
@@ -588,7 +633,7 @@ impl Active {
         &mut self,
         command: &Value,
         snapshot: &CastInput,
-        status: Option<Status>,
+        status: Option<PlaybackStatus>,
     ) -> Result<(), ApiError> {
         let generation = snapshot.playback_generation;
         let seq = command["seq"].as_u64().unwrap_or(0);
@@ -597,8 +642,10 @@ impl Active {
         {
             match command["action"].as_str() {
                 Some("next-track") => {
-                    self.want_play = true;
-                    advance(generation)?;
+                    if advance(generation)? {
+                        self.want_play = true;
+                        self.notify_action(PlaybackAction::Skip)?;
+                    }
                 }
                 Some("toggle-play" | "play" | "pause") => {
                     self.want_play = match command["action"].as_str() {
@@ -608,12 +655,16 @@ impl Active {
                     };
                     if let Some(status) = status {
                         if self.want_play {
-                            if !self.saw_playback && status.state != 1 {
-                                self.loaded_at = Instant::now();
+                            if status.state != PlaybackState::Playing {
+                                if !self.saw_playback {
+                                    self.loaded_at = Instant::now();
+                                }
+                                self.backend.play().map_err(backend_error)?;
+                                self.notify_action(PlaybackAction::Play)?;
                             }
-                            self.native.play().map_err(native_error)?;
-                        } else if status.state == 1 {
-                            self.native.pause().map_err(native_error)?;
+                        } else if status.state == PlaybackState::Playing {
+                            self.backend.pause().map_err(backend_error)?;
+                            self.notify_action(PlaybackAction::Pause)?;
                         }
                     }
                 }
@@ -626,9 +677,9 @@ impl Active {
                                 .as_f64()
                                 .unwrap_or(status.position)
                         };
-                        self.native
+                        self.backend
                             .seek(target.clamp(0.0, status.duration))
-                            .map_err(native_error)?;
+                            .map_err(backend_error)?;
                     }
                 }
                 _ => {}
@@ -645,15 +696,16 @@ impl Active {
         Ok(())
     }
 
-    fn observe(&mut self, snapshot: &CastInput, status: Status) -> Result<(), ApiError> {
+    fn observe(&mut self, snapshot: &CastInput, status: PlaybackStatus) -> Result<(), ApiError> {
         let programme = self.programme.as_ref().expect("loaded programme");
-        let playing = status.state == 1 && !status.buffering && status.position > 0.0;
+        let playing =
+            status.state == PlaybackState::Playing && !status.buffering && status.position > 0.0;
         self.saw_playback |= playing;
         // Show reaches STOPPED when its programme clock finishes. This is a
         // sender event: the tail is already on the existing TS timeline, so
         // it is safe to append the next song without receiver telemetry.
         let ended = self.want_play
-            && status.state == 3
+            && status.state == PlaybackState::Stopped
             && (self.saw_playback || (status.duration > 0.0 && status.position >= status.duration));
         if self.want_play
             && !self.saw_playback
@@ -700,7 +752,10 @@ impl Active {
     fn wait_for_media(&mut self, generation: u64) -> Result<(), ApiError> {
         if self.waiting_generation != Some(generation) {
             if self.programme.take().is_some() {
-                self.native.stop().map_err(native_error)?;
+                self.backend.stop().map_err(backend_error)?;
+                if !self.want_play {
+                    self.notify_action(PlaybackAction::Clear)?;
+                }
                 self.want_play = true;
             }
             self.waiting_generation = Some(generation);
@@ -722,9 +777,9 @@ impl Active {
         }
         if self.last_hud.as_ref() != Some(&hud) {
             self.hud_revision += 1;
-            self.native
+            self.backend
                 .set_queue_hud(self.hud_revision, &hud)
-                .map_err(native_error)?;
+                .map_err(backend_error)?;
             self.last_hud = Some(hud);
         }
         self.settings(&snapshot)?;
@@ -741,7 +796,7 @@ impl Active {
                 Ok(true)
             };
             match load {
-                Ok(true) => Some(self.native.status().map_err(native_error)?),
+                Ok(true) => Some(self.backend.playback_status().map_err(backend_error)?),
                 Ok(false) => return Ok(()),
                 Err(error) if error.code == media::ORIGINAL_PENDING => {
                     // An old cache may only have the local playback files.
@@ -773,9 +828,7 @@ impl Active {
         {
             // Prewarming is opportunistic; normal load remains the fallback.
             if let Ok(paths) = self.files.paths(context, &next) {
-                self.native
-                    .prepare_next(&paths.video, &paths.first, paths.second.as_deref())
-                    .map_err(native_error)?;
+                self.backend.prepare_media(&paths).map_err(backend_error)?;
                 self.prepared = Some(next);
             }
         }
@@ -794,17 +847,18 @@ fn operation_current(context: &HostContext, operation: u64) -> bool {
         && with_app(|app| Ok(app.native().show_cast.operation == operation)).unwrap_or(false)
 }
 
-fn advance(generation: u64) -> Result<(), ApiError> {
+fn advance(generation: u64) -> Result<bool, ApiError> {
     with_app(|app| {
         if app.native().show_cast.phase == Phase::Active && app.native_cast_generation(generation) {
-            app.native_execute(AppStateRequest::AdvanceToNext {
+            let result = app.native_execute(AppStateRequest::AdvanceToNext {
                 schema_version: 1,
                 expected_playback_generation: generation,
                 reset_av_delay: false,
                 now: now(),
             })?;
+            return Ok(result["changed"] == true);
         }
-        Ok(())
+        Ok(false)
     })
 }
 
@@ -836,8 +890,11 @@ fn finish(operation: u64, error: Option<ApiError>) {
     });
 }
 
-fn worker(context: &HostContext, dll: &Path) {
-    let mut active = None::<Active>;
+fn worker<B: CastBackend>(
+    context: &HostContext,
+    open_backend: impl Fn() -> Result<B, BackendError>,
+) {
+    let mut active = None;
     let mut operation = 0;
     while !context.stop.load(Ordering::Acquire) {
         let pending = with_app(|app| {
@@ -877,11 +934,10 @@ fn worker(context: &HostContext, dll: &Path) {
                         Ok(())
                     })
                 }),
-                Command::Connect(renderer) => {
-                    Active::connect(context, dll, renderer, id).map(|session| {
+                Command::Connect(renderer) => Active::connect(context, &open_backend, renderer, id)
+                    .map(|session| {
                         active = Some(session);
-                    })
-                }
+                    }),
                 Command::Disconnect => {
                     let error = active.take().and_then(|session| session.close().err());
                     finish(id, error);

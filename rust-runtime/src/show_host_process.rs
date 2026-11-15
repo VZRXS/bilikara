@@ -1,10 +1,15 @@
 //! Private process boundary for the optional, unmodified ShowHost DLL.
 //! A whole casting session shares one child, native instance and HTTP stream.
 //! Process exit reclaims native resources which the DLL cannot release itself.
-use crate::windows_show_host::{AudioSlot, Error, QueueHud, ShowHostNativeAdapter, Status};
+use crate::cast_backend::{
+    AudioSlot, CastBackend, Error, MediaPaths, PlaybackAction, PlaybackState, PlaybackStatus,
+    QueueHud,
+};
+use crate::windows_show_host::{ShowHostNativeAdapter, Status};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::net::Ipv4Addr;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::{self, JoinHandle};
@@ -15,10 +20,18 @@ const MAX_LINE_BYTES: usize = 64 * 1024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn error(code: &str, message: impl Into<String>) -> Error {
-    Error {
-        code: code.into(),
-        message: message.into(),
-    }
+    Error::new(code, message)
+}
+
+pub(crate) fn discover_backend() -> Option<impl Fn() -> Result<ShowHostProcess, Error>> {
+    let dll = match std::env::var_os("BILIKARA_SHOW_HOST_DLL") {
+        Some(path) => PathBuf::from(path),
+        None => std::env::current_exe()
+            .ok()?
+            .parent()?
+            .join("vendor/show-host/libshow_host.dll"),
+    };
+    (dll.is_absolute() && dll.is_file()).then_some(move || ShowHostProcess::open(&dll))
 }
 
 /// The native handle never enters this process. All commands use private pipes;
@@ -266,16 +279,6 @@ impl ShowHostProcess {
         .ok_or_else(|| error("NATIVE_OUTPUT_INVALID", "invalid Show standby result"))
     }
 
-    pub(crate) fn set_audio_track(&mut self, slot: AudioSlot) -> Result<(), Error> {
-        self.request("set_audio_track", json!({"slot": slot}))
-            .map(|_| ())
-    }
-
-    pub(crate) fn set_queue_hud(&mut self, revision: u64, hud: &QueueHud) -> Result<(), Error> {
-        self.request("set_queue_hud", json!({"revision": revision, "hud": hud}))?;
-        Ok(())
-    }
-
     pub fn play(&mut self) -> Result<(), Error> {
         self.request("play", json!({})).map(|_| ())
     }
@@ -384,6 +387,105 @@ impl ShowHostProcess {
     }
 }
 
+impl CastBackend for ShowHostProcess {
+    fn start_output(&mut self, local_address: Ipv4Addr) -> Result<String, Error> {
+        let port = self.start_stream()?;
+        Ok(format!("http://{local_address}:{port}/cast/stage.ts"))
+    }
+
+    fn has_served_output(&mut self) -> Result<bool, Error> {
+        Ok(self.served_streams()? > 0)
+    }
+
+    fn load_media(&mut self, media: &MediaPaths) -> Result<(), Error> {
+        self.load_pair(&media.video, &media.first, media.second.as_deref())
+    }
+
+    fn prepare_media(&mut self, media: &MediaPaths) -> Result<(), Error> {
+        self.prepare_next(&media.video, &media.first, media.second.as_deref())
+            .map(|_| ())
+    }
+
+    fn set_audio_track(&mut self, slot: AudioSlot) -> Result<(), Error> {
+        self.request("set_audio_track", json!({"slot": slot}))
+            .map(|_| ())
+    }
+
+    fn resync_audio(&mut self) -> Result<(), Error> {
+        self.set_audio_offset(0.0)
+    }
+
+    fn set_queue_hud(&mut self, revision: u64, hud: &QueueHud) -> Result<(), Error> {
+        self.request("set_queue_hud", json!({"revision": revision, "hud": hud}))
+            .map(|_| ())
+    }
+
+    fn notify_action(&mut self, action: PlaybackAction) -> Result<(), Error> {
+        match self.request("notify_action", json!({ "action": action })) {
+            Err(error) if error.code == "HUD_ACTION_REJECTED" => {
+                eprintln!("[show-cast] {error}");
+                Ok(())
+            }
+            result => result.map(|_| ()),
+        }
+    }
+
+    fn play(&mut self) -> Result<(), Error> {
+        Self::play(self)
+    }
+
+    fn pause(&mut self) -> Result<(), Error> {
+        Self::pause(self)
+    }
+
+    fn stop(&mut self) -> Result<(), Error> {
+        Self::stop(self)
+    }
+
+    fn seek(&mut self, seconds: f64) -> Result<(), Error> {
+        Self::seek(self, seconds)
+    }
+
+    fn set_volume(&mut self, percent: i32) -> Result<(), Error> {
+        Self::set_volume(self, percent)
+    }
+
+    fn set_key(&mut self, semitones: i32) -> Result<(), Error> {
+        Self::set_key(self, semitones)
+    }
+
+    fn playback_status(&mut self) -> Result<PlaybackStatus, Error> {
+        let Status {
+            state,
+            position,
+            duration,
+            buffering,
+        } = self.status()?;
+        let state = match state {
+            0 => PlaybackState::Idle,
+            1 => PlaybackState::Playing,
+            2 => PlaybackState::Paused,
+            3 => PlaybackState::Stopped,
+            _ => {
+                return Err(error(
+                    "NATIVE_OUTPUT_INVALID",
+                    "invalid Show playback state",
+                ));
+            }
+        };
+        Ok(PlaybackStatus {
+            state,
+            position,
+            duration,
+            buffering,
+        })
+    }
+
+    fn close(&mut self) -> Result<(), Error> {
+        Self::close(self)
+    }
+}
+
 impl Drop for ShowHostProcess {
     fn drop(&mut self) {
         self.terminate();
@@ -469,6 +571,7 @@ fn argument<'a>(arguments: &'a Value, name: &str) -> Result<&'a str, Error> {
 
 fn execute(
     native: &mut Option<ShowHostNativeAdapter>,
+    sequence: u64,
     command: &str,
     arguments: &Value,
 ) -> Result<Value, Error> {
@@ -539,6 +642,11 @@ fn execute(
             }
             instance.set_queue_hud(revision, &hud)?;
         }
+        "notify_action" => {
+            let action = serde_json::from_value(arguments["action"].clone())
+                .map_err(|_| error("INVALID_ARGUMENT", "invalid playback HUD action"))?;
+            instance.notify_action(action, sequence)?;
+        }
         "play" => instance.play()?,
         "pause" => instance.pause()?,
         "stop" => instance.stop()?,
@@ -595,7 +703,7 @@ pub fn run_worker() -> Result<(), Error> {
                 "private request command is missing",
             )
         })?;
-        let result = execute(&mut native, command, &request["arguments"]);
+        let result = execute(&mut native, id, command, &request["arguments"]);
         let response = match result {
             Ok(data) => json!({"id": id, "ok": true, "data": data}),
             Err(failure) => json!({"id": id, "ok": false, "error": failure}),

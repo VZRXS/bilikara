@@ -500,7 +500,7 @@ fn start(
     };
     library::start_coordinator(context.clone())?;
     cache::start_pump(context.clone())?;
-    show_cast::start(context.clone())?;
+    show_cast::start(context.clone(), crate::show_host_process::discover_backend)?;
     automatic_volume::configure_capability();
     automatic_volume::start(context.clone())?;
     network::start_monitor(&context)?;

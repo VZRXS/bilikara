@@ -5,6 +5,8 @@ mod artifact_service;
 mod bilibili_service;
 mod cache_application;
 mod cache_runtime;
+#[cfg(feature = "native-host")]
+mod cast_backend;
 pub mod catalog_maintenance;
 mod cloudflare_service;
 mod desktop_login;

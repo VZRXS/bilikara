@@ -1,6 +1,8 @@
 //! Optional Windows ShowHost C ABI adapter. The DLL owns media processing,
 //! program timing, its encoder and the Cast HTTP server. Call this adapter on
 //! one service thread: loading and teardown synchronously wait for native work.
+pub use crate::cast_backend::Error;
+use crate::cast_backend::{AudioSlot, PlaybackAction, QueueHud};
 use serde::Serialize;
 use std::marker::PhantomData;
 use std::path::Path;
@@ -31,54 +33,12 @@ pub const REQUIRED_ABI_SYMBOLS: &[&str] = &[
     "show_host_get_cast_pipeline_stats",
 ];
 
-#[derive(Debug, Clone, Serialize)]
-pub struct Error {
-    pub code: String,
-    pub message: String,
-}
-
-impl Error {
-    fn new(code: &str, message: impl Into<String>) -> Self {
-        Self {
-            code: code.into(),
-            message: message.into(),
-        }
-    }
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.code, self.message)
-    }
-}
-
-impl std::error::Error for Error {}
-
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct Status {
     pub state: i32,
     pub position: f64,
     pub duration: f64,
     pub buffering: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum AudioSlot {
-    First,
-    Second,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
-pub(crate) struct HudRow {
-    pub title: String,
-    pub requester: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
-pub(crate) struct QueueHud {
-    pub current: Option<HudRow>,
-    pub upcoming: Vec<HudRow>,
 }
 
 /// Owns exactly one native instance and its loaded library. It deliberately
@@ -211,6 +171,33 @@ impl ShowHostNativeAdapter {
 
     pub(crate) fn set_queue_hud(&mut self, revision: u64, hud: &QueueHud) -> Result<(), Error> {
         native::set_queue_hud(self.instance()?, revision, hud)
+    }
+
+    pub(crate) fn notify_action(
+        &mut self,
+        action: PlaybackAction,
+        sequence: u64,
+    ) -> Result<(), Error> {
+        let n = self.instance()?;
+        let Some(notify) = n.api.notify_action else {
+            return Ok(());
+        };
+        // SHOW_HOST_HUD_ACTION_* in the optional ShowHost C ABI.
+        let action = match action {
+            PlaybackAction::Clear => 0,
+            PlaybackAction::Play => 1,
+            PlaybackAction::Pause => 2,
+            PlaybackAction::Skip => 4,
+            PlaybackAction::VolumeUp => 7,
+            PlaybackAction::VolumeDown => 8,
+        };
+        if !unsafe { notify(n.host, action, sequence) } {
+            return Err(Error::new(
+                "HUD_ACTION_REJECTED",
+                "ShowHost rejected the playback HUD action",
+            ));
+        }
+        Ok(())
     }
 
     pub fn play(&mut self) -> Result<(), Error> {
@@ -368,6 +355,13 @@ impl ShowHostNativeAdapter {
     pub(crate) fn set_queue_hud(&mut self, _revision: u64, _hud: &QueueHud) -> Result<(), Error> {
         Err(unavailable())
     }
+    pub(crate) fn notify_action(
+        &mut self,
+        _action: PlaybackAction,
+        _sequence: u64,
+    ) -> Result<(), Error> {
+        Err(unavailable())
+    }
     pub fn play(&mut self) -> Result<(), Error> {
         Err(unavailable())
     }
@@ -451,7 +445,8 @@ fn validate_status(status: Status) -> Result<Status, Error> {
 
 #[cfg(windows)]
 mod native {
-    use super::{EXPECTED_ABI, Error, HudRow, QueueHud};
+    use super::{EXPECTED_ABI, Error, QueueHud};
+    use crate::cast_backend::HudRow;
     use std::ffi::{CStr, OsString, c_void};
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use std::os::windows::io::AsRawHandle;
@@ -475,6 +470,7 @@ mod native {
 
     type Handle = *mut c_void;
     type Action = unsafe extern "C" fn(Handle);
+    type NotifyAction = unsafe extern "C" fn(Handle, u32, u64) -> bool;
     type Load = unsafe extern "C" fn(
         Handle,
         *const u16,
@@ -599,6 +595,7 @@ mod native {
         pub load: Load,
         pub prepare: Prepare,
         queue_hud: unsafe extern "C" fn(Handle, *const HudState) -> bool,
+        pub notify_action: Option<NotifyAction>,
         pub start_cast: unsafe extern "C" fn(Handle, u16) -> bool,
         pub port: unsafe extern "C" fn(Handle) -> u16,
         pub stop_cast: Action,
@@ -730,6 +727,14 @@ mod native {
                     c"show_host_set_audience_hud_state",
                     unsafe extern "C" fn(Handle, *const HudState) -> bool
                 ),
+                notify_action: library
+                    .symbol(c"show_host_notify_playback_action")
+                    .ok()
+                    .map(|symbol| unsafe {
+                        std::mem::transmute::<unsafe extern "system" fn() -> isize, NotifyAction>(
+                            symbol,
+                        )
+                    }),
                 start_cast: bind!(
                     c"show_host_start_cast_stream",
                     unsafe extern "C" fn(Handle, u16) -> bool

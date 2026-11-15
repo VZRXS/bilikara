@@ -74,12 +74,6 @@ impl MediaKey {
     }
 }
 
-pub(super) struct MediaPaths {
-    pub(super) video: PathBuf,
-    pub(super) first: PathBuf,
-    pub(super) second: Option<PathBuf>,
-}
-
 struct MediaLease(String);
 impl Drop for MediaLease {
     fn drop(&mut self) {
