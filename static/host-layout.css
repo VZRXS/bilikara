@@ -1079,21 +1079,34 @@ html[data-host-platform="ios"][data-ios-native-dock="true"] .selection-modal-car
   max-height: calc(100dvh - max(12px, var(--ios-safe-top)) - max(12px, var(--mobile-dock-height), var(--mobile-ime-height, 0px)));
 }
 
-/* Continuous phone pages extend behind the floating dock. The stage and track
-   strip stay fixed; scroll owners reserve reachable trailing content space. */
-html[data-host-layout="portrait"]:is([data-host-page="my"], [data-host-page="playback"], [data-host-page="queue"]) .shell-body {
+/* Playback retains its continuous page behind the floating dock. */
+html[data-host-layout="portrait"][data-host-page="playback"] .shell-body {
   grid-row: 3 / 5;
   padding-bottom: var(--mobile-ime-height, var(--android-ime-height, 0px));
+}
+/* My/Settings and Queue/History end at the dock's top track boundary. Only
+   background remains behind it; keyboard avoidance belongs to content. */
+html[data-host-layout="portrait"]:is([data-host-page="my"], [data-host-page="queue"]) .shell-body {
+  grid-row: 3;
+  padding-bottom: max(0px, calc(var(--mobile-ime-height, var(--android-ime-height, 0px)) - var(--mobile-dock-height)));
 }
 html[data-host-layout="portrait"][data-host-navigation-transition="true"] :is(.shell-body, .layout, .host-content-region) {
   overflow: visible;
 }
-html[data-host-layout="portrait"] #stage-control-tray,
-html[data-host-layout="portrait"] :is(.queue-card, .history-card) :is(.playlist, .history-list) {
+html[data-host-layout="portrait"] #stage-control-tray {
   padding-bottom: calc(var(--mobile-content-trailing-inset) + 14px);
   scroll-padding-bottom: calc(var(--mobile-content-trailing-inset) + 14px);
 }
-html[data-host-layout="portrait"] .android-my-scroll { padding-bottom: calc(var(--mobile-content-trailing-inset) + 14px); }
+html[data-host-layout="portrait"] :is(.queue-card, .history-card) :is(.playlist, .history-list) {
+  padding-bottom: 14px;
+  scroll-padding-bottom: 14px;
+}
+/* My/Settings keep full-width scroll owners, including during page motion.
+   The content gutters belong inside them, away from the system indicator. */
+html[data-host-layout="portrait"][data-host-page="my"] .shell-body { padding-inline: 0; }
+html[data-host-layout="portrait"] .android-my-scroll {
+  padding: 0 14px 14px;
+}
 html[data-host-layout="portrait"] .app-shell .host-workspace-region .session-users-panel { padding: 0; }
 html[data-host-layout="portrait"] :is(.queue-current, .song-item, .history-item) { padding-block: 8px; min-height: 0; }
 html[data-host-layout="portrait"] .history-item { flex-shrink: 0; }
@@ -1102,10 +1115,10 @@ html[data-host-layout="portrait"] :is(.queue-current-side, .song-badge-column) {
 html[data-host-layout="portrait"] .android-host-dock { grid-column: 1; }
 
 html[data-host-layout="portrait"] .settings-workspace-body {
-  padding: 0 0 calc(var(--mobile-content-trailing-inset) + 14px);
+  padding: 0 14px 14px;
 }
 html[data-host-layout="portrait"] :is(.android-my-scroll, .settings-workspace-body) {
-  scroll-padding-bottom: calc(var(--mobile-content-trailing-inset) + 14px);
+  scroll-padding-bottom: 14px;
 }
 
 html[data-host-layout="portrait"] body.is-tauri-fullscreen-active :is(.shell-body, .layout, .host-content-region, .left-column) { overflow: visible; }
@@ -1115,6 +1128,25 @@ html[data-host-layout="portrait"] .topbar .top-controls { align-self: center; }
 /* Only functional groups have a surface. Transparent page frames reveal the
    viewport backdrop; navigation clips covered content instead of painting a base. */
 html[data-host-layout="portrait"] .settings-workspace { grid-template-rows: minmax(0, 1fr); }
+/* On phone, the section owns the whole group surface, including its heading.
+   Desktop retains the separate heading and inner control card. */
+html[data-host-layout="portrait"] .settings-workspace-body { --settings-section-gap: 12px; }
+html[data-host-layout="portrait"] .settings-workspace-body > .settings-section {
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--settings-group-bg);
+}
+html[data-host-layout="portrait"] .settings-section > .settings-section-card {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+html[data-host-layout="portrait"] .settings-section-card > .cache-panel-row { padding-block: 12px; }
+html[data-host-layout="portrait"] .settings-section-card > .cache-panel-row:first-child { padding-top: 0; }
+html[data-host-layout="portrait"] .settings-section-card > .cache-panel-row:last-child { padding-bottom: 0; }
 html[data-host-layout="portrait"] .android-my-scroll > .android-my-card {
   margin: 0;
   padding: 14px;
@@ -1125,6 +1157,13 @@ html[data-host-layout="portrait"] .android-my-scroll > .android-my-card {
 html[data-host-layout="portrait"] .android-my-scroll > .android-my-card:not([hidden]) ~ .android-my-card:not([hidden]) {
   margin-top: 12px;
 }
+/* A collapsed account is one status row: 30px badge + 12px padding + border.
+   Expanded QR content keeps the ordinary 14px group padding. */
+html[data-host-layout="portrait"] .android-my-scroll > #android-account-slot:is(:has(.bbdown-login-panel.hidden), :where([data-legacy-has~="r30"])) {
+  min-height: 44px;
+  padding-block: 6px;
+}
+html[data-host-layout="portrait"] .android-my-section-heading { min-width: 0; flex-wrap: wrap; }
 html[data-host-layout="portrait"] #android-settings-slot #cache-panel { gap: 0; }
 html[data-host-layout="portrait"] #cache-panel > .cache-panel-row:not([hidden]):not(.hidden) {
   padding-block: 12px;
@@ -1155,13 +1194,19 @@ html[data-host-layout="portrait"] .queue-card > .list-stage.is-whole-list-scroll
   align-content: start;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scroll-padding-bottom: calc(var(--mobile-content-trailing-inset) + 14px);
+  scroll-padding-bottom: 14px;
 }
 html[data-host-layout="portrait"] .queue-card > .is-whole-list-scrollable > .playlist {
   overflow: visible;
   /* WebKit otherwise retains the former bounded flex/grid track's height;
      overflowing rows then extend beyond, rather than before, its end padding. */
   height: max-content;
+}
+/* No current song means no first track or inter-track gap. A visible current
+   keeps the original natural-height row and pending-list split unchanged. */
+html[data-host-layout="portrait"] .queue-card > .list-stage:not(:is(:has(> #queue-current:not(.hidden):not([hidden])), :where([data-legacy-has~="r31"]))) {
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0;
 }
 
 html[data-host-layout="portrait"] .request-quick-view { padding: 0; }

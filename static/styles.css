@@ -12173,9 +12173,9 @@ html .volume-adjust-popover::backdrop {
   padding-bottom: 2px;
   padding-right: 0;
 }
-:root :is(.host-workspace-region .history-list, .source-browse-scroll) { padding-right: 0; }
+:root :is(.host-workspace-region .history-list, .source-browse-scroll, .result-page-viewport) { padding-right: 0; }
 :root #host-workspace-request .tag-browser-tags.has-scroll-inset,
-:root :is(.host-workspace-region .history-list, .source-browse-scroll).has-scroll-inset { padding-right: 4px; }
+:root :is(.host-workspace-region .history-list, .source-browse-scroll, .result-page-viewport).has-scroll-inset { padding-right: 4px; }
 
 /* Editing keeps the existing 36px tags and vertical scrolling. The footer is
    outside the scroll track; its 52px trash slot includes the 1.15 enlargement. */

@@ -2593,27 +2593,7 @@ select:disabled {
   min-height: 0;
 }
 
-.queue-panel .list {
-  max-height: clamp(300px, 56vh, 680px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding-right: 0;
-}
-.queue-panel .list.has-scroll-inset { padding-right: 4px; }
-
-.queue-panel .list::-webkit-scrollbar {
-  width: 8px;
-}
-
-.queue-panel .list::-webkit-scrollbar-track {
-  background: var(--scrollbar-track-bg);
-  border-radius: 999px;
-}
-
-.queue-panel .list::-webkit-scrollbar-thumb {
-  background: var(--scrollbar-thumb-bg);
-  border-radius: 999px;
-}
+/* Queue/History follow document flow, including its existing dock clearance. */
 
 .search-results {
   display: grid;
@@ -3552,10 +3532,6 @@ select:disabled {
 
   .queue-state {
     justify-self: start;
-  }
-
-  .queue-panel .list {
-    max-height: clamp(280px, 52vh, 560px);
   }
 
   .remote-setting-panel {
