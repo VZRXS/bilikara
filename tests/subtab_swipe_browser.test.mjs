@@ -50,11 +50,15 @@ async function fixedSwipe(page,options) {
   await page.evaluate(async selector=>{
     const origin=document.querySelector(selector);
     const panels='.host-workspace-region,[data-host-workspace-panel],[data-request-panel],[data-search-panel],[data-discover-panel],[data-sources-panel],.remote-request-view';
+    // Only rendered panel/origin-ancestor targets can move the fixed origin.
+    // WebKit can retain unresolved transitions on hidden nodes, so a document-
+    // wide wait could never settle.
     const pending=()=>document.getAnimations().filter(animation=>{
       const node=animation.effect?.target;
       return animation.effect?.getTiming().iterations!==Infinity
         && (animation.pending||animation.playState==='running')
-        && (node?.matches?.(panels)||(origin&&node?.contains?.(origin)));
+        && (node?.matches?.(panels)||(origin&&node?.contains?.(origin)))
+        && node.checkVisibility?.({contentVisibilityAuto:true})!==false;
     });
     do {
       await Promise.allSettled(pending().map(animation=>animation.finished));

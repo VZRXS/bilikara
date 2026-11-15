@@ -45,7 +45,11 @@ async function open(t, engine, {sessionUser = true,platform = 'android',viewport
   const page = await context.newPage(), errors=[];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(host.base);
-  await page.waitForFunction(()=>typeof state!=='undefined'&&state.hasValidStateResponse&&window.BilikaraHostLayout);
+  // Mobile Hosts expose BilikaraHostLayout. The desktop Host deliberately stops
+  // host-layout.js after marking its fixed landscape workspace, so wait for that.
+  await page.waitForFunction(desktop=>typeof state!=='undefined'&&state.hasValidStateResponse&&(desktop
+    ?document.documentElement.dataset.hostPlatform==='desktop'&&document.documentElement.dataset.hostLayout==='landscape'
+    :Boolean(window.BilikaraHostLayout)),desktop);
   await page.evaluate(()=>{setLanguage('zh');window.phoneMedia=[...document.querySelectorAll('video,audio')];});
   t.after(()=>assert.deepEqual(errors,[]));
   return {page,host};

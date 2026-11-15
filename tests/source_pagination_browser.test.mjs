@@ -110,13 +110,22 @@ for(const engine of [chromium,webkit])for(const client of ['android','ios','remo
     const request=async view=>{
       if(remote)await page.locator('.request-panel').scrollIntoViewIfNeeded();
       const tabSelector=`[${remote?'data-remote-request-view':'data-request-view'}="${view}"]`;
-      const backSelector=remote?'#remote-request-secondary-back':'[data-request-back]';
-      // A re-render can replace contextual Back with the primary tabs. Resolve
-      // the available entry on every auto-wait retry, never count then click a
-      // previously visible Back. click() also waits for an enabled target.
-      await page.locator(`${backSelector}:visible,${tabSelector}:visible`).first().click();
       const active=await page.evaluate(remote=>remote?state.remoteRequestView:state.requestSubview,remote);
-      if(active!==view)await page.locator(tabSelector).click();
+      if(active!==view){
+        const tab=page.locator(tabSelector);
+        if(!await tab.isVisible()){
+          // Only the active sub-view's Back returns to the primary tabs. Every
+          // Host sub-view owns a [data-request-back]; phone portrait moves the
+          // active one into #android-request-tabs. Scope to that owner and keep
+          // Playwright's strict single match, so an ambiguous Back fails loudly
+          // instead of auto-waiting on another panel's hidden button.
+          const back=remote?page.locator('#remote-request-secondary-back')
+            :page.locator(`#android-request-tabs [data-request-back], [data-request-panel="${active}"] [data-request-back]`).locator('visible=true');
+          await back.click();
+          await tab.waitFor({state:'visible'});
+        }
+        await tab.click();
+      }
       await page.locator(`[${remote?'data-remote-request-panel':'data-request-panel'}="${view}"]`).waitFor({state:'visible'});
     };
     const capture=async scenario=>{
@@ -140,6 +149,12 @@ for(const engine of [chromium,webkit])for(const client of ['android','ios','remo
     };
     for(const [width,height] of remote?[[320,844],[393,844]]:[[393,844],[1024,768]]){
       await page.setViewportSize({width,height});const samples=[];
+      if(!remote){
+        // Resizing moves the active contextual header between the phone toolbar
+        // and its panel. Choose navigation only after the new arrangement exists.
+        await page.waitForFunction(portrait=>document.documentElement.dataset.hostLayout===(portrait?'portrait':'landscape'),height>width);
+        await settlePager(page);
+      }
       await request('search');
       for(const mode of ['shared','local']){
         await page.locator(`[${remote?'data-remote-search-mode':'data-search-mode'}="${mode}"]`).click();
@@ -577,6 +592,30 @@ for(const engine of [chromium,webkit])for(const [client,nativeDock] of [['androi
               if(client==='ios'){document.documentElement.style.setProperty('--ios-safe-top','59px');document.documentElement.style.setProperty('--ios-safe-bottom','34px');}
             },{client,font});
             await settle();
+            if(!await panel.isVisible()){
+              // A larger root font raises the rem-based two-column minimums, so a
+              // landscape tablet can fall back to the compact layout, whose Request
+              // tool sheet starts closed. Only that layout may hide the panel; reopen
+              // it through the rail like a user, then apply every assertion below.
+              assert.equal(await page.evaluate(()=>document.documentElement.dataset.hostColumns),'compact',
+                'only the compact layout may close the Request panel: '+JSON.stringify({width,height,font}));
+              await page.locator('[data-host-workspace="request"]').click();
+              await panel.waitFor({state:'visible'});
+              // Measure the settled sheet, not its entry transform. Wait only for
+              // finite animations on rendered nodes of that sheet (or the wrappers
+              // carrying it): WebKit can keep unresolved transitions on hidden nodes.
+              await panel.evaluate(node=>{
+                const sheet=node.closest('#host-workspace-region')||node;
+                const relevant=document.getAnimations().filter(animation=>{
+                  const target=animation.effect?.target;
+                  return animation.effect?.getTiming().iterations!==Infinity&&target
+                    &&(sheet.contains(target)||target.contains(sheet))
+                    &&target.checkVisibility?.({contentVisibilityAuto:true})!==false;
+                });
+                return Promise.allSettled(relevant.map(animation=>animation.finished));
+              });
+              await settle();
+            }
             const sample=await panel.evaluate(n=>{
               const rect=n=>{const r=n.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,height:r.height};};
               const q=s=>rect(n.querySelector(s)),grid=n.querySelector('.follow-up-grid'),style=getComputedStyle(grid),panelStyle=getComputedStyle(n);
