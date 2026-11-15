@@ -4278,7 +4278,7 @@ function renderRemoteGridPages(container, items, key, renderPage, {loading = fal
     });
     remoteResultPagers.set(container, pager);
   }
-  pager.update({key, items:source.items, total:items.length, pageSize:12, limited:true, hasMore:false,
+  pager.update({key, items:source.items, total:items.length, pageSize:window.BilikaraResultPager.documentPageSize.compact, limited:true, hasMore:false,
     loading, emptyText, language:state.language});
 }
 

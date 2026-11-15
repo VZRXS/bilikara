@@ -8303,7 +8303,7 @@ function androidGridPages(container, items, key, renderPage, {loading = false, e
   const record = androidBrowseFrame(container, renderPage);
   const signature = JSON.stringify([key, items]);
   if (record.signature !== signature) { record.signature = signature; record.items = items; }
-  record.pager.update({key, items:record.items, total:items.length, pageSize:12,
+  record.pager.update({key, items:record.items, total:items.length,
     limited:true, loading, emptyText, language:state.language});
 }
 

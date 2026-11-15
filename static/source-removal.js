@@ -192,7 +192,7 @@
       if (sameIds) this.records.splice(0,this.records.length,...rows); else this.records = rows;
       if (this.pager) {
         this.pager.update({key:this.source + ':' + filter,positionKey:this.source + ':' + filter,itemKey:row=>row.id,
-          items:this.records,total:records.length,pageSize:12,
+          items:this.records,total:records.length,
           limited:true,hasMore:false,loading:loading || this.pending,language,emptyText});
         if (!active) this.pager.hide();
       } else this.pageRecords = this.records;
