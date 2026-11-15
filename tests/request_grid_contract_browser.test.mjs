@@ -497,6 +497,8 @@ for (const engine of engines) {
 function pagerFacts([card, sourceFit]) {
   const shown = n => n.getClientRects().length && getComputedStyle(n).visibility !== 'hidden';
   const cards = [...document.querySelectorAll(card)].filter(shown), first = cards[0];
+  if (!first) return {missing: true, hostLayout: document.documentElement.dataset.hostLayout, columnsMode: document.documentElement.dataset.hostColumns,
+    present: document.querySelectorAll(card).length, viewport: [innerWidth, innerHeight]};
   // Song pagers fit their own result viewport (fit:true); the source list fits its bounded source scroller.
   const grid = first.parentElement, fit = sourceFit ? grid.closest('.source-browse-scroll') : grid.closest('.result-page-viewport');
   const pager = [...document.querySelectorAll('.result-pager')].find(p => shown(p) && p.closest('.android-result-frame,.source-mode-panel,.request-mode-panel')?.contains(grid));
@@ -514,6 +516,7 @@ async function g11Check(page, card, label, before, sourceFit) {
   await page.waitForFunction(() => [...document.querySelectorAll('.result-pager')].filter(p => p.getClientRects().length).every(p => p.getAttribute('aria-busy') !== 'true'));
   await settle(page);
   const f = await page.evaluate(pagerFacts, [card, Boolean(sourceFit)]), text = `${label}: ` + JSON.stringify({...f, before});
+  assert.ok(!f.missing, 'the page still shows its cards: ' + text);
   assert.ok(f.last && f.fit, 'diagnostics recorded a measurement for a measured fit box: ' + text);
   assert.equal(f.last.size, f.pageSize, 'diagnostics size is the committed page size: ' + text);
   assert.equal(f.last.columns, f.columns, 'diagnostics columns match the grid: ' + text);
@@ -534,7 +537,7 @@ for (const engine of engines) for (const name of ['uid-detail', 'source-list']) 
     const browser = await engine.launch({headless: true}); t.after(() => browser.close());
     const {page, errors} = await openSession(t, browser, {kind: 'alpha', viewport: [393, 844], touch: true, keyboard: true});
     await visit(page, pages[name].host);
-    const card = name === 'source-list' ? '#follow-up-grid [data-uid]' : pages[name].card, sourceFit = name === 'source-list';
+    const card = name === 'source-list' ? '#follow-up-grid > *' : pages[name].card, sourceFit = name === 'source-list';
     let history = await g11Check(page, card, 'initial', null, sourceFit);
     const step = async (label, fn) => { await page.evaluate(fn); history = await g11Check(page, card, label, history, sourceFit); };
     await step('font 200%', () => { document.documentElement.style.fontSize = '32px'; });
