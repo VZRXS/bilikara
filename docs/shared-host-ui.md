@@ -291,7 +291,10 @@ Bounded result grids measure layout border boxes rather than animated paint
 bounds. The first card is observed alongside viewport/content/font changes.
 Headings, footer, safe area and native dock occupy their existing layout tracks
 once. The first native page measures an unpainted real card before committing
-capacity; hidden or unmeasured panels wait instead of publishing a guessed page.
+capacity. Hidden, inert or inactive panels wait until visible. A visible panel
+with no measurable height still displays one page: its real grid columns and
+configured minimum rows (at least one) determine capacity even when no full row
+fits. Short-screen scroll ownership remains a separate layout decision.
 Loading and refresh retain fitted capacity. Complete rows follow the measured
 floor policy; phone song pages keep their approved minimum of three rows and
 scroll within the same viewport when those rows cannot fit. Remote uses shared

@@ -622,58 +622,71 @@ assert.equal(fittedPageSize({...geometry,height:404}),15);
 });
 
 
-test('first panel capacity waits for measured geometry and never publishes a fallback [B2-G10]', async () => {
+test('first panel capacity measures once, retains refresh and renders visible short panels [B2-G10-R1]', async () => {
   const instance=Object.create(ResultPaginationFrontendTest);await instance.setUpClass();await instance.run_case(String.raw`
 const fs=require('node:fs');
 const source=fs.readFileSync('static/result-pagination.js','utf8').replace(/\r\n/g,'\n');
 const section=(start,end)=>{const a=source.indexOf(start),b=source.indexOf(end,a);assert.ok(a>=0&&b>a);return source.slice(a,b);};
-// Exercise the production fit/initialization/controller methods with measured
-// layout inputs. Browser tests separately verify the actual CSS geometry.
+// Exercise the production controller with measured inputs; WSL verifies CSS.
 const fitting=section('    function measureCapacity(', '    function layout()');
 const publishing=section('    function publishPageSize()', '    function commitPaint(');
 const updating=section('      update(value) {', '      localize(language) {');
-let options={},capacityReady=false,fittedGeometry=null,visible=false;
-let layoutFrame=null,idleTimer=null,visibleDots=[];
-const minimumRows=1,rows=0,retainPages=false,measurements=[],writes=[],probes=[];
-const fit={clientHeight:0,clientWidth:365};
-const style={width:'365px',gridTemplateColumns:'115px 115px 115px',rowGap:'10px',paddingTop:'2px',paddingBottom:'2px'};
-const item={classList:{contains:()=>false}};
-const itemStyle={height:'72px',boxSizing:'border-box',fontFamily:'fixture',fontSize:'14px',lineHeight:'16px'};
-const probe={style:{},removeAttribute(){},setAttribute(){},remove(){this.removed=true;},firstElementChild:item};
-const container={clientWidth:365,classList:{contains:()=>false},getClientRects:()=>visible?[{}]:[],cloneNode:()=>probe};
-const viewport={style:{},getClientRects:()=>visible?[{}]:[],append:node=>assert.equal(node,probe)};
-const pager={classList:{remove(){}},getClientRects:()=>visible?[{}]:[],dataset:new Proxy({}, {set(target,key,value){if(key==='pageSize')writes.push(value);target[key]=value;return true;}})};
-const getComputedStyle=node=>node===container?style:itemStyle;
-const renderItems=(items,message,target)=>{assert.equal(target,probe);probes.push(items.length);};
-const cancelNavigation=()=>{},closeEditor=()=>{},retirePaint=()=>{};
-let api;
-const model=new Pages(()=>api.publish());
-api=eval('(()=>{'+fitting+publishing+'return {controller:{'+updating+'},initialize:commitInitialCapacity,publish:publishPageSize};})()');
+function fixture(minimumRows=1) {
+  let options={},capacityReady=false,fittedGeometry=null;
+  let layoutFrame=null,idleTimer=null,visibleDots=[];
+  const flags={visible:false,blocked:false,visibility:'visible'};
+  const rows=0,retainPages=false,measurements=[],writes=[],probes=[];
+  const fit={clientHeight:0,clientWidth:365};
+  const style={width:'365px',gridTemplateColumns:'115px 115px 115px',rowGap:'10px',paddingTop:'2px',paddingBottom:'2px'};
+  const item={classList:{contains:()=>false}};
+  const itemStyle={height:'72px',boxSizing:'border-box',fontFamily:'fixture',fontSize:'14px',lineHeight:'16px'};
+  const probe={style:{},removeAttribute(){},setAttribute(){},remove(){this.removed=true;},firstElementChild:item};
+  const container={inert:true,clientWidth:365,classList:{contains:()=>false},getClientRects:()=>flags.visible?[{}]:[],cloneNode:()=>probe};
+  const viewport={style:{},getClientRects:()=>flags.visible?[{}]:[],closest:()=>flags.blocked?{}:null,append:node=>assert.equal(node,probe)};
+  const pager={classList:{remove(){}},getClientRects:()=>flags.visible?[{}]:[],dataset:new Proxy({}, {set(target,key,value){if(key==='pageSize')writes.push(value);target[key]=value;return true;}})};
+  const getComputedStyle=node=>node===container?{...style,visibility:flags.visibility}:itemStyle;
+  const renderItems=(items,message,target)=>{assert.equal(target,probe);probes.push(items.length);};
+  const cancelNavigation=()=>{},closeEditor=()=>{},retirePaint=()=>{};
+  let api;
+  const model=new Pages(()=>api.publish());
+  api=eval('(()=>{'+fitting+publishing+'return {controller:{'+updating+'},initialize:commitInitialCapacity,publish:publishPageSize};})()');
+  return {api,flags,model,fit,writes,probes,probe,measurements};
+}
 const records=items(0,60),value={key:'owners',positionKey:'owners',items:records,total:60,hasMore:false};
+const {api,flags,model,fit,writes,probes,probe,measurements}=fixture();
 api.controller.update({...value,items:[],loading:true});
 assert.deepEqual(writes,[],'loading has no guessed page size');
 api.controller.update(value);
-assert.deepEqual(writes,[],'an unmeasured panel cannot publish 6 or 12');
-fit.clientHeight=404;
-api.initialize();
-assert.deepEqual(writes,[],'a hidden panel waits for visibility');
-visible=true;
-api.initialize();
+assert.deepEqual(writes,[],'a hidden panel cannot publish 6 or 12');
+fit.clientHeight=404;api.initialize();
+assert.deepEqual(writes,[],'a hidden panel still waits with measurable height');
+flags.visible=true;api.initialize();
 assert.deepEqual(writes,['15'],'the first commit comes directly from complete fitting rows');
-assert.equal(model.items.length,15);
-assert.deepEqual(probes,[1],'only one unpainted card is needed for initialization');
+assert.equal(model.items.length,15);assert.deepEqual(probes,[1]);
 assert.equal(probe.style.visibility,'hidden');assert.equal(probe.removed,true);
 assert.equal(measurements.at(-1).size,15);
-api.controller.update({...value,items:[],loading:true});
-api.controller.update({...value,items:[...records]});
+api.controller.update({...value,items:[],loading:true});api.controller.update({...value,items:[...records]});
 assert.equal(model.pageSize,15,'empty loading and refresh retain the fitted capacity');
 assert.deepEqual(writes,['15'],'unchanged capacity produces no repeated attribute commits');
 assert.deepEqual(probes,[1],'refresh does not restart bootstrap measurement');
+for(const minimum of [1,()=>3])for(const height of [-1,0,1,75]) {
+  const sample=fixture(minimum),expected=minimum===1?3:9;
+  sample.flags.visible=true;sample.flags.blocked=true;sample.fit.clientHeight=height;
+  sample.api.controller.update(value);
+  assert.deepEqual(sample.writes,[],'hidden/inert/inactive panel ancestors still wait');
+  sample.flags.blocked=false;sample.flags.visibility='hidden';sample.api.initialize();
+  assert.deepEqual(sample.writes,[],'visibility:hidden must not initialize a page');
+  sample.flags.visibility='visible';sample.api.initialize();
+  assert.deepEqual(sample.writes,[String(expected)],'visible zero/short height commits the minimum rows from real columns');
+  assert.equal(sample.model.items.length,expected,'visible short panels still render a full page');
+  assert.equal(sample.measurements.at(-1).height,height,'diagnostics retain the actual height');
+  sample.api.controller.update({...value,items:[],loading:true});sample.api.controller.update(value);
+  assert.deepEqual(sample.writes,[String(expected)],'short-panel refresh does not republish capacity');
+}
 const {documentPageSize}=require('./static/result-pagination.js');
 assert.deepEqual(documentPageSize,{song:6,compact:12});assert.ok(Object.isFrozen(documentPageSize));
 `);
 });
-
 
 test('grid gap tokens have one shared owner for Host and Remote [B2-G13]', () => {
   const tokens=['--request-song-grid-gap','--request-compact-grid-gap'],owners=[];

@@ -460,7 +460,10 @@
         minimumRows:typeof minimumRows === "function" ? minimumRows() : minimumRows,
         gap:parseFloat(style.rowGap) || 0,
         padding:(parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0)};
-      const size = fittedPageSize(geometry);
+      // A visible panel with no measurable height still displays one page.
+      // Preserve its actual height in diagnostics; the fit floor selects the
+      // configured minimumRows (at least one) rather than a guessed item count.
+      const size = fittedPageSize({...geometry, height:Math.max(1, geometry.height)});
       const measurement = {...geometry, size, width:fit.clientWidth};
       if (JSON.stringify(measurements.at(-1)) !== JSON.stringify(measurement)) {
         measurements.push(measurement); if (measurements.length > 24) measurements.shift();
@@ -468,8 +471,16 @@
       return size;
     }
 
+    function fitPanelVisible() {
+      if (!pager.getClientRects().length || !container.getClientRects().length
+        || viewport.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+      // The grid's own loading inert flag must not block its first real page.
+      const visibility = getComputedStyle(container).visibility;
+      return visibility !== "hidden" && visibility !== "collapse";
+    }
+
     function initialCapacity() {
-      if (!pager.getClientRects().length || !container.getClientRects().length || fit.clientHeight <= 0) return null;
+      if (!fitPanelVisible()) return null;
       // Measure one real card at this grid's width without publishing a guessed
       // page or starting page reads. The probe is out of flow and never painted.
       const probe = container.cloneNode(false);
@@ -496,7 +507,7 @@
     }
 
     function layout() {
-      if (!pager.getClientRects().length) return;
+      if (!pager.getClientRects().length || (fit && !fitPanelVisible())) return;
       if (fit && !capacityReady && options.items?.length) {
         commitInitialCapacity();
         return;
@@ -972,7 +983,8 @@
         options = value;
         if (fit && !capacityReady && value.items.length) {
           // Reserve the final footer before reading available panel height.
-          // Hidden/zero-height panels wait for the existing ResizeObserver.
+          // Hidden/inactive panels wait for the existing layout lifecycle; a
+          // visible panel always shows at least its configured minimum rows.
           pager.hidden = container.classList.contains("hidden");
           commitInitialCapacity();
           return;
