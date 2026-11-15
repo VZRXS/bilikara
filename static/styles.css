@@ -6066,6 +6066,13 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   display: none;
 }
 
+/* Only an admitted two-column Host workspace can use the narrower song
+   minimum. Percentages resolve against each grid, so wide tracks retain 200px
+   and a pair still requires room for two 178px cards plus its actual gap. */
+:root[data-host-columns="two"] #host-workspace-request {
+  --request-song-card-min-inline-size: min(200px, max(178px, calc((100% - 10px) / 2)));
+}
+
 /* Expanded search results */
 #host-workspace-request .search-results {
   display: grid;
