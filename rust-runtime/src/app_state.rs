@@ -4872,6 +4872,15 @@ impl AppState {
         {
             return execute_error_response(error);
         }
+        #[cfg(feature = "native-host")]
+        if self.native_session.show_cast.owns_playback
+            && matches!(&request, AppStateRequest::ApplyAvDelay { .. })
+        {
+            return execute_error_response(rejected(
+                "cast_av_delay_unavailable",
+                "DLNA 投屏期间不能调节音画延迟",
+            ));
+        }
         let terminal = match &request {
             AppStateRequest::ApplyCacheEvent {
                 item_id,
@@ -5431,6 +5440,12 @@ impl AppState {
                     );
                     if clears_controls {
                         self.player_controls.clear();
+                    }
+                    #[cfg(feature = "native-host")]
+                    if mutation.force_program_lifetime
+                        && self.native_session.show_cast.owns_playback
+                    {
+                        self.native_session.show_cast.restart_generation = next.playback_generation;
                     }
                     self.data = Some(next);
                     #[cfg(feature = "native-host")]

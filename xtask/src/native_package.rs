@@ -181,13 +181,18 @@ pub(super) fn inspect(executable: &Path, expected: &str, platform: Platform) -> 
                 )?;
             }
         }
-        let allowed = [
+        let mut allowed: BTreeSet<_> = [
             "_internal".into(),
             "license".into(),
             platform.executable("bilikara-desktop").into(),
         ]
         .into_iter()
         .collect();
+        allowed.extend(crate::msvc_redist::installed(
+            &package,
+            &[package.join(platform.executable("bilikara-desktop"))],
+            platform,
+        )?);
         require(names == allowed, "Unexpected desktop top-level entries")?;
     }
     let docs = if root.file_name().is_some_and(|n| n == "Resources") {
@@ -279,6 +284,14 @@ pub(super) fn inspect(executable: &Path, expected: &str, platform: Platform) -> 
     native_file(executable, platform)?;
     native_file(
         &executable.with_file_name(platform.executable("bilikara-updater")),
+        platform,
+    )?;
+    crate::msvc_redist::installed(
+        &root,
+        &[
+            executable.to_owned(),
+            executable.with_file_name(platform.executable("bilikara-updater")),
+        ],
         platform,
     )?;
     Ok(facts)

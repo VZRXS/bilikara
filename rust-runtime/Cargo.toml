@@ -23,7 +23,7 @@ required-features = ["native-host"]
 name = "bilikara-updater"
 
 [features]
-native-host = ["dep:axum", "dep:tokio-util", "qrcode/svg", "dep:time"]
+native-host = ["dep:axum", "dep:tokio-util", "qrcode/svg", "dep:time", "dep:roxmltree", "dep:socket2", "dep:windows", "dep:windows-core"]
 
 [dependencies]
 base64 = "0.22"
@@ -47,6 +47,8 @@ mp4 = "0.14"
 png = { version = "0.18.1", default-features = false }
 qrcode = { version = "0.14.1", default-features = false }
 regex = "1"
+roxmltree = { version = "0.20", optional = true }
+socket2 = { version = "0.6", optional = true }
 rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
 reqwest = { version = "0.13", features = ["blocking", "json", "cookies"] }
 serde = { version = "1", features = ["derive"] }
@@ -59,6 +61,8 @@ webpki-root-certs = "1"
 rquickjs = { version = "=0.14.0", default-features = false, features = ["std", "bindgen"] }
 
 [target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", optional = true, features = ["Win32_Devices_Enumeration_Pnp", "Win32_System_Com", "Win32_UI_WindowsAndMessaging"] }
+windows-core = { version = "0.61", optional = true }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_Storage_FileSystem", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_JobObjects", "Win32_Security", "Win32_System_WindowsProgramming"] }
 
 [dev-dependencies]

@@ -219,5 +219,6 @@ pub fn stage_resources(
     if let Some(prefix) = prefix {
         libav::stage(config, prefix, &layout)?;
     }
+    crate::show_host::stage(config, &layout)?;
     Ok(())
 }

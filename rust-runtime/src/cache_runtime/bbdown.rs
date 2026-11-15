@@ -432,7 +432,7 @@ pub(super) fn run_track(
         // Preserve default Host's accepted MP4 codecs outside the copy-remux
         // profiles, using its existing validator and unchanged track bytes.
         let metadata = validate_default_track(&job.spec, track, &source, cancel)?;
-        (source, TrackValidation::Inspected(metadata))
+        (source.clone(), TrackValidation::Inspected(metadata))
     } else {
         let destination = directory.join(format!("normalized-{final_name}"));
         let probe = normalize_track(&job.spec, track, &source, &destination, cancel)?;
@@ -449,6 +449,7 @@ pub(super) fn run_track(
     Ok(TrackResult {
         spec: track.clone(),
         temporary_path: destination,
+        show_source: KEEP_SHOW_INPUTS.then_some(source),
         final_name,
         probe,
     })

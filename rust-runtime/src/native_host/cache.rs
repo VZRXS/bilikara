@@ -119,12 +119,13 @@ fn tick(
             })?;
         }
     }
-    let (snapshot, cookie, policy, player) = with_app(|app| {
+    let (snapshot, cookie, policy, player, cast_needs_originals) = with_app(|app| {
         Ok((
             app.native_core_snapshot()?,
             app.native().cookie.clone(),
             app.native().cache_policy.clone(),
             app.native().player_media.clone(),
+            app.native().show_cast.needs_original_tracks(),
         ))
     })?;
     let effective = MediaSelection::new(&policy, &player, context.desktop);
@@ -158,14 +159,14 @@ fn tick(
     // Do not resubmit on every progress/status observation. Failure stays failed
     // until explicit retry, avoiding an unbounded Bilibili request loop.
     let fingerprint = format!(
-        "{}:{effective:?}:{youtube_effective:?}:{usable}:{youtube_usable}:{}",
+        "{}:{effective:?}:{youtube_effective:?}:{usable}:{youtube_usable}:{cast_needs_originals}:{}",
         policy.snapshot(),
         items
             .iter()
             .map(|item| {
                 format!(
-                    "{}:{}:{}",
-                    item.id, item.item_incarnation_id, item.cache_status
+                    "{}:{}:{}:{}",
+                    item.id, item.item_incarnation_id, item.cache_status, item.artifact_set_id
                 )
             })
             .collect::<Vec<_>>()
@@ -231,6 +232,13 @@ fn tick(
         .as_str()
         .filter(|id| active.iter().any(|item| item == id))
         .map(str::to_owned);
+    // Older local-only artifacts stay readable while the ordinary cache
+    // worker rebuilds the current and next tracks for Show.
+    let show_input_limit = if cast_needs_originals {
+        policy.max_cache_items.min(2)
+    } else {
+        0
+    };
     let plan = plan_cache_window(CachePlanRequest {
         items: items
             .iter()
@@ -292,12 +300,18 @@ fn tick(
     }
     let jobs = items
         .iter()
-        .filter(|item| {
+        .enumerate()
+        .filter(|(_, item)| {
             usable_for(item)
                 && plan.desired_ids.contains(&item.id)
                 && (item.cache_status != "failed" || replaced.contains(&item.id))
         })
-        .map(|item| job(context, item, &cookie, &policy, effective_for(item)))
+        .map(|(index, item)| {
+            job(context, item, &cookie, &policy, effective_for(item)).map(|mut job| {
+                job.require_show_inputs = index < show_input_limit;
+                job
+            })
+        })
         .collect::<Result<Vec<_>, _>>()?;
     execute_cache_runtime(CacheRuntimeCommand::Sync {
         cache_root: context.cache_root.clone(),
@@ -308,7 +322,12 @@ fn tick(
             .collect::<HashMap<_, _>>(),
         retained_ids: plan.retained_ids,
         jobs,
-        ordered_ids: plan.pending_order,
+        ordered_ids: items
+            .iter()
+            .take(show_input_limit)
+            .map(|item| item.id.clone())
+            .chain(plan.pending_order)
+            .collect(),
         preempt_item_id: plan.preempt_ids.first().cloned().unwrap_or_default(),
     })
     .map_err(cache_error)?;

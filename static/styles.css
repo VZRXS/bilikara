@@ -11512,6 +11512,27 @@ body.is-presentation-stage-only #audio-variant-backdrop {
 /* Local dual-screen mode keeps the normal Host workspace. Only its existing
    player region becomes the announcement surface, with direct transport
    controls below; the audience video lives in the separate output window. */
+.presentation-cast-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.presentation-cast-section[hidden],
+.presentation-cast-section [hidden] {
+  display: none;
+}
+
+.presentation-display-option.show-cast-device {
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+}
+
+body.is-show-cast-control #presentation-host-progress:disabled,
+body.is-show-cast-control #av-sync-panel,
+#remote-av-sync-panel.is-cast-disabled {
+  opacity: .6;
+}
+
 .presentation-host-announcement,
 .presentation-host-controls {
   display: none;

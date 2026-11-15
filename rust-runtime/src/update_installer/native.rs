@@ -115,6 +115,115 @@ fn updater_path(root: &Path, platform: &str) -> PathBuf {
     backend_path(root, platform).with_file_name(super::apply::updater_name(platform))
 }
 
+fn linked_or_reparse(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // A junction or another reparse point is not necessarily a symlink.
+        metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+/// The Windows updater currently imports only VCRUNTIME140.dll from VC14's
+/// private release CRT. Carry that already-deployed companion to its external
+/// workspace; older installations without an app-local copy remain supported.
+/// Never repair this dependency from PATH, System32 or the incoming package.
+fn copy_updater_crt(
+    installation: &Installation,
+    workspace: &Path,
+) -> Result<(), UpdateInstallerError> {
+    if installation.platform != "windows" {
+        return Ok(());
+    }
+    let root = installation
+        .root
+        .canonicalize()
+        .map_err(io_error("updater_missing"))?;
+    let updater = updater_path(&root, "windows");
+    let directory = updater
+        .parent()
+        .ok_or_else(|| error("updater_missing", "Updater has no parent directory"))?;
+    let mut current = root.clone();
+    for component in directory
+        .strip_prefix(&root)
+        .map_err(|_| {
+            error(
+                "unsafe_install_path",
+                "Updater directory escapes the installation",
+            )
+        })?
+        .components()
+    {
+        let Component::Normal(name) = component else {
+            return Err(error("unsafe_install_path", "Invalid updater directory"));
+        };
+        current.push(name);
+        let metadata = fs::symlink_metadata(&current).map_err(io_error("updater_missing"))?;
+        if linked_or_reparse(&metadata) || !metadata.is_dir() {
+            return Err(error(
+                "unsafe_install_path",
+                "Updater CRT directory must not contain links or reparse points",
+            ));
+        }
+    }
+    const CRT: &str = "vcruntime140.dll";
+    let source = directory.join(CRT);
+    let metadata = match fs::symlink_metadata(&source) {
+        Ok(metadata) => metadata,
+        Err(cause) if cause.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(cause) => return Err(io_error("updater_missing")(cause)),
+    };
+    if linked_or_reparse(&metadata) || !metadata.is_file() {
+        return Err(error(
+            "unsafe_install_path",
+            "Updater CRT must be a regular file without links or reparse points",
+        ));
+    }
+    let actual = source.canonicalize().map_err(io_error("updater_missing"))?;
+    let actual_directory = directory
+        .canonicalize()
+        .map_err(io_error("updater_missing"))?;
+    if actual.parent() != Some(actual_directory.as_path()) {
+        return Err(error(
+            "unsafe_install_path",
+            "Updater CRT escapes the installed updater directory",
+        ));
+    }
+    binary_arch(&actual, "windows", &installation.arch)?;
+    let workspace_metadata =
+        fs::symlink_metadata(workspace).map_err(io_error("updater_missing"))?;
+    if linked_or_reparse(&workspace_metadata) || !workspace_metadata.is_dir() {
+        return Err(error(
+            "unsafe_install_path",
+            "Updater workspace must not be a link or reparse point",
+        ));
+    }
+    let workspace = workspace
+        .canonicalize()
+        .map_err(io_error("updater_missing"))?;
+    if workspace.starts_with(&root) {
+        return Err(error(
+            "unsafe_install_path",
+            "Updater workspace must be outside the installation",
+        ));
+    }
+    let mut input = File::open(&actual).map_err(io_error("updater_missing"))?;
+    // Exclusive creation also rejects an existing linked/hard-linked target;
+    // no user-owned file outside the workspace can be overwritten through it.
+    let mut output = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(workspace.join(CRT))
+        .map_err(io_error("updater_missing"))?;
+    io::copy(&mut input, &mut output).map_err(io_error("updater_missing"))?;
+    Ok(())
+}
+
 fn backend_path(root: &Path, platform: &str) -> PathBuf {
     if platform == "macos" {
         root.join("Contents/Frameworks/bilikara-backend.app/Contents/MacOS/bilikara-desktop-host")
@@ -677,6 +786,7 @@ pub fn prepare(
         &updater,
     )
     .map_err(io_error("updater_missing"))?;
+    copy_updater_crt(installation, workspace)?;
     let plan = super::apply::Plan {
         schema_version: 1,
         platform: installation.platform.clone(),
@@ -1002,6 +1112,141 @@ pub(crate) mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn updater_workspace_crt_is_optional_same_directory_and_never_overwrites_targets() {
+        let root = root();
+        let installed = root.join("installed");
+        let directory = installed.join("_internal");
+        let workspace = root.join("update-crt");
+        fs::create_dir_all(&directory).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let installation = Installation {
+            root: installed.clone(),
+            platform: "windows".into(),
+            arch: "x64".into(),
+            wait_pids: vec![111, 222],
+        };
+        // Published packages without an app-local CRT retain their behavior.
+        copy_updater_crt(&installation, &workspace).unwrap();
+        assert!(fs::read_dir(&workspace).unwrap().next().is_none());
+        // An unrelated root-level copy cannot supply the helper dependency.
+        fs::write(installed.join("vcruntime140.dll"), b"unrelated root copy").unwrap();
+        copy_updater_crt(&installation, &workspace).unwrap();
+        assert!(fs::read_dir(&workspace).unwrap().next().is_none());
+        let mut crt = vec![0_u8; 128];
+        crt[..2].copy_from_slice(b"MZ");
+        crt[60..64].copy_from_slice(&64_u32.to_le_bytes());
+        crt[64..68].copy_from_slice(b"PE\0\0");
+        crt[68..70].copy_from_slice(&0x8664_u16.to_le_bytes());
+        fs::write(directory.join("vcruntime140.dll"), &crt).unwrap();
+        fs::write(directory.join("msvcp140.dll"), b"not an updater dependency").unwrap();
+        copy_updater_crt(&installation, &workspace).unwrap();
+        assert_eq!(fs::read(workspace.join("vcruntime140.dll")).unwrap(), crt);
+        assert!(!workspace.join("msvcp140.dll").exists());
+        fs::write(
+            workspace.join("vcruntime140.dll"),
+            b"existing workspace file",
+        )
+        .unwrap();
+        assert!(copy_updater_crt(&installation, &workspace).is_err());
+        assert_eq!(
+            fs::read(workspace.join("vcruntime140.dll")).unwrap(),
+            b"existing workspace file"
+        );
+        fs::remove_file(workspace.join("vcruntime140.dll")).unwrap();
+        crt[68..70].copy_from_slice(&0xaa64_u16.to_le_bytes());
+        fs::write(directory.join("vcruntime140.dll"), &crt).unwrap();
+        assert_eq!(
+            copy_updater_crt(&installation, &workspace)
+                .unwrap_err()
+                .kind,
+            "incompatible_architecture"
+        );
+        assert!(!workspace.join("vcruntime140.dll").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn updater_workspace_crt_rejects_linked_files_and_directories() {
+        use std::os::unix::fs::symlink;
+        let root = root();
+        let installed = root.join("installed");
+        let directory = installed.join("_internal");
+        let workspace = root.join("update-crt");
+        fs::create_dir_all(&directory).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let external = root.join("external.dll");
+        fs::write(&external, b"unchanged external input").unwrap();
+        let installation = Installation {
+            root: installed.clone(),
+            platform: "windows".into(),
+            arch: "x64".into(),
+            wait_pids: vec![111, 222],
+        };
+        symlink(&external, directory.join("vcruntime140.dll")).unwrap();
+        assert_eq!(
+            copy_updater_crt(&installation, &workspace)
+                .unwrap_err()
+                .kind,
+            "unsafe_install_path"
+        );
+        assert!(fs::read_dir(&workspace).unwrap().next().is_none());
+        fs::remove_file(directory.join("vcruntime140.dll")).unwrap();
+        fs::remove_dir(&directory).unwrap();
+        symlink(&root, &directory).unwrap();
+        assert_eq!(
+            copy_updater_crt(&installation, &workspace)
+                .unwrap_err()
+                .kind,
+            "unsafe_install_path"
+        );
+        assert_eq!(fs::read(&external).unwrap(), b"unchanged external input");
+        fs::remove_file(&directory).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn updater_workspace_crt_rejects_native_windows_junction() {
+        let root = root();
+        let installed = root.join("installed");
+        let external = root.join("external CRT directory");
+        let workspace = root.join("update-crt");
+        fs::create_dir(&installed).unwrap();
+        fs::create_dir(&external).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        fs::write(external.join("vcruntime140.dll"), b"untouched input").unwrap();
+        let junction = installed.join("_internal");
+        // Directory junction creation needs no symbolic-link privilege.
+        let output = Command::new(std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into()))
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&external)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "junction fixture failed: {output:?}"
+        );
+        let installation = Installation {
+            root: installed,
+            platform: "windows".into(),
+            arch: "x64".into(),
+            wait_pids: vec![111, 222],
+        };
+        let result = copy_updater_crt(&installation, &workspace);
+        // Remove the junction itself before any recursive fixture cleanup.
+        fs::remove_dir(&junction).unwrap();
+        assert_eq!(result.unwrap_err().kind, "unsafe_install_path");
+        assert_eq!(
+            fs::read(external.join("vcruntime140.dll")).unwrap(),
+            b"untouched input"
+        );
+        assert!(fs::read_dir(&workspace).unwrap().next().is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn native_preparation_preserves_old_install_and_legacy_launcher_contract() {
         let root = root();
         let archive = root.join("native.zip");
@@ -1009,6 +1254,8 @@ pub(crate) mod tests {
         extract(&archive, &root.join("current"), &mut || true).unwrap();
         let installed = root.join("current/bilikara");
         fs::write(installed.join("user-record"), b"unchanged").unwrap();
+        let crt = fs::read(installed.join("_internal/bilikara-updater.exe")).unwrap();
+        fs::write(installed.join("_internal/vcruntime140.dll"), &crt).unwrap();
         let workspace = root.join("update-operation");
         fs::create_dir(&workspace).unwrap();
         let installation = Installation {
@@ -1041,6 +1288,7 @@ pub(crate) mod tests {
             fs::read(&updater).unwrap(),
             fs::read(installed.join("_internal/bilikara-updater.exe")).unwrap()
         );
+        assert_eq!(fs::read(workspace.join("vcruntime140.dll")).unwrap(), crt);
         let plan: super::super::apply::Plan =
             serde_json::from_slice(&fs::read(&plan_path).unwrap()).unwrap();
         plan.validate(&plan_path).unwrap();

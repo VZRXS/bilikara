@@ -1920,9 +1920,9 @@ function presentationPhaseRank(session) {
 }
 
 function presentationCompositionActive(session = state.presentationSession) {
-  return state.presentationAppliedComposition === "stageOnly"
+  return state.data?.cast_active === true || (state.presentationAppliedComposition === "stageOnly"
     && session.mode === "localDualScreen"
-    && (session.phase === "activating" || session.phase === "active");
+    && (session.phase === "activating" || session.phase === "active"));
 }
 
 function clearPresentationCursorTimer() {
@@ -1955,10 +1955,10 @@ function applyPresentationCompositionDom(generation, composition) {
   state.presentationAppliedComposition = active ? "stageOnly" : "combined";
   state.playerFullscreenInteraction?.sync();
   state.presentationCompositionGeneration = generation;
-  document.body?.classList.toggle("is-presentation-control-host", active);
+  document.body?.classList.toggle("is-presentation-control-host", active || state.data?.cast_active === true);
   document.body?.classList.remove("is-presentation-stage-only");
   if (elements.playerFrame) {
-    elements.playerFrame.inert = active;
+    elements.playerFrame.inert = active || state.data?.cast_active === true;
   }
   if (active) {
     hideMountedPlayerControls();
@@ -2489,6 +2489,7 @@ function renderPresentationOutputControl() {
   if (!settings || !button || !status) {
     return;
   }
+  globalThis.BilikaraShowCast?.render();
   const nativeAvailable = typeof tauriInvoke("presentation") === "function";
   settings.classList.toggle("hidden", false);
   if (!nativeAvailable) {
@@ -2505,6 +2506,10 @@ function renderPresentationOutputControl() {
     return;
   }
   const session = state.presentationSession;
+  const cast = state.data?.show_cast;
+  const castActive = cast?.owns_playback === true;
+  const castBusy = Boolean(globalThis.BilikaraShowCast?.busy());
+  const castName = cast?.renderers?.find((device) => device.id === cast.selected_renderer_id)?.name;
   const selectedId = session.selectedOutputDisplayId || state.presentationSelectedDisplayId;
   const selected = presentationDisplayById(selectedId);
   const hostDisplayId = typeof resolvedPresentationHostDisplayId === "function"
@@ -2539,12 +2544,14 @@ function renderPresentationOutputControl() {
               : t("display.presentationSelectDisplay");
   const summaryText = state.presentationControlBusy
     ? t("display.presentationTransitioning")
-    : session.phase === "active"
+    : castActive
+      ? t("cast.title")
+      : session.phase === "active"
       ? t("display.dualOutputOn")
       : session.phase === "inactive"
         ? t("display.outputOff")
         : t("display.presentationTransitioning");
-  const metaText = state.presentationDisplayBusy
+  const metaText = castActive ? castName || t("cast.title") : state.presentationDisplayBusy
     ? t("display.detectingDisplays")
     : state.presentationDisplayError
       ? t("display.presentationUnavailable")
@@ -2557,6 +2564,7 @@ function renderPresentationOutputControl() {
   const canDeactivate = session.phase === "active" || session.phase === "activating";
   const disabled = state.presentationControlBusy
     || state.presentationDisplayBusy
+    || castBusy
     || !(canActivate || canDeactivate);
   const signature = JSON.stringify({
     session,
@@ -2567,6 +2575,9 @@ function renderPresentationOutputControl() {
     displayBusy: state.presentationDisplayBusy,
     controlBusy: state.presentationControlBusy,
     identifiersBusy: state.presentationIdentifiersBusy,
+    castActive,
+    castBusy,
+    castName,
     language: state.language,
   });
   if (signature === state.presentationOutputRenderSignature) {
@@ -2588,12 +2599,12 @@ function renderPresentationOutputControl() {
   } else {
     button.removeAttribute("aria-busy");
   }
-  setClassToggle(settings, "is-active", session.phase === "active");
-  setClassToggle(elements.presentationStateDot, "is-active", session.phase === "active");
+  setClassToggle(settings, "is-active", session.phase === "active" || castActive);
+  setClassToggle(elements.presentationStateDot, "is-active", session.phase === "active" || castActive);
   setClassToggle(
     elements.presentationStateDot,
     "is-connecting",
-    session.phase === "activating" || session.phase === "recovering",
+    session.phase === "activating" || session.phase === "recovering" || castBusy,
   );
   setClassToggle(elements.presentationRefreshButton, "is-loading", state.presentationDisplayBusy);
   if (elements.presentationRefreshButton) {
@@ -2675,13 +2686,16 @@ async function deactivateLocalPresentation() {
 }
 
 async function toggleLocalPresentation() {
-  if (state.presentationControlBusy || state.presentationDisplayBusy) {
+  if (state.presentationControlBusy || state.presentationDisplayBusy || globalThis.BilikaraShowCast?.busy()) {
     return;
   }
   state.presentationControlBusy = true;
   renderPresentationOutputControl();
   try {
     if (state.presentationSession.phase === "inactive") {
+      if (globalThis.BilikaraShowCast) {
+        await globalThis.BilikaraShowCast.stopForPresentation();
+      }
       await activateLocalPresentation();
     } else {
       await deactivateLocalPresentation();
@@ -2969,6 +2983,20 @@ function hostPlaybackSessionObservedPlaying(
 
 function presentationPlaybackStateModel(session = state.hostPlaybackSession) {
   const currentItem = state.data?.current_item || null;
+  if (state.data?.cast_active === true) {
+    const status = state.data.player_status;
+    return {
+      playbackGeneration: state.data.playback_generation,
+      itemIdentity: currentItem?.id || null,
+      title: currentItem?.display_title || currentItem?.title || t("player.noSong"),
+      paused: status?.is_paused !== false && status?.observed_phase !== "starting",
+      currentTimeSeconds: Number(status?.current_time || 0),
+      durationSeconds: Number(status?.duration || 0),
+      volumePercent: Math.min(100, Number(state.data.player_settings?.volume_percent ?? 100)),
+      muted: state.data.player_settings?.is_muted === true,
+      canSkip: Boolean(currentItem) && state.data.show_cast?.phase === "active",
+    };
+  }
   const { video, audio } = activeLocalPlayerElements();
   const media = video || activePrimaryVideoElement();
   const duration = Number(media?.duration);
@@ -3109,6 +3137,7 @@ function paintPresentationHostProgress(currentSeconds, durationSeconds) {
 }
 
 function renderPresentationHostSurface(session = state.hostPlaybackSession) {
+  const castActive = state.data?.cast_active === true;
   const active = typeof presentationCompositionActive === "function"
     ? presentationCompositionActive()
     : false;
@@ -3145,8 +3174,9 @@ function renderPresentationHostSurface(session = state.hostPlaybackSession) {
   const hasPlayableMedia = Boolean(
     active
     && currentItem
-    && session?.readyCommitted
-    && isCurrentHostPlaybackSession(session, session.video, session.audio),
+    && (castActive
+      ? state.data?.show_cast?.phase === "active" && Number(playback.durationSeconds) > 0
+      : session?.readyCommitted && isCurrentHostPlaybackSession(session, session.video, session.audio)),
   );
   if (elements.presentationHostPlay) {
     elements.presentationHostPlay.disabled = !hasPlayableMedia
@@ -3160,9 +3190,11 @@ function renderPresentationHostSurface(session = state.hostPlaybackSession) {
     }
   }
   if (elements.presentationHostProgress) {
-    elements.presentationHostProgress.disabled = !hasPlayableMedia
+    elements.presentationHostProgress.disabled = castActive || !hasPlayableMedia
       || !durationAvailable
       || state.presentationHostControlBusy;
+    if (castActive) elements.presentationHostProgress.title = t("cast.readOnlyProgress");
+    else elements.presentationHostProgress.removeAttribute("title");
   }
   if (!state.presentationHostProgressScrubbing) {
     paintPresentationHostProgress(
@@ -3685,6 +3717,19 @@ async function handlePresentationHostControl(action, button) {
   button.setAttribute("aria-busy", "true");
   renderPresentationHostSurface(session);
   try {
+    if (state.data?.cast_active === true) {
+      const castAction = { toggle: "toggle-play", "seek-relative": "seek-relative", next: "next-track" }[action];
+      if (castAction && state.data.show_cast?.phase === "active" && state.data.current_item) {
+        const outcome = await apiPostExactStateCommand("/api/player/control", {
+          action: castAction,
+          playback_generation: state.data.playback_generation,
+          item_id: state.data.current_item.id,
+          ...(action === "seek-relative" ? { delta_seconds: Number(button.dataset.delta || 0) } : {}),
+        });
+        if (outcome.snapshotAccepted) render();
+      }
+      return;
+    }
     if (action === "toggle") {
       toggleMountedLocalPlayback();
     } else if (action === "seek" || action === "seek-relative") {
@@ -10079,6 +10124,16 @@ function render() {
   if (!data) {
     return;
   }
+  const castActive = data.cast_active === true;
+  const castChanged = Boolean(document.body?.classList.contains("is-show-cast-control")) !== castActive;
+  document.body?.classList.toggle("is-show-cast-control", castActive);
+  document.body?.classList.toggle("is-presentation-control-host", presentationCompositionActive());
+  if (elements.playerFrame) elements.playerFrame.inert = presentationCompositionActive();
+  if (castChanged) {
+    state.playerFullscreenInteraction?.sync();
+    schedulePersistentStageMeasurement();
+    syncNarrowToolLayout();
+  }
   // Runtime preferences and LAN invitations do not depend on the restored
   // session. Keep them visible while Rust waits for the Host's choice, without
   // mounting its player or rendering the unresolved queue/roster.
@@ -10112,6 +10167,7 @@ function render() {
   renderCurrentPresentationScene();
   renderPlayerFullscreenButton();
   renderPresentationOutputControl();
+  globalThis.BilikaraShowCast?.syncHud(data, delayOverlayTitleForItem);
   applyRemotePlayerControl(data.player_control_command, currentItem, playbackMode);
   publishPresentationPlaybackState().catch(() => {});
   renderQueueCurrent(currentItem);
@@ -11769,6 +11825,22 @@ function acceptHostStateSnapshot(snapshot) {
   });
   if (loginFailure) setAppMessage(localizedCacheMessage(loginFailure.cache_message, "failed"), true);
   state.data = snapshot;
+  if (snapshot.cast_active === true && typeof renderPresentationHostSurface === "function") {
+    state.presentationHostProgressScrubbing = false;
+    renderPresentationHostSurface();
+  }
+  const castResume = snapshot.show_cast?.resume;
+  if (previousSnapshot?.cast_active === true && snapshot.cast_active !== true
+    && castResume?.playback_generation === next.playbackGeneration
+    && castResume.item_id === snapshot.current_item?.id) {
+    state.pendingPlaybackRestore = {
+      itemId: castResume.item_id,
+      itemIncarnationId: snapshot.current_item.item_incarnation_id,
+      variantId: snapshot.playback_program?.selected_audio_variant_id,
+      currentTime: Number(castResume.current_time) || 0,
+      wasPlaying: castResume.was_playing === true,
+    };
+  }
   if (snapshot.startup_warning && state.startupWarningSeen !== snapshot.startup_warning) {
     state.startupWarningSeen = snapshot.startup_warning;
     setAppMessage(snapshot.startup_warning, true);
@@ -12717,6 +12789,7 @@ function showSongTransitionOverlayForData(
 }
 
 function maybeShowSongTransitionOverlay(previousData, nextData, { force = false, generation = 0 } = {}) {
+  if (previousData?.cast_active === true || nextData?.cast_active === true) return;
   const defer = state.immediateDeferTransition;
   if (defer
     && previousData?.playback_generation === defer.playback_generation
@@ -15423,12 +15496,15 @@ function renderAvSyncControls(playbackMode, playerSettings) {
   elements.avSyncPanel.classList.toggle("hidden", !isLocalMode);
   const offsetMs = currentAvOffsetMs();
   const delayState = playerSettings?.av_delay || {};
-  elements.avOffsetInput.disabled = state.avOffsetSaving;
+  const castActive = state.data?.cast_active === true;
+  const disabled = state.avOffsetSaving || castActive;
+  elements.avSyncPanel.title = castActive ? t("cast.delayUnavailable") : "";
+  elements.avOffsetInput.disabled = disabled;
   elements.avSyncPanel.querySelectorAll("button[data-step]").forEach((button) => {
-    button.disabled = state.avOffsetSaving;
+    button.disabled = disabled;
   });
   if (elements.avOffsetResetButton) {
-    elements.avOffsetResetButton.disabled = state.avOffsetSaving || !Boolean(delayState.has_local_adjustment);
+    elements.avOffsetResetButton.disabled = disabled || !Boolean(delayState.has_local_adjustment);
   }
   if (elements.avDelayLockButton) {
     const locked = Boolean(delayState.locked);
@@ -15436,7 +15512,7 @@ function renderAvSyncControls(playbackMode, playerSettings) {
     elements.avDelayLockButton.querySelectorAll("[data-av-lock-icon]").forEach((icon) => {
       icon.classList.toggle("hidden", icon.dataset.avLockIcon !== (locked ? "locked" : "unlocked"));
     });
-    elements.avDelayLockButton.disabled = state.avOffsetSaving || !Boolean(delayState.lock_button_enabled);
+    elements.avDelayLockButton.disabled = disabled || !Boolean(delayState.lock_button_enabled);
     elements.avDelayLockButton.dataset.locked = String(locked);
     elements.avDelayLockButton.dataset.hasLocal = String(hasLocal);
     elements.avDelayLockButton.setAttribute("aria-pressed", String(locked));
@@ -15970,6 +16046,18 @@ function reconcileHostPlaybackSession(currentItem) {
 
 function renderPlayer(currentItem, playbackMode) {
   handleRatingCurrentItemChange(currentItem);
+  if (state.data?.cast_active === true) {
+    if (!state.castOwnsPlayerView) {
+      state.castOwnsPlayerView = true;
+      retireHostPlaybackSession(state.hostPlaybackSession);
+      state.hostPlaybackSession = null;
+      state.pendingPlaybackRestore = null;
+      clearLocalAdvanceDelay({ resetInFlight: true });
+      replaceHostPlayerView();
+    }
+    return;
+  }
+  state.castOwnsPlayerView = false;
   const reconciliation = reconcileHostPlaybackSession(currentItem);
   if (reconciliation.kind !== "mounted") {
     return;
@@ -16329,6 +16417,7 @@ function renderPlayer(currentItem, playbackMode) {
 
 
 function applyRemotePlayerControl(command, currentItem, playbackMode) {
+  if (state.data?.cast_active === true) return;
   const seq = Number(command?.seq || 0);
   if (!Number.isSafeInteger(seq) || seq < 1) {
     return;
@@ -19308,6 +19397,16 @@ async function requestNextTrack(expectedPlaybackGeneration = null) {
   ) {
     return false;
   }
+  if (state.data?.cast_active === true) {
+    if (!state.data.current_item || state.data.show_cast?.phase !== "active") return false;
+    const outcome = await apiPostExactStateCommand("/api/player/control", {
+      action: "next-track",
+      playback_generation: state.data.playback_generation,
+      item_id: state.data.current_item.id,
+    });
+    if (outcome.snapshotAccepted) render();
+    return true;
+  }
   const session = state.hostPlaybackSession;
   const capturedSession = isCurrentHostPlaybackSession(
     session,
@@ -19658,7 +19757,7 @@ async function setAvOffset(offsetMs) {
 }
 
 async function dispatchAvDelayAction(action) {
-  if (state.avOffsetSaving) {
+  if (state.avOffsetSaving || state.data?.cast_active === true) {
     return;
   }
   const previousOffsetMs = currentAvOffsetMs();
@@ -20446,6 +20545,25 @@ elements.presentationSettingsToggle?.addEventListener("click", async () => {
   }
 });
 
+globalThis.BilikaraShowCast?.install({
+  snapshot: () => state.data,
+  translate: t,
+  deviceIcon: () => createPresentationDeviceIcon("output"),
+  physicalBusy: () => state.presentationControlBusy || ["activating", "recovering"].includes(state.presentationSession.phase),
+  closePhysical: async () => {
+    if (state.presentationSession.phase !== "inactive") await deactivateLocalPresentation();
+    if (state.presentationSession.phase !== "inactive") throw new Error(t("cast.stopTimeout"));
+  },
+  post: async (path, body) => {
+    const data = await apiPost(path, body, { timeoutMs: 10_000 });
+    if (path !== "/api/show-cast/hud" && acceptHostStateSnapshot(data)) render();
+    return data;
+  },
+  refresh: fetchState,
+  update: renderPresentationOutputControl,
+  error: (message) => setAppMessage(message, true),
+});
+
 elements.presentationDisplayList?.addEventListener("click", (event) => {
   const option = event.target.closest("[data-presentation-display-id]");
   if (!option || option.disabled) {
@@ -20466,8 +20584,10 @@ function hostRestartContext(requirePresentation = true) {
   const item = state.data?.current_item, generation = state.data?.playback_generation;
   return { key: `${item?.id}:${item?.item_incarnation_id}:${generation}`,
     itemId: item?.id, generation, title: item?.display_title || item?.title,
-    enabled: Boolean(item && (!requirePresentation || presentationCompositionActive()) && !state.presentationHostControlBusy && state.hostPlaybackSession?.readyCommitted
-      && isCurrentHostPlaybackSession(state.hostPlaybackSession)) };
+    enabled: Boolean(item && (!requirePresentation || presentationCompositionActive()) && !state.presentationHostControlBusy
+      && (state.data?.cast_active === true
+        ? state.data.show_cast?.phase === "active" && Number(state.data.player_status?.duration) > 0
+        : state.hostPlaybackSession?.readyCommitted && isCurrentHostPlaybackSession(state.hostPlaybackSession))) };
 }
 function setHostRestartBusy(busy) {
   state.presentationHostControlBusy = busy;
@@ -20505,6 +20625,7 @@ document.querySelectorAll("[data-presentation-host-action]").forEach((button) =>
 });
 
 elements.presentationHostProgress?.addEventListener("input", () => {
+  if (state.data?.cast_active === true) return;
   state.presentationHostProgressScrubbing = true;
   paintPresentationHostProgress(
     Number(elements.presentationHostProgress?.value || 0),
@@ -21124,29 +21245,26 @@ async function handleAudioVariantSelection(event) {
     return;
   }
 
-  const playbackSession = state.hostPlaybackSession;
-  const video = playbackSession?.video;
-  if (
-    !isCurrentHostPlaybackSession(
-      playbackSession,
-      video,
-      playbackSession?.audio,
-    )
-  ) {
-    return;
+  let pendingRestore = null;
+  if (state.data.cast_active !== true) {
+    const playbackSession = state.hostPlaybackSession;
+    const video = playbackSession?.video;
+    if (!isCurrentHostPlaybackSession(playbackSession, video, playbackSession?.audio)) {
+      return;
+    }
+    pendingRestore = {
+      itemId: currentItem.id,
+      itemIncarnationId: currentItem.item_incarnation_id,
+      variantId: nextVariantId,
+      currentTime: video ? Number(video.currentTime || 0) : 0,
+      // Buffering/clock recovery can hold video without changing play intent.
+      wasPlaying: Boolean(playbackSession.logicalPlayIntent),
+    };
+    state.pendingPlaybackRestore = pendingRestore;
   }
   state.audioVariantSwitchInFlight = true;
   state.audioVariantSwitchUnlockAt = Date.now() + audioVariantSwitchDebounceMs;
   renderAudioVariantBar(currentItem, frontendPlaybackMode(state.data?.playback_mode));
-  const pendingRestore = {
-    itemId: currentItem.id,
-    itemIncarnationId: currentItem.item_incarnation_id,
-    variantId: nextVariantId,
-    currentTime: video ? Number(video.currentTime || 0) : 0,
-    // Buffering/clock recovery can hold video without changing play intent.
-    wasPlaying: Boolean(playbackSession.logicalPlayIntent),
-  };
-  state.pendingPlaybackRestore = pendingRestore;
   try {
     const outcome = await apiPostExactStateCommand("/api/player/audio-variant", {
       item_id: currentItem.id,
@@ -21154,14 +21272,14 @@ async function handleAudioVariantSelection(event) {
       expected_item_incarnation_id: currentItem.item_incarnation_id,
     });
     if (!outcome.commandApplied) {
-      if (state.pendingPlaybackRestore === pendingRestore) {
+      if (pendingRestore && state.pendingPlaybackRestore === pendingRestore) {
         state.pendingPlaybackRestore = null;
       }
       state.audioVariantSwitchUnlockAt = 0;
     }
     render();
   } catch (error) {
-    if (state.pendingPlaybackRestore === pendingRestore) {
+    if (pendingRestore && state.pendingPlaybackRestore === pendingRestore) {
       state.pendingPlaybackRestore = null;
     }
     setAppMessage(error.message, true);
@@ -22726,7 +22844,7 @@ async function restartHostPlaybackAfterBootstrap() {
     return false;
   }
   state.hostPlaybackBootstrapRestartPending = false;
-  if (!state.data?.playback_program) {
+  if (!state.data?.playback_program || state.data?.cast_active === true) {
     return false;
   }
   try {
@@ -22748,7 +22866,7 @@ async function restartHostPlaybackAfterPageRestore() {
   ) {
     return false;
   }
-  if (!state.data?.playback_program) {
+  if (!state.data?.playback_program || state.data?.cast_active === true) {
     state.pageHidePlaybackRestartRequired = false;
     state.pageHiddenPlaybackGeneration = null;
     return false;

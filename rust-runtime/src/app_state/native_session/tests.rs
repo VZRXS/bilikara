@@ -363,6 +363,87 @@ fn ready_at(app: &mut AppState, cache_root: Option<&Path>) -> (AppSnapshot, Valu
 }
 
 #[test]
+fn cast_handoff_rejects_old_webview_and_returns_at_show_position() {
+    let (mut app, host) = setup();
+    let (snapshot, mut claim) = ready(&mut app);
+    let generation = snapshot.playback_generation;
+    assert_eq!(
+        app.native_claim(&host, &claim, false).unwrap()["claimed"],
+        true
+    );
+    let status = json!({
+        "item_id":"first", "playback_generation":generation, "status_sequence":1,
+        "observed_phase":"playing", "is_paused":false, "current_time":12.0, "duration":120.0
+    });
+    app.native_player_status(&host, &status, 4.0).unwrap();
+    app.native_control(
+        &host,
+        &json!({
+            "item_id":"first", "playback_generation":generation, "action":"pause"
+        }),
+        5.0,
+    )
+    .unwrap();
+
+    app.native().show_cast.owns_playback = true;
+    assert_eq!(
+        app.native_take_cast_playback().unwrap()["current_time"],
+        12.0
+    );
+    assert!(
+        app.native_cast_control().is_none(),
+        "do not replay old browser actions"
+    );
+    assert_eq!(
+        app.native_claim(&host, &claim, false).unwrap()["claimed"],
+        false
+    );
+    assert_eq!(
+        app.native_player_status(&host, &status, 6.0)
+            .unwrap_err()
+            .code,
+        "stale_player"
+    );
+    let delay = app.execute(AppStateRequest::ApplyAvDelay {
+        schema_version: 1,
+        action: AvDelayCommand::Adjust { delta_ms: 100 },
+        now: 6.0,
+    });
+    assert_eq!(delay.error().unwrap().kind, "cast_av_delay_unavailable");
+
+    app.native_control(&host, &json!({
+        "item_id":"first", "playback_generation":generation, "action":"seek-relative", "delta_seconds":15
+    }), 6.0).unwrap();
+    let command = app.native_cast_control().unwrap();
+    assert_eq!(command["delta_seconds"], 15.0);
+    assert!(app.native_snapshot(true).unwrap()["player_control_command"].is_null());
+    assert!(
+        app.native_ack(&host, &command).is_err(),
+        "WebView cannot acknowledge Show's command"
+    );
+    app.native_report_cast_playback(generation, "first", "paused", 27.0, 120.0, 7.0)
+        .unwrap();
+    let remote = app.native_snapshot(false).unwrap();
+    assert_eq!(remote["cast_active"], true);
+    assert_eq!(remote["player_status"]["position_source"], "show_sender");
+    assert_eq!(remote["player_status"]["current_time"], 27.0);
+    assert!(!remote.as_object().unwrap().contains_key("show_cast"));
+
+    app.native_return_cast_playback().unwrap();
+    let resumed = app.native_snapshot(true).unwrap();
+    let next = resumed["playback_generation"].as_u64().unwrap();
+    assert!(next > generation);
+    assert_eq!(resumed["show_cast"]["resume"]["current_time"], 27.0);
+    assert_eq!(resumed["show_cast"]["resume"]["was_playing"], false);
+    assert!(resumed["player_control_command"].is_null());
+    claim["playback_generation"] = json!(next);
+    assert_eq!(
+        app.native_claim(&host, &claim, false).unwrap()["claimed"],
+        true
+    );
+}
+
+#[test]
 fn local_ip_is_not_host_authority_and_old_visitors_do_not_fill_the_room() {
     let (mut app, host) = setup();
     assert!(app.native_authorize(&host, true).unwrap());

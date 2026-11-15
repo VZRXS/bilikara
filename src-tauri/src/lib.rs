@@ -30,6 +30,8 @@ mod window_chrome;
 mod window_lifecycle;
 #[cfg(all(desktop, any(target_os = "windows", test)))]
 mod windows_fullscreen;
+#[cfg(all(desktop, windows))]
+mod windows_power;
 
 #[cfg(target_os = "android")]
 mod android;

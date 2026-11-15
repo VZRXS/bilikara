@@ -92,6 +92,14 @@ export function expectedPackage(fixture, environment, { development, prefix, mac
   }
   directory(vendor); directoryIfMissing(`${resources}/vendor`);
   for (const name of ['bilikara-desktop-host', 'bilikara-updater']) copy(fixture, `${code}/${name}${suffix}`);
+  // The independently compiled Windows /MD command fixture imports exactly
+  // vcruntime140.dll, as checked by the test setup. Preparation does not stage
+  // app-local CRTs; release Host/updater and the fixture shell do.
+  if (compliance && process.platform === 'win32') {
+    const crt = path.join(environment.BILIKARA_MSVC_REDIST_DIR, 'vcruntime140.dll');
+    copy(crt, `${code}/vcruntime140.dll`);
+    if (shell) copy(crt, 'vcruntime140.dll');
+  }
   tree(path.join(root, 'static'), `${resources}/static`, name => name === 'vendor');
   tree(path.join(root, 'static/vendor'), `${resources}/vendor`, name => ['LICENSE.txt', 'README.md'].includes(name));
   for (const name of ['LICENSE.txt', 'README.md']) {

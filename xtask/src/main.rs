@@ -10,8 +10,10 @@ mod libav_prepare;
 #[cfg(test)]
 mod libav_prerequisite_tests;
 mod macos;
+mod msvc_redist;
 mod native_package;
 mod release;
+mod show_host;
 #[cfg(test)]
 mod tests;
 mod tools;

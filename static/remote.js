@@ -6992,12 +6992,16 @@ function renderRemoteAvSyncControls(playbackMode, playerSettings) {
   elements.remoteAvSyncPanel.classList.toggle("hidden", !isLocalMode);
   const offsetMs = currentRemoteAvOffsetMs(playerSettings);
   const delayState = playerSettings?.av_delay || {};
-  elements.remoteAvOffsetInput.disabled = state.remoteAvDelaySaving;
+  const castActive = state.data?.cast_active === true;
+  const disabled = state.remoteAvDelaySaving || castActive;
+  elements.remoteAvSyncPanel.classList.toggle("is-cast-disabled", castActive);
+  elements.remoteAvSyncPanel.title = castActive ? t("cast.delayUnavailable") : "";
+  elements.remoteAvOffsetInput.disabled = disabled;
   elements.remoteAvSyncPanel.querySelectorAll("button[data-av-step]").forEach((button) => {
-    button.disabled = state.remoteAvDelaySaving;
+    button.disabled = disabled;
   });
   if (elements.remoteAvOffsetResetButton) {
-    elements.remoteAvOffsetResetButton.disabled = state.remoteAvDelaySaving || !Boolean(delayState.has_local_adjustment);
+    elements.remoteAvOffsetResetButton.disabled = disabled || !Boolean(delayState.has_local_adjustment);
   }
   if (elements.remoteAvDelayLockButton) {
     const locked = Boolean(delayState.locked);
@@ -7007,7 +7011,7 @@ function renderRemoteAvSyncControls(playbackMode, playerSettings) {
       "data-av-lock-icon",
       locked ? "locked" : "unlocked",
     );
-    elements.remoteAvDelayLockButton.disabled = state.remoteAvDelaySaving || !Boolean(delayState.lock_button_enabled);
+    elements.remoteAvDelayLockButton.disabled = disabled || !Boolean(delayState.lock_button_enabled);
     elements.remoteAvDelayLockButton.dataset.locked = String(locked);
     elements.remoteAvDelayLockButton.dataset.hasLocal = String(hasLocal);
     elements.remoteAvDelayLockButton.setAttribute("aria-pressed", String(locked));
@@ -7683,6 +7687,7 @@ async function setRemoteAvOffset(offsetMs) {
 }
 
 async function dispatchRemoteAvDelayAction(action) {
+  if (state.data?.cast_active === true) return;
   if (state.remoteAvDelaySaving) {
     return;
   }
@@ -7943,6 +7948,7 @@ function renderPlayerControls(currentItem, playbackMode) {
   const reportedDurationSeconds = Number(playerStatus?.duration || 0);
   const durationSeconds = itemDurationSeconds > 0 ? itemDurationSeconds : reportedDurationSeconds;
   const hasKnownDuration = Number.isFinite(durationSeconds) && durationSeconds > 0;
+  const castActive = state.data?.cast_active === true;
   const controlSignature = JSON.stringify({
     itemId: currentItem.id || "",
     itemIncarnationId: currentItem.item_incarnation_id || "",
@@ -7952,6 +7958,7 @@ function renderPlayerControls(currentItem, playbackMode) {
     hasLocalSplitMedia: hasLocalSplitMedia(currentItem),
     isPaused,
     hasKnownDuration,
+    castActive,
     pendingAction: state.playerControlPendingAction || "",
   });
   if (controlSignature === state.playerControlsRenderSignature) {
@@ -7985,9 +7992,11 @@ function renderPlayerControls(currentItem, playbackMode) {
 
   if (elements.playbackSheetSeek) {
     const seekPending = state.playerControlPendingAction === "seek-absolute";
-    elements.playbackSheetSeek.disabled = !canControl
+    elements.playbackSheetSeek.disabled = castActive || !canControl
       || !hasKnownDuration
       || Boolean(state.playerControlPendingAction);
+    if (castActive) elements.playbackSheetSeek.title = t("cast.readOnlyProgress");
+    else elements.playbackSheetSeek.removeAttribute("title");
     if (seekPending) {
       elements.playbackSheetSeek.setAttribute("aria-busy", "true");
     } else {
