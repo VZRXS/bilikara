@@ -419,6 +419,11 @@
 
     function layout() {
       if (!pager.getClientRects().length) return;
+      // Only bounded, actually scrolling viewports need the content inset.
+      // Remote document flow and short result pages keep their full width.
+      const overflowY = getComputedStyle(viewport).overflowY;
+      viewport.classList.toggle("has-scroll-inset", (overflowY === "auto" || overflowY === "scroll")
+        && viewport.scrollHeight > viewport.clientHeight + 1);
       if (viewportWidth !== viewport.clientWidth) {
         viewportWidth = viewport.clientWidth;
         viewport.style.minHeight = "";
@@ -469,9 +474,10 @@
     }
     const resizeObserver = new ResizeObserver(scheduleLayout);
     resizeObserver.observe(pager);
+    resizeObserver.observe(viewport);
+    resizeObserver.observe(container);
     if (fit) {
-      resizeObserver.observe(fit);
-      resizeObserver.observe(container);
+      if (fit !== viewport) resizeObserver.observe(fit);
       document.fonts?.ready.then(scheduleLayout);
       document.fonts?.addEventListener("loadingdone", () => {fittedGeometry = null;scheduleLayout();});
     }
