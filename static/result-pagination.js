@@ -477,7 +477,7 @@
       probe.setAttribute("aria-hidden", "true");
       probe.inert = true;
       Object.assign(probe.style, {position:"absolute", visibility:"hidden", pointerEvents:"none",
-        width:getComputedStyle(container).width, height:"auto", inset:"0 auto auto 0"});
+        width:getComputedStyle(container).width, height:"auto", top:"0", left:"0"});
       renderItems(options.items.slice(0, 1), options.emptyText, probe);
       viewport.append(probe);
       try { return measureCapacity(probe.firstElementChild); }
