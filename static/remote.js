@@ -5393,7 +5393,7 @@ function renderSourcesFollowBrowse() {
     elements.sourcesAddFollowUidButton.textContent = sourceBusy
       ? t("gatcha.pulling")
       : state.gatchaUidSaving
-        ? t("gatcha.adding")
+        ? t("search.adding")
         : t("gatcha.add");
   }
   if (elements.sourcesFollowSearchQuery) {

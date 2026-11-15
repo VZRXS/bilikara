@@ -8,6 +8,33 @@ const ROOT = root;
 import { contains, sourceIndex, iterableValues, concatenate } from './frontend_contract_support.mjs';
 import vm from 'node:vm';
 
+test('Remote UID addition uses the specific loading label and preserves pulling and busy guards',()=>{
+  const remote=readFileSync(path.join(ROOT,'static/remote.js'),'utf8');
+  const start=sourceIndex(remote,'function renderSourcesFollowBrowse() {');
+  const end=sourceIndex(remote,'\nasync function loadFollowBrowse(',start);
+  const translations=JSON.parse(readFileSync(path.join(ROOT,'static/i18n.json'),'utf8')).languages;
+  const attributes=new Map();
+  const button={classList:{add(){}},setAttribute:(key,value)=>attributes.set(key,value),removeAttribute:key=>attributes.delete(key)};
+  const state={data:{gatcha:{}},followBrowseSelectedUid:'',followBrowseData:{owners:[],items:[]},gatchaUidSaving:false,sourceBusy:false,language:'en'};
+  const elements={sourcesFollowGrid:{},sourcesFollowResults:{},sourcesFollowUidInput:{},sourcesAddFollowUidButton:button};
+  const context={window:{},state,elements,t:key=>translations[state.language][key],
+    gatchaTaskBusy:()=>state.sourceBusy,gatchaSourceBusy:()=>state.sourceBusy,
+    hideRemoteResultPager(){},renderRemoteGridPages(){},renderSourceCardPage(){},setSourcesFollowBrowseMessage(){},syncRemoteRequestPanelSizeTier(){}};
+  vm.runInNewContext(readFileSync(path.join(ROOT,'static/source-status.js'),'utf8')+'\n'+remote.slice(start,end),context);
+  for(const [language,adding,pulling] of [['en','Adding...','Pulling'],['zh','添加中...','拉取中'],['ja','追加中...','取得中']]) {
+    state.language=language;
+    for(const [saving,busy,label] of [[false,false,translations[language]['gatcha.add']],[true,false,adding],[true,true,pulling],[false,true,pulling],[false,false,translations[language]['gatcha.add']]]) {
+      Object.assign(state,{gatchaUidSaving:saving,sourceBusy:busy});
+      context.renderSourcesFollowBrowse();
+      assert.equal(button.textContent,label,`${language}: saving=${saving}, sourceBusy=${busy}`);
+      assert.equal(button.disabled,saving||busy);
+      assert.equal(elements.sourcesFollowUidInput.disabled,saving||busy);
+      assert.equal(attributes.has('aria-busy'),saving||busy);
+    }
+  }
+  assert.equal(translations.en['gatcha.adding'],'Processing','generic processing labels retain their existing meaning');
+});
+
 test('Remote retains a favorite version change while its previous read is pending',()=>{
   const remote=readFileSync(path.join(ROOT,'static/remote.js'),'utf8');
   const start=remote.indexOf('function scheduleFavlistBrowseReloadFromState('),end=remote.indexOf('\nfunction renderSourcesFollowBrowse(',start);

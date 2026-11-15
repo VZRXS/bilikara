@@ -124,14 +124,14 @@ html[data-host-layout="portrait"] .request-mode-tabs {
 :root .source-action-row:is(:has(> .source-uid-form), :where([data-legacy-has~="r23"])) { grid-template-columns: minmax(0, 1fr); }
 :root .source-uid-form {
   display: grid;
-  grid-template-columns: minmax(var(--source-uid-input-min-width, 0px), 1fr) auto;
+  grid-template-columns: minmax(var(--source-uid-input-min-width, 0px), 1fr) var(--source-uid-action-track, auto);
   min-width: 0;
   margin: 0;
   align-self: start;
   align-items: stretch;
   gap: 8px;
 }
-:root .source-uid-form:is(:has(> .source-refresh-button), :where([data-legacy-has~="r24"])) { grid-template-columns: minmax(var(--source-uid-input-min-width, 0px), 1fr) auto auto; }
+:root .source-uid-form:is(:has(> .source-refresh-button), :where([data-legacy-has~="r24"])) { grid-template-columns: minmax(var(--source-uid-input-min-width, 0px), 1fr) repeat(2, var(--source-uid-action-track, auto)); }
 :root .source-uid-form > input {
   min-width: var(--source-uid-input-min-width, 0px);
   width: 100%;
@@ -151,6 +151,8 @@ html[data-host-layout="portrait"] .request-mode-tabs {
    Other languages and Host retain their existing single-line treatment. */
 :root[data-ui-client="remote"]:lang(en) .source-uid-form {
   --source-uid-input-min-width: 128px;
+  /* The 44px button minimum must not let an auto track squeeze a whole word. */
+  --source-uid-action-track: minmax(min-content, auto);
 }
 @media (max-width: 520px) {
   :root[data-ui-client="remote"]:lang(en) .source-uid-form > button {

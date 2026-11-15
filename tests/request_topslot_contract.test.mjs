@@ -64,10 +64,12 @@ test('English Remote UID rows reserve input space and fit two text lines in the 
     return css.slice(start).split('}',1)[0];
   };
   const form=rule(':root .source-uid-form'),input=rule(':root .source-uid-form > input');
-  assert.match(form,/grid-template-columns: minmax\(var\(--source-uid-input-min-width, 0px\), 1fr\) auto;/);
+  assert.match(form,/grid-template-columns: minmax\(var\(--source-uid-input-min-width, 0px\), 1fr\) var\(--source-uid-action-track, auto\);/);
   assert.match(input,/min-width: var\(--source-uid-input-min-width, 0px\);/);
   assert.match(rule(':root[data-ui-client="remote"]:lang(en) .source-uid-form'),/--source-uid-input-min-width: 128px;/);
+  assert.match(rule(':root[data-ui-client="remote"]:lang(en) .source-uid-form'),/--source-uid-action-track: minmax\(min-content, auto\);/,'action tracks reserve the longest word even during loading');
   const button=rule(':root .source-uid-form > button');
+  assert.match(button,/min-width: 44px;/,'short labels keep their ordinary minimum target');
   assert.match(button,/white-space: nowrap;/,'ordinary languages keep the original single-line rule');
   assert.match(css,/@media \(max-width: 520px\) \{\s*:root\[data-ui-client="remote"\]:lang\(en\) \.source-uid-form > button/);
   const narrow=rule(':root[data-ui-client="remote"]:lang(en) .source-uid-form > button');

@@ -142,7 +142,10 @@ Returning restores the same add-input nodes and their unsubmitted drafts.
 The UID field and add/fetch/manual-refresh actions stay on one shared row.
 `request-tabs.css` reserves a 128px input minimum for English Remote; its narrow
 button treatment uses intrinsic text widths, compact inline padding and natural
-word wrapping. At 360px, labels may occupy two 18px lines at 16px within the same
+word wrapping. Action tracks reserve their longest word as well as the ordinary
+44px button minimum, including busy labels. Remote UID addition uses the existing
+`search.adding` translation; the generic `gatcha.adding` label keeps its other uses.
+At 360px, labels may occupy two 18px lines at 16px within the same
 44px control, without stacking actions or clipping text. At 393px and wider,
 labels remain single-line; Chinese and Japanese keep their existing single-line
 treatment. Rendered input width, line count and text bounds require browser checks.
