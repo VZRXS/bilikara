@@ -22,9 +22,11 @@ const forms={
   favorites:{form:'#sources-favlist-pull-form',input:'#sources-favlist-uid-input',
     buttons:['#sources-pull-favlist-button']},
 };
-// Every label the Remote assigns to these buttons, idle and busy.
+// Every label the Remote assigns to these buttons, idle and busy. The source UID
+// Add action uses the request-specific search.adding; the shared gatcha.adding
+// label also serves resort/backup/confirmation actions and remains unchanged.
 const labels={
-  '#sources-add-follow-uid-button':['gatcha.add','gatcha.adding','gatcha.pulling'],
+  '#sources-add-follow-uid-button':['gatcha.add','search.adding','gatcha.pulling'],
   '#refresh-gatcha-cache-button':['gatcha.refresh','gatcha.refreshing','gatcha.pulling'],
   '#sources-pull-favlist-button':['gatcha.pullFavlist','gatcha.pulling'],
 };
@@ -143,28 +145,39 @@ for(const engine of [chromium,webkit])test(`${engine.name()} Remote UID rows kee
           buttons:value.buttons.map(button=>({id:button.selector,lines:button.rendered.lines,width:Math.round(button.rendered.box.width)}))});
       }
     }
-    // Real busy states rendered by the Remote itself at the narrowest English row.
+    // Real busy states rendered by the Remote itself at the narrowest row.
+    // The UID Add action shows search.adding in all three languages.
+    const adding={en:'Adding...',zh:'添加中...',ja:'追加中...'};
+    const sharedAdding={en:'Processing',zh:'处理中',ja:'処理中'};
     await page.setViewportSize({width:360,height:740});
-    await page.evaluate(()=>setLanguage('en'));
-    for(const [mode,spec] of Object.entries(forms)){
-      await page.locator(`[data-remote-sources-mode="${mode}"]`).click();
-      await page.locator(spec.form).waitFor({state:'visible'});
-      await page.evaluate(mode=>{
-        if(mode==='uids'){state.gatchaUidSaving=true;state.gatchaRefreshSaving=true;renderSourcesFollowBrowse();}
-        else state.gatchaFavlistSaving=true;
-        renderSourceManagementControls();
-      },mode);
-      await settle(page);
-      const value=await measure(page,spec);
-      for(const button of value.buttons)assert.equal(button.rendered.box.height,44);
-      assert.deepEqual(value.buttons.map(button=>button.rendered.label),
-        mode==='uids'?['Processing','Updating']:['Pulling'],'the Remote rendered its busy labels');
-      check(value,{twoLine:true,englishMinimum:true});
-      await page.evaluate(mode=>{
-        if(mode==='uids'){state.gatchaUidSaving=false;state.gatchaRefreshSaving=false;renderSourcesFollowBrowse();}
-        else state.gatchaFavlistSaving=false;
-        renderSourceManagementControls();
-      },mode);
+    for(const language of ['en','zh','ja']){
+      await page.evaluate(language=>setLanguage(language),language);
+      assert.equal(await page.evaluate(()=>t('search.adding')),adding[language]);
+      assert.equal(await page.evaluate(()=>t('gatcha.adding')),sharedAdding[language],'the shared gatcha.adding label is unchanged');
+      for(const [mode,spec] of Object.entries(forms)){
+        await page.locator(`[data-remote-sources-mode="${mode}"]`).click();
+        await page.locator(spec.form).waitFor({state:'visible'});
+        await page.evaluate(mode=>{
+          if(mode==='uids'){state.gatchaUidSaving=true;state.gatchaRefreshSaving=true;renderSourcesFollowBrowse();}
+          else state.gatchaFavlistSaving=true;
+          renderSourceManagementControls();
+        },mode);
+        await settle(page);
+        const value=await measure(page,spec);
+        for(const button of value.buttons)assert.equal(button.rendered.box.height,44);
+        const expected=await page.evaluate(mode=>mode==='uids'?[t('search.adding'),t('gatcha.refreshing')]:[t('gatcha.pulling')],mode);
+        assert.deepEqual(value.buttons.map(button=>button.rendered.label),expected,'the Remote rendered its busy labels');
+        if(mode==='uids'){
+          assert.equal(value.buttons[0].rendered.label,adding[language],'UID Add busy uses search.adding');
+          assert.notEqual(value.buttons[0].rendered.label,sharedAdding[language],'UID Add busy no longer uses gatcha.adding');
+        }
+        check(value,{twoLine:language==='en',englishMinimum:language==='en'});
+        await page.evaluate(mode=>{
+          if(mode==='uids'){state.gatchaUidSaving=false;state.gatchaRefreshSaving=false;renderSourcesFollowBrowse();}
+          else state.gatchaFavlistSaving=false;
+          renderSourceManagementControls();
+        },mode);
+      }
     }
     t.diagnostic(JSON.stringify(recorded));
   });
