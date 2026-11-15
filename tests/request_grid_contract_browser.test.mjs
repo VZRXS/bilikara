@@ -542,6 +542,10 @@ for (const engine of engines) for (const name of ['uid-detail', 'source-list']) 
     const step = async (label, fn) => { await page.evaluate(fn); history = await g11Check(page, card, label, history, sourceFit); };
     await step('font 200%', () => { document.documentElement.style.fontSize = '32px'; });
     await step('font 100%', () => { document.documentElement.style.fontSize = ''; });
+    // Text zoom can grow a card's border box without changing its font properties (the stale-cache case).
+    const cardRule = name === 'source-list' ? '#follow-up-grid > *' : '.search-result-item';
+    await step('card border box grows', new Function(`const s = document.createElement('style'); s.id = 'g11-card'; s.textContent = '${cardRule} { padding-bottom: 24px !important; min-height: 0 !important; }'; document.head.append(s);`));
+    await step('card border box restored', () => document.getElementById('g11-card').remove());
     for (const [width, height] of [[844, 393], [393, 844]]) {
       await page.setViewportSize({width, height});
       await page.evaluate(([w, h]) => { Object.assign(visualViewport, {width: w, height: h}); visualViewport.dispatchEvent(new Event('resize')); }, [width, height]);
