@@ -10,7 +10,7 @@ runtime actions. Keep client-specific stacking and layout variants explicit.
 | Toast phone/dock clearance | `static/host-layout.css` | Existing responsive layout override; no component material override. |
 | Global `--font-sans` / `--font-display` | `static/ui-surfaces.css` | Existing effective system stack; shadowed client declarations removed. |
 | Portrait My/Settings scrollports and content gutters | `static/host-layout.css` | Full-width owners with internal 14px side insets; existing trailing dock space and group geometry. `static/host-layout.js` retains page clipping, resident controls, visibility/inert state and My's scroll offset. |
-| Request result viewport scroll inset | `static/result-pagination.js`, `static/styles.css` | The existing coalesced ResizeObserver measures actual bounded vertical overflow; only overflowing viewports add 4px at the right. Remote document flow, page capacity and the shared pager/hit geometry retain their existing contract. |
+| Request result viewport scroll inset | `static/result-pagination.js`, `static/styles.css` | The existing coalesced ResizeObserver measures bounded vertical overflow at the uninset content width; overflowing viewports add 4px at the right. Narrower aspect-ratio cards may reduce final overflow, but cannot reverse that decision. Measurement restores padding before capacity fitting and paint. Remote document flow, page capacity and the shared pager/hit geometry retain their existing contract. |
 | Theme palettes and semantic surfaces | Existing client/shared token sheets | Host/Remote palette differences remain intentional. |
 
 `tests/ui_toast_ownership.test.mjs`, included in `test:auxiliary`, parses actual

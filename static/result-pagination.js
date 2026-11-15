@@ -417,13 +417,30 @@
       layoutFrame = requestAnimationFrame(() => { layoutFrame = null; layout(); });
     }
 
+    function needsScrollInset() {
+      const overflowY = getComputedStyle(viewport).overflowY;
+      if (overflowY !== "auto" && overflowY !== "scroll") return false;
+      if (!viewport.classList.contains("has-scroll-inset")) return viewport.scrollHeight > viewport.clientHeight + 1;
+      // Measure at the uninset width: narrowing 16:9 cards also shortens their
+      // rows, which otherwise feeds back into the observer's overflow decision.
+      // Keep the class intact; restore padding before fitting or painting.
+      const padding = viewport.style.getPropertyValue("padding-right");
+      const priority = viewport.style.getPropertyPriority("padding-right");
+      viewport.style.setProperty("padding-right", "0px", "important");
+      try { return viewport.scrollHeight > viewport.clientHeight + 1; }
+      finally {
+        if (padding) viewport.style.setProperty("padding-right", padding, priority);
+        else viewport.style.removeProperty("padding-right");
+      }
+    }
+
     function layout() {
       if (!pager.getClientRects().length) return;
       // Only bounded, actually scrolling viewports need the content inset.
       // Remote document flow and short result pages keep their full width.
-      const overflowY = getComputedStyle(viewport).overflowY;
-      viewport.classList.toggle("has-scroll-inset", (overflowY === "auto" || overflowY === "scroll")
-        && viewport.scrollHeight > viewport.clientHeight + 1);
+      const scrollTop = viewport.scrollTop;
+      viewport.classList.toggle("has-scroll-inset", needsScrollInset());
+      if (viewport.scrollTop !== scrollTop) viewport.scrollTop = scrollTop;
       if (viewportWidth !== viewport.clientWidth) {
         viewportWidth = viewport.clientWidth;
         viewport.style.minHeight = "";
