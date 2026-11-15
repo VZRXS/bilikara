@@ -634,10 +634,10 @@ const updating=section('      update(value) {', '      localize(language) {');
 function fixture(minimumRows=1) {
   let options={},capacityReady=false,fittedGeometry=null;
   let layoutFrame=null,idleTimer=null,visibleDots=[];
-  const flags={visible:false,blocked:false,visibility:'visible'};
+  const flags={visible:false,blocked:false,visibility:'visible',scrollOwner:''};
   const rows=0,retainPages=false,measurements=[],writes=[],probes=[];
   const fit={clientHeight:0,clientWidth:365};
-  const style={width:'365px',gridTemplateColumns:'115px 115px 115px',rowGap:'10px',paddingTop:'2px',paddingBottom:'2px'};
+  const style={width:'365px',gridTemplateColumns:'115px 115px 115px',rowGap:'10px',paddingTop:'2px',paddingBottom:'2px',getPropertyValue:()=>flags.scrollOwner};
   const item={classList:{contains:()=>false}};
   const itemStyle={height:'72px',boxSizing:'border-box',fontFamily:'fixture',fontSize:'14px',lineHeight:'16px'};
   const probe={style:{},removeAttribute(){},setAttribute(){},remove(){this.removed=true;},firstElementChild:item};
@@ -649,8 +649,8 @@ function fixture(minimumRows=1) {
   const cancelNavigation=()=>{},closeEditor=()=>{},retirePaint=()=>{};
   let api;
   const model=new Pages(()=>api.publish());
-  api=eval('(()=>{'+fitting+publishing+'return {controller:{'+updating+'},initialize:commitInitialCapacity,publish:publishPageSize};})()');
-  return {api,flags,model,fit,writes,probes,probe,measurements};
+  api=eval('(()=>{'+fitting+publishing+'return {controller:{'+updating+'},initialize:commitInitialCapacity,publish:publishPageSize,measure:measureCapacity};})()');
+  return {api,flags,model,fit,writes,probes,probe,measurements,measure:()=>api.measure(probe.firstElementChild)};
 }
 const records=items(0,60),value={key:'owners',positionKey:'owners',items:records,total:60,hasMore:false};
 const {api,flags,model,fit,writes,probes,probe,measurements}=fixture();
@@ -682,6 +682,20 @@ for(const minimum of [1,()=>3])for(const height of [-1,0,1,75]) {
   assert.equal(sample.measurements.at(-1).height,height,'diagnostics retain the actual height');
   sample.api.controller.update({...value,items:[],loading:true});sample.api.controller.update(value);
   assert.deepEqual(sample.writes,[String(expected)],'short-panel refresh does not republish capacity');
+}
+for(const minimum of [1,()=>3]) {
+  const flow=fixture(minimum),expected=minimum===1?3:9;
+  flow.flags.visible=true;flow.flags.scrollOwner='panel';flow.fit.clientHeight=404;
+  flow.api.controller.update(value);
+  assert.deepEqual(flow.writes,[String(expected)],'whole-panel scrolling starts with measured-column minimum rows');
+  for(const height of [76,240,568,900]) {
+    flow.fit.clientHeight=height;
+    assert.equal(flow.measure(),expected,'growing natural content height cannot grow page capacity');
+    assert.equal(flow.measurements.at(-1).height,height,'diagnostics still expose the real fit region');
+    assert.equal(flow.measurements.at(-1).scrollOwner,'panel');
+  }
+  flow.flags.scrollOwner='';flow.fit.clientHeight=404;
+  assert.equal(flow.measure(),15,'leaving the overlay restores bounded complete-row fitting');
 }
 const {documentPageSize}=require('./static/result-pagination.js');
 assert.deepEqual(documentPageSize,{song:6,compact:12});assert.ok(Object.isFrozen(documentPageSize));

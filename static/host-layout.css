@@ -987,6 +987,43 @@ html:is([data-host-platform="android"], [data-host-platform="ios"]) #host-worksp
 html:is([data-host-platform="android"], [data-host-platform="ios"]) .request-discover-view .tag-browser.is-browsing-tags > .android-result-frame:not([hidden]) { grid-row: 2; }
 html:is([data-host-platform="android"], [data-host-platform="ios"]) .request-discover-view .tag-browser.is-browsing-tags.has-request-session-user-notice > .android-result-frame:not([hidden]) { grid-row: 3; }
 
+/* A short landscape compact overlay scrolls the complete Request tool panel.
+   Column/overlay admission already measures available space. Desktop, portrait
+   and admitted two-column workspaces retain their bounded scroll owners. */
+html:is([data-host-platform="android"], [data-host-platform="ios"])[data-host-columns="compact"]:not([data-host-layout="portrait"]) .app-shell[data-narrow-tool-layout="overlay"] #host-workspace-request {
+  --result-page-scroll-owner: panel;
+  box-sizing: border-box;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  overflow-anchor: none;
+  padding-bottom: calc(12px + var(--mobile-ime-height, var(--android-ime-height, 0px)));
+  scroll-padding-bottom: 12px;
+}
+html:is([data-host-platform="android"], [data-host-platform="ios"])[data-host-columns="compact"]:not([data-host-layout="portrait"]) .app-shell[data-narrow-tool-layout="overlay"] #host-workspace-request .request-workspace-body {
+  display: block;
+  flex: 0 0 auto;
+  overflow: visible;
+}
+html:is([data-host-platform="android"], [data-host-platform="ios"])[data-host-columns="compact"]:not([data-host-layout="portrait"]) .app-shell[data-narrow-tool-layout="overlay"] #host-workspace-request :is(
+  .request-subview, .request-mode-panel, .android-result-frame, .result-page-viewport,
+  .source-browse-scroll, .follow-browser, .favlist-browser, .follow-up-list-view,
+  .follow-up-items-view, .tag-browser, .category-browser, .category-browser-home,
+  .category-browser-detail, .category-browser-results, .request-scroll-region,
+  .search-results, .tag-browser-tags, .follow-up-grid, [data-d1-browse-results]
+) {
+  flex: 0 0 auto;
+  height: auto;
+  max-height: none;
+  min-height: 0;
+  overflow: visible;
+  overscroll-behavior-y: auto;
+  grid-template-rows: none;
+  grid-auto-rows: auto;
+  align-content: start;
+  padding-right: 0;
+}
+
 /* WKWebView exposes remaining safe areas through env(); an already-inset
    native view reports zero. Keep this separate from Android's native insets. */
 html[data-host-platform="ios"] {

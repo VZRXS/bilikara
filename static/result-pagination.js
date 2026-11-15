@@ -9,7 +9,7 @@
   const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
 
   // Bounded native panels fit complete rows. A hidden/unmeasured panel keeps
-  // its existing page; very short panels use one row and internal scrolling.
+  // its existing page; short panels use their minimum rows in one scroll owner.
   function fittedPageSize({columns, height, itemHeight, gap = 0, padding = 0, minimumRows = 1}) {
     if (![columns,height,itemHeight,gap,padding].every(Number.isFinite)
       || columns < 1 || height <= 0 || itemHeight <= 0 || gap < 0 || padding < 0) return null;
@@ -463,8 +463,11 @@
       // A visible panel with no measurable height still displays one page.
       // Preserve its actual height in diagnostics; the fit floor selects the
       // configured minimumRows (at least one) rather than a guessed item count.
-      const size = fittedPageSize({...geometry, height:Math.max(1, geometry.height)});
-      const measurement = {...geometry, size, width:fit.clientWidth};
+      const panelScroll = style.getPropertyValue("--result-page-scroll-owner").trim() === "panel";
+      // A whole-panel scrollport gives the grid natural content height. It is
+      // not a fit budget: feeding it back would grow a page on every paint.
+      const size = fittedPageSize({...geometry, height:panelScroll ? 1 : Math.max(1, geometry.height)});
+      const measurement = {...geometry, size, width:fit.clientWidth, scrollOwner:panelScroll ? "panel" : "viewport"};
       if (JSON.stringify(measurements.at(-1)) !== JSON.stringify(measurement)) {
         measurements.push(measurement); if (measurements.length > 24) measurements.shift();
       }

@@ -296,6 +296,19 @@ suppresses selection; inputs, copyable links, user prose and diagnostic/error
 details retain native copying. This does not install a document-wide gesture
 blocker.
 
+In a short landscape mobile Host admitted to compact columns and an overlay
+tool sheet, the complete Request tool panel is the sole vertical scroll owner.
+Its header, active content, source tools and Pager scroll together. Internal
+source/list/result wrappers use natural height and visible overflow. This state
+uses existing measured column/overlay admission, with no device or viewport-size
+breakpoint, and leaves portrait, two-column and desktop geometry unchanged.
+Each page retains its configured minimum rows (at least one complete row),
+measured from real columns; natural content height cannot increase capacity.
+The same outer frame retains safe-area clearance; the scrollport adds 12px
+trailing space and the actual keyboard overlay inset so the Pager stays reachable.
+Source editing cancels pending holds on the actual owner's scroll and uses that
+owner's bounds/offset for drag placement and edge scrolling.
+
 Bounded result grids measure layout border boxes rather than animated paint
 bounds. The first card is observed alongside viewport/content/font changes.
 Headings, footer, safe area and native dock occupy their existing layout tracks
