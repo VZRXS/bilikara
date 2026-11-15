@@ -517,6 +517,74 @@ test('chromium desktop announcements reserve classic scrollbar width only when c
   assert.deepEqual(errors, []);
 });
 
+// ---------- D2: Remote queue dragging scrolls the document at the visible edges ----------
+for (const engine of [chromium, webkit]) {
+  test(`${engine.name()} Remote queue drag scrolls the document near the visible edges above the dock [D2]`, {skip: !linux, timeout: 120000}, async t => {
+    const browser = await engine.launch({headless: true}); t.after(() => browser.close());
+    const {page, errors} = await openSession(t, browser, {id: 'remote-393x844', kind: 'desktop', viewport: [393, 844], touch: true, remote: true});
+    await visit(page, pages.queue.remote);
+    const handle = page.locator('#queue-list [data-drag-handle]').first();
+    await handle.scrollIntoViewIfNeeded(); await settle(page);
+    const before = await page.evaluate(() => ({doc: document.scrollingElement.scrollTop, list: document.getElementById('queue-list').scrollTop,
+      dockTop: document.getElementById('playback-dock').getBoundingClientRect().top}));
+    const box = await handle.boundingBox();
+    const x = box.x + box.width / 2, y = box.y + box.height / 2;
+    await page.mouse.move(x, y); await page.mouse.down();
+    await page.mouse.move(x, y + 12, {steps: 2});
+    assert.equal(await page.evaluate(() => Boolean(state.dragItemId && state.dragMoved)), true, 'the badge drag is active');
+    // Each pointer move near the edge scrolls one step; alternate by one pixel so every move is delivered.
+    for (let i = 0; i < 12; i++) await page.mouse.move(x, before.dockTop - 20 - (i % 2));
+    const down = await page.evaluate(() => ({doc: document.scrollingElement.scrollTop, list: document.getElementById('queue-list').scrollTop}));
+    assert.ok(down.doc >= before.doc + 50, 'dragging near the visible bottom above the dock scrolls the document: ' + JSON.stringify({before, down}));
+    for (let i = 0; i < 12; i++) await page.mouse.move(x, 20 + (i % 2));
+    const up = await page.evaluate(() => ({doc: document.scrollingElement.scrollTop, list: document.getElementById('queue-list').scrollTop}));
+    assert.ok(up.doc <= down.doc - 50, 'dragging near the visible top scrolls the document back: ' + JSON.stringify({down, up}));
+    assert.deepEqual([before.list, down.list, up.list], [0, 0, 0], 'the queue list never owns scrolling');
+    // Cancel instead of dropping: this checks scrolling only and must not commit a reorder.
+    await page.evaluate(() => document.dispatchEvent(new PointerEvent('pointercancel', {pointerId: state.dragPointerId, bubbles: true})));
+    await page.mouse.up();
+    assert.equal(await page.evaluate(() => state.dragItemId), '', 'the cancelled drag is cleared');
+    assert.deepEqual(errors, []);
+  });
+}
+
+// ---------- D4: My/Settings grouping across themes, languages and the expanded login QR ----------
+for (const engine of [chromium, webkit]) {
+  test(`${engine.name()} phone My/Settings groups hold across themes, languages and the expanded login QR [D4]`, {skip: !linux, timeout: 180000}, async t => {
+    const browser = await engine.launch({headless: true}); t.after(() => browser.close());
+    const {page, errors} = await openSession(t, browser, {id: 'android-393x844', kind: 'alpha', viewport: [393, 844], touch: true});
+    const group = () => page.evaluate(() => {
+      const card = document.getElementById('android-account-slot'), box = card.getBoundingClientRect(), style = getComputedStyle(card);
+      const clipped = [...card.querySelectorAll('*')].filter(n => n.getClientRects().length && n.checkVisibility?.() !== false
+        && n.getBoundingClientRect().width > 0 && n.getBoundingClientRect().height > 0).some(n => {
+        const r = n.getBoundingClientRect(); return r.left < box.left - 0.5 || r.right > box.right + 0.5 || r.top < box.top - 0.5 || r.bottom > box.bottom + 0.5; });
+      return {height: box.height, padding: style.padding, inline: [style.paddingLeft, style.paddingRight], clipped,
+        overflow: card.scrollWidth > card.clientWidth + 1 || card.scrollHeight > card.clientHeight + 1};
+    });
+    const sections = () => page.evaluate(() => [...document.querySelectorAll('#host-workspace-settings .settings-workspace-body > .settings-section')]
+      .filter(n => n.getClientRects().length).map(n => { const s = getComputedStyle(n); return {padding: s.padding, radius: s.borderRadius, border: s.borderTopWidth,
+        filled: s.backgroundColor !== 'rgba(0, 0, 0, 0)', clipped: n.scrollWidth > n.clientWidth + 1}; }));
+    for (const theme of ['light', 'dark', 'blue']) for (const language of ['zh', 'en', 'ja']) {
+      await page.evaluate(([theme, language]) => { applyTheme(theme); setLanguage(language); }, [theme, language]);
+      await visit(page, pages.my.host);
+      const account = await group();
+      assert.ok(Math.abs(account.height - 44) <= 0.5 && !account.clipped && !account.overflow, `${theme}/${language}: the collapsed login card is 44px and complete ` + JSON.stringify(account));
+      assert.deepEqual(account.inline, ['14px', '14px']);
+      await visit(page, pages.settings.host);
+      for (const section of await sections()) assert.deepEqual(section, {padding: '14px', radius: '14px', border: '1px', filled: true, clipped: false}, `${theme}/${language} Settings group`);
+    }
+    await page.evaluate(() => { applyTheme('light'); setLanguage('zh'); });
+    await visit(page, pages.my.host);
+    await page.evaluate(() => { fetchState = async () => {}; state.eventSource?.close();
+      state.data.bbdown.login = {state: 'waiting', logged_in: false, message: '请扫码登录'}; renderBBDownLogin(state.data.bbdown.login); });
+    await settle(page);
+    const expanded = await group();
+    assert.equal(expanded.padding, '14px', 'the expanded QR group keeps ordinary 14px padding ' + JSON.stringify(expanded));
+    assert.ok(expanded.height > 44 && !expanded.clipped, 'the expanded QR content grows its group without clipping ' + JSON.stringify(expanded));
+    assert.deepEqual(errors, []);
+  });
+}
+
 // Remote document scrolling keeps the browser's own indicator, which CSS cannot inset above #playback-dock.
 test('Remote document indicator crosses the fixed playback dock [SCROLL-R2-03 G5]', {
   skip: 'ENGINE-LIMITATION (b3-measure.md §0 F5, §4 D3): native document scroll indicators cannot be inset; Remote keeps document scrolling',
