@@ -1178,6 +1178,18 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   padding-bottom: 10px;
 }
 :root :is(#host-workspace-request, .request-workspace, .search-card-surface, .remote-search-browser-view)
+  .search-result-cover {
+  flex: 0 0 auto;
+}
+/* Owner badges, missing owners and font fallback share one metadata track.
+   Title text keeps its existing two-line box and overflow behavior. */
+:root :is(#host-workspace-request, .request-workspace, .search-card-surface, .remote-search-browser-view)
+  .search-result-url {
+  height: 16px;
+  min-height: 16px;
+  line-height: 16px;
+}
+:root :is(#host-workspace-request, .request-workspace, .search-card-surface, .remote-search-browser-view)
   .search-result-meta {
   padding-inline: 10px;
   gap: 6px;

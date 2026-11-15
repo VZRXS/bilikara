@@ -179,6 +179,10 @@ TopSlot equal-height and cross-page y comparisons, without hiding or collapsing
 the filter. The alphabet-to-TopSlot sequence remains in normal flow, and the
 following TopSlot's lower edge to the first card still measures the shared 12px
 gap. This exception does not apply to native/Remote contextual levels.
+Equal-width song cards use nonshrinking 16:9 covers and the existing two-line
+title box. `ui-surfaces.css` reserves a 16px metadata row whether or not an
+owner is present, keeping complete card heights equal without truncating more
+title text or changing the existing title-overflow behavior.
 Category pagination uses the server's exact matched count when supplied; when
 the provider omits it, keep navigation available without displaying a guessed
 total. Phone category switches use ordinary 44px controls and 16px text, with
