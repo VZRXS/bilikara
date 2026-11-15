@@ -200,7 +200,8 @@ for(const [engineName,engine]of Object.entries({chromium,webkit})) {
 
   // B5b R2 (AGENTS §5.3): the explicit standalone pipeline test has its own action in the output group.
   // Native Alpha ships no live-TS companion, so "companion available" is a fixture snapshot (available:true with
-  // SSE closed) and decoder availability is a wrapped BilikaraNativeOutput.decoderKind(); the real adapter is kept.
+  // SSE closed) and decoder availability is a wrapper whose decoderKind() is overridden (the frozen real adapter
+  // stays its prototype, so attach/create are unchanged).
   for(const platform of ['desktop','android','ios'])test(`${engineName} ${platform}: the standalone pipeline test action is explicit and conditional [B5b R2]`,{
     skip:process.platform!=='linux',timeout:150000,
   },async t=>{
@@ -215,7 +216,7 @@ for(const [engineName,engine]of Object.entries({chromium,webkit})) {
     const group=page.locator('[data-media-output="settings"]'),action=group.locator('.media-output-pipeline-test'),toggle=group.locator('.media-output-toggle');
     await page.evaluate(()=>{state.eventSource?.close();fetchState=async()=>{};window.realNativeOutput=window.BilikaraNativeOutput;});
     const snapshot=patch=>page.evaluate(patch=>{state.data.state_revision++;Object.assign(state.data.media_output,patch);render();},patch);
-    const decoder=kind=>page.evaluate(kind=>{window.BilikaraNativeOutput=Object.assign(Object.create(realNativeOutput),{decoderKind:()=>kind});render();},kind);
+    const decoder=kind=>page.evaluate(kind=>{window.BilikaraNativeOutput=Object.create(realNativeOutput,{decoderKind:{value:()=>kind,enumerable:true}});render();},kind);
     const local={target:'local',requested_target:'local',status:'local',busy:false};
     // Visibility matrix: only disconnected local playback with a companion and a native/MSE decoder shows the action.
     for(const [label,patch,kind,shown] of [
