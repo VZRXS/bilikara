@@ -29,7 +29,8 @@ after(async () => {
 const titles = ['Short', '残酷な天使のテーゼ (TV size) カラオケ', 'A very long English karaoke title that keeps going for two lines and more',
   '只有一行', 'KOTOKO - 覚えてていいよ / off vocal 有和声 歌词字幕版 超长标题测试', '恋爱循环'];
 const songs = Array.from({length: 600}, (_, i) => ({bvid: 'BV' + String(i + 1).padStart(10, '0'), title: `${titles[i % titles.length]} #${i + 1}`,
-  owner_name: i % 3 ? 'Fixture UP' : '很长的 UP 主名字 Fixture', mid: '42', duration: 200 + i, play: 1000 * i,
+  // Every fourth song has no owner, so grids mix owner badges with missing-owner metadata rows (G12).
+  owner_name: i % 4 === 3 ? '' : i % 3 ? 'Fixture UP' : '很长的 UP 主名字 Fixture', mid: i % 4 === 3 ? '' : '42', duration: 200 + i, play: 1000 * i,
   cover_url: `/grid-covers/${i % 2}.svg`, pic: `/grid-covers/${i % 2}.svg`, url: `https://www.bilibili.com/video/BV${String(i + 1).padStart(10, '0')}`}));
 const owners = Array.from({length: 61}, (_, i) => ({uid: String(42 + i), name: `测试 UP ${i + 1}`, count: 600 - i, avatar_url: '/pic/icon.png'}));
 const folders = owners.map(owner => ({...owner, id: `${owner.uid}:7`, folder_id: '7', media_id: '7', title: `收藏夹 ${owner.uid}`}));
@@ -182,12 +183,15 @@ function measureGrid(card) {
   const cards = [...document.querySelectorAll(card)].filter(n => shown(n) && onScreen(n));
   if (!cards.length) return null;
   const grid = cards[0].parentElement, style = getComputedStyle(grid);
-  const own = cards.filter(n => n.parentElement === grid).map(n => { const r = n.getBoundingClientRect(); return {x: r.x, y: r.y, w: r.width, h: r.height}; });
+  const ownCards = cards.filter(n => n.parentElement === grid);
+  const own = ownCards.map(n => { const r = n.getBoundingClientRect(); return {x: r.x, y: r.y, w: r.width, h: r.height}; });
+  const titles = ownCards.map(n => n.querySelector('.search-result-title')).filter(Boolean)
+    .map(n => ({text: n.textContent, h: +n.getBoundingClientRect().height.toFixed(1), owner: Boolean(n.parentElement.querySelector('.search-result-owner'))}));
   const pager = grid.closest('.android-result-frame,.source-mode-panel,.request-mode-panel,.remote-search-browser-view,.remote-request-view')?.querySelector('.result-pager');
   const history = pager && window.__pageSizeHistory?.get(pager);
   return {grid: grid.id || grid.className, columns: new Set(own.map(r => Math.round(r.x))).size, cardWidths: [...new Set(own.map(r => +r.w.toFixed(1)))],
     heights: own.map(r => +r.h.toFixed(1)), rowGap: style.rowGap, columnGap: style.columnGap, count: own.length,
-    pageSize: pager?.dataset.pageSize ?? null, sizeHistory: history ? [...history] : null,
+    pageSize: pager?.dataset.pageSize ?? null, sizeHistory: history ? [...history] : null, titles,
     hostColumns: document.documentElement.dataset.hostColumns, hostLayout: document.documentElement.dataset.hostLayout};
 }
 
@@ -267,6 +271,15 @@ for (const engine of engines) for (const layout of capacityLayouts) {
       // One authority: the first committed capacity is already the fitted one (no 12 -> 15 or 6 -> 3 flash).
       assert.deepEqual(grid.sizeHistory, [grid.pageSize], `${name}: a single page-size commit, not ${JSON.stringify(grid.sizeHistory)}`);
       assert.equal(Number(grid.pageSize), grid.count, `${name}: the committed capacity matches the rendered cards`);
+      if (name === 'search-results') {
+        // A refresh passes through empty loading; the fitted capacity stays committed (no fallback in between).
+        await page.evaluate(() => document.querySelector('#shared-search-button').click());
+        await page.waitForFunction(() => [...document.querySelectorAll('#shared-search-results .search-result-item')].some(n => n.getClientRects().length));
+        await visit(page, []);
+        const again = await page.evaluate(measureGrid, pages[name].card);
+        assert.deepEqual(again.sizeHistory, grid.sizeHistory, `${name}: refresh keeps the single commit, not ${JSON.stringify(again.sizeHistory)}`);
+        assert.equal(again.pageSize, grid.pageSize, `${name}: refresh keeps the fitted capacity`);
+      }
       assert.deepEqual(errors, []);
       await page.close();
     }
@@ -294,6 +307,7 @@ for (const engine of engines) {
 const heightLayouts = [
   {id: 'desktop-1440x900', kind: 'desktop', viewport: [1440, 900]},
   {id: 'desktop-700x800', kind: 'desktop', viewport: [700, 800]},
+  {id: 'phone-393x844', kind: 'alpha', viewport: [393, 844], touch: true},
   {id: 'remote-393x844', kind: 'desktop', viewport: [393, 844], touch: true, remote: true},
   {id: 'remote-360x740', kind: 'desktop', viewport: [360, 740], touch: true, remote: true},
 ];
@@ -306,6 +320,10 @@ for (const engine of engines) for (const layout of heightLayouts) {
       const grid = await page.evaluate(measureGrid, pages[name].card);
       const spread = Math.max(...grid.heights) - Math.min(...grid.heights);
       assert.ok(spread <= 0.5, `${name}: one card height per grid, not ${JSON.stringify([...new Set(grid.heights)])}`);
+      // Mixed titles and missing owners: the equal height comes from fixed tracks, not from cutting title text.
+      assert.ok(grid.titles.some(title => title.owner) && grid.titles.some(title => !title.owner), `${name}: the page mixes owner and missing-owner cards`);
+      assert.ok(grid.titles.every(title => songs.some(song => song.title === title.text)), `${name}: every card keeps its complete title text`);
+      assert.equal(new Set(grid.titles.map(title => title.h)).size, 1, `${name}: one title box height, not ${JSON.stringify(grid.titles.map(title => title.h))}`);
       assert.deepEqual(errors, []);
       await page.close();
     }
