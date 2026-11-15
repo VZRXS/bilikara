@@ -139,6 +139,16 @@ The favorite chooser presents its folder count beside the section heading using
 the shared small count style. Its single body/footer gap equals the outer inset.
 UP/favorites details hide the outer source-add row and retain their own search.
 Returning restores the same add-input nodes and their unsubmitted drafts.
+The UID field and add/fetch/manual-refresh actions stay on one shared row.
+`request-tabs.css` reserves a 128px input minimum for English Remote; its narrow
+button treatment uses intrinsic text widths, compact inline padding and natural
+word wrapping. Action tracks reserve their longest word as well as the ordinary
+44px button minimum, including busy labels. Remote UID addition uses the existing
+`search.adding` translation; the generic `gatcha.adding` label keeps its other uses.
+At 360px, labels may occupy two 18px lines at 16px within the same
+44px control, without stacking actions or clipping text. At 393px and wider,
+labels remain single-line; Chinese and Japanese keep their existing single-line
+treatment. Rendered input width, line count and text bounds require browser checks.
 Android and iOS source lists share horizontal pagination and selection tools.
 Their browse pages measure the available viewport and fit complete card rows;
 desktop retains its existing workspace layout. Background source metadata that

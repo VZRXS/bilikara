@@ -55,3 +55,31 @@ test('source detail wrappers pass header hover paint to the outer inset while on
   assert.match(css,/\.source-browse-scroll\.is-detail-view \{\s*overflow-y: hidden;/);
   assert.match(css,/\.source-browse-scroll\.is-detail-view :is\(#follow-song-results, #favlist-song-results\) \{[^}]*overflow-y: auto;/);
 });
+
+test('English Remote UID rows reserve input space and fit two text lines in the ordinary control height',()=>{
+  const css=read('request-tabs.css');
+  const rule=selector=>{
+    const start=css.indexOf(selector+' {');
+    assert.ok(start>=0,selector);
+    return css.slice(start).split('}',1)[0];
+  };
+  const form=rule(':root .source-uid-form'),input=rule(':root .source-uid-form > input');
+  assert.match(form,/grid-template-columns: minmax\(var\(--source-uid-input-min-width, 0px\), 1fr\) var\(--source-uid-action-track, auto\);/);
+  assert.match(input,/min-width: var\(--source-uid-input-min-width, 0px\);/);
+  assert.match(rule(':root[data-ui-client="remote"]:lang(en) .source-uid-form'),/--source-uid-input-min-width: 128px;/);
+  assert.match(rule(':root[data-ui-client="remote"]:lang(en) .source-uid-form'),/--source-uid-action-track: minmax\(min-content, auto\);/,'action tracks reserve the longest word even during loading');
+  const button=rule(':root .source-uid-form > button');
+  assert.match(button,/min-width: 44px;/,'short labels keep their ordinary minimum target');
+  assert.match(button,/white-space: nowrap;/,'ordinary languages keep the original single-line rule');
+  assert.match(css,/@media \(max-width: 520px\) \{\s*:root\[data-ui-client="remote"\]:lang\(en\) \.source-uid-form > button/);
+  const narrow=rule(':root[data-ui-client="remote"]:lang(en) .source-uid-form > button');
+  assert.match(narrow,/white-space: normal;/);
+  assert.match(narrow,/font-size: var\(--remote-peer-action-font-size, 16px\);/);
+  assert.doesNotMatch(narrow,/^\s*(?:min-|max-)?(?:width|height):/m,'wrapping must not assign label widths or enlarge controls');
+  const height=Number(button.match(/\bheight: (\d+)px;/)[1]);
+  const lineHeight=Number(narrow.match(/line-height: (\d+)px;/)[1]);
+  const padding=Number(narrow.match(/padding: (\d+)px/)[1]);
+  assert.equal(height,44);
+  // CSS budget only: WSL rendering separately verifies wrapping and glyph bounds.
+  assert.ok(2*lineHeight+2*padding+2<=height,'two lines leave room for padding and a possible 1px border');
+});

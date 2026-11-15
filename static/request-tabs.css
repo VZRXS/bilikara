@@ -124,16 +124,16 @@ html[data-host-layout="portrait"] .request-mode-tabs {
 :root .source-action-row:is(:has(> .source-uid-form), :where([data-legacy-has~="r23"])) { grid-template-columns: minmax(0, 1fr); }
 :root .source-uid-form {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(var(--source-uid-input-min-width, 0px), 1fr) var(--source-uid-action-track, auto);
   min-width: 0;
   margin: 0;
   align-self: start;
   align-items: stretch;
   gap: 8px;
 }
-:root .source-uid-form:is(:has(> .source-refresh-button), :where([data-legacy-has~="r24"])) { grid-template-columns: minmax(0, 1fr) auto auto; }
+:root .source-uid-form:is(:has(> .source-refresh-button), :where([data-legacy-has~="r24"])) { grid-template-columns: minmax(var(--source-uid-input-min-width, 0px), 1fr) repeat(2, var(--source-uid-action-track, auto)); }
 :root .source-uid-form > input {
-  min-width: 0;
+  min-width: var(--source-uid-input-min-width, 0px);
   width: 100%;
   height: 44px;
 }
@@ -144,6 +144,23 @@ html[data-host-layout="portrait"] .request-mode-tabs {
   width: auto;
   padding-inline: 12px;
   white-space: nowrap;
+}
+
+/* English Remote actions yield at word boundaries once the UID reaches its
+   readable minimum. Auto tracks use the translated text, never label widths.
+   Other languages and Host retain their existing single-line treatment. */
+:root[data-ui-client="remote"]:lang(en) .source-uid-form {
+  --source-uid-input-min-width: 128px;
+  /* The 44px button minimum must not let an auto track squeeze a whole word. */
+  --source-uid-action-track: minmax(min-content, auto);
+}
+@media (max-width: 520px) {
+  :root[data-ui-client="remote"]:lang(en) .source-uid-form > button {
+    padding: 2px 4px;
+    font-size: var(--remote-peer-action-font-size, 16px);
+    line-height: 18px;
+    white-space: normal;
+  }
 }
 
 /* RequestTopSlot geometry is shared by the bounded Host and document Remote.
