@@ -578,3 +578,57 @@ for (const engine of engines) for (const name of ['uid-detail', 'source-list']) 
     assert.deepEqual(errors, []);
   });
 }
+
+// ---------- G9 admission boundary: whole-panel mode never flaps around the one-row threshold ----------
+// Sweeps a landscape phone's height up and back down through the compact-overlay range. At every height the
+// owner mode and page size stay constant for 30 frames, the mode changes once per direction, both directions
+// agree at each height, and a bounded (non-panel) layout really fits one complete row inside its inner owner.
+for (const engine of engines) for (const name of ['source-list', 'uid-detail']) {
+  test(`${engine.name()} ${name} whole-panel admission is stable across the one-row boundary [B2 G9 R1]`, {skip: !linux, timeout: 360000}, async t => {
+    const browser = await engine.launch({headless: true}); t.after(() => browser.close());
+    const {page, errors} = await openSession(t, browser, {kind: 'alpha', viewport: [844, 393], touch: true});
+    await visit(page, pages[name].host);
+    const card = name === 'source-list' ? '#follow-up-grid > *' : pages[name].card;
+    const heights = Array.from({length: 46}, (_, i) => 300 + i * 6), modes = {up: new Map(), down: new Map()};
+    for (const [direction, list] of [['up', heights], ['down', [...heights].reverse()]]) {
+      for (const height of list) {
+        await page.setViewportSize({width: 844, height});
+        await settle(page);
+        if (!await page.evaluate(card => [...document.querySelectorAll(card)].some(n => n.getClientRects().length), card)) {
+          await page.evaluate(() => activateHostWorkspace('request'));
+          await page.waitForFunction(card => [...document.querySelectorAll(card)].some(n => n.getClientRects().length), card, {timeout: 10000}).catch(() => {});
+          await settle(page);
+        }
+        const sample = await page.evaluate(async card => {
+          const ws = document.getElementById('host-workspace-request'), frames = [];
+          for (let i = 0; i < 30; i++) {
+            await new Promise(resolve => requestAnimationFrame(resolve));
+            const pager = [...document.querySelectorAll('.result-pager')].find(p => p.getClientRects().length);
+            frames.push(`${ws.getAttribute('data-result-scroll-owner') || 'bounded'}:${pager?.dataset.pageSize}`);
+          }
+          const first = [...document.querySelectorAll(card)].find(n => n.getClientRects().length);
+          const owner = first && (first.closest('.source-browse-scroll') || first.closest('.result-page-viewport'));
+          const r = first?.getBoundingClientRect(), o = owner?.getBoundingClientRect();
+          return {frames: [...new Set(frames)], flips: frames.filter((v, i) => i && v !== frames[i - 1]).length,
+            mode: ws.getAttribute('data-result-scroll-owner') || 'bounded', candidate: getComputedStyle(ws).getPropertyValue('--result-page-panel-scroll-candidate').trim(),
+            rowFits: Boolean(r && o && r.height <= o.height + 1), card: r && Math.round(r.height), owner: o && Math.round(o.height)};
+        }, card);
+        const label = `${direction} ${height}: ` + JSON.stringify(sample);
+        assert.equal(sample.flips, 0, 'owner mode and page size stay constant for 30 frames: ' + label);
+        if (sample.mode !== 'panel') assert.ok(sample.rowFits, 'a bounded layout fits one complete row in its inner owner: ' + label);
+        else assert.equal(sample.candidate, '1', 'panel mode only inside the compact-overlay candidate: ' + label);
+        modes[direction].set(height, sample.mode);
+      }
+    }
+    for (const [direction, list] of [['up', heights], ['down', [...heights].reverse()]]) {
+      const sequence = list.map(h => modes[direction].get(h));
+      const changes = sequence.filter((m, i) => i && m !== sequence[i - 1]).length;
+      assert.ok(changes <= 1, `${direction}: the mode changes at most once across the sweep: ` + JSON.stringify(list.map((h, i) => [h, sequence[i]])));
+    }
+    const disagree = heights.filter(h => modes.up.get(h) !== modes.down.get(h));
+    assert.deepEqual(disagree, [], 'both directions choose the same mode at each height: ' + JSON.stringify(heights.map(h => [h, modes.up.get(h), modes.down.get(h)])));
+    assert.ok(new Set(modes.up.values()).has('panel'), 'the sweep reaches whole-panel mode: ' + JSON.stringify([...modes.up]));
+    assert.ok(new Set(modes.up.values()).has('bounded'), 'the sweep reaches the bounded layout: ' + JSON.stringify([...modes.up]));
+    assert.deepEqual(errors, []);
+  });
+}
