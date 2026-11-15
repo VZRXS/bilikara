@@ -1120,6 +1120,25 @@ html[data-host-layout="portrait"] .topbar .top-controls { align-self: center; }
 /* Only functional groups have a surface. Transparent page frames reveal the
    viewport backdrop; navigation clips covered content instead of painting a base. */
 html[data-host-layout="portrait"] .settings-workspace { grid-template-rows: minmax(0, 1fr); }
+/* On phone, the section owns the whole group surface, including its heading.
+   Desktop retains the separate heading and inner control card. */
+html[data-host-layout="portrait"] .settings-workspace-body { --settings-section-gap: 12px; }
+html[data-host-layout="portrait"] .settings-workspace-body > .settings-section {
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--settings-group-bg);
+}
+html[data-host-layout="portrait"] .settings-section > .settings-section-card {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+html[data-host-layout="portrait"] .settings-section-card > .cache-panel-row { padding-block: 12px; }
+html[data-host-layout="portrait"] .settings-section-card > .cache-panel-row:first-child { padding-top: 0; }
+html[data-host-layout="portrait"] .settings-section-card > .cache-panel-row:last-child { padding-bottom: 0; }
 html[data-host-layout="portrait"] .android-my-scroll > .android-my-card {
   margin: 0;
   padding: 14px;
@@ -1130,6 +1149,13 @@ html[data-host-layout="portrait"] .android-my-scroll > .android-my-card {
 html[data-host-layout="portrait"] .android-my-scroll > .android-my-card:not([hidden]) ~ .android-my-card:not([hidden]) {
   margin-top: 12px;
 }
+/* A collapsed account is one status row: 30px badge + 12px padding + border.
+   Expanded QR content keeps the ordinary 14px group padding. */
+html[data-host-layout="portrait"] .android-my-scroll > #android-account-slot:is(:has(.bbdown-login-panel.hidden), :where([data-legacy-has~="r30"])) {
+  min-height: 44px;
+  padding-block: 6px;
+}
+html[data-host-layout="portrait"] .android-my-section-heading { min-width: 0; flex-wrap: wrap; }
 html[data-host-layout="portrait"] #android-settings-slot #cache-panel { gap: 0; }
 html[data-host-layout="portrait"] #cache-panel > .cache-panel-row:not([hidden]):not(.hidden) {
   padding-block: 12px;

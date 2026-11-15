@@ -177,3 +177,25 @@ test('Remote queue dragging scrolls the document at visible edges above the dock
   rect = {top: 900, bottom: 1500};
   move(740); assert.equal(scroll.scrollTop, 136, 'an offscreen list does not initiate scrolling');
 });
+
+test('phone Settings paints the section around its heading with shared My group geometry [B3-D4]', () => {
+  const css = load('host-layout.css');
+  assert.match(css, /html\[data-host-layout="portrait"\] \.settings-workspace-body\s*\{ --settings-section-gap: 12px; \}/);
+  const group = css.match(/html\[data-host-layout="portrait"\] \.settings-workspace-body > \.settings-section\s*\{([^}]+)\}/)?.[1];
+  for (const declaration of ['gap: 12px', 'padding: 14px', 'border: 1px solid var(--line)', 'border-radius: 14px', 'background: var(--settings-group-bg)']) {
+    assert.ok(group?.includes(declaration), declaration);
+  }
+  const inner = css.match(/html\[data-host-layout="portrait"\] \.settings-section > \.settings-section-card\s*\{([^}]+)\}/)?.[1];
+  for (const declaration of ['padding: 0', 'border: 0', 'background: transparent']) assert.ok(inner?.includes(declaration), declaration);
+});
+
+test('collapsed phone account status has a 44px minimum without clipping expanded content [B3-D4]', () => {
+  const css = load('host-layout.css');
+  const compact = css.match(/#android-account-slot:is\(:has\(\.bbdown-login-panel.hidden\), :where\(\[data-legacy-has~="r30"\]\)\)\s*\{([^}]+)\}/)?.[1];
+  assert.match(compact || '', /min-height: 44px/);
+  assert.match(compact || '', /padding-block: 6px/);
+  assert.doesNotMatch(compact || '', /(?:^|[;\s])(?:height|max-height|font-size|overflow)\s*:/);
+  assert.match(css, /\.android-my-section-heading\s*\{ min-width: 0; flex-wrap: wrap; \}/);
+  const relations = JSON.parse(/var relations = (\[[\s\S]*?\n\]);/.exec(load('webview-compat.js'))[1]);
+  assert.deepEqual(relations.find(([key]) => key === 'r30'), ['r30', '#android-account-slot', '.bbdown-login-panel.hidden']);
+});

@@ -315,6 +315,11 @@
     "r29",
     ".request-mode-panel",
     ".android-result-frame:not([hidden]) .host-result-pager:not([hidden])"
+  ],
+  [
+    "r30",
+    "#android-account-slot",
+    ".bbdown-login-panel.hidden"
   ]
 ];
   if (window.BilikaraWebViewCompatibility.engine === 83) relations.forEach(function (rule) {
