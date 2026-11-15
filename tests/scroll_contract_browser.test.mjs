@@ -186,6 +186,14 @@ function measureScroll() {
 }
 
 async function openPage(t, browser, layout, name) {
+  const {page, errors} = await openSession(t, browser, layout);
+  await visit(page, layout.remote ? pages[name].remote : pages[name].host);
+  const sample = await page.evaluate(measureScroll);
+  assert.deepEqual(errors, [], 'page errors');
+  return sample;
+}
+
+async function openSession(t, browser, layout) {
   const running = await host(layout.kind);
   const context = await browser.newContext({viewport: {width: layout.viewport[0], height: layout.viewport[1]},
     hasTouch: Boolean(layout.touch), isMobile: Boolean(layout.remote), locale: 'zh-CN'});
@@ -220,10 +228,7 @@ async function openPage(t, browser, layout, name) {
     await page.locator('#remote-identity-modal').waitFor({state: 'hidden'});
   }
   await settle(page);
-  await visit(page, layout.remote ? pages[name].remote : pages[name].host);
-  const sample = await page.evaluate(measureScroll);
-  assert.deepEqual(errors, [], 'page errors');
-  return sample;
+  return {page, errors};
 }
 
 // ---------- static scan ----------
@@ -328,6 +333,126 @@ for (const engine of [chromium, webkit]) for (const layout of layouts) {
     }
   });
 }
+
+// ---------- B3 G2: portrait My/Settings own full-width scrollports ----------
+// Motion clipping, resident My controls, inert ownership and My's scroll offset are covered by
+// tests/mobile_host_browser.test.mjs; this checks the scrollport geometry that the native indicator follows.
+for (const engine of [chromium, webkit]) for (const height of [640, 844]) {
+  test(`${engine.name()} 393x${height} portrait My and Settings own full-width scrollports with 14px inner gutters [B3 G2]`, {skip: !linux, timeout: 120000}, async t => {
+    const browser = await engine.launch({headless: true}); t.after(() => browser.close());
+    const {page, errors} = await openSession(t, browser, {id: `android-393x${height}`, kind: 'alpha', viewport: [393, height], touch: true});
+    for (const name of ['my', 'settings']) {
+      await visit(page, pages[name].host);
+      const value = await page.evaluate(name => {
+        const owner = document.querySelector(name === 'my' ? '#android-my-scroll' : '#host-workspace-settings .settings-workspace-body');
+        const box = owner.getBoundingClientRect(), style = getComputedStyle(owner);
+        const groups = [...owner.children].filter(n => n.getClientRects().length && n.checkVisibility?.() !== false && n.getBoundingClientRect().height > 0)
+          .map(n => { const r = n.getBoundingClientRect(); return {el: n.id || n.className, left: r.left, right: r.right}; });
+        return {left: box.left, right: box.right, width: innerWidth, padding: [style.paddingLeft, style.paddingRight], groups};
+      }, name);
+      assert.ok(Math.abs(value.left) <= 0.5 && Math.abs(value.right - value.width) <= 0.5, `${name} owner spans the page: ` + JSON.stringify(value));
+      assert.deepEqual(value.padding, ['14px', '14px'], `${name} keeps its 14px gutters inside the owner`);
+      assert.ok(value.groups.length >= 2, JSON.stringify(value.groups));
+      for (const group of value.groups) assert.ok(Math.abs(group.left - 14) <= 0.5 && Math.abs(value.width - group.right - 14) <= 0.5,
+        `${name} ${group.el} keeps the 14px page gutters: ` + JSON.stringify(group));
+    }
+    assert.deepEqual(errors, []);
+  });
+}
+
+// ---------- B3 G3: result viewport inset follows actual overflow, without oscillation ----------
+for (const engine of [chromium, webkit]) {
+  test(`${engine.name()} phone result viewports add 4px only while overflowing and settle at the threshold [B3 G3]`, {skip: !linux, timeout: 240000}, async t => {
+    const browser = await engine.launch({headless: true}); t.after(() => browser.close());
+    const {page, errors} = await openSession(t, browser, {id: 'android-393x844', kind: 'alpha', viewport: [393, 844], touch: true});
+    let count = songs.length, query = 0;
+    await page.route(/\/api\/catalog\/search(?:\?|$)/, route => {
+      const url = new URL(route.request().url());
+      return route.fulfill({json: {ok: true, data: {...paged(songs.slice(0, count), url), query: url.searchParams.get('q') || '', result_kind: 'songs'}}});
+    });
+    await visit(page, [['request', 'search'], ['click', '[data-search-mode="shared"]']]);
+    const search = async total => {
+      count = total;
+      const text = `scroll ${++query}`;
+      await visit(page, [['fill', '#shared-search-query', text], ['click', '#shared-search-button']]);
+      // Empty results leave the list without cards, so wait for the committed search rather than for nodes.
+      await page.waitForFunction(text => {
+        const mode = state.searchModeState.shared, list = document.getElementById('shared-search-results');
+        const pager = list?.closest('.android-result-frame')?.querySelector('.result-pager');
+        return mode.submitted === text && !mode.loading && (!pager || pager.hidden || pager.getAttribute('aria-busy') !== 'true');
+      }, text);
+      await settle(page);
+    };
+    const inset = () => page.evaluate(() => {
+      const viewport = document.getElementById('shared-search-results').closest('.result-page-viewport');
+      return {inset: viewport.classList.contains('has-scroll-inset'), padding: getComputedStyle(viewport).paddingRight,
+        overflow: viewport.scrollHeight - viewport.clientHeight, height: innerHeight};
+    });
+    const consistent = (value, label) => {
+      assert.equal(value.inset, value.overflow > 1, `${label}: the inset follows actual overflow ` + JSON.stringify(value));
+      assert.equal(value.padding, value.inset ? '4px' : '0px', `${label}: 4px only while scrolling ` + JSON.stringify(value));
+    };
+    await search(songs.length); const long = await inset(); consistent(long, 'long results');
+    assert.equal(long.inset, true, 'the phone three-row page overflows at 393x844 ' + JSON.stringify(long));
+    await page.locator('.android-result-frame:has(#shared-search-results) [data-page-action="next"]').click();
+    await settle(page); consistent(await inset(), 'after a page turn');
+    await search(2); const short = await inset(); consistent(short, 'one short row'); assert.equal(short.inset, false);
+    await search(0); consistent(await inset(), 'empty results');
+    await search(songs.length);
+    await page.setViewportSize({width: 393, height: 1000}); await settle(page); consistent(await inset(), 'taller viewport');
+    await page.setViewportSize({width: 393, height: 844}); await settle(page); consistent(await inset(), 'restored viewport');
+    // Sweep the overflow threshold one CSS pixel at a time. Toggling the 4px inset narrows the cards; a
+    // ResizeObserver feedback loop would keep flipping the class after layout has settled.
+    const flips = [];
+    for (let height = 836; height <= 872; height++) {
+      await page.setViewportSize({width: 393, height}); await settle(page);
+      const value = await page.evaluate(() => new Promise(resolve => {
+        const viewport = document.getElementById('shared-search-results').closest('.result-page-viewport');
+        let changes = 0, frames = 0;
+        const observer = new MutationObserver(records => { changes += records.length; });
+        observer.observe(viewport, {attributes: true, attributeFilter: ['class']});
+        const tick = () => { if (++frames < 30) requestAnimationFrame(tick); else { observer.disconnect();
+          resolve({changes, inset: viewport.classList.contains('has-scroll-inset'), overflow: viewport.scrollHeight - viewport.clientHeight,
+            padding: getComputedStyle(viewport).paddingRight}); } };
+        requestAnimationFrame(tick);
+      }));
+      flips.push({height, ...value});
+      assert.equal(value.changes, 0, `the inset is stable once settled at 393x${height}: ` + JSON.stringify(value));
+      consistent(value, `393x${height}`);
+    }
+    assert.ok(flips.some(v => v.inset) && flips.some(v => !v.inset), 'the sweep crosses the overflow threshold: ' + JSON.stringify(flips.map(v => [v.height, v.inset])));
+    assert.deepEqual(errors, []);
+  });
+}
+
+// ---------- B3 G6: announcements reserve a classic scrollbar only on overflow ----------
+test('chromium desktop announcements reserve classic scrollbar width only when content overflows [B3 G6]', {skip: !linux, timeout: 120000}, async t => {
+  const browser = await chromium.launch({headless: true, ignoreDefaultArgs: ['--hide-scrollbars']}); t.after(() => browser.close());
+  const {page, errors} = await openSession(t, browser, {id: 'desktop-1440x900', kind: 'desktop', viewport: [1440, 900]});
+  assert.equal(await page.evaluate(() => Boolean(window.BilikaraAnnouncements && state.data?.capabilities?.announcements)), true, 'the native Host offers announcements');
+  let items = [];
+  await page.route('**/api/announcements/check', route => route.fulfill({json: {ok: true, data: {items, automatic_ids: [], available: true}}}));
+  await page.route('**/api/announcements/shown', route => route.fulfill({json: {ok: true, data: {}}}));
+  const item = (id, body) => ({id, kind: 'release', title: {zh: `公告 ${id}`}, body_markdown: {zh: body}, published_at: '2026-11-01T00:00:00Z', version: '0.9.0'});
+  const long = Array.from({length: 60}, (_, i) => `第 ${i + 1} 段：滚动合同的公告正文，用来产生实际的纵向溢出。`).join('\n\n');
+  for (const [label, list] of [['empty', []], ['short', [item('short', '一行公告。')]], ['long', [item('long', long)]]]) {
+    items = list;
+    await page.evaluate(() => BilikaraAnnouncements.manual());
+    await page.waitForFunction(() => !document.getElementById('announcements-modal').classList.contains('hidden')
+      && document.getElementById('announcements-button').getAttribute('aria-busy') !== 'true');
+    await settle(page);
+    const value = await page.evaluate(() => {
+      const content = document.getElementById('announcements-content'), style = getComputedStyle(content);
+      return {gutter: style.scrollbarGutter, overflow: content.scrollHeight - content.clientHeight,
+        classic: content.offsetWidth - content.clientWidth - (parseFloat(style.borderLeftWidth) || 0) - (parseFloat(style.borderRightWidth) || 0)};
+    });
+    assert.equal(value.gutter, 'auto', `${label}: no stable gutter`);
+    if (label === 'long') assert.ok(value.overflow > 1 && value.classic > 0, 'long content overflows and its classic scrollbar takes width: ' + JSON.stringify(value));
+    else assert.ok(value.overflow <= 1 && value.classic === 0, `${label} content reserves no scrollbar width: ` + JSON.stringify(value));
+    await page.evaluate(() => BilikaraAnnouncements.close());
+  }
+  assert.deepEqual(errors, []);
+});
 
 // Remote document scrolling keeps the browser's own indicator, which CSS cannot inset above #playback-dock.
 test('Remote document indicator crosses the fixed playback dock [SCROLL-R2-03 G5]', {
