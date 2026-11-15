@@ -151,9 +151,14 @@ async function openSession(t, browser, layout) {
       }
     }).observe(document, {subtree: true, childList: true, attributes: true, attributeFilter: ['data-page-size'], attributeOldValue: true});
   }, layout.kind === 'alpha');
-  await context.route('**/*', route => {
+  await context.route('**/*', async route => {
     const url = new URL(route.request().url());
     if (url.origin !== running.base) return route.abort();
+    // iOS tablets reuse the Android alpha Host with the platform marker iOS ships (as ios_output_ui does).
+    if (layout.platform && url.pathname === '/') {
+      const response = await route.fetch();
+      return route.fulfill({response, body: (await response.text()).replace('data-host-platform="android"', `data-host-platform="${layout.platform}"`)});
+    }
     const cover = /^\/grid-covers\/(\d)\.svg$/.exec(url.pathname);
     if (cover) return route.fulfill({body: covers[Number(cover[1])], contentType: 'image/svg+xml'});
     const data = fixtureApi(url);
@@ -199,11 +204,12 @@ const engines = [chromium, webkit];
 const songPages = ['search-results', 'name-results', 'uid-detail', 'favorites-detail'];
 
 // ---------- G8: two-column tablets keep two song columns ----------
-for (const engine of engines) for (const [width, height] of [[1180, 820], [1024, 768]]) {
-  test(`${engine.name()} tablet ${width}x${height} two-column song grids keep at least two columns [B2 G8]`, {skip: !linux, timeout: 180000}, async t => {
+for (const engine of engines) for (const platform of ['android', 'ios']) for (const [width, height] of [[1180, 820], [1024, 768]]) {
+  test(`${engine.name()} ${platform === 'ios' ? 'iOS ' : ''}tablet ${width}x${height} two-column song grids keep at least two columns [B2 G8]`, {skip: !linux, timeout: 180000}, async t => {
     const browser = await engine.launch({headless: true}); t.after(() => browser.close());
     for (const name of songPages) {
-      const {page, errors} = await openSession(t, browser, {kind: 'alpha', viewport: [width, height], touch: true});
+      const {page, errors} = await openSession(t, browser, {kind: 'alpha', viewport: [width, height], touch: true, platform: platform === 'ios' ? 'ios' : null});
+      assert.equal(await page.evaluate(() => document.documentElement.dataset.hostPlatform), platform);
       await visit(page, pages[name].host);
       const grid = await page.evaluate(measureGrid, pages[name].card);
       assert.equal(grid.hostColumns, 'two', `${name}: the tablet uses the two-column layout`);
@@ -370,5 +376,33 @@ for (const engine of engines) {
     }
     assert.deepEqual(gaps['host-song'], gaps['remote-song'], 'SongGrid row/column gaps match: ' + JSON.stringify(gaps));
     assert.deepEqual(gaps['host-compact'], gaps['remote-compact'], 'CompactGrid row/column gaps match: ' + JSON.stringify(gaps));
+  });
+}
+
+// ---------- G13 rework (N1): desktop Host keeps Preview 2 spacing; native tablets and Remote keep 8/10 ----------
+const gapCases = [
+  {id: 'desktop-1440x900', layout: {kind: 'desktop', viewport: [1440, 900]}, song: '10px', compact: '10px'},
+  {id: 'desktop-761x800', layout: {kind: 'desktop', viewport: [761, 800]}, song: '10px', compact: '10px'},
+  {id: 'desktop-760x800', layout: {kind: 'desktop', viewport: [760, 800]}, song: '10px', compact: '10px'},
+  {id: 'desktop-700x800', layout: {kind: 'desktop', viewport: [700, 800]}, song: '10px', compact: '10px'},
+  {id: 'android-tablet-1180x820', layout: {kind: 'alpha', viewport: [1180, 820], touch: true}, song: '8px', compact: '10px'},
+  {id: 'ios-tablet-1024x768', layout: {kind: 'alpha', viewport: [1024, 768], touch: true, platform: 'ios'}, song: '8px', compact: '10px'},
+  {id: 'remote-393x844', layout: {kind: 'desktop', viewport: [393, 844], touch: true, remote: true}, song: '8px', compact: '10px'},
+];
+for (const engine of engines) {
+  test(`${engine.name()} desktop Host keeps Preview 2 grid gaps while native tablets and Remote keep the shared tokens [B2 G13]`, {skip: !linux, timeout: 300000}, async t => {
+    const browser = await engine.launch({headless: true}); t.after(() => browser.close());
+    for (const sample of gapCases) for (const [role, name] of [['song', 'search-results'], ['compact', 'source-list']]) {
+      const {page, errors} = await openSession(t, browser, sample.layout);
+      await visit(page, sample.layout.remote ? pages[name].remote : pages[name].host);
+      const grid = await page.evaluate(measureGrid, pages[name].card);
+      assert.deepEqual([grid.rowGap, grid.columnGap], [sample[role], sample[role]], `${sample.id} ${role} grid gap: ` + JSON.stringify(grid));
+      if (role === 'song' && sample.layout.kind === 'desktop' && !sample.layout.remote) {
+        assert.equal(grid.columns, 2, `${sample.id}: desktop keeps two song columns`);
+        assert.ok(Math.min(...grid.cardWidths) >= 200, `${sample.id}: desktop keeps the 200px admission: ` + JSON.stringify(grid));
+      }
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
   });
 }
