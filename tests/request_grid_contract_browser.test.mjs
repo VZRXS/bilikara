@@ -83,6 +83,15 @@ const pages = {
   'favorites-detail': {grid: null, card: '.search-result-item',
     host: [['request', 'sources'], ['click', '[data-sources-mode="favorites"]'], ['wait', '#favlist-grid [data-folder-id]'], ['click', '#favlist-grid [data-folder-id]'], ['wait', '#favlist-song-results .search-result-item']],
     remote: [['click', '[data-remote-request-view="sources"]'], ['click', '[data-remote-sources-mode="favorites"]'], ['wait', '#favlist-grid [data-folder-id]'], ['click', '#favlist-grid [data-folder-id]'], ['wait', '#remote-sources-favorites-panel .search-result-item']]},
+  'name-tags': {grid: null, card: '.tag-browser-tag',
+    host: [['request', 'discover'], ['click', '[data-discover-mode="name"]'], ['click', '#request-discover-name .tag-letter-button[data-letter="A"]'], ['wait', '#request-discover-name .tag-browser-tag']]},
+  'artist-tags': {grid: null, card: '.tag-browser-tag',
+    host: [['request', 'discover'], ['click', '[data-discover-mode="artist"]'], ['click', '#request-discover-artist .tag-letter-button[data-letter="A"]'], ['wait', '#request-discover-artist .tag-browser-tag']]},
+  'artist-results': {grid: null, card: '.search-result-item',
+    host: [['request', 'discover'], ['click', '[data-discover-mode="artist"]'], ['click', '#request-discover-artist .tag-letter-button[data-letter="A"]'], ['wait', '#request-discover-artist .tag-browser-tag'],
+      ['click', '#request-discover-artist .tag-browser-tag'], ['wait', '#request-discover-artist .search-result-item']]},
+  'favorites-list': {grid: null, card: '.follow-up-button,.source-removal-card',
+    host: [['request', 'sources'], ['click', '[data-sources-mode="favorites"]'], ['wait', '#favlist-grid [data-folder-id]']]},
 };
 
 async function host(kind) {
@@ -130,7 +139,10 @@ async function openSession(t, browser, layout) {
     hasTouch: Boolean(layout.touch), isMobile: Boolean(layout.remote), locale: 'zh-CN'});
   t.after(() => context.close());
   await context.addCookies([...running.cookies].map(([n, v]) => ({name: n, value: v, url: running.base})));
-  await context.addInitScript(mobile => {
+  await context.addInitScript(({mobile, keyboard}) => {
+    // G11 dock/IME fixture (as mobile_host_browser): a mutable visualViewport the test resizes explicitly.
+    if (keyboard) Object.defineProperty(window, 'visualViewport', {configurable: true,
+      value: Object.assign(new EventTarget(), {height: innerHeight, width: innerWidth, offsetTop: 0, offsetLeft: 0, scale: 1})});
     localStorage.setItem('bilikara.update.automatic', 'false'); localStorage.setItem('bilikara.ui.language', 'zh');
     if (mobile) window.BilikaraHostWindow = {postMessage(raw) { if (['enter', 'exit'].includes(raw)) return; const {id} = JSON.parse(raw);
       queueMicrotask(() => this.onmessage({data: JSON.stringify({id, ok: true, data: {layout: 'auto', orientation: 'system'}})})); }};
@@ -150,7 +162,7 @@ async function openSession(t, browser, layout) {
         }
       }
     }).observe(document, {subtree: true, childList: true, attributes: true, attributeFilter: ['data-page-size'], attributeOldValue: true});
-  }, layout.kind === 'alpha');
+  }, {mobile: layout.kind === 'alpha', keyboard: Boolean(layout.keyboard)});
   await context.route('**/*', async route => {
     const url = new URL(route.request().url());
     if (url.origin !== running.base) return route.abort();
@@ -407,5 +419,147 @@ for (const engine of engines) {
       assert.deepEqual(errors, []);
       await page.close();
     }
+  });
+}
+
+// ---------- G9: short landscape phones scroll the whole tool panel through one owner ----------
+// The visible request panel's overflowing vertical scrollers (document, ancestors of its cards and anything inside
+// the panel), the TopSlot, a complete first row and pager reachability at the end of that single owner.
+function g9Probe(card) {
+  const shown = n => n.getClientRects().length && getComputedStyle(n).visibility !== 'hidden';
+  const cards = [...document.querySelectorAll(card)].filter(shown);
+  const first = cards[0], panel = first?.closest('.request-mode-panel,.source-mode-panel,.request-subview');
+  const result = {cards: cards.length};
+  if (!first) return result;
+  const pager = [...panel.querySelectorAll('.result-pager')].find(shown) || null;
+  const scrolls = n => n === document.scrollingElement ? n.scrollHeight > innerHeight + 1
+    : /(auto|scroll|overlay)/.test(getComputedStyle(n).overflowY) && n.scrollHeight > n.clientHeight + 1;
+  const related = n => n === document.scrollingElement || n.contains(first) || panel.contains(n);
+  const owners = [document.scrollingElement, ...document.querySelectorAll('*')].filter(n => n && shown(n) && related(n) && scrolls(n));
+  const name = n => n === document.scrollingElement ? 'document' : n.id ? '#' + n.id : n.tagName.toLowerCase() + '.' + [...n.classList].join('.');
+  result.owners = owners.map(name);
+  const top = panel.querySelector('.browse-search-bar,.source-action-row,.source-uid-form,form');
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:fixed;bottom:0;left:0;width:1px;height:env(safe-area-inset-bottom,0px);';
+  document.body.append(probe); const safe = probe.getBoundingClientRect().height; probe.remove();
+  const dock = document.getElementById('android-host-dock'), dockRect = dock && shown(dock) ? dock.getBoundingClientRect() : null;
+  const floor = Math.min(innerHeight - safe, dockRect && dockRect.height && dockRect.top > innerHeight / 2 ? dockRect.top : Infinity);
+  result.floor = floor;
+  if (owners.length !== 1) return result;
+  const owner = owners[0];
+  const visible = () => { const r = owner === document.scrollingElement ? {top: 0, bottom: innerHeight} : owner.getBoundingClientRect();
+    return {top: Math.max(0, r.top), bottom: Math.min(r.bottom, floor)}; };
+  result.containsTop = Boolean(top && owner.contains(top));
+  result.containsPager = Boolean(pager && owner.contains(pager));
+  result.containsCards = owner.contains(first);
+  // First row: scroll it into the owner's visible box and require every card of that row to fit completely.
+  owner.scrollTop = 0; first.scrollIntoView({block: 'nearest'});
+  const box = visible(), rowTop = first.getBoundingClientRect().top;
+  const row = cards.filter(n => Math.abs(n.getBoundingClientRect().top - rowTop) < 1).map(n => n.getBoundingClientRect());
+  result.row = {count: row.length, top: Math.min(...row.map(r => r.top)), bottom: Math.max(...row.map(r => r.bottom)), box};
+  result.rowFits = row.length > 0 && row.every(r => r.top >= box.top - 1 && r.bottom <= box.bottom + 1);
+  // Pager: scroll the single owner to its end; the pager stays inside the visible box and its buttons hit-test.
+  owner.scrollTop = owner.scrollHeight;
+  if (pager) {
+    const p = pager.getBoundingClientRect(), end = visible();
+    result.pager = {top: p.top, bottom: p.bottom, box: end};
+    result.pagerFits = p.top >= end.top - 1 && p.bottom <= end.bottom + 1;
+    result.pagerHits = [...pager.querySelectorAll('button')].filter(b => b.getClientRects().length).every(b => {
+      const r = b.getBoundingClientRect(); return pager.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2));
+    });
+  }
+  owner.scrollTop = 0;
+  return result;
+}
+const g9Pages = ['source-list', 'uid-detail', 'favorites-list', 'favorites-detail', 'search-results', 'name-tags', 'name-results', 'artist-tags', 'artist-results'];
+for (const engine of engines) {
+  test(`${engine.name()} 844x393 request pages scroll through one whole-panel owner [B2 G9]`, {skip: !linux, timeout: 360000}, async t => {
+    const browser = await engine.launch({headless: true}); t.after(() => browser.close());
+    for (const name of g9Pages) {
+      const {page, errors} = await openSession(t, browser, {kind: 'alpha', viewport: [844, 393], touch: true});
+      await visit(page, pages[name].host);
+      const g = await page.evaluate(g9Probe, pages[name].card), label = `${name}: ` + JSON.stringify(g);
+      assert.equal(g.owners?.length, 1, `${name}: exactly one overflowing vertical owner, no nesting: ${JSON.stringify(g.owners)}`);
+      assert.equal(Boolean(g.containsCards && g.containsTop && g.containsPager), true, 'the owner scrolls the whole panel (TopSlot, cards, pager): ' + label);
+      assert.equal(g.rowFits, true, 'at least one complete card row is fully visible: ' + label);
+      assert.equal(g.pagerFits, true, 'the pager is reachable at the bottom, clear of the dock and safe area: ' + label);
+      assert.equal(g.pagerHits, true, 'pager buttons are hittable: ' + label);
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  });
+}
+
+// ---------- G11: fit cache keys and invalidation follow every layout change ----------
+// After each change settles, the last BilikaraResultPager.diagnostics() entry must describe the visible pager's
+// measured fit box, grid and card, and the committed data-page-size; each change commits at most once, never back.
+// 200% text uses the repository's root font-size convention (32px); it cannot reproduce Android WebView textZoom.
+function pagerFacts(card) {
+  const shown = n => n.getClientRects().length && getComputedStyle(n).visibility !== 'hidden';
+  const cards = [...document.querySelectorAll(card)].filter(shown), first = cards[0];
+  const grid = first.parentElement, fit = grid.closest('.source-browse-scroll') || grid.closest('.result-page-viewport');
+  const pager = [...document.querySelectorAll('.result-pager')].find(p => shown(p) && p.closest('.android-result-frame,.source-mode-panel,.request-mode-panel')?.contains(grid));
+  const style = getComputedStyle(grid), cardStyle = getComputedStyle(first);
+  const last = window.BilikaraResultPager.diagnostics().at(-1);
+  return {last, pageSize: Number(pager?.dataset.pageSize), history: [...(window.__pageSizeHistory.get(pager) || [])],
+    rendered: cards.filter(n => n.parentElement === grid).length,
+    fit: fit ? {width: fit.clientWidth, height: fit.clientHeight} : null, columns: style.gridTemplateColumns.split(' ').length,
+    gap: parseFloat(style.rowGap) || 0, itemHeight: parseFloat(cardStyle.height),
+    fitted: last ? window.BilikaraResultPager.fittedPageSize({...last, height: Math.max(1, last.height)}) : null};
+}
+async function g11Check(page, card, label, before) {
+  await settle(page);
+  await page.waitForFunction(() => [...document.querySelectorAll('.result-pager')].filter(p => p.getClientRects().length).every(p => p.getAttribute('aria-busy') !== 'true'));
+  await settle(page);
+  const f = await page.evaluate(pagerFacts, card), text = `${label}: ` + JSON.stringify({...f, before});
+  assert.ok(f.last && f.fit, 'diagnostics recorded a measurement for a measured fit box: ' + text);
+  assert.equal(f.last.size, f.pageSize, 'diagnostics size is the committed page size: ' + text);
+  assert.equal(f.last.columns, f.columns, 'diagnostics columns match the grid: ' + text);
+  assert.ok(Math.abs(f.last.width - f.fit.width) <= 1 && Math.abs(f.last.height - f.fit.height) <= 1, 'diagnostics fit box matches the measured fit element: ' + text);
+  assert.ok(Math.abs(f.last.gap - f.gap) <= 0.5, 'diagnostics gap matches the grid: ' + text);
+  assert.ok(Math.abs(f.last.itemHeight - f.itemHeight) <= 1, 'diagnostics item height matches a rendered card: ' + text);
+  assert.equal(f.fitted, f.pageSize, 'the committed size is the fit of the recorded geometry: ' + text);
+  assert.equal(f.rendered, f.pageSize, 'the page renders exactly its committed capacity: ' + text);
+  if (before) {
+    const added = f.history.slice(before.length);
+    assert.ok(added.length <= 1, 'one commit per change, no intermediate fallback: ' + text);
+    assert.ok(!added.length || added[0] !== before.at(-1), 'a change never re-commits the same value: ' + text);
+  }
+  return f.history;
+}
+for (const engine of engines) for (const name of ['uid-detail', 'source-list']) {
+  test(`${engine.name()} ${name} fit diagnostics follow font, rotation, IME, dock, toolbar and re-entry [B2 G11]`, {skip: !linux, timeout: 300000}, async t => {
+    const browser = await engine.launch({headless: true}); t.after(() => browser.close());
+    const {page, errors} = await openSession(t, browser, {kind: 'alpha', viewport: [393, 844], touch: true, keyboard: true});
+    await visit(page, pages[name].host);
+    const card = pages[name].card;
+    let history = await g11Check(page, card, 'initial');
+    const step = async (label, fn) => { await page.evaluate(fn); history = await g11Check(page, card, label, history); };
+    await step('font 200%', () => { document.documentElement.style.fontSize = '32px'; });
+    await step('font 100%', () => { document.documentElement.style.fontSize = ''; });
+    for (const [width, height] of [[844, 393], [393, 844]]) {
+      await page.setViewportSize({width, height});
+      await page.evaluate(([w, h]) => { Object.assign(visualViewport, {width: w, height: h}); visualViewport.dispatchEvent(new Event('resize')); }, [width, height]);
+      history = await g11Check(page, card, `rotate ${width}x${height}`, history);
+    }
+    await step('IME open', () => { visualViewport.height = 520; visualViewport.dispatchEvent(new Event('resize')); });
+    await step('IME close', () => { visualViewport.height = innerHeight; visualViewport.dispatchEvent(new Event('resize')); });
+    await step('dock taller', () => { const d = document.getElementById('android-host-dock'); d.dataset.g11Height = d.style.height; d.style.height = (d.getBoundingClientRect().height + 40) + 'px'; });
+    await step('dock restored', () => { const d = document.getElementById('android-host-dock'); d.style.height = d.dataset.g11Height || ''; });
+    if (name === 'uid-detail') {
+      await step('toolbar shown', () => document.querySelector('#follow-search-form').parentElement.querySelector('.browse-search-cancel').click());
+      await step('toolbar hidden', () => document.querySelector('#follow-search-form').parentElement.querySelector('.browse-search-cancel').click());
+      await page.evaluate(() => document.querySelector('#follow-browse-back').click());
+      await page.waitForFunction(() => [...document.querySelectorAll('#follow-up-grid [data-uid]')].some(n => n.getClientRects().length));
+      await page.evaluate(() => document.querySelector('#follow-up-grid [data-uid]').click());
+      await page.waitForFunction(() => [...document.querySelectorAll('#follow-song-results .search-result-item')].some(n => n.getClientRects().length));
+    } else {
+      await page.evaluate(() => activateRequestSubview('search'));
+      await settle(page);
+      await page.evaluate(() => activateRequestSubview('sources'));
+      await page.waitForFunction(() => [...document.querySelectorAll('#follow-up-grid [data-uid]')].some(n => n.getClientRects().length));
+    }
+    await g11Check(page, card, 're-entered', history);
+    assert.deepEqual(errors, []);
   });
 }
