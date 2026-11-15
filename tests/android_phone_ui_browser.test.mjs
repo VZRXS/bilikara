@@ -446,11 +446,8 @@ for(const engine of [chromium,webkit]) for(const [client,width,height] of [
   ['android',1024,768],['android',1180,820],['remote',393,844],['remote',360,740],
 ]) test(`${engine.name()} ${client} ${width}x${height} Request TopSlots share bounds and first-card spacing`,{
   timeout:120000,
-  // b2-measure.md G9 and b2-steps23-review.md §3c S3-3 (bilikara-next-10 artifacts):
-  // the merged source footer leaves no hittable card area at 844x393.
-  // Keep every assertion for re-enabling after the step 5 scroll-owner decision.
-  skip:client==='android'&&width===844&&height===393
-    ?'B2-G9 landscape phone scroll owner pending user decision':process.platform!=='linux',
+  // B2 step 5 (G9): 844x393 is re-enabled; the whole-panel scroll owner keeps every TopSlot assertion.
+  skip:process.platform!=='linux',
 },async t=>{
   const {page,host}=await open(t,engine,{platform:client==='desktop'?'desktop':'android',viewport:{width,height}});
   await installTopSlotFixtures(page);

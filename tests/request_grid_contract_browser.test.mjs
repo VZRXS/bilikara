@@ -83,6 +83,15 @@ const pages = {
   'favorites-detail': {grid: null, card: '.search-result-item',
     host: [['request', 'sources'], ['click', '[data-sources-mode="favorites"]'], ['wait', '#favlist-grid [data-folder-id]'], ['click', '#favlist-grid [data-folder-id]'], ['wait', '#favlist-song-results .search-result-item']],
     remote: [['click', '[data-remote-request-view="sources"]'], ['click', '[data-remote-sources-mode="favorites"]'], ['wait', '#favlist-grid [data-folder-id]'], ['click', '#favlist-grid [data-folder-id]'], ['wait', '#remote-sources-favorites-panel .search-result-item']]},
+  'name-tags': {grid: null, card: '.tag-browser-tag',
+    host: [['request', 'discover'], ['click', '[data-discover-mode="name"]'], ['click', '#request-discover-name .tag-letter-button[data-letter="A"]'], ['wait', '#request-discover-name .tag-browser-tag']]},
+  'artist-tags': {grid: null, card: '.tag-browser-tag',
+    host: [['request', 'discover'], ['click', '[data-discover-mode="artist"]'], ['click', '#request-discover-artist .tag-letter-button[data-letter="A"]'], ['wait', '#request-discover-artist .tag-browser-tag']]},
+  'artist-results': {grid: null, card: '.search-result-item',
+    host: [['request', 'discover'], ['click', '[data-discover-mode="artist"]'], ['click', '#request-discover-artist .tag-letter-button[data-letter="A"]'], ['wait', '#request-discover-artist .tag-browser-tag'],
+      ['click', '#request-discover-artist .tag-browser-tag'], ['wait', '#request-discover-artist .search-result-item']]},
+  'favorites-list': {grid: null, card: '.follow-up-button,.source-removal-card',
+    host: [['request', 'sources'], ['click', '[data-sources-mode="favorites"]'], ['wait', '#favlist-grid [data-folder-id]']]},
 };
 
 async function host(kind) {
@@ -130,7 +139,10 @@ async function openSession(t, browser, layout) {
     hasTouch: Boolean(layout.touch), isMobile: Boolean(layout.remote), locale: 'zh-CN'});
   t.after(() => context.close());
   await context.addCookies([...running.cookies].map(([n, v]) => ({name: n, value: v, url: running.base})));
-  await context.addInitScript(mobile => {
+  await context.addInitScript(({mobile, keyboard}) => {
+    // G11 dock/IME fixture (as mobile_host_browser): a mutable visualViewport the test resizes explicitly.
+    if (keyboard) Object.defineProperty(window, 'visualViewport', {configurable: true,
+      value: Object.assign(new EventTarget(), {height: innerHeight, width: innerWidth, offsetTop: 0, offsetLeft: 0, scale: 1})});
     localStorage.setItem('bilikara.update.automatic', 'false'); localStorage.setItem('bilikara.ui.language', 'zh');
     if (mobile) window.BilikaraHostWindow = {postMessage(raw) { if (['enter', 'exit'].includes(raw)) return; const {id} = JSON.parse(raw);
       queueMicrotask(() => this.onmessage({data: JSON.stringify({id, ok: true, data: {layout: 'auto', orientation: 'system'}})})); }};
@@ -150,7 +162,7 @@ async function openSession(t, browser, layout) {
         }
       }
     }).observe(document, {subtree: true, childList: true, attributes: true, attributeFilter: ['data-page-size'], attributeOldValue: true});
-  }, layout.kind === 'alpha');
+  }, {mobile: layout.kind === 'alpha', keyboard: Boolean(layout.keyboard)});
   await context.route('**/*', async route => {
     const url = new URL(route.request().url());
     if (url.origin !== running.base) return route.abort();
@@ -407,5 +419,230 @@ for (const engine of engines) {
       assert.deepEqual(errors, []);
       await page.close();
     }
+  });
+}
+
+// ---------- G9: short landscape phones scroll the whole tool panel through one owner ----------
+// The visible request panel's overflowing vertical scrollers (document, ancestors of its cards and anything inside
+// the panel), the TopSlot, a complete first row and pager reachability at the end of that single owner.
+function g9Probe(card) {
+  const shown = n => n.getClientRects().length && getComputedStyle(n).visibility !== 'hidden';
+  const cards = [...document.querySelectorAll(card)].filter(shown);
+  const first = cards[0], panel = first?.closest('.request-mode-panel,.source-mode-panel,.request-subview');
+  const result = {cards: cards.length};
+  if (!first) return result;
+  const pager = [...panel.querySelectorAll('.result-pager')].find(shown) || null;
+  const scrolls = n => n === document.scrollingElement ? n.scrollHeight > innerHeight + 1
+    : /(auto|scroll|overlay)/.test(getComputedStyle(n).overflowY) && n.scrollHeight > n.clientHeight + 1;
+  const related = n => n === document.scrollingElement || n.contains(first) || panel.contains(n);
+  const owners = [document.scrollingElement, ...document.querySelectorAll('*')].filter(n => n && shown(n) && related(n) && scrolls(n));
+  const name = n => n === document.scrollingElement ? 'document' : n.id ? '#' + n.id : n.tagName.toLowerCase() + '.' + [...n.classList].join('.');
+  result.owners = owners.map(name);
+  const top = panel.querySelector('.browse-search-bar,.source-action-row,.source-uid-form,form');
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:fixed;bottom:0;left:0;width:1px;height:env(safe-area-inset-bottom,0px);';
+  document.body.append(probe); const safe = probe.getBoundingClientRect().height; probe.remove();
+  const dock = document.getElementById('android-host-dock'), dockRect = dock && shown(dock) ? dock.getBoundingClientRect() : null;
+  const floor = Math.min(innerHeight - safe, dockRect && dockRect.height && dockRect.top > innerHeight / 2 ? dockRect.top : Infinity);
+  result.floor = floor;
+  if (owners.length !== 1) return result;
+  const owner = owners[0];
+  const visible = () => { const r = owner === document.scrollingElement ? {top: 0, bottom: innerHeight} : owner.getBoundingClientRect();
+    return {top: Math.max(0, r.top), bottom: Math.min(r.bottom, floor)}; };
+  result.containsTop = Boolean(top && owner.contains(top));
+  result.containsPager = Boolean(pager && owner.contains(pager));
+  result.containsCards = owner.contains(first);
+  // First row: scroll it into the owner's visible box and require every card of that row to fit completely.
+  owner.scrollTop = 0; first.scrollIntoView({block: 'nearest'});
+  const box = visible(), rowTop = first.getBoundingClientRect().top;
+  const row = cards.filter(n => Math.abs(n.getBoundingClientRect().top - rowTop) < 1).map(n => n.getBoundingClientRect());
+  result.row = {count: row.length, top: Math.min(...row.map(r => r.top)), bottom: Math.max(...row.map(r => r.bottom)), box};
+  result.rowFits = row.length > 0 && row.every(r => r.top >= box.top - 1 && r.bottom <= box.bottom + 1);
+  // Pager: scroll the single owner to its end; the pager stays inside the visible box and its buttons hit-test.
+  owner.scrollTop = owner.scrollHeight;
+  if (pager) {
+    const p = pager.getBoundingClientRect(), end = visible();
+    result.pager = {top: p.top, bottom: p.bottom, box: end};
+    result.pagerFits = p.top >= end.top - 1 && p.bottom <= end.bottom + 1;
+    result.pagerHits = [...pager.querySelectorAll('button')].filter(b => b.getClientRects().length).every(b => {
+      const r = b.getBoundingClientRect(); return pager.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2));
+    });
+  }
+  owner.scrollTop = 0;
+  return result;
+}
+const g9Pages = ['source-list', 'uid-detail', 'favorites-list', 'favorites-detail', 'search-results', 'name-tags', 'name-results', 'artist-tags', 'artist-results'];
+for (const engine of engines) {
+  test(`${engine.name()} 844x393 request pages scroll through one whole-panel owner [B2 G9]`, {skip: !linux, timeout: 360000}, async t => {
+    const browser = await engine.launch({headless: true}); t.after(() => browser.close());
+    for (const name of g9Pages) {
+      const {page, errors} = await openSession(t, browser, {kind: 'alpha', viewport: [844, 393], touch: true});
+      await visit(page, pages[name].host);
+      const g = await page.evaluate(g9Probe, pages[name].card), label = `${name}: ` + JSON.stringify(g);
+      assert.equal(g.owners?.length, 1, `${name}: exactly one overflowing vertical owner, no nesting: ${JSON.stringify(g.owners)}`);
+      assert.equal(Boolean(g.containsCards && g.containsTop && g.containsPager), true, 'the owner scrolls the whole panel (TopSlot, cards, pager): ' + label);
+      assert.equal(g.rowFits, true, 'at least one complete card row is fully visible: ' + label);
+      assert.equal(g.pagerFits, true, 'the pager is reachable at the bottom, clear of the dock and safe area: ' + label);
+      assert.equal(g.pagerHits, true, 'pager buttons are hittable: ' + label);
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  });
+}
+
+// ---------- G11: fit cache keys and invalidation follow every layout change ----------
+// After each change settles, the last BilikaraResultPager.diagnostics() entry must describe the visible pager's
+// measured fit box, grid and card, and the committed data-page-size; each change commits at most once, never back.
+// 200% text uses the repository's root font-size convention (32px); it cannot reproduce Android WebView textZoom.
+function pagerFacts([card, sourceFit]) {
+  const shown = n => n.getClientRects().length && getComputedStyle(n).visibility !== 'hidden';
+  const cards = [...document.querySelectorAll(card)].filter(shown), first = cards[0];
+  if (!first) return {missing: true, hostLayout: document.documentElement.dataset.hostLayout, columnsMode: document.documentElement.dataset.hostColumns,
+    present: document.querySelectorAll(card).length, viewport: [innerWidth, innerHeight]};
+  // Song pagers fit their own result viewport (fit:true); the source list fits its bounded source scroller.
+  const grid = first.parentElement, fit = sourceFit ? grid.closest('.source-browse-scroll') : grid.closest('.result-page-viewport');
+  const pager = [...document.querySelectorAll('.result-pager')].find(p => shown(p) && p.closest('.android-result-frame,.source-mode-panel,.request-mode-panel')?.contains(grid));
+  const style = getComputedStyle(grid), cardStyle = getComputedStyle(first);
+  const last = window.BilikaraResultPager.diagnostics().at(-1);
+  return {last, pageSize: Number(pager?.dataset.pageSize), history: [...(window.__pageSizeHistory.get(pager) || [])],
+    rendered: cards.filter(n => n.parentElement === grid).length,
+    fit: fit ? {width: fit.clientWidth, height: fit.clientHeight} : null, columns: style.gridTemplateColumns.split(' ').length,
+    gap: parseFloat(style.rowGap) || 0, itemHeight: parseFloat(cardStyle.height),
+    // A whole-panel scroll owner records its natural height but fits minimum rows (height 1), as documented in B2 step 5.
+    fitted: last ? window.BilikaraResultPager.fittedPageSize({...last, height: last.scrollOwner === 'panel' ? 1 : Math.max(1, last.height)}) : null};
+}
+async function g11Check(page, card, label, before, sourceFit) {
+  await settle(page);
+  await page.waitForFunction(() => [...document.querySelectorAll('.result-pager')].filter(p => p.getClientRects().length).every(p => p.getAttribute('aria-busy') !== 'true'));
+  await settle(page);
+  const f = await page.evaluate(pagerFacts, [card, Boolean(sourceFit)]), text = `${label}: ` + JSON.stringify({...f, before});
+  assert.ok(!f.missing, 'the page still shows its cards: ' + text);
+  assert.ok(f.last && f.fit, 'diagnostics recorded a measurement for a measured fit box: ' + text);
+  assert.equal(f.last.size, f.pageSize, 'diagnostics size is the committed page size: ' + text);
+  assert.equal(f.last.columns, f.columns, 'diagnostics columns match the grid: ' + text);
+  assert.ok(Math.abs(f.last.width - f.fit.width) <= 1 && Math.abs(f.last.height - f.fit.height) <= 1, 'diagnostics fit box matches the measured fit element: ' + text);
+  assert.ok(Math.abs(f.last.gap - f.gap) <= 0.5, 'diagnostics gap matches the grid: ' + text);
+  assert.ok(Math.abs(f.last.itemHeight - f.itemHeight) <= 1, 'diagnostics item height matches a rendered card: ' + text);
+  assert.equal(f.fitted, f.pageSize, 'the committed size is the fit of the recorded geometry: ' + text);
+  assert.equal(f.rendered, f.pageSize, 'the page renders exactly its committed capacity: ' + text);
+  if (before) {
+    const added = f.history.slice(before.length);
+    assert.ok(added.length <= 1, 'one commit per change, no intermediate fallback: ' + text);
+    assert.ok(!added.length || added[0] !== before.at(-1), 'a change never re-commits the same value: ' + text);
+  }
+  return f.history;
+}
+for (const engine of engines) for (const name of ['uid-detail', 'source-list']) {
+  test(`${engine.name()} ${name} fit diagnostics follow font, rotation, IME, dock, toolbar and re-entry [B2 G11]`, {skip: !linux, timeout: 300000}, async t => {
+    const browser = await engine.launch({headless: true}); t.after(() => browser.close());
+    const {page, errors} = await openSession(t, browser, {kind: 'alpha', viewport: [393, 844], touch: true, keyboard: true});
+    await visit(page, pages[name].host);
+    const card = name === 'source-list' ? '#follow-up-grid > *' : pages[name].card, sourceFit = name === 'source-list';
+    let history = await g11Check(page, card, 'initial', null, sourceFit);
+    const step = async (label, fn) => { await page.evaluate(fn); history = await g11Check(page, card, label, history, sourceFit); };
+    await step('font 200%', () => { document.documentElement.style.fontSize = '32px'; });
+    await step('font 100%', () => { document.documentElement.style.fontSize = ''; });
+    // Text zoom can grow a card's border box without changing its font properties (the stale-cache case).
+    const cardRule = name === 'source-list' ? '#follow-up-grid > *' : '.search-result-item';
+    await step('card border box grows', new Function(`const s = document.createElement('style'); s.id = 'g11-card'; s.textContent = '${cardRule} { padding-bottom: 24px !important; min-height: 0 !important; }'; document.head.append(s);`));
+    await step('card border box restored', () => document.getElementById('g11-card').remove());
+    for (const [width, height] of [[844, 393], [393, 844]]) {
+      await page.setViewportSize({width, height});
+      await page.evaluate(([w, h]) => { Object.assign(visualViewport, {width: w, height: h}); visualViewport.dispatchEvent(new Event('resize')); }, [width, height]);
+      // A compact landscape overlay starts closed after the layout change; reopen the Request sheet as a user would.
+      await settle(page);
+      if (!await page.evaluate(card => [...document.querySelectorAll(card)].some(n => n.getClientRects().length), card)) {
+        await page.evaluate(() => activateHostWorkspace('request'));
+        await page.waitForFunction(card => [...document.querySelectorAll(card)].some(n => n.getClientRects().length), card, {timeout: 10000}).catch(() => {});
+      }
+      history = await g11Check(page, card, `rotate ${width}x${height}`, history, sourceFit);
+    }
+    await step('IME open', () => { visualViewport.height = 520; visualViewport.dispatchEvent(new Event('resize')); });
+    await step('IME close', () => { visualViewport.height = innerHeight; visualViewport.dispatchEvent(new Event('resize')); });
+    await step('dock taller', () => { const d = document.getElementById('android-host-dock'); d.dataset.g11Height = d.style.height; d.style.height = (d.getBoundingClientRect().height + 40) + 'px'; });
+    await step('dock restored', () => { const d = document.getElementById('android-host-dock'); d.style.height = d.dataset.g11Height || ''; });
+    if (name === 'uid-detail') {
+      await step('toolbar shown', () => document.querySelector('#follow-search-form').parentElement.querySelector('.browse-search-cancel').click());
+      await step('toolbar hidden', () => document.querySelector('#follow-search-form').parentElement.querySelector('.browse-search-cancel').click());
+      await page.evaluate(() => document.querySelector('#follow-browse-back').click());
+      await page.waitForFunction(() => [...document.querySelectorAll('#follow-up-grid [data-uid]')].some(n => n.getClientRects().length));
+      await page.evaluate(() => document.querySelector('#follow-up-grid [data-uid]').click());
+      await page.waitForFunction(() => [...document.querySelectorAll('#follow-song-results .search-result-item')].some(n => n.getClientRects().length));
+    } else {
+      await page.evaluate(() => activateRequestSubview('search'));
+      await settle(page);
+      await page.evaluate(() => activateRequestSubview('sources'));
+      await page.waitForFunction(() => [...document.querySelectorAll('#follow-up-grid [data-uid]')].some(n => n.getClientRects().length));
+    }
+    await g11Check(page, card, 're-entered', history, sourceFit);
+    assert.deepEqual(errors, []);
+  });
+}
+
+// ---------- G9 admission boundary: whole-panel mode never flaps around the one-row threshold ----------
+// Sweeps a landscape phone's height (300..804px) up and back down through the compact-overlay range. At every height the
+// owner mode and page size stay constant for 30 frames, the mode changes once per direction, both directions
+// agree at each height, and a bounded (non-panel) layout really fits one complete row inside its inner owner.
+for (const engine of engines) for (const name of ['source-list', 'uid-detail']) {
+  test(`${engine.name()} ${name} whole-panel admission is stable across the one-row boundary [B2 G9 R1]`, {skip: !linux, timeout: 360000}, async t => {
+    const browser = await engine.launch({headless: true}); t.after(() => browser.close());
+    const {page, errors} = await openSession(t, browser, {kind: 'alpha', viewport: [844, 393], touch: true});
+    await visit(page, pages[name].host);
+    const card = name === 'source-list' ? '#follow-up-grid > *' : pages[name].card;
+    // 300..804px: at 844 wide the compact overlay sheet stays capped (360px) until about 680px, so the bounded side
+    // of the boundary is only reached near the top of the range.
+    const heights = Array.from({length: 43}, (_, i) => 300 + i * 12), modes = {up: new Map(), down: new Map()};
+    for (const [direction, list] of [['up', heights], ['down', [...heights].reverse()]]) {
+      for (const height of list) {
+        await page.setViewportSize({width: 844, height});
+        await settle(page);
+        if (!await page.evaluate(card => [...document.querySelectorAll(card)].some(n => n.getClientRects().length), card)) {
+          await page.evaluate(() => activateHostWorkspace('request'));
+          await page.waitForFunction(card => [...document.querySelectorAll(card)].some(n => n.getClientRects().length), card, {timeout: 10000}).catch(() => {});
+          await settle(page);
+        }
+        const sample = await page.evaluate(async ([card, sourceFit]) => {
+          const ws = document.getElementById('host-workspace-request'), frames = [];
+          for (let i = 0; i < 30; i++) {
+            await new Promise(resolve => requestAnimationFrame(resolve));
+            const pager = [...document.querySelectorAll('.result-pager')].find(p => p.getClientRects().length);
+            frames.push(`${ws.getAttribute('data-result-scroll-owner') || 'bounded'}:${pager?.dataset.pageSize}`);
+          }
+          const first = [...document.querySelectorAll(card)].find(n => n.getClientRects().length);
+          // Song pagers fit their own result viewport; the source list fits its bounded source scroller.
+          const fitOf = n => sourceFit ? n.closest('.source-browse-scroll') : n.closest('.result-page-viewport');
+          const owner = first && fitOf(first), mode = ws.getAttribute('data-result-scroll-owner');
+          // The bounded alternative for this height: temporarily leave panel mode, read fit and row, restore.
+          const scrolls = [ws, owner].filter(Boolean).map(n => [n, n.scrollTop]);
+          if (mode) ws.removeAttribute('data-result-scroll-owner');
+          const boundedFit = owner?.clientHeight, boundedRow = first ? first.getBoundingClientRect().height + (parseFloat(getComputedStyle(first.parentElement).paddingTop) || 0) + (parseFloat(getComputedStyle(first.parentElement).paddingBottom) || 0) : null;
+          if (mode) ws.setAttribute('data-result-scroll-owner', mode);
+          for (const [n, top] of scrolls) n.scrollTop = top;
+          const r = first?.getBoundingClientRect(), o = owner?.getBoundingClientRect();
+          return {frames: [...new Set(frames)], flips: frames.filter((v, i) => i && v !== frames[i - 1]).length,
+            mode: ws.getAttribute('data-result-scroll-owner') || 'bounded', candidate: getComputedStyle(ws).getPropertyValue('--result-page-panel-scroll-candidate').trim(),
+            rowFits: Boolean(r && o && r.height <= o.height + 1), card: r && Math.round(r.height), owner: o && Math.round(o.height),
+            boundedFit, boundedRow: boundedRow && +boundedRow.toFixed(1)};
+        }, [card, name === 'source-list']);
+        const label = `${direction} ${height}: ` + JSON.stringify(sample);
+        assert.equal(sample.flips, 0, 'owner mode and page size stay constant for 30 frames: ' + label);
+        if (sample.mode !== 'panel') assert.ok(sample.rowFits, 'a bounded layout fits one complete row in its inner owner: ' + label);
+        else {
+          assert.equal(sample.candidate, '1', 'panel mode only inside the compact-overlay candidate: ' + label);
+          assert.ok(sample.boundedFit + 0.5 < sample.boundedRow, 'panel mode only when the bounded layout cannot hold one complete row: ' + label);
+        }
+        modes[direction].set(height, sample.mode);
+      }
+    }
+    for (const [direction, list] of [['up', heights], ['down', [...heights].reverse()]]) {
+      const sequence = list.map(h => modes[direction].get(h));
+      const changes = sequence.filter((m, i) => i && m !== sequence[i - 1]).length;
+      assert.ok(changes <= 1, `${direction}: the mode changes at most once across the sweep: ` + JSON.stringify(list.map((h, i) => [h, sequence[i]])));
+    }
+    const disagree = heights.filter(h => modes.up.get(h) !== modes.down.get(h));
+    assert.deepEqual(disagree, [], 'both directions choose the same mode at each height: ' + JSON.stringify(heights.map(h => [h, modes.up.get(h), modes.down.get(h)])));
+    assert.ok(new Set(modes.up.values()).has('panel'), 'the sweep reaches whole-panel mode: ' + JSON.stringify([...modes.up]));
+    assert.ok(new Set(modes.up.values()).has('bounded'), 'the sweep reaches the bounded layout: ' + JSON.stringify([...modes.up]));
+    assert.deepEqual(errors, []);
   });
 }
