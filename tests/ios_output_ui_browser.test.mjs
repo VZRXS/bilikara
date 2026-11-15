@@ -57,16 +57,17 @@ for(const [engineName,engine]of Object.entries({chromium,webkit})) {
     await page.locator(platform==='desktop'?'#work-rail-settings':'[data-android-page="my"]').click();
     await page.locator('#purek-settings').scrollIntoViewIfNeeded();
     const toggle=page.locator('[data-media-output="settings"] .media-output-toggle');
-    assert.equal(await toggle.isEnabled(),true);assert.equal(await toggle.isChecked(),false);
+    // B5b (R8 §14.3, user decision): with no device connected the switch stays off and disabled. It neither opens
+    // acquisition nor starts the standalone pipeline; the separate add-device entry (#purek-open) owns scanning.
+    assert.equal(await toggle.isDisabled(),true);assert.equal(await toggle.isChecked(),false);
     // Tap the label itself: Playwright otherwise waits for its intentionally
     // disabled associated input to become enabled before sending any input.
     await page.locator('[data-media-output="settings"] .media-output-targets').click({force:true});
     assert.equal(await page.locator('#purek-modal').isVisible(),false,'DLNA only changes output; it never opens acquisition');
-    await page.waitForFunction(()=>document.querySelector('[data-media-output="settings"] .media-output-status').textContent===t('mediaOutput.actionFailed'));
-    assert.deepEqual(outputPosts,[{target:'native',experimental:true}]);
+    assert.deepEqual(outputPosts,[],'the disabled switch sends no output request');
     await page.locator('#purek-open').click();
     await page.locator('#purek-modal').waitFor({state:'visible'});
-    assert.equal(await toggle.isChecked(),false);assert.deepEqual(outputPosts,[{target:"native",experimental:true}]);
+    assert.equal(await toggle.isChecked(),false);assert.deepEqual(outputPosts,[]);
     await page.locator('#purek-dlna-entry summary').click();
     await page.locator('#purek-dlna-url').fill(tv.description);
     await page.locator('#purek-dlna-connect').click();
@@ -74,7 +75,7 @@ for(const [engineName,engine]of Object.entries({chromium,webkit})) {
     assert.equal((await host.api('/api/purek/state')).connection_type,'dlna');
     assert.ok(tv.state.actions.includes('GetProtocolInfo'));
     assert.equal(tv.state.actions.includes('SetDeviceAuthorization'),false,'Plain DLNA classification comes from Rust, never a fabricated Pure K authorization');
-    assert.deepEqual(outputPosts,[{target:'native',experimental:true}],'connection does not issue a browser-side duplicate output command');
+    assert.deepEqual(outputPosts,[],'connection does not issue a browser-side duplicate output command');
     assert.equal((await host.api('/api/state')).media_output.target,'local');
     await page.locator('#purek-close').click();
     await page.locator('#purek-modal').waitFor({state:'hidden'});
@@ -96,10 +97,179 @@ for(const [engineName,engine]of Object.entries({chromium,webkit})) {
     assert.equal(await toggle.isChecked(),false);
     await page.locator('[aria-describedby="purek-dialog-info"]').click();
     assert.ok((await page.locator('#purek-dialog-info').innerText()).includes(await page.evaluate(()=>t('mediaOutput.backendUnavailable'))));
-    assert.deepEqual(outputPosts,[{target:"native",experimental:true},{target:"purek",experimental:true}]);
+    assert.deepEqual(outputPosts,[{target:"purek",experimental:true}]);
     await page.keyboard.press('Escape');await page.locator('#purek-close').click();
+    // The DLNA flow must not interrupt local playback or replace its media. Assert playback intent and ownership,
+    // not an instantaneous video.paused sample: the split-player sync (holdVideoForAudio) may briefly hold video
+    // while headless WebKit's audio clock lags, on e4d1ba3 as well (bilikara-next-8 b5b-r1-diagnosis.md).
     assert.deepEqual(await page.evaluate(()=>({same:state.hostPlaybackSession.video===pair.video&&state.hostPlaybackSession.audio===pair.audio,
-      playing:!pair.video.paused&&!pair.audio.paused})),{same:true,playing:true});
+      phase:state.hostPlaybackSession.phase,intent:state.hostPlaybackSession.logicalPlayIntent,local:state.localShouldBePlaying,
+      networkHold:Boolean(state.networkOutputHoldingLocal),target:state.data.media_output.target})),
+      {same:true,phase:'playing',intent:true,local:true,networkHold:false,target:'local'});
+  });
+
+  // B5b (R8 §14.3): the output group's add-device entry is separate from DLNA availability. Native Alpha has no
+  // packaged live-TS companion, so every platform here, including iOS, is also the no-companion case.
+  for(const platform of ['desktop','android','ios'])test(`${engineName} ${platform}: the add-device entry is separate from DLNA availability [B5b]`,{
+    skip:process.platform!=='linux',timeout:150000,
+  },async t=>{
+    const {page}=await open(t,engine,platform),tv=await receiver(t),outputPosts=[],mobile=platform!=='desktop';
+    // Output commands are answered by a fixture snapshot: no physical receiver or companion qualifies them here.
+    await page.route('**/api/player/output',async route=>{
+      const body=route.request().postDataJSON();outputPosts.push(body);
+      const data=await page.evaluate(body=>{const d=structuredClone(state.data);d.state_revision++;
+        Object.assign(d.media_output,{target:body.target,requested_target:body.target,status:body.target==='local'?'stopped':'streaming',busy:false,desired_playing:true});return d;},body);
+      return route.fulfill({json:{ok:true,data}});
+    });
+    await page.locator(mobile?'[data-android-page="my"]':'#work-rail-settings').click();
+    const group=page.locator('[data-media-output="settings"]'),entry=group.locator('#purek-open'),toggle=group.locator('.media-output-toggle');
+    const targets=group.locator('.media-output-targets'),status=group.locator('.media-output-status');
+    await page.locator('#purek-settings').scrollIntoViewIfNeeded();
+    const unconnected=async label=>{
+      assert.equal(await entry.count(),1,`${label}: the output group hosts the existing scan action`);
+      assert.equal(await entry.getAttribute('data-media-output-add-device'),'',`${label}: the entry is marked as the add-device role`);
+      assert.equal(await entry.isVisible(),true);assert.equal(await entry.isEnabled(),true,`${label}: the entry stays operable without a companion`);
+      assert.equal(await entry.innerText(),await page.evaluate(key=>t(key),mobile?'ktv.scan':'ktv.requestScan'));
+      assert.equal(await toggle.isChecked(),false);assert.equal(await toggle.isDisabled(),true,`${label}: no device means the switch is off and disabled`);
+      const notConnected=await page.evaluate(()=>t('mediaOutput.status.notConnected'));
+      assert.equal(await toggle.getAttribute('aria-label'),await page.evaluate(()=>t('mediaOutput.dlna'))+' · '+notConnected,`${label}: accessible name carries the reason`);
+      assert.equal(await targets.getAttribute('title'),notConnected);
+      assert.equal(await status.isVisible(),true);assert.equal(await status.innerText(),notConnected,`${label}: visible not-connected hint`);
+    };
+    const geometry=()=>group.evaluate(n=>{
+      const box=n.getBoundingClientRect(),entry=n.querySelector('#purek-open'),tool=entry.closest('.purek-scan-tool'),targets=n.querySelector('.media-output-targets');
+      const e=entry.getBoundingClientRect(),w=tool.getBoundingClientRect(),g=targets.getBoundingClientRect(),s=getComputedStyle(entry);
+      return {overflow:n.scrollWidth-n.clientWidth,pill:[s.height,s.borderRadius,s.fontSize],hit:getComputedStyle(entry,'::before').height,toolHeight:w.height,targetHeight:g.height,
+        inside:[e,g].every(r=>r.left>=box.left-0.5&&r.right<=box.right+0.5),overlap:Math.min(e.right,g.right)>Math.max(e.left,g.left)&&Math.min(e.bottom,g.bottom)>Math.max(e.top,g.top)};
+    });
+    for(const [width,height] of mobile?[[360,780]]:[[1024,768],[700,700]])for(const language of ['zh','en','ja']){
+      await page.setViewportSize({width,height});await page.evaluate(language=>setLanguage(language),language);await settle(page);
+      // A narrow desktop window turns Settings into a closed tool sheet; reopen it rather than toggling it shut.
+      if(!mobile&&!await page.locator('#purek-settings').isVisible()){await page.locator('#work-rail-settings').click();await settle(page);}
+      await page.locator('#purek-settings').scrollIntoViewIfNeeded();
+      const label=`${width}x${height} ${language}`;
+      await unconnected(label);
+      const g=await geometry();
+      assert.ok(g.overflow<=1,`${label}: no horizontal overflow `+JSON.stringify(g));
+      assert.deepEqual(g.pill,['30px','999px','12px'],`${label}: the entry keeps the compact settings-tool pill`);
+      assert.equal(g.hit,'44px',`${label}: the compact pill keeps its 44px hit region`);
+      assert.ok(g.toolHeight>=44&&g.targetHeight>=44,`${label}: entry row and switch keep 44px targets `+JSON.stringify(g));
+      assert.equal(g.inside,true,`${label}: entry and switch stay inside the group`);assert.equal(g.overlap,false,`${label}: entry and switch do not overlap`);
+    }
+    await page.evaluate(()=>setLanguage('zh'));await settle(page);
+    // The switch never opens Scan/Manage and sends nothing while disconnected.
+    await targets.click({force:true});
+    assert.equal(await page.locator('#purek-modal').isVisible(),false);assert.deepEqual(outputPosts,[]);
+    // The entry opens the existing acquisition dialog: local scan (mobile) or Remote request (desktop), plus plain DLNA.
+    await entry.click();await page.locator('#purek-modal').waitFor({state:'visible'});
+    assert.equal(await page.locator('#purek-dlna-entry').isVisible(),true,'ordinary DLNA address entry stays reachable');
+    assert.equal(await page.locator(mobile?'#ktv-host-local-scan':'#ktv-host-empty').isVisible(),true,mobile?'mobile scans locally':'desktop requests a Remote scan');
+    assert.equal(await page.locator('.purek-card').evaluate(n=>getComputedStyle(n).borderRadius),'18px','the dialog keeps the floating-panel corners');
+    assert.deepEqual(outputPosts,[]);
+    // Plain DLNA connection through the existing dialog (real Rust admission, simulated receiver).
+    await page.locator('#purek-dlna-entry summary').click();await page.locator('#purek-dlna-url').fill(tv.description);
+    await page.locator('#purek-dlna-connect').click();
+    await page.waitForFunction(()=>state.data?.purek?.connected===true&&state.data.media_output?.authorized===true&&!state.data.media_output.busy&&!BilikaraMediaOutput.busy());
+    await page.locator('#purek-close').click();await page.locator('#purek-modal').waitFor({state:'hidden'});
+    assert.equal(await entry.getAttribute('data-media-output-add-device'),null,'a connected device removes the add-device role');
+    assert.equal(await entry.innerText(),await page.evaluate(key=>t(key),mobile?'purek.manage':'purek.disconnect'));
+    assert.equal(await entry.getAttribute('aria-haspopup'),mobile?'dialog':'false');
+    assert.equal(await toggle.isEnabled(),true,'an authorized device enables the switch');
+    assert.notEqual(await status.isVisible()&&await status.innerText(),await page.evaluate(()=>t('mediaOutput.status.notConnected')));
+    if(mobile){await entry.click();await page.locator('#purek-modal').waitFor({state:'visible'});
+      assert.equal(await page.locator('#purek-dlna-entry').isVisible(),false,'mobile Manage opens management, not a new connection');
+      await page.locator('#purek-close').click();await page.locator('#purek-modal').waitFor({state:'hidden'});}
+    // Authorized output starts and returns to local through the switch only.
+    await targets.click();await page.waitForFunction(()=>state.data.media_output.target==='purek'&&!BilikaraMediaOutput.busy());
+    assert.deepEqual(outputPosts,[{target:'purek',experimental:true}]);assert.equal(await toggle.isChecked(),true);
+    assert.equal(await page.locator('#purek-modal').isVisible(),false);
+    await targets.click();await page.waitForFunction(()=>state.data.media_output.target==='local'&&!BilikaraMediaOutput.busy());
+    assert.deepEqual(outputPosts.at(-1),{target:'local'});
+    if(!mobile){
+      // Desktop keeps its disconnect shortcut; disconnecting restores the add-device role.
+      await entry.click();
+      await page.waitForFunction(()=>state.data?.purek?.connected===false&&state.data.media_output?.authorized===false);
+      await page.waitForFunction(()=>document.querySelector('#purek-open').hasAttribute('data-media-output-add-device'));
+      assert.equal(await page.locator('#purek-modal').isVisible(),false,'disconnect does not open a dialog');
+      assert.equal(await toggle.isDisabled(),true);
+    }
+    // An already running standalone (native) pipeline can still be switched back to local.
+    await page.evaluate(()=>{state.eventSource?.close();fetchState=async()=>{};state.data.state_revision++;
+      Object.assign(state.data.media_output,{authorized:false,target:'native',requested_target:'native',status:'streaming',busy:false});render();});
+    assert.equal(await toggle.isChecked(),true);assert.equal(await toggle.isEnabled(),true,'native output keeps its way back to local');
+    await targets.click();await page.waitForFunction(()=>state.data.media_output.target==='local'&&!BilikaraMediaOutput.busy());
+    assert.deepEqual(outputPosts.at(-1),{target:'local'});
+    assert.equal(await toggle.isDisabled(),true,'back to local without a device, the switch is disabled again');
+    assert.deepEqual(await page.evaluate(()=>({same:state.hostPlaybackSession.video===pair.video&&state.hostPlaybackSession.audio===pair.audio})),{same:true});
+  });
+
+  // B5b R2 (AGENTS §5.3): the explicit standalone pipeline test has its own action in the output group.
+  // Native Alpha ships no live-TS companion, so "companion available" is a fixture snapshot (available:true with
+  // SSE closed) and decoder availability is a wrapper whose decoderKind() is overridden (the frozen real adapter
+  // stays its prototype, so attach/create are unchanged).
+  for(const platform of ['desktop','android','ios'])test(`${engineName} ${platform}: the standalone pipeline test action is explicit and conditional [B5b R2]`,{
+    skip:process.platform!=='linux',timeout:150000,
+  },async t=>{
+    const {page}=await open(t,engine,platform),outputPosts=[],mobile=platform!=='desktop';let release=null,gate=null;
+    await page.route('**/api/player/output',async route=>{
+      const body=route.request().postDataJSON();outputPosts.push(body);if(gate)await gate;
+      const data=await page.evaluate(body=>{const d=structuredClone(state.data);d.state_revision++;
+        Object.assign(d.media_output,{target:body.target,requested_target:body.target,status:body.target==='local'?'stopped':'streaming',busy:false,desired_playing:true});return d;},body);
+      return route.fulfill({json:{ok:true,data}});
+    });
+    await page.locator(mobile?'[data-android-page="my"]':'#work-rail-settings').click();
+    const group=page.locator('[data-media-output="settings"]'),action=group.locator('.media-output-pipeline-test'),toggle=group.locator('.media-output-toggle');
+    await page.evaluate(()=>{state.eventSource?.close();fetchState=async()=>{};window.realNativeOutput=window.BilikaraNativeOutput;});
+    const snapshot=patch=>page.evaluate(patch=>{state.data.state_revision++;Object.assign(state.data.media_output,patch);render();},patch);
+    const decoder=kind=>page.evaluate(kind=>{window.BilikaraNativeOutput=Object.create(realNativeOutput,{decoderKind:{value:()=>kind,enumerable:true}});render();},kind);
+    const local={target:'local',requested_target:'local',status:'local',busy:false};
+    // Visibility matrix: only disconnected local playback with a companion and a native/MSE decoder shows the action.
+    for(const [label,patch,kind,shown] of [
+      ['no companion',{...local,available:false,authorized:false},'mse',false],
+      ['companion, no decoder',{...local,available:true,authorized:false},'unavailable',false],
+      ['companion and MSE decoder',{...local,available:true,authorized:false},'mse',true],
+      ['companion and native decoder',{...local,available:true,authorized:false},'native',true],
+      ['connected device',{...local,available:true,authorized:true,status:'authorized'},'native',false],
+    ]){
+      await decoder(kind);await snapshot(patch);
+      assert.equal(await action.isVisible(),shown,`${label}: the test action is ${shown?'shown':'hidden'}`);
+      assert.equal(await toggle.isDisabled(),!patch.authorized,`${label}: the switch follows device connection only`);
+    }
+    await decoder('mse');await snapshot({...local,available:true,authorized:false});
+    // Ordinary control geometry and narrow layouts in three languages.
+    for(const [width,height] of mobile?[[360,780]]:[[1024,768],[700,700]])for(const language of ['zh','en','ja']){
+      await page.setViewportSize({width,height});await page.evaluate(language=>setLanguage(language),language);await settle(page);
+      if(!mobile&&!await page.locator('#purek-settings').isVisible()){await page.locator('#work-rail-settings').click();await settle(page);}
+      await action.scrollIntoViewIfNeeded();
+      const label=`${width}x${height} ${language}`;
+      assert.equal(await action.innerText(),await page.evaluate(()=>t('mediaOutput.pipelineTest')));
+      const g=await group.evaluate(n=>{const a=n.querySelector('.media-output-pipeline-test'),r=a.getBoundingClientRect(),b=n.getBoundingClientRect(),s=getComputedStyle(a);
+        return {height:r.height,font:s.fontSize,radius:s.borderRadius,inside:r.left>=b.left-0.5&&r.right<=b.right+0.5,overflow:n.scrollWidth-n.clientWidth,textFits:a.scrollWidth<=a.clientWidth+1};});
+      assert.ok(g.height>=44,`${label}: 44px ordinary action `+JSON.stringify(g));
+      assert.deepEqual([g.font,g.radius],['16px','14px'],`${label}: ordinary control typography and corners (AGENTS §5.3) `+JSON.stringify(g));
+      assert.equal(g.inside,true,`${label}: stays inside the group`);assert.ok(g.overflow<=1&&g.textFits,`${label}: no overflow `+JSON.stringify(g));
+      assert.equal(await toggle.isDisabled(),true,`${label}: the switch stays disabled`);
+    }
+    await page.evaluate(()=>setLanguage('zh'));await settle(page);
+    // Busy guard: one request, disabled and aria-busy while pending; the switch never becomes the entry.
+    gate=new Promise(resolve=>release=resolve);
+    await action.click();
+    await page.waitForFunction(()=>document.querySelector('[data-media-output="settings"] .media-output-pipeline-test').getAttribute('aria-busy')==='true');
+    assert.equal(await action.isDisabled(),true);assert.equal(await action.innerText(),await page.evaluate(()=>t('mediaOutput.working')));
+    await action.dispatchEvent('click');await action.dispatchEvent('click');
+    assert.deepEqual(outputPosts,[{target:'native',experimental:true}],'duplicate activation is rejected while pending');
+    assert.equal(await toggle.isDisabled(),true,'the switch stays disabled while the test starts');
+    assert.equal(await page.locator('#purek-modal').isVisible(),false,'the test never opens Scan/Manage');
+    release();gate=null;
+    await page.waitForFunction(()=>state.data.media_output.target==='native'&&!BilikaraMediaOutput.busy());
+    assert.equal(await action.isVisible(),false,'a running pipeline hides the start action');
+    assert.equal(await toggle.isChecked(),true);assert.equal(await toggle.isEnabled(),true,'the running pipeline can return to local');
+    await group.locator('.media-output-targets').click();
+    await page.waitForFunction(()=>state.data.media_output.target==='local'&&!BilikaraMediaOutput.busy());
+    assert.deepEqual(outputPosts,[{target:'native',experimental:true},{target:'local'}]);
+    assert.equal(await toggle.isDisabled(),true,'back at local without a device the switch is disabled again');
+    assert.equal(await action.isVisible(),true,'the test can be started again');
+    assert.equal(await page.evaluate(()=>state.hostPlaybackSession.video===pair.video&&state.hostPlaybackSession.audio===pair.audio),true,'media identity is preserved');
   });
 
   test(`${engineName} iOS: quality and downloader keep native selects, pill geometry and original value/change ownership`,{skip:process.platform!=='linux',timeout:90000},async t=>{
