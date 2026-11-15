@@ -1079,25 +1079,33 @@ html[data-host-platform="ios"][data-ios-native-dock="true"] .selection-modal-car
   max-height: calc(100dvh - max(12px, var(--ios-safe-top)) - max(12px, var(--mobile-dock-height), var(--mobile-ime-height, 0px)));
 }
 
-/* Continuous phone pages extend behind the floating dock. The stage and track
-   strip stay fixed; scroll owners reserve reachable trailing content space. */
-html[data-host-layout="portrait"]:is([data-host-page="my"], [data-host-page="playback"], [data-host-page="queue"]) .shell-body {
+/* Playback retains its continuous page behind the floating dock. */
+html[data-host-layout="portrait"][data-host-page="playback"] .shell-body {
   grid-row: 3 / 5;
   padding-bottom: var(--mobile-ime-height, var(--android-ime-height, 0px));
+}
+/* My/Settings and Queue/History end at the dock's top track boundary. Only
+   background remains behind it; keyboard avoidance belongs to content. */
+html[data-host-layout="portrait"]:is([data-host-page="my"], [data-host-page="queue"]) .shell-body {
+  grid-row: 3;
+  padding-bottom: max(0px, calc(var(--mobile-ime-height, var(--android-ime-height, 0px)) - var(--mobile-dock-height)));
 }
 html[data-host-layout="portrait"][data-host-navigation-transition="true"] :is(.shell-body, .layout, .host-content-region) {
   overflow: visible;
 }
-html[data-host-layout="portrait"] #stage-control-tray,
-html[data-host-layout="portrait"] :is(.queue-card, .history-card) :is(.playlist, .history-list) {
+html[data-host-layout="portrait"] #stage-control-tray {
   padding-bottom: calc(var(--mobile-content-trailing-inset) + 14px);
   scroll-padding-bottom: calc(var(--mobile-content-trailing-inset) + 14px);
+}
+html[data-host-layout="portrait"] :is(.queue-card, .history-card) :is(.playlist, .history-list) {
+  padding-bottom: 14px;
+  scroll-padding-bottom: 14px;
 }
 /* My/Settings keep full-width scroll owners, including during page motion.
    The content gutters belong inside them, away from the system indicator. */
 html[data-host-layout="portrait"][data-host-page="my"] .shell-body { padding-inline: 0; }
 html[data-host-layout="portrait"] .android-my-scroll {
-  padding: 0 14px calc(var(--mobile-content-trailing-inset) + 14px);
+  padding: 0 14px 14px;
 }
 html[data-host-layout="portrait"] .app-shell .host-workspace-region .session-users-panel { padding: 0; }
 html[data-host-layout="portrait"] :is(.queue-current, .song-item, .history-item) { padding-block: 8px; min-height: 0; }
@@ -1107,10 +1115,10 @@ html[data-host-layout="portrait"] :is(.queue-current-side, .song-badge-column) {
 html[data-host-layout="portrait"] .android-host-dock { grid-column: 1; }
 
 html[data-host-layout="portrait"] .settings-workspace-body {
-  padding: 0 14px calc(var(--mobile-content-trailing-inset) + 14px);
+  padding: 0 14px 14px;
 }
 html[data-host-layout="portrait"] :is(.android-my-scroll, .settings-workspace-body) {
-  scroll-padding-bottom: calc(var(--mobile-content-trailing-inset) + 14px);
+  scroll-padding-bottom: 14px;
 }
 
 html[data-host-layout="portrait"] body.is-tauri-fullscreen-active :is(.shell-body, .layout, .host-content-region, .left-column) { overflow: visible; }
@@ -1186,7 +1194,7 @@ html[data-host-layout="portrait"] .queue-card > .list-stage.is-whole-list-scroll
   align-content: start;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scroll-padding-bottom: calc(var(--mobile-content-trailing-inset) + 14px);
+  scroll-padding-bottom: 14px;
 }
 html[data-host-layout="portrait"] .queue-card > .is-whole-list-scrollable > .playlist {
   overflow: visible;

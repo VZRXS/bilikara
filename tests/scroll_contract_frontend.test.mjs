@@ -58,11 +58,27 @@ test('portrait My/Settings own full-width scrolling and internal content gutters
   assert.match(css, /html\[data-host-layout="portrait"\]\[data-host-page="my"\] \.shell-body\s*\{\s*padding-inline: 0;\s*\}/);
   for (const owner of ['android-my-scroll', 'settings-workspace-body']) {
     assert.match(css, new RegExp('html\\[data-host-layout="portrait"\\] \\.' + owner
-      + '\\s*\\{\\s*padding: 0 14px calc\\(var\\(--mobile-content-trailing-inset\\) \\+ 14px\\);\\s*\\}'));
+      + '\\s*\\{\\s*padding: 0 14px 14px;\\s*\\}'));
   }
-  // G2 moves only the side gutters; the existing dock/trailing relationship
-  // remains part of the contract until D1 is decided.
-  assert.match(css, /:is\(\.android-my-scroll, \.settings-workspace-body\)\s*\{\s*scroll-padding-bottom: calc\(var\(--mobile-content-trailing-inset\) \+ 14px\);/);
+  assert.match(css, /:is\(\.android-my-scroll, \.settings-workspace-body\)\s*\{\s*scroll-padding-bottom: 14px;/);
+});
+
+test('portrait My/Queue routes end before the dock while Playback keeps its declarations [B3-D1]', () => {
+  const css = load('host-layout.css').replace(/\r\n/g, '\n');
+  assert.ok(css.includes(`html[data-host-layout="portrait"][data-host-page="playback"] .shell-body {
+  grid-row: 3 / 5;
+  padding-bottom: var(--mobile-ime-height, var(--android-ime-height, 0px));
+}`));
+  assert.ok(css.includes(`html[data-host-layout="portrait"] #stage-control-tray {
+  padding-bottom: calc(var(--mobile-content-trailing-inset) + 14px);
+  scroll-padding-bottom: calc(var(--mobile-content-trailing-inset) + 14px);
+}`));
+  const routes = css.match(/html\[data-host-layout="portrait"\]:is\(\[data-host-page="my"\], \[data-host-page="queue"\]\) \.shell-body\s*\{([^}]+)\}/)?.[1];
+  assert.match(routes || '', /grid-row: 3;/);
+  assert.match(routes || '', /padding-bottom: max\(0px, calc\(var\(--mobile-ime-height, var\(--android-ime-height, 0px\)\) - var\(--mobile-dock-height\)\)\)/);
+  assert.match(css, /:is\(\.queue-card, \.history-card\) :is\(\.playlist, \.history-list\)\s*\{\s*padding-bottom: 14px;\s*scroll-padding-bottom: 14px;/);
+  const whole = css.match(/\.queue-card > \.list-stage\.is-whole-list-scrollable\s*\{([^}]+)\}/)?.[1];
+  assert.match(whole || '', /scroll-padding-bottom: 14px/);
 });
 
 test('result viewport inset follows actual bounded overflow through the existing observer [B3-G3]', () => {
