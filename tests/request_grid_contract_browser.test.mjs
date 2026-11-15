@@ -580,7 +580,7 @@ for (const engine of engines) for (const name of ['uid-detail', 'source-list']) 
 }
 
 // ---------- G9 admission boundary: whole-panel mode never flaps around the one-row threshold ----------
-// Sweeps a landscape phone's height up and back down through the compact-overlay range. At every height the
+// Sweeps a landscape phone's height (300..804px) up and back down through the compact-overlay range. At every height the
 // owner mode and page size stay constant for 30 frames, the mode changes once per direction, both directions
 // agree at each height, and a bounded (non-panel) layout really fits one complete row inside its inner owner.
 for (const engine of engines) for (const name of ['source-list', 'uid-detail']) {
@@ -589,7 +589,9 @@ for (const engine of engines) for (const name of ['source-list', 'uid-detail']) 
     const {page, errors} = await openSession(t, browser, {kind: 'alpha', viewport: [844, 393], touch: true});
     await visit(page, pages[name].host);
     const card = name === 'source-list' ? '#follow-up-grid > *' : pages[name].card;
-    const heights = Array.from({length: 46}, (_, i) => 300 + i * 6), modes = {up: new Map(), down: new Map()};
+    // 300..804px: at 844 wide the compact overlay sheet stays capped (360px) until about 680px, so the bounded side
+    // of the boundary is only reached near the top of the range.
+    const heights = Array.from({length: 43}, (_, i) => 300 + i * 12), modes = {up: new Map(), down: new Map()};
     for (const [direction, list] of [['up', heights], ['down', [...heights].reverse()]]) {
       for (const height of list) {
         await page.setViewportSize({width: 844, height});
@@ -599,7 +601,7 @@ for (const engine of engines) for (const name of ['source-list', 'uid-detail']) 
           await page.waitForFunction(card => [...document.querySelectorAll(card)].some(n => n.getClientRects().length), card, {timeout: 10000}).catch(() => {});
           await settle(page);
         }
-        const sample = await page.evaluate(async card => {
+        const sample = await page.evaluate(async ([card, sourceFit]) => {
           const ws = document.getElementById('host-workspace-request'), frames = [];
           for (let i = 0; i < 30; i++) {
             await new Promise(resolve => requestAnimationFrame(resolve));
@@ -607,16 +609,28 @@ for (const engine of engines) for (const name of ['source-list', 'uid-detail']) 
             frames.push(`${ws.getAttribute('data-result-scroll-owner') || 'bounded'}:${pager?.dataset.pageSize}`);
           }
           const first = [...document.querySelectorAll(card)].find(n => n.getClientRects().length);
-          const owner = first && (first.closest('.source-browse-scroll') || first.closest('.result-page-viewport'));
+          // Song pagers fit their own result viewport; the source list fits its bounded source scroller.
+          const fitOf = n => sourceFit ? n.closest('.source-browse-scroll') : n.closest('.result-page-viewport');
+          const owner = first && fitOf(first), mode = ws.getAttribute('data-result-scroll-owner');
+          // The bounded alternative for this height: temporarily leave panel mode, read fit and row, restore.
+          const scrolls = [ws, owner].filter(Boolean).map(n => [n, n.scrollTop]);
+          if (mode) ws.removeAttribute('data-result-scroll-owner');
+          const boundedFit = owner?.clientHeight, boundedRow = first ? first.getBoundingClientRect().height + (parseFloat(getComputedStyle(first.parentElement).paddingTop) || 0) + (parseFloat(getComputedStyle(first.parentElement).paddingBottom) || 0) : null;
+          if (mode) ws.setAttribute('data-result-scroll-owner', mode);
+          for (const [n, top] of scrolls) n.scrollTop = top;
           const r = first?.getBoundingClientRect(), o = owner?.getBoundingClientRect();
           return {frames: [...new Set(frames)], flips: frames.filter((v, i) => i && v !== frames[i - 1]).length,
             mode: ws.getAttribute('data-result-scroll-owner') || 'bounded', candidate: getComputedStyle(ws).getPropertyValue('--result-page-panel-scroll-candidate').trim(),
-            rowFits: Boolean(r && o && r.height <= o.height + 1), card: r && Math.round(r.height), owner: o && Math.round(o.height)};
-        }, card);
+            rowFits: Boolean(r && o && r.height <= o.height + 1), card: r && Math.round(r.height), owner: o && Math.round(o.height),
+            boundedFit, boundedRow: boundedRow && +boundedRow.toFixed(1)};
+        }, [card, name === 'source-list']);
         const label = `${direction} ${height}: ` + JSON.stringify(sample);
         assert.equal(sample.flips, 0, 'owner mode and page size stay constant for 30 frames: ' + label);
         if (sample.mode !== 'panel') assert.ok(sample.rowFits, 'a bounded layout fits one complete row in its inner owner: ' + label);
-        else assert.equal(sample.candidate, '1', 'panel mode only inside the compact-overlay candidate: ' + label);
+        else {
+          assert.equal(sample.candidate, '1', 'panel mode only inside the compact-overlay candidate: ' + label);
+          assert.ok(sample.boundedFit + 0.5 < sample.boundedRow, 'panel mode only when the bounded layout cannot hold one complete row: ' + label);
+        }
         modes[direction].set(height, sample.mode);
       }
     }
