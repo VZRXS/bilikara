@@ -119,10 +119,10 @@ for (const platform of ['android','ios']) test(`${platform} phone pages use view
     assert.ok(Math.abs((await page.locator('#player-frame').boundingBox()).y-frame.y)<1,'only the controls scroll');
     await go(page,'queue');
     // B3 D1 (user decision, b3-measure.md §4): Queue and My end at the dock top; only Playback keeps the underlap.
-    assert.ok(await page.locator('#host-workspace-region').evaluate(n=>n.getBoundingClientRect().bottom<=document.getElementById('android-host-dock').getBoundingClientRect().top+1),
-      'Queue stops at the dock top [B3 D1]');
+    assert.ok(await page.locator('#host-workspace-region').evaluate(n=>Math.abs(n.getBoundingClientRect().bottom-document.getElementById('android-host-dock').getBoundingClientRect().top)<=1),
+      'Queue stops exactly at the dock top [B3 D1]');
     await go(page,'my');
-    assert.ok(await page.locator('#android-my-scroll').evaluate(n=>n.getBoundingClientRect().bottom<=document.getElementById('android-host-dock').getBoundingClientRect().top+1),'My stops at the dock top [B3 D1]');
+    assert.ok(await page.locator('#android-my-scroll').evaluate(n=>Math.abs(n.getBoundingClientRect().bottom-document.getElementById('android-host-dock').getBoundingClientRect().top)<=1),'My stops exactly at the dock top [B3 D1]');
     const fields=await page.locator('#cache-quality-select,#cache-download-source-select').evaluateAll(nodes=>nodes.map(n=>{
       const s=getComputedStyle(n);return ['appearance','backgroundColor','backdropFilter','webkitBackdropFilter','borderRadius','fontSize','fontWeight','height','boxShadow'].map(k=>s[k]);
     }));
@@ -835,7 +835,7 @@ for(const platform of ['android','ios'])test(`${platform} unframed phone pages k
     },name);
     // B3 D1 (user decision, b3-measure.md §4): the My scrollport ends at the dock top so the native indicator
     // never crosses the dock; only the background shows behind it. Playback keeps its dock underlap below.
-    if(name==='my')assert.ok(result.bottom<=result.dockTop+1,'My scroller stops at the dock top [B3 D1]: '+JSON.stringify(result));
+    if(name==='my')assert.ok(Math.abs(result.bottom-result.dockTop)<=1,'My scroller stops exactly at the dock top [B3 D1]: '+JSON.stringify(result));
     else {
       assert.ok(result.bottom>=result.dockBottom-1,'Playback scroll content extends behind the dock: '+JSON.stringify(result));
       const frameAfter=await page.locator('#player-frame').boundingBox();
@@ -1012,7 +1012,7 @@ for(const [platform,nativeDock] of [['android',false],['ios',false],['ios',true]
     await page.locator('[data-android-workspace="history"]').click();
     await page.locator('#history-list').evaluate(n=>{n.scrollTop=n.scrollHeight;});
     assert.equal(await page.locator('#history-list').evaluate(n=>{const r=n.getBoundingClientRect(),last=n.lastElementChild.getBoundingClientRect(),dock=document.getElementById('android-host-dock').getBoundingClientRect();return Math.abs(r.left)<1&&Math.abs(r.right-innerWidth)<1&&last.top>=r.top-.5&&last.bottom<=Math.min(r.bottom,dock.top)+.5;}),true,'History shares the outer scrollbar and fully reachable last row');
-    assert.ok(await page.locator('#history-list').evaluate(n=>n.getBoundingClientRect().bottom<=document.getElementById('android-host-dock').getBoundingClientRect().top+1),'history scrollport stops at the dock top [B3 D1]');
+    assert.ok(await page.locator('#history-list').evaluate(n=>Math.abs(n.getBoundingClientRect().bottom-document.getElementById('android-host-dock').getBoundingClientRect().top)<=1),'history scrollport stops exactly at the dock top [B3 D1]');
     assert.equal(await page.evaluate(()=>queueCapacityMedia.session===state.hostPlaybackSession&&queueCapacityMedia.video===state.hostPlaybackSession.video&&queueCapacityMedia.audio===state.hostPlaybackSession.audio),true,'capacity changes retain live media ownership');
   });
 

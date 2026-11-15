@@ -201,7 +201,9 @@ function measureScroll() {
     listReach = {list: label(list), lastBottom: last.bottom, dockTop, clearance: dockTop - last.bottom};
     doc.scrollTop = before;
   }
-  return {owners, document: {scrolls: doc.scrollHeight > innerHeight + 1, overflow: doc.scrollHeight - innerHeight}, listReach,
+  const stage = document.getElementById('list-stage'), current = document.getElementById('queue-current');
+  const queueFrame = stage && shown(stage) ? {bottom: stage.getBoundingClientRect().bottom, currentHidden: !current || !shown(current)} : null;
+  return {owners, document: {scrolls: doc.scrollHeight > innerHeight + 1, overflow: doc.scrollHeight - innerHeight}, listReach, queueFrame,
     dock, stableIdle, myGroups: groups('.android-my-scroll > .android-my-card, .android-my-scroll > .android-menu-row'),
     settingsGroups: groups('#host-workspace-settings .settings-workspace-body > .settings-section'),
     layout: document.documentElement.dataset.hostLayout, platform: document.documentElement.dataset.hostPlatform};
@@ -335,11 +337,25 @@ for (const engine of [chromium, webkit]) for (const layout of layouts) {
         // D1 (decided, b3-measure.md §4): phone My/Settings/Queue/History scrollports end at the dock top, so the
         // native indicator never crosses it; only the background shows behind the dock.
         if (layout.id.startsWith('android-') && ['my', 'settings', 'queue', 'history'].includes(name)) {
-          await st.test('phone page scrollports stop at the dock top [D1]', () => {
+          // Without a current song, the Queue grid keeps an empty 1fr track and its 10px gap below #playlist
+          // (.host-workspace-region .list-stage, present since 6944f87), so that owner ends 10px early.
+          const emptyQueueTrack = name === 'queue' && sample.queueFrame?.currentHidden;
+          await st.test('phone page scrollports stop exactly at the dock top [D1]', () => {
             assert.ok(sample.dock, 'the phone dock is rendered');
             const owners = sample.owners.filter(owner => owner.underDock !== null);
             assert.ok(owners.length >= 1, 'the page has a scroll owner: ' + JSON.stringify(sample.owners.map(owner => owner.el)));
-            for (const owner of owners) assert.ok(owner.underDock <= 1, `${owner.el} ends at the dock top, not ${owner.underDock}px under it`);
+            for (const owner of owners) {
+              assert.ok(owner.underDock <= 1, `${owner.el} ends at the dock top, not ${owner.underDock}px under it`);
+              // Lower bound: the owner must not end early either (wasted space, indicator stopping short).
+              if (!(emptyQueueTrack && owner.el === '#playlist')) assert.ok(owner.underDock >= -1, `${owner.el} reaches the dock top, not ${-owner.underDock}px above it`);
+            }
+            if (name === 'queue') assert.ok(Math.abs(sample.queueFrame.bottom - sample.dock.y) <= 1, 'the Queue frame reaches exactly the dock top: ' + JSON.stringify(sample.queueFrame));
+          });
+          if (emptyQueueTrack) await st.test('the Queue scroll owner reaches the dock top without a current song [D1]', {
+            todo: 'pre-existing empty grid track: .list-stage keeps "auto minmax(0, 1fr)" with a 10px gap when #queue-current is hidden',
+          }, () => {
+            const owner = sample.owners.find(owner => owner.el === '#playlist');
+            assert.ok(owner && Math.abs(owner.underDock) <= 1, '#playlist ends exactly at the dock top: ' + JSON.stringify(owner));
           });
         }
 
@@ -564,6 +580,7 @@ for (const engine of [chromium, webkit]) {
     const sections = () => page.evaluate(() => [...document.querySelectorAll('#host-workspace-settings .settings-workspace-body > .settings-section')]
       .filter(n => n.getClientRects().length).map(n => { const s = getComputedStyle(n); return {padding: s.padding, radius: s.borderRadius, border: s.borderTopWidth,
         filled: s.backgroundColor !== 'rgba(0, 0, 0, 0)', clipped: n.scrollWidth > n.clientWidth + 1}; }));
+    let groupCount = null;
     for (const theme of ['light', 'dark', 'blue']) for (const language of ['zh', 'en', 'ja']) {
       await page.evaluate(([theme, language]) => { applyTheme(theme); setLanguage(language); }, [theme, language]);
       await visit(page, pages.my.host);
@@ -571,7 +588,12 @@ for (const engine of [chromium, webkit]) {
       assert.ok(Math.abs(account.height - 44) <= 0.5 && !account.clipped && !account.overflow, `${theme}/${language}: the collapsed login card is 44px and complete ` + JSON.stringify(account));
       assert.deepEqual(account.inline, ['14px', '14px']);
       await visit(page, pages.settings.host);
-      for (const section of await sections()) assert.deepEqual(section, {padding: '14px', radius: '14px', border: '1px', filled: true, clipped: false}, `${theme}/${language} Settings group`);
+      const groups = await sections();
+      // Guard against an empty loop: phone Settings shows its Appearance and Advanced groups in every theme/language.
+      assert.ok(groups.length >= 2, `${theme}/${language}: Settings renders its groups ` + JSON.stringify(groups));
+      groupCount ??= groups.length;
+      assert.equal(groups.length, groupCount, `${theme}/${language}: the same Settings groups in every theme and language`);
+      for (const section of groups) assert.deepEqual(section, {padding: '14px', radius: '14px', border: '1px', filled: true, clipped: false}, `${theme}/${language} Settings group`);
     }
     await page.evaluate(() => { applyTheme('light'); setLanguage('zh'); });
     await visit(page, pages.my.host);
