@@ -9,6 +9,7 @@ runtime actions. Keep client-specific stacking and layout variants explicit.
 | Toast viewport width | `static/ui-surfaces.css` | Existing 75vw cap and natural short-message width. |
 | Toast phone/dock clearance | `static/host-layout.css` | Existing responsive layout override; no component material override. |
 | Global `--font-sans` / `--font-display` | `static/ui-surfaces.css` | Existing effective system stack; shadowed client declarations removed. |
+| Portrait My/Settings scrollports and content gutters | `static/host-layout.css` | Full-width owners with internal 14px side insets; existing trailing dock space and group geometry. `static/host-layout.js` retains page clipping, resident controls, visibility/inert state and My's scroll offset. |
 | Theme palettes and semantic surfaces | Existing client/shared token sheets | Host/Remote palette differences remain intentional. |
 
 `tests/ui_toast_ownership.test.mjs`, included in `test:auxiliary`, parses actual

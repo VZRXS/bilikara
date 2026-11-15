@@ -1093,7 +1093,12 @@ html[data-host-layout="portrait"] :is(.queue-card, .history-card) :is(.playlist,
   padding-bottom: calc(var(--mobile-content-trailing-inset) + 14px);
   scroll-padding-bottom: calc(var(--mobile-content-trailing-inset) + 14px);
 }
-html[data-host-layout="portrait"] .android-my-scroll { padding-bottom: calc(var(--mobile-content-trailing-inset) + 14px); }
+/* My/Settings keep full-width scroll owners, including during page motion.
+   The content gutters belong inside them, away from the system indicator. */
+html[data-host-layout="portrait"][data-host-page="my"] .shell-body { padding-inline: 0; }
+html[data-host-layout="portrait"] .android-my-scroll {
+  padding: 0 14px calc(var(--mobile-content-trailing-inset) + 14px);
+}
 html[data-host-layout="portrait"] .app-shell .host-workspace-region .session-users-panel { padding: 0; }
 html[data-host-layout="portrait"] :is(.queue-current, .song-item, .history-item) { padding-block: 8px; min-height: 0; }
 html[data-host-layout="portrait"] .history-item { flex-shrink: 0; }
@@ -1102,7 +1107,7 @@ html[data-host-layout="portrait"] :is(.queue-current-side, .song-badge-column) {
 html[data-host-layout="portrait"] .android-host-dock { grid-column: 1; }
 
 html[data-host-layout="portrait"] .settings-workspace-body {
-  padding: 0 0 calc(var(--mobile-content-trailing-inset) + 14px);
+  padding: 0 14px calc(var(--mobile-content-trailing-inset) + 14px);
 }
 html[data-host-layout="portrait"] :is(.android-my-scroll, .settings-workspace-body) {
   scroll-padding-bottom: calc(var(--mobile-content-trailing-inset) + 14px);
