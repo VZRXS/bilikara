@@ -99,8 +99,13 @@ for(const [engineName,engine]of Object.entries({chromium,webkit})) {
     assert.ok((await page.locator('#purek-dialog-info').innerText()).includes(await page.evaluate(()=>t('mediaOutput.backendUnavailable'))));
     assert.deepEqual(outputPosts,[{target:"purek",experimental:true}]);
     await page.keyboard.press('Escape');await page.locator('#purek-close').click();
+    // The DLNA flow must not interrupt local playback or replace its media. Assert playback intent and ownership,
+    // not an instantaneous video.paused sample: the split-player sync (holdVideoForAudio) may briefly hold video
+    // while headless WebKit's audio clock lags, on e4d1ba3 as well (bilikara-next-8 b5b-r1-diagnosis.md).
     assert.deepEqual(await page.evaluate(()=>({same:state.hostPlaybackSession.video===pair.video&&state.hostPlaybackSession.audio===pair.audio,
-      playing:!pair.video.paused&&!pair.audio.paused})),{same:true,playing:true});
+      phase:state.hostPlaybackSession.phase,intent:state.hostPlaybackSession.logicalPlayIntent,local:state.localShouldBePlaying,
+      networkHold:Boolean(state.networkOutputHoldingLocal),target:state.data.media_output.target})),
+      {same:true,phase:'playing',intent:true,local:true,networkHold:false,target:'local'});
   });
 
   // B5b (R8 §14.3): the output group's add-device entry is separate from DLNA availability. Native Alpha has no
