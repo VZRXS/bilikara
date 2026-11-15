@@ -65,3 +65,14 @@ test('result viewport CSS reserves a right gap only with the overflow class [B3-
   assert.match(css, /:root :is\([^{}]*\.result-page-viewport\)\s*\{ padding-right: 0; \}/);
   assert.match(css, /:root :is\([^{}]*\.result-page-viewport\)\.has-scroll-inset\s*\{ padding-right: 4px; \}/);
 });
+
+test('announcement content leaves scrollbar reservation to actual native overflow [B3-G6]', () => {
+  for (const file of ['announcements.css', 'compat83/announcements.css']) {
+    const css = load(file);
+    const content = css.match(/#announcements-content\s*\{([^}]+)\}/)?.[1];
+    assert.ok(content, file);
+    assert.match(content, /overflow-y:\s*auto/);
+    assert.match(content, /scrollbar-gutter:\s*auto/);
+    assert.doesNotMatch(css, /scrollbar-gutter:\s*stable/);
+  }
+});

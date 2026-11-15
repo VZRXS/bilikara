@@ -13,7 +13,8 @@
 #announcements-close { flex-shrink: 0; }
 #announcements-status { margin: 0; color: var(--accent); font-size: 13px; font-weight: 500; line-height: 1.5; }
 #announcements-status:empty { display: none; }
-#announcements-content { overflow-y: auto; min-height: 0; overscroll-behavior: contain; scrollbar-gutter: stable; padding-right: 4px; outline-offset: -2px; }
+/* Native classic scrollbars reserve width only when this content overflows. */
+#announcements-content { overflow-y: auto; min-height: 0; overscroll-behavior: contain; scrollbar-gutter: auto; padding-right: 4px; outline-offset: -2px; }
 #announcements-content:empty { display: none; }
 .announcement-item { display: grid; gap: 12px; overflow-wrap: anywhere; }
 .announcement-heading { display: grid; gap: 6px; }
