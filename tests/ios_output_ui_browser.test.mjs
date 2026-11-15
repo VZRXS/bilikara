@@ -139,6 +139,8 @@ for(const [engineName,engine]of Object.entries({chromium,webkit})) {
     });
     for(const [width,height] of mobile?[[360,780]]:[[1024,768],[700,700]])for(const language of ['zh','en','ja']){
       await page.setViewportSize({width,height});await page.evaluate(language=>setLanguage(language),language);await settle(page);
+      // A narrow desktop window turns Settings into a closed tool sheet; reopen it rather than toggling it shut.
+      if(!mobile&&!await page.locator('#purek-settings').isVisible()){await page.locator('#work-rail-settings').click();await settle(page);}
       await page.locator('#purek-settings').scrollIntoViewIfNeeded();
       const label=`${width}x${height} ${language}`;
       await unconnected(label);
