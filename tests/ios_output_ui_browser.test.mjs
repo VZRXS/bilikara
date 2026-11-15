@@ -249,7 +249,7 @@ for(const [engineName,engine]of Object.entries({chromium,webkit})) {
     // Busy guard: one request, disabled and aria-busy while pending; the switch never becomes the entry.
     gate=new Promise(resolve=>release=resolve);
     await action.click();
-    await page.waitForFunction(()=>document.querySelector('.media-output-pipeline-test').getAttribute('aria-busy')==='true');
+    await page.waitForFunction(()=>document.querySelector('[data-media-output="settings"] .media-output-pipeline-test').getAttribute('aria-busy')==='true');
     assert.equal(await action.isDisabled(),true);assert.equal(await action.innerText(),await page.evaluate(()=>t('mediaOutput.working')));
     await action.dispatchEvent('click');await action.dispatchEvent('click');
     assert.deepEqual(outputPosts,[{target:'native',experimental:true}],'duplicate activation is rejected while pending');
