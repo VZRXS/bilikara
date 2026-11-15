@@ -179,10 +179,19 @@ TopSlot equal-height and cross-page y comparisons, without hiding or collapsing
 the filter. The alphabet-to-TopSlot sequence remains in normal flow, and the
 following TopSlot's lower edge to the first card still measures the shared 12px
 gap. This exception does not apply to native/Remote contextual levels.
-Song results and large category covers use `--request-song-grid-gap: 8px`;
-UP/favorites and name/artist entry grids use `--request-compact-grid-gap: 10px`.
-Both tokens have one definition in `ui-surfaces.css`, consumed by Host and
-Remote. This keeps Remote song gaps at 8px and compact gaps at 10px.
+Song results and large category covers default to `--request-song-grid-gap: 8px`;
+UP/favorites and name/artist entry grids default to `--request-compact-grid-gap: 10px`.
+`ui-surfaces.css` owns both tokens and all scoped values; Host and Remote sheets
+only consume them. Native Android/iOS Hosts, including tablets, portrait Host
+and Remote retain 8px song gaps and 10px compact gaps at every width.
+Desktop Host preserves Preview 2 spacing with token overrides: song grids use
+10px; category covers use 16px, or 12px at widths up to 760px; 220px tag grids
+use 12px, while the workspace's 104px compact entries retain 10px. Desktop here
+means non-portrait, non-Remote Host whose `data-host-platform` is neither
+`android` nor `ios`; an unmarked Web Host counts as desktop. Platform markers
+select this exception, not viewport width. The category breakpoint only retains
+the existing desktop spacing response; grid columns and the 200px default
+admission are unchanged.
 Host song grids retain a 200px minimum by default. In a workspace already
 admitted as `data-host-columns="two"`, CSS may yield toward 178px only when
 the actual grid width can hold two cards plus the shared SongGrid gap. Wider

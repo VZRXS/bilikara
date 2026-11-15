@@ -688,16 +688,57 @@ assert.deepEqual(documentPageSize,{song:6,compact:12});assert.ok(Object.isFrozen
 `);
 });
 
-test('grid gap tokens have one shared owner for Host and Remote [B2-G13]', () => {
-  const tokens=['--request-song-grid-gap','--request-compact-grid-gap'],owners=[];
+test('grid gap owner preserves desktop spacing without selecting native tablets [B2-G13-N1]', () => {
+  const tokens=['--request-song-grid-gap','--request-compact-grid-gap'],policies=[],media=[];
+  const gaps=rule=>rule.type==='style'?rule.value.declarations.declarations
+    .filter(d=>d.property==='custom'&&tokens.includes(d.value.name)):[];
   for(const file of ['styles.css','remote.css','host-layout.css','ui-surfaces.css']) {
     const source=readFileSync(path.join(ROOT,'static',file),'utf8');
-    cssTransform({filename:file,code:Buffer.from(source),visitor:{Declaration(declaration){
-      if(declaration.property==='custom'&&tokens.includes(declaration.value.name))owners.push([file,declaration.value.name]);
+    cssTransform({filename:file,code:Buffer.from(source),visitor:{Rule(rule){
+      for(const declaration of gaps(rule)) {
+        const value=declaration.value.value;
+        assert.equal(value.length,1);assert.equal(value[0].type,'length');assert.equal(value[0].value.unit,'px');
+        policies.push({file,name:declaration.value.name,value:value[0].value.value,selectors:rule.value.selectors});
+      }
+      if(rule.type==='media'&&rule.value.rules.some(child=>gaps(child).length))media.push(rule.value);
     }}});
   }
-  assert.deepEqual(owners,tokens.map(name=>['ui-surfaces.css',name]),'client sheets cannot create independent gap policies');
-  const shared=readFileSync(path.join(ROOT,'static/ui-surfaces.css'),'utf8');
-  assert.match(shared,/--request-song-grid-gap: 8px;/);
-  assert.match(shared,/--request-compact-grid-gap: 10px;/);
+  assert.deepEqual([...new Set(policies.map(policy=>policy.file))],['ui-surfaces.css'],
+    'client sheets cannot create independent gap policies');
+  const role=selector=>selector.filter(part=>part.type==='class'||part.type==='id')
+    .map(part=>(part.type==='id'?'#':'.')+part.name).join(' ');
+  assert.deepEqual(policies.map(policy=>[policy.name,policy.value,policy.selectors.map(role)]),[
+    [tokens[0],8,['']], [tokens[1],10,['']], [tokens[0],10,['']],
+    [tokens[0],16,['.category-browser-grid']], [tokens[0],12,['.category-browser-grid']],
+    [tokens[1],12,['.tag-browser-tags']], [tokens[1],10,['#host-workspace-request .tag-browser-tags']]
+  ],'base roles and the approved desktop exceptions retain their exact gaps');
+  for(const policy of policies.slice(0,2))assert.deepEqual(policy.selectors,[[{type:'pseudo-class',kind:'root'}]]);
+  const matches=(parts,attributes)=>parts.every(part=>{
+    if(part.type==='pseudo-class'&&part.kind==='root')return true;
+    if(part.type==='pseudo-class'&&part.kind==='not')return !part.selectors.some(selector=>matches(selector,attributes));
+    assert.equal(part.type,'attribute');assert.equal(part.operation?.operator,'equal');
+    return attributes[part.name]===part.operation.value;
+  });
+  const clients=[
+    [{},true], [{'data-host-platform':'windows'},true], [{'data-host-platform':'macos'},true],
+    [{'data-host-layout':'portrait'},false], [{'data-ui-client':'remote'},false],
+    ...['android','ios'].flatMap(platform=>['portrait','landscape'].map(layout=>[
+      {'data-host-platform':platform,'data-host-layout':layout,'data-host-columns':'two'},false
+    ]))
+  ];
+  for(const policy of policies.slice(2))for(const selector of policy.selectors) {
+    assert.deepEqual(selector[0],{type:'pseudo-class',kind:'root'});
+    const end=selector.findIndex(part=>part.type==='combinator');
+    const rootScope=end<0?selector:selector.slice(0,end);
+    for(const [attributes,expected] of clients)assert.equal(matches(rootScope,attributes),expected,
+      'desktop overrides must exclude portrait, Remote and native Android/iOS at every width: '+JSON.stringify(attributes));
+  }
+  assert.equal(media.length,1,'only the existing desktop category spacing uses a width response');
+  assert.deepEqual(media[0].rules.flatMap(gaps).map(d=>[d.value.name,d.value.value[0].value.value]),[[tokens[0],12]]);
+  const queries=media[0].query.mediaQueries;
+  assert.equal(queries.length,1);assert.equal(queries[0].mediaType,'all');
+  assert.equal(queries[0].condition.type,'feature');
+  const feature=queries[0].condition.value;
+  assert.equal(feature.type,'range');assert.equal(feature.name,'width');assert.equal(feature.operator,'less-than-equal');
+  assert.deepEqual(feature.value.value.value,{unit:'px',value:760});
 });
