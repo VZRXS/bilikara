@@ -179,6 +179,28 @@ TopSlot equal-height and cross-page y comparisons, without hiding or collapsing
 the filter. The alphabet-to-TopSlot sequence remains in normal flow, and the
 following TopSlot's lower edge to the first card still measures the shared 12px
 gap. This exception does not apply to native/Remote contextual levels.
+Song results and large category covers default to `--request-song-grid-gap: 8px`;
+UP/favorites and name/artist entry grids default to `--request-compact-grid-gap: 10px`.
+`ui-surfaces.css` owns both tokens and all scoped values; Host and Remote sheets
+only consume them. Native Android/iOS Hosts, including tablets, portrait Host
+and Remote retain 8px song gaps and 10px compact gaps at every width.
+Desktop Host preserves Preview 2 spacing with token overrides: song grids use
+10px; category covers use 16px, or 12px at widths up to 760px; 220px tag grids
+use 12px, while the workspace's 104px compact entries retain 10px. Desktop here
+means non-portrait, non-Remote Host whose `data-host-platform` is neither
+`android` nor `ios`; an unmarked Web Host counts as desktop. Platform markers
+select this exception, not viewport width. The category breakpoint only retains
+the existing desktop spacing response; grid columns and the 200px default
+admission are unchanged.
+Host song grids retain a 200px minimum by default. In a workspace already
+admitted as `data-host-columns="two"`, CSS may yield toward 178px only when
+the actual grid width can hold two cards plus the shared SongGrid gap. Wider
+tracks retain 200px, while insufficient width keeps one column. This follows
+measured stage/workspace admission, never a device name or 1180px threshold.
+Equal-width song cards use nonshrinking 16:9 covers and the existing two-line
+title box. `ui-surfaces.css` reserves a 16px metadata row whether or not an
+owner is present, keeping complete card heights equal without truncating more
+title text or changing the existing title-overflow behavior.
 Category pagination uses the server's exact matched count when supplied; when
 the provider omits it, keep navigation available without displaying a guessed
 total. Phone category switches use ordinary 44px controls and 16px text, with
@@ -277,6 +299,15 @@ blocker.
 Bounded result grids measure layout border boxes rather than animated paint
 bounds. The first card is observed alongside viewport/content/font changes.
 Headings, footer, safe area and native dock occupy their existing layout tracks
-once. Complete rows are selected with the existing floor policy, never a forced
-three-row rule. Numeric recent geometry is available through the shared pager's
+once. The first native page measures an unpainted real card before committing
+capacity. Hidden, inert or inactive panels wait until visible. A visible panel
+with no measurable height still displays one page: its real grid columns and
+configured minimum rows (at least one) determine capacity even when no full row
+fits. Short-screen scroll ownership remains a separate layout decision.
+Loading and refresh retain fitted capacity. Complete rows follow the measured
+floor policy; phone song pages keep their approved minimum of three rows and
+scroll within the same viewport when those rows cannot fit. Remote uses shared
+document-flow budgets of 6 songs or 12 compact/category entries, because its
+content itself expands the document height. Numeric recent geometry is available
+through the shared pager's
 bounded diagnostic snapshot; no query or source identity is recorded.

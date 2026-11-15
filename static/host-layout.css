@@ -714,7 +714,7 @@ html[data-host-layout="portrait"] .request-mode-back svg {
 html[data-host-layout="portrait"] .category-browser-home { margin-right: 0; padding-right: 0; }
 html[data-host-layout="portrait"] .category-browser-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: var(--request-song-grid-gap);
 }
 html[data-host-layout="portrait"] .category-browser-card-name { font-size: 20px; padding: 10px; }
 /* Only the in-category switcher is text-only; the category home keeps artwork. */
@@ -748,7 +748,7 @@ html[data-host-layout="portrait"] .category-browser-tabs { padding: 0; gap: 6px;
 html[data-host-layout="portrait"] .request-mode-head { padding: 8px 10px; }
 html[data-host-layout="portrait"] :is(.request-discover-view, .request-search-view, .request-sources-view) > .request-mode-panel { padding: 0; }
 html[data-host-layout="portrait"] .category-browser-detail { --category-browser-tab-height: var(--host-control-height); }
-html[data-host-layout="portrait"] #host-workspace-request .search-results { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+html[data-host-layout="portrait"] #host-workspace-request .search-results { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--request-song-grid-gap); }
 /* Phone feed density: desktop's 118/150px minimum distorts narrow covers.
    Keep one renderer for category/search/source cards, including missing art. */
 html[data-host-layout="portrait"] #host-workspace-request .search-result-item {

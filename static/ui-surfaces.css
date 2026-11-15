@@ -4,6 +4,8 @@
   color-scheme: light;
   /* Controls retain app pressed/focus feedback instead of WebKit's tap tint. */
   -webkit-tap-highlight-color: transparent;
+  --request-song-grid-gap: 8px;
+  --request-compact-grid-gap: 10px;
   --settings-group-bg: #ffffff;
   --queue-order-bg: rgba(255, 255, 255, 0.96);
   --queue-order-border: 1.4px solid rgba(109, 98, 88, 0.18);
@@ -11,6 +13,25 @@
   --queue-order-shadow: 0 8px 18px rgba(88, 56, 30, 0.05);
   --queue-ready-border-color: rgba(43, 123, 96, 0.4);
   --queue-ready-shadow: 0 0 0 3px rgba(43, 123, 96, 0.07);
+}
+/* Desktop Host retains Preview 2 spacing; unmarked Web Hosts are desktop.
+   Native Android/iOS, portrait Host and Remote keep the shared 8px/10px gaps. */
+:root:not([data-ui-client="remote"]):not([data-host-layout="portrait"]):not([data-host-platform="android"]):not([data-host-platform="ios"]) {
+  --request-song-grid-gap: 10px;
+}
+:root:not([data-ui-client="remote"]):not([data-host-layout="portrait"]):not([data-host-platform="android"]):not([data-host-platform="ios"]) .category-browser-grid {
+  --request-song-grid-gap: 16px;
+}
+@media (max-width: 760px) {
+  :root:not([data-ui-client="remote"]):not([data-host-layout="portrait"]):not([data-host-platform="android"]):not([data-host-platform="ios"]) .category-browser-grid {
+    --request-song-grid-gap: 12px;
+  }
+}
+:root:not([data-ui-client="remote"]):not([data-host-layout="portrait"]):not([data-host-platform="android"]):not([data-host-platform="ios"]) .tag-browser-tags {
+  --request-compact-grid-gap: 12px;
+}
+:root:not([data-ui-client="remote"]):not([data-host-layout="portrait"]):not([data-host-platform="android"]):not([data-host-platform="ios"]) #host-workspace-request .tag-browser-tags {
+  --request-compact-grid-gap: 10px;
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
@@ -1176,6 +1197,18 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   .search-result-item {
   gap: 10px;
   padding-bottom: 10px;
+}
+:root :is(#host-workspace-request, .request-workspace, .search-card-surface, .remote-search-browser-view)
+  .search-result-cover {
+  flex: 0 0 auto;
+}
+/* Owner badges, missing owners and font fallback share one metadata track.
+   Title text keeps its existing two-line box and overflow behavior. */
+:root :is(#host-workspace-request, .request-workspace, .search-card-surface, .remote-search-browser-view)
+  .search-result-url {
+  height: 16px;
+  min-height: 16px;
+  line-height: 16px;
 }
 :root :is(#host-workspace-request, .request-workspace, .search-card-surface, .remote-search-browser-view)
   .search-result-meta {

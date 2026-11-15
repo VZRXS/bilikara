@@ -1,7 +1,9 @@
 /* Shared browse result navigation. This owns only the current read-only UI page. */
 (function (root) {
   "use strict";
-  const pageSize = 6;
+  // Remote is document-scrolled: these are product page budgets, not panel fit.
+  const documentPageSize = Object.freeze({song:6, compact:12});
+  const pageSize = documentPageSize.song;
   const measurements = [];
   const maximumPage = Math.floor(100000 / pageSize) + 1;
   const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
@@ -346,6 +348,7 @@
     let inputDraft = false;
     let viewportWidth = 0;
     let layoutFrame = null, observedItem = null, fittedGeometry = null;
+    let capacityReady = !fit;
     // Three rendered pages at most, in addition to the existing bounded data
     // cache. Detached cards keep decoded images and their pending-action nodes.
     const paintedPages = new Map();
@@ -386,12 +389,16 @@
       }
       return entry;
     }
+    function publishPageSize() {
+      const size = String(model.pageSize);
+      if (capacityReady && pager.dataset.pageSize !== size) pager.dataset.pageSize = size;
+    }
     function commitPaint(entry) {
       if (livePaint !== entry || entry.nodes.some(node => node.parentNode !== container)) container.replaceChildren(...entry.nodes);
       livePaint = entry;
       container.classList.remove("hidden");
       pager.dataset.page = String(model.page);
-      pager.dataset.pageSize = String(model.pageSize);
+      publishPageSize();
       onCommit(model.items, container);
       scheduleLayout();
     }
@@ -434,8 +441,77 @@
       }
     }
 
+    function measureCapacity(item) {
+      if (!item || item.classList.contains("search-empty")) return null;
+      const style = getComputedStyle(container);
+      // Use layout dimensions; animated transforms affect painted bounds
+      // without changing how many complete grid rows the panel can hold.
+      const itemStyle = getComputedStyle(item);
+      const borderBox = parseFloat(itemStyle.height) + (itemStyle.boxSizing === 'border-box' ? 0
+        : (parseFloat(itemStyle.paddingTop)||0)+(parseFloat(itemStyle.paddingBottom)||0)
+          +(parseFloat(itemStyle.borderTopWidth)||0)+(parseFloat(itemStyle.borderBottomWidth)||0));
+      // Capacity belongs to the grid geometry, never to the first song on
+      // each page. Titles and last-page contents must not invalidate caches.
+      const geometryKey = JSON.stringify([container.clientWidth, style.gridTemplateColumns,
+        style.rowGap, itemStyle.fontFamily, itemStyle.fontSize, itemStyle.lineHeight]);
+      if (fittedGeometry?.key !== geometryKey) fittedGeometry = {key:geometryKey, itemHeight:borderBox};
+      const geometry = {columns:style.gridTemplateColumns.split(" ").length,
+        height:fit.clientHeight, itemHeight:fittedGeometry.itemHeight,
+        minimumRows:typeof minimumRows === "function" ? minimumRows() : minimumRows,
+        gap:parseFloat(style.rowGap) || 0,
+        padding:(parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0)};
+      // A visible panel with no measurable height still displays one page.
+      // Preserve its actual height in diagnostics; the fit floor selects the
+      // configured minimumRows (at least one) rather than a guessed item count.
+      const size = fittedPageSize({...geometry, height:Math.max(1, geometry.height)});
+      const measurement = {...geometry, size, width:fit.clientWidth};
+      if (JSON.stringify(measurements.at(-1)) !== JSON.stringify(measurement)) {
+        measurements.push(measurement); if (measurements.length > 24) measurements.shift();
+      }
+      return size;
+    }
+
+    function fitPanelVisible() {
+      if (!pager.getClientRects().length || !container.getClientRects().length
+        || viewport.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+      // The grid's own loading inert flag must not block its first real page.
+      const visibility = getComputedStyle(container).visibility;
+      return visibility !== "hidden" && visibility !== "collapse";
+    }
+
+    function initialCapacity() {
+      if (!fitPanelVisible()) return null;
+      // Measure one real card at this grid's width without publishing a guessed
+      // page or starting page reads. The probe is out of flow and never painted.
+      const probe = container.cloneNode(false);
+      probe.removeAttribute("id");
+      probe.setAttribute("aria-hidden", "true");
+      probe.inert = true;
+      Object.assign(probe.style, {position:"absolute", visibility:"hidden", pointerEvents:"none",
+        width:getComputedStyle(container).width, height:"auto", top:"0", left:"0"});
+      renderItems(options.items.slice(0, 1), options.emptyText, probe);
+      viewport.append(probe);
+      try { return measureCapacity(probe.firstElementChild); }
+      finally { probe.remove(); }
+    }
+
+    function updateModel(size) {
+      model.update({...options, pageSize:size, shouldPrefetch:() => Boolean(viewport.getClientRects().length)});
+    }
+
+    function commitInitialCapacity() {
+      const size = initialCapacity();
+      if (size === null) return;
+      capacityReady = true;
+      updateModel(size);
+    }
+
     function layout() {
-      if (!pager.getClientRects().length) return;
+      if (!pager.getClientRects().length || (fit && !fitPanelVisible())) return;
+      if (fit && !capacityReady && options.items?.length) {
+        commitInitialCapacity();
+        return;
+      }
       // Only bounded, actually scrolling viewports need the content inset.
       // Remote document flow and short result pages keep their full width.
       const scrollTop = viewport.scrollTop;
@@ -448,32 +524,11 @@
       if (fit && !model.loading && !paintBusy) {
         const item = container.firstElementChild;
         if (!item || item.classList.contains("search-empty")) return;
-        const style = getComputedStyle(container);
         if (observedItem !== item) {
           if (observedItem) resizeObserver.unobserve(observedItem);
           observedItem = item; resizeObserver.observe(item);
         }
-        // Use layout dimensions; animated transforms affect painted bounds
-        // without changing how many complete grid rows the panel can hold.
-        const itemStyle = getComputedStyle(item);
-        const borderBox = parseFloat(itemStyle.height) + (itemStyle.boxSizing === 'border-box' ? 0
-          : (parseFloat(itemStyle.paddingTop)||0)+(parseFloat(itemStyle.paddingBottom)||0)
-            +(parseFloat(itemStyle.borderTopWidth)||0)+(parseFloat(itemStyle.borderBottomWidth)||0));
-        // Capacity belongs to the grid geometry, never to the first song on
-        // each page. Titles and last-page contents must not invalidate caches.
-        const geometryKey = JSON.stringify([container.clientWidth, style.gridTemplateColumns,
-          style.rowGap, itemStyle.fontFamily, itemStyle.fontSize, itemStyle.lineHeight]);
-        if (fittedGeometry?.key !== geometryKey) fittedGeometry = {key:geometryKey, itemHeight:borderBox};
-        const geometry = {columns:style.gridTemplateColumns.split(" ").length,
-          height:fit.clientHeight, itemHeight:fittedGeometry.itemHeight,
-          minimumRows:typeof minimumRows === "function" ? minimumRows() : minimumRows,
-          gap:parseFloat(style.rowGap) || 0,
-          padding:(parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0)};
-        const size = fittedPageSize(geometry);
-        const measurement = {...geometry, size, width:fit.clientWidth};
-        if (JSON.stringify(measurements.at(-1)) !== JSON.stringify(measurement)) {
-          measurements.push(measurement); if (measurements.length > 24) measurements.shift();
-        }
+        const size = measureCapacity(item);
         if (size !== null && model.pageSize !== size) {
           cancelNavigation();
           viewport.style.minHeight = "";
@@ -603,7 +658,7 @@
       pager.setAttribute("aria-busy", String(busy));
       container.setAttribute("aria-busy", String(busy));
       container.inert = busy;
-      if(!retainPages){pager.dataset.page = String(model.page);pager.dataset.pageSize = String(model.pageSize);}
+      if(!retainPages){pager.dataset.page = String(model.page);publishPageSize();}
       input.setAttribute("aria-label", translate("pagination.pageInput"));
       submit.setAttribute("aria-label", translate("pagination.go"));
       for (const button of pager.querySelectorAll("[data-page-action]")) {
@@ -926,9 +981,17 @@
           visibleDots = [];
         }
         options = value;
+        if (fit && !capacityReady && value.items.length) {
+          // Reserve the final footer before reading available panel height.
+          // Hidden/inactive panels wait for the existing layout lifecycle; a
+          // visible panel always shows at least its configured minimum rows.
+          pager.hidden = container.classList.contains("hidden");
+          commitInitialCapacity();
+          return;
+        }
         const columns = rows ? getComputedStyle(container).gridTemplateColumns.split(" ").length : 1;
-        model.update({...value, shouldPrefetch:() => Boolean(viewport.getClientRects().length),
-          pageSize:fit && model.items.length ? model.pageSize : rows ? Math.max(1, Math.min(8, columns)) * rows : value.pageSize});
+        updateModel(fit && capacityReady ? model.pageSize
+          : rows ? Math.max(1, Math.min(8, columns)) * rows : value.pageSize);
       },
       localize(language) {
         options.language = language;
@@ -956,7 +1019,7 @@
     };
   }
 
-  const api = { diagnostics: () => measurements.map(value => ({...value})), Pages, pageSize, maximumPage, compactCount, swipeDirection, dotWindow, fittedPageSize, create };
+  const api = { diagnostics: () => measurements.map(value => ({...value})), Pages, pageSize, documentPageSize, maximumPage, compactCount, swipeDirection, dotWindow, fittedPageSize, create };
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.BilikaraResultPager = api;
 })(typeof window === "undefined" ? null : window);

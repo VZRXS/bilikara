@@ -2597,7 +2597,7 @@ select:disabled {
 
 .search-results {
   display: grid;
-  gap: 10px;
+  gap: var(--request-song-grid-gap);
   align-content: start;
   grid-auto-rows: max-content;
   margin-top: 0;
@@ -2763,7 +2763,7 @@ select:disabled {
 .follow-up-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
-  gap: 8px;
+  gap: var(--request-compact-grid-gap);
   max-height: none;
   overflow-x: hidden;
   overflow-y: auto;
@@ -2914,7 +2914,7 @@ select:disabled {
 .remote-search-browser-view .search-results {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: var(--request-song-grid-gap);
   align-items: start;
   align-content: start;
   grid-auto-rows: max-content;
@@ -3132,7 +3132,7 @@ select:disabled {
 .tag-browser-tags {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
-  gap: 8px;
+  gap: var(--request-compact-grid-gap);
   align-content: start;
   grid-auto-rows: max-content;
   min-height: 0;
@@ -3219,7 +3219,7 @@ select:disabled {
 .category-browser-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: var(--request-song-grid-gap);
   overflow: visible;
   padding-right: 4px;
 }
