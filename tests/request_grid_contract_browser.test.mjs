@@ -494,10 +494,11 @@ for (const engine of engines) {
 // After each change settles, the last BilikaraResultPager.diagnostics() entry must describe the visible pager's
 // measured fit box, grid and card, and the committed data-page-size; each change commits at most once, never back.
 // 200% text uses the repository's root font-size convention (32px); it cannot reproduce Android WebView textZoom.
-function pagerFacts(card) {
+function pagerFacts([card, sourceFit]) {
   const shown = n => n.getClientRects().length && getComputedStyle(n).visibility !== 'hidden';
   const cards = [...document.querySelectorAll(card)].filter(shown), first = cards[0];
-  const grid = first.parentElement, fit = grid.closest('.source-browse-scroll') || grid.closest('.result-page-viewport');
+  // Song pagers fit their own result viewport (fit:true); the source list fits its bounded source scroller.
+  const grid = first.parentElement, fit = sourceFit ? grid.closest('.source-browse-scroll') : grid.closest('.result-page-viewport');
   const pager = [...document.querySelectorAll('.result-pager')].find(p => shown(p) && p.closest('.android-result-frame,.source-mode-panel,.request-mode-panel')?.contains(grid));
   const style = getComputedStyle(grid), cardStyle = getComputedStyle(first);
   const last = window.BilikaraResultPager.diagnostics().at(-1);
@@ -505,13 +506,14 @@ function pagerFacts(card) {
     rendered: cards.filter(n => n.parentElement === grid).length,
     fit: fit ? {width: fit.clientWidth, height: fit.clientHeight} : null, columns: style.gridTemplateColumns.split(' ').length,
     gap: parseFloat(style.rowGap) || 0, itemHeight: parseFloat(cardStyle.height),
-    fitted: last ? window.BilikaraResultPager.fittedPageSize({...last, height: Math.max(1, last.height)}) : null};
+    // A whole-panel scroll owner records its natural height but fits minimum rows (height 1), as documented in B2 step 5.
+    fitted: last ? window.BilikaraResultPager.fittedPageSize({...last, height: last.scrollOwner === 'panel' ? 1 : Math.max(1, last.height)}) : null};
 }
-async function g11Check(page, card, label, before) {
+async function g11Check(page, card, label, before, sourceFit) {
   await settle(page);
   await page.waitForFunction(() => [...document.querySelectorAll('.result-pager')].filter(p => p.getClientRects().length).every(p => p.getAttribute('aria-busy') !== 'true'));
   await settle(page);
-  const f = await page.evaluate(pagerFacts, card), text = `${label}: ` + JSON.stringify({...f, before});
+  const f = await page.evaluate(pagerFacts, [card, Boolean(sourceFit)]), text = `${label}: ` + JSON.stringify({...f, before});
   assert.ok(f.last && f.fit, 'diagnostics recorded a measurement for a measured fit box: ' + text);
   assert.equal(f.last.size, f.pageSize, 'diagnostics size is the committed page size: ' + text);
   assert.equal(f.last.columns, f.columns, 'diagnostics columns match the grid: ' + text);
@@ -532,15 +534,15 @@ for (const engine of engines) for (const name of ['uid-detail', 'source-list']) 
     const browser = await engine.launch({headless: true}); t.after(() => browser.close());
     const {page, errors} = await openSession(t, browser, {kind: 'alpha', viewport: [393, 844], touch: true, keyboard: true});
     await visit(page, pages[name].host);
-    const card = pages[name].card;
-    let history = await g11Check(page, card, 'initial');
-    const step = async (label, fn) => { await page.evaluate(fn); history = await g11Check(page, card, label, history); };
+    const card = name === 'source-list' ? '#follow-up-grid [data-uid]' : pages[name].card, sourceFit = name === 'source-list';
+    let history = await g11Check(page, card, 'initial', null, sourceFit);
+    const step = async (label, fn) => { await page.evaluate(fn); history = await g11Check(page, card, label, history, sourceFit); };
     await step('font 200%', () => { document.documentElement.style.fontSize = '32px'; });
     await step('font 100%', () => { document.documentElement.style.fontSize = ''; });
     for (const [width, height] of [[844, 393], [393, 844]]) {
       await page.setViewportSize({width, height});
       await page.evaluate(([w, h]) => { Object.assign(visualViewport, {width: w, height: h}); visualViewport.dispatchEvent(new Event('resize')); }, [width, height]);
-      history = await g11Check(page, card, `rotate ${width}x${height}`, history);
+      history = await g11Check(page, card, `rotate ${width}x${height}`, history, sourceFit);
     }
     await step('IME open', () => { visualViewport.height = 520; visualViewport.dispatchEvent(new Event('resize')); });
     await step('IME close', () => { visualViewport.height = innerHeight; visualViewport.dispatchEvent(new Event('resize')); });
@@ -559,7 +561,7 @@ for (const engine of engines) for (const name of ['uid-detail', 'source-list']) 
       await page.evaluate(() => activateRequestSubview('sources'));
       await page.waitForFunction(() => [...document.querySelectorAll('#follow-up-grid [data-uid]')].some(n => n.getClientRects().length));
     }
-    await g11Check(page, card, 're-entered', history);
+    await g11Check(page, card, 're-entered', history, sourceFit);
     assert.deepEqual(errors, []);
   });
 }
