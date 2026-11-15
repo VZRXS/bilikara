@@ -296,6 +296,29 @@ suppresses selection; inputs, copyable links, user prose and diagnostic/error
 details retain native copying. This does not install a document-wide gesture
 blocker.
 
+Compact columns and an overlay tool sheet make a landscape mobile Host eligible
+for whole-panel scrolling. Admission additionally requires that the bounded
+layout cannot fit one complete card row after its TopSlot and full footer,
+including the visible 52px tools and 52px Pager, reserve their normal space.
+Overlays with enough height retain their internal owner and Pager bottom anchor,
+including when tools hide. Pagination temporarily restores the bounded layout
+at uninset width with content-dependent scrollbars suppressed to measure that
+budget, then restores styles and scroll offsets
+before paint. This same baseline governs entry and exit, so natural whole-panel
+height cannot feed back into admission. The existing observer also watches the
+panel and its header/body tracks for height and toolbar changes; no polling is
+added. No device or viewport-size breakpoint selects this mode, and portrait,
+two-column and desktop geometry stay unchanged.
+When admitted, the complete Request tool panel is the sole vertical scroll owner.
+Its header, active content, source tools and Pager scroll together. Internal
+source/list/result wrappers use natural height and visible overflow.
+Each page retains its configured minimum rows (at least one complete row),
+measured from real columns; natural content height cannot increase capacity.
+The same outer frame retains safe-area clearance; the scrollport adds 12px
+trailing space and the actual keyboard overlay inset so the Pager stays reachable.
+Source editing cancels pending holds on the actual owner's scroll and uses that
+owner's bounds/offset for drag placement and edge scrolling.
+
 Bounded result grids measure layout border boxes rather than animated paint
 bounds. The first card is observed alongside viewport/content/font changes.
 Headings, footer, safe area and native dock occupy their existing layout tracks
@@ -304,6 +327,13 @@ capacity. Hidden, inert or inactive panels wait until visible. A visible panel
 with no measurable height still displays one page: its real grid columns and
 configured minimum rows (at least one) determine capacity even when no full row
 fits. Short-screen scroll ownership remains a separate layout decision.
+Fit cache keys include the actual card border-box height and available fit
+height, along with columns, spacing, fonts, minimum rows and scroll-owner policy.
+The existing coalesced ResizeObserver and font events remeasure current geometry
+after text scaling, rotation, dock/keyboard or tool-row changes. Hiding a page
+clears fit geometry and releases its observed card; re-entry's existing render
+lifecycle observes the new card and schedules a fresh measurement. No timer or
+polling is added. B3's uninset-width overflow decision stays unchanged.
 Loading and refresh retain fitted capacity. Complete rows follow the measured
 floor policy; phone song pages keep their approved minimum of three rows and
 scroll within the same viewport when those rows cannot fit. Remote uses shared

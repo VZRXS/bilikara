@@ -113,7 +113,8 @@
       grid.addEventListener('contextmenu', event => {
         if (this.mobile && (this.hold || this.editing) && event.target.closest('.source-removal-card')) event.preventDefault();
       });
-      this.scroll.addEventListener('scroll', () => { if (!this.hold?.triggered) this.cancelHold(); });
+      // Capture scrolling from the bounded list or the short-screen panel.
+      (this.panel.closest('#host-workspace-request') || this.scroll).addEventListener('scroll', () => { if (!this.hold?.triggered) this.cancelHold(); }, true);
       root.addEventListener('pointerdown', event => {
         if (this.toolPointer && event.pointerId !== this.toolPointer.id) this.toolPointer = null;
         if (this.hold && event.pointerId !== this.hold.id) this.cancelHold();
@@ -140,6 +141,10 @@
           options.renderPage(rows, message, grid, this); this.paint();
         },
       }) : null;
+    }
+    scrollOwner() {
+      return getComputedStyle(this.scroll).getPropertyValue('--result-page-scroll-owner').trim() === 'panel'
+        ? this.scroll.closest('#host-workspace-request') || this.scroll : this.scroll;
     }
     get blocked() { return this.pending || this.loading || !this.available || !this.active; }
     get interacting() { return Boolean(this.pointer || this.hold); }
@@ -388,21 +393,22 @@
       const box = this.trashSlot.getBoundingClientRect();
       pointer.overTrash = event.clientX >= box.left && event.clientX <= box.right && event.clientY >= box.top && event.clientY <= box.bottom;
       this.remove.classList.toggle('drag-over',pointer.overTrash);
-      const bounds = this.grid.getBoundingClientRect(), scroll = this.scroll.getBoundingClientRect();
+      const owner = this.scrollOwner();
+      const bounds = this.grid.getBoundingClientRect(), scroll = owner.getBoundingClientRect();
       pointer.valid = event.clientX >= bounds.left && event.clientX <= bounds.right
         && event.clientY >= Math.max(bounds.top,scroll.top) && event.clientY <= Math.min(bounds.bottom,scroll.bottom);
       this.clearIndicators(); if (!pointer.valid) return;
       if (!pointer.rows) {
         pointer.rows = [];
         for (const card of this.grid.querySelectorAll('.source-removal-card')) {
-          const box = card.getBoundingClientRect(), top = box.top + this.scroll.scrollTop, bottom = box.bottom + this.scroll.scrollTop;
+          const box = card.getBoundingClientRect(), top = box.top + owner.scrollTop, bottom = box.bottom + owner.scrollTop;
           let row = pointer.rows.at(-1);
           if (!row || Math.abs(row.top-top)>4) { row={top,bottom,cards:[]};pointer.rows.push(row); }
           row.cards.push({node:card,left:box.left,right:box.right});
           if (card.dataset.sourceId === pointer.sourceId) pointer.rowIndex = pointer.rows.length-1;
         }
       }
-      const position = dropPosition(pointer.rows,pointer.rowIndex,event.clientX,event.clientY+this.scroll.scrollTop);
+      const position = dropPosition(pointer.rows,pointer.rowIndex,event.clientX,event.clientY+owner.scrollTop);
       if (!position) { pointer.valid = false; return; }
       pointer.rowIndex = position.rowIndex;
       const closest = position.card.node, before = position.before;
@@ -416,8 +422,8 @@
       const index = members.findIndex(row => row.id === closest.dataset.sourceId);
       pointer.before = before ? closest.dataset.sourceId : members[index+1]?.id || null;
       closest.classList.add(before ? 'drop-before' : 'drop-after');
-      if (event.clientY < scroll.top+24) this.scroll.scrollTop -= 12;
-      else if (event.clientY > scroll.bottom-24) this.scroll.scrollTop += 12;
+      if (event.clientY < scroll.top+24) owner.scrollTop -= 12;
+      else if (event.clientY > scroll.bottom-24) owner.scrollTop += 12;
     }
     pointerUp(event) {
       if (this.hold?.id === event.pointerId) {

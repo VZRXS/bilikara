@@ -230,3 +230,34 @@ test('phone pending list uses one track without a hidden or absent current song 
   assert.match(stage || '', /grid-template-rows: auto minmax\(0, 1fr\)/);
   assert.match(stage || '', /gap: 10px/);
 });
+
+
+test('source dragging uses the whole-panel owner only in compact overlay flow [B2-G9]', () => {
+  let panelFlow=false;
+  const panel={scrollTop:100,getBoundingClientRect:()=>({top:0,bottom:160})};
+  const inner={scrollTop:40,closest:()=>panel,getBoundingClientRect:()=>({top:20,bottom:180})};
+  const context=vm.createContext({getComputedStyle:()=>({getPropertyValue:()=>panelFlow?'panel':''})});
+  const source=load('source-removal.js'),start=source.indexOf('  function dropPosition('),end=source.indexOf('  root.BilikaraSourceRemoval');
+  assert.ok(start>=0&&end>start);
+  vm.runInContext(source.slice(start,end)+'\nglobalThis.Editor=SourceEditor;',context);
+  const card=(id,top)=>({dataset:{sourceId:id},classList:{add(){}},style:{setProperty(){}},
+    getBoundingClientRect:()=>({left:0,right:100,top,bottom:top+72})});
+  const cards=[card('a',20),card('b',102)];
+  const editor=Object.assign(Object.create(context.Editor.prototype),{
+    scroll:inner,grid:{getBoundingClientRect:()=>({left:0,right:300,top:-100,bottom:600}),querySelectorAll:()=>cards},
+    active:true,available:true,version:'v1',filter:'',records:[{id:'a'},{id:'b'}],
+    trashSlot:{getBoundingClientRect:()=>({left:400,right:452,top:0,bottom:52})},
+    remove:{classList:{toggle(){}}},clearIndicators(){}
+  });
+  const reset=()=>editor.pointer={id:7,dragging:true,sourceId:'a',ids:['a'],version:'v1',filter:'',preview:{style:{}}};
+  const move=y=>editor.pointerMove({pointerId:7,clientX:70,clientY:y,preventDefault(){}});
+  assert.equal(editor.scrollOwner(),inner);reset();move(170);
+  assert.equal(inner.scrollTop,52,'bounded list keeps its original edge scrolling');
+  assert.equal(panel.scrollTop,100);
+  panelFlow=true;reset();assert.equal(editor.scrollOwner(),panel);move(150);
+  assert.equal(panel.scrollTop,112,'short-screen drag scrolls the actual visible panel edge');
+  assert.equal(inner.scrollTop,52,'released inner list cannot become a second owner');
+  assert.equal(editor.pointer.rows[0].top,120,'row coordinates include the actual panel scroll offset');
+  reset();move(10);assert.equal(panel.scrollTop,100,'top edge uses the same panel');
+  panelFlow=false;assert.equal(editor.scrollOwner(),inner,'rotation/resident layout restores bounded ownership');
+});

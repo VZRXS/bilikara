@@ -9,7 +9,7 @@
   const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
 
   // Bounded native panels fit complete rows. A hidden/unmeasured panel keeps
-  // its existing page; very short panels use one row and internal scrolling.
+  // its existing page; short panels use their minimum rows in one scroll owner.
   function fittedPageSize({columns, height, itemHeight, gap = 0, padding = 0, minimumRows = 1}) {
     if (![columns,height,itemHeight,gap,padding].every(Number.isFinite)
       || columns < 1 || height <= 0 || itemHeight <= 0 || gap < 0 || padding < 0) return null;
@@ -441,30 +441,83 @@
       }
     }
 
-    function measureCapacity(item) {
+    function itemBlockSize(style) {
+      return parseFloat(style.height) + (style.boxSizing === "border-box" ? 0
+        : (parseFloat(style.paddingTop)||0)+(parseFloat(style.paddingBottom)||0)
+          +(parseFloat(style.borderTopWidth)||0)+(parseFloat(style.borderBottomWidth)||0));
+    }
+
+    function syncPanelScrollOwner(item, probe) {
+      const panel = container.closest("#host-workspace-request");
+      if (!panel) return;
+      const attribute = "data-result-scroll-owner";
+      const previous = panel.getAttribute(attribute);
+      if (getComputedStyle(panel).getPropertyValue("--result-page-panel-scroll-candidate").trim() !== "1") {
+        if (previous !== null) { panel.removeAttribute(attribute); panel.scrollTop = 0; }
+        return;
+      }
+      const offsets = [...new Set([panel, viewport, fit])].map(node => [node, node.scrollTop]);
+      const styles = [...new Set([viewport, fit, container])].flatMap(node =>
+        ["padding-right", "overflow-x", "overflow-y"].map(property => [node, property,
+          node.style.getPropertyValue(property), node.style.getPropertyPriority(property)]));
+      const probeWidth = probe?.style.width;
+      let panelScroll = previous === "panel";
+      try {
+        // Always use the bounded layout, even while the whole panel scrolls.
+        // Ignore inherited inset classes and content-dependent scrollbars.
+        // The actual footer/tools still reserve their full layout slots.
+        if (previous !== null) panel.removeAttribute(attribute);
+        for (const [node, property] of styles) node.style.setProperty(property, property === "padding-right" ? "0px" : "hidden", "important");
+        const style = getComputedStyle(container);
+        if (probe) probe.style.width = style.width;
+        const rowHeight = itemBlockSize(getComputedStyle(item));
+        const required = rowHeight + (parseFloat(style.paddingTop)||0) + (parseFloat(style.paddingBottom)||0);
+        if (Number.isFinite(required) && rowHeight > 0) panelScroll = fit.clientHeight + .5 < required;
+      } finally {
+        for (const [node, property, value, priority] of styles) {
+          if (value) node.style.setProperty(property, value, priority);
+          else node.style.removeProperty(property);
+        }
+        if (previous !== null) panel.setAttribute(attribute, previous);
+        if (probe) probe.style.width = probeWidth;
+        for (const [node, top] of offsets) if (node.scrollTop !== top) node.scrollTop = top;
+      }
+      if (panelScroll) {
+        if (previous !== "panel") panel.setAttribute(attribute, "panel");
+      } else if (previous !== null) { panel.removeAttribute(attribute); panel.scrollTop = 0; }
+      // A real-card probe must follow the final width, not the temporary one.
+      if (probe) probe.style.width = getComputedStyle(container).width;
+    }
+
+    function measureCapacity(item, probe = null) {
       if (!item || item.classList.contains("search-empty")) return null;
+      syncPanelScrollOwner(item, probe);
       const style = getComputedStyle(container);
       // Use layout dimensions; animated transforms affect painted bounds
       // without changing how many complete grid rows the panel can hold.
       const itemStyle = getComputedStyle(item);
-      const borderBox = parseFloat(itemStyle.height) + (itemStyle.boxSizing === 'border-box' ? 0
-        : (parseFloat(itemStyle.paddingTop)||0)+(parseFloat(itemStyle.paddingBottom)||0)
-          +(parseFloat(itemStyle.borderTopWidth)||0)+(parseFloat(itemStyle.borderBottomWidth)||0));
-      // Capacity belongs to the grid geometry, never to the first song on
-      // each page. Titles and last-page contents must not invalidate caches.
+      const borderBox = itemBlockSize(itemStyle);
+      const availableHeight = fit.clientHeight;
+      const rowFloor = typeof minimumRows === "function" ? minimumRows() : minimumRows;
+      const panelScroll = style.getPropertyValue("--result-page-scroll-owner").trim() === "panel";
+      // Card identity alone cannot invalidate fit. Actual border-box or frame
+      // height changes must, including font scaling, rotation and tool insets.
       const geometryKey = JSON.stringify([container.clientWidth, style.gridTemplateColumns,
-        style.rowGap, itemStyle.fontFamily, itemStyle.fontSize, itemStyle.lineHeight]);
+        style.rowGap, style.paddingTop, style.paddingBottom, itemStyle.fontFamily,
+        itemStyle.fontSize, itemStyle.lineHeight, borderBox, availableHeight, rowFloor, panelScroll]);
       if (fittedGeometry?.key !== geometryKey) fittedGeometry = {key:geometryKey, itemHeight:borderBox};
       const geometry = {columns:style.gridTemplateColumns.split(" ").length,
-        height:fit.clientHeight, itemHeight:fittedGeometry.itemHeight,
-        minimumRows:typeof minimumRows === "function" ? minimumRows() : minimumRows,
+        height:availableHeight, itemHeight:fittedGeometry.itemHeight,
+        minimumRows:rowFloor,
         gap:parseFloat(style.rowGap) || 0,
         padding:(parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0)};
       // A visible panel with no measurable height still displays one page.
       // Preserve its actual height in diagnostics; the fit floor selects the
       // configured minimumRows (at least one) rather than a guessed item count.
-      const size = fittedPageSize({...geometry, height:Math.max(1, geometry.height)});
-      const measurement = {...geometry, size, width:fit.clientWidth};
+      // A whole-panel scrollport gives the grid natural content height. It is
+      // not a fit budget: feeding it back would grow a page on every paint.
+      const size = fittedPageSize({...geometry, height:panelScroll ? 1 : Math.max(1, geometry.height)});
+      const measurement = {...geometry, size, width:fit.clientWidth, scrollOwner:panelScroll ? "panel" : "viewport"};
       if (JSON.stringify(measurements.at(-1)) !== JSON.stringify(measurement)) {
         measurements.push(measurement); if (measurements.length > 24) measurements.shift();
       }
@@ -491,7 +544,7 @@
         width:getComputedStyle(container).width, height:"auto", top:"0", left:"0"});
       renderItems(options.items.slice(0, 1), options.emptyText, probe);
       viewport.append(probe);
-      try { return measureCapacity(probe.firstElementChild); }
+      try { return measureCapacity(probe.firstElementChild, probe); }
       finally { probe.remove(); }
     }
 
@@ -550,6 +603,8 @@
     resizeObserver.observe(container);
     if (fit) {
       if (fit !== viewport) resizeObserver.observe(fit);
+      const panel = container.closest("#host-workspace-request");
+      if (panel) for (const node of [panel, ...panel.children]) resizeObserver.observe(node);
       document.fonts?.ready.then(scheduleLayout);
       document.fonts?.addEventListener("loadingdone", () => {fittedGeometry = null;scheduleLayout();});
     }
@@ -1003,6 +1058,8 @@
       },
       hide() {
         if (layoutFrame !== null) { cancelAnimationFrame(layoutFrame); layoutFrame = null; }
+        fittedGeometry = null;
+        if (observedItem) { resizeObserver.unobserve(observedItem); observedItem = null; }
         model.version += 1;
         cancelNavigation();
         if (retainPages) retirePaint();
