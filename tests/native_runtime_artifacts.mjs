@@ -81,48 +81,72 @@ async function exclusiveTurn(directory, lock, queue, ticket, action, deadline, p
       continue;
     }
     pruneLockLeftovers(directory);
-    if (acquire(lock, token)) break;
-    let held = '', age;
+    // Every unsuccessful turn waits at least one poll interval and honors the deadline,
+    // including when acquisition fails while no lock exists (a persistent Windows EPERM).
+    const problem = {code: ''};
+    if (acquire(lock, token, problem)) break;
+    let held = '', age = null;
     try { held = readFileSync(path.join(lock, 'owner'), 'utf8'); } catch {}
-    try { age = Date.now() - statSync(lock).mtimeMs; } catch { continue; }
+    try { age = Date.now() - statSync(lock).mtimeMs; } catch {}
     const holder = Number(held.split(':')[0]);
-    if (held ? !(Number.isSafeInteger(holder) && holder > 0 && alive(holder)) : age > 60_000) {
-      reclaim(lock, held);
-      continue;
+    if (age !== null && (held ? !(Number.isSafeInteger(holder) && holder > 0 && alive(holder)) : age > 60_000)) {
+      try { if (await reclaim(lock, held)) continue; } catch (error) { problem.code = error.code || error.message; }
     }
-    assert.ok(Date.now() < deadline, `timed out waiting for the Cargo artifact lock ${lock}`);
-    await delay(poll);
+    assert.ok(Date.now() < deadline, `timed out waiting for the Cargo artifact lock ${lock}${age === null ? ' (no lock present)' : ''}${problem.code ? `; last error ${problem.code}` : ''}`);
+    await delay(Math.max(poll, 1));
   }
   try {
     return await action();
   } finally {
-    release(lock);
+    await release(lock);
   }
 }
 
-export function acquire(lock, token) {
+// File operations used by the lock, replaceable by tests. Windows can refuse to rename
+// a directory while another process holds a handle inside it (a waiter reading the
+// owner token), so renames retry transient EPERM/EACCES/EBUSY with exponential
+// backoff (10 ms doubling, at most 200 ms apart) for a bounded total time.
+export const lockIo = {rename: renameSync, retryMs: 5_000};
+const TRANSIENT = ['EPERM', 'EACCES', 'EBUSY'];
+async function renameRetrying(from, to, purpose) {
+  const started = Date.now();
+  for (let attempt = 1, wait = 10; ; attempt++, wait = Math.min(wait * 2, 200)) {
+    try { return lockIo.rename(from, to); } catch (error) {
+      if (!TRANSIENT.includes(error.code) || Date.now() - started + wait > lockIo.retryMs) {
+        throw Object.assign(new Error(`could not ${purpose} ${from} after ${attempt} attempt(s) over ${Date.now() - started} ms: ${error.code || error.message}`), {code: error.code, cause: error});
+      }
+      await delay(wait);
+    }
+  }
+}
+
+// A tombstone has a unique name; one that cannot be deleted now is reclaimed later.
+const discard = tomb => { try { rmSync(tomb, {recursive: true, force: true}); } catch {} };
+
+export function acquire(lock, token, problem = {}) {
   const staged = unique(lock, 'new');
   mkdirSync(staged);
   try {
     writeFileSync(path.join(staged, 'owner'), token, 'utf8');
-    renameSync(staged, lock);
+    lockIo.rename(staged, lock);
     return true;
   } catch (error) {
     if (!BUSY.includes(error.code)) throw error;
+    problem.code = error.code;
     return false;
   } finally {
-    rmSync(staged, {recursive: true, force: true});
+    discard(staged);
   }
 }
 
-export function release(lock) {
+export async function release(lock) {
   const tomb = unique(lock, 'released');
-  renameSync(lock, tomb);
-  rmSync(tomb, {recursive: true, force: true});
+  await renameRetrying(lock, tomb, 'release the Cargo artifact lock');
+  discard(tomb);
 }
 
 // Reclaim the lock instance whose owner token was observed as stale.
-export function reclaim(lock, observed) {
+export async function reclaim(lock, observed) {
   const claim = path.join(lock, 'reclaim');
   try {
     writeFileSync(claim, String(process.pid), {flag: 'wx'});
@@ -141,8 +165,14 @@ export function reclaim(lock, observed) {
   try { current = readFileSync(path.join(lock, 'owner'), 'utf8'); } catch {}
   if (current !== observed) { rmSync(claim, {force: true}); return false; }
   const tomb = unique(lock, 'stale');
-  renameSync(lock, tomb);
-  rmSync(tomb, {recursive: true, force: true});
+  try {
+    await renameRetrying(lock, tomb, 'reclaim the stale Cargo artifact lock');
+  } catch (error) {
+    // Give up this claim; the waiting loop retries after its poll interval until its deadline.
+    try { rmSync(claim, {force: true}); } catch {}
+    throw error;
+  }
+  discard(tomb);
   return true;
 }
 

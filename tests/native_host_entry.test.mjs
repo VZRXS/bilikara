@@ -1,5 +1,5 @@
 import {desktopWorkflow, desktopChecks} from './ci_workflow_support.mjs';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import path from 'node:path';
@@ -7,7 +7,7 @@ import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { root, runNative } from './desktop_construction_support.mjs';
 import { csvRows } from './native_export_support.mjs';
-import { acquire, exclusive, publish, reclaim, release } from './native_runtime_artifacts.mjs';
+import { acquire, exclusive, lockIo, publish, reclaim, release } from './native_runtime_artifacts.mjs';
 
 test('independent CSV reader preserves BOM, Unicode, quoted separators/newlines and escaped quotes', () => {
   assert.deepEqual(csvRows(Buffer.from('\uFEFFid,title\r\n1,"开场, ""合唱""\n第二行"\r\n2,last\r\n')),
@@ -102,14 +102,14 @@ test('concurrent test files receive process-owned Cargo artifacts that a later u
     // A late reclaimer that observed an older stale lock never removes the newer lock acquired since.
     const abandoned = `${await exited()}:abandoned`;
     mkdirSync(lock); writeFileSync(path.join(lock, 'owner'), abandoned);
-    assert.equal(reclaim(lock, abandoned), true, 'the first reclaimer moves the abandoned lock aside');
+    assert.equal(await reclaim(lock, abandoned), true, 'the first reclaimer moves the abandoned lock aside');
     assert.equal(acquire(lock, 'live:newer'), true); assert.equal(acquire(lock, 'second'), false, 'a held lock admits no second holder');
-    assert.equal(reclaim(lock, abandoned), false, 'the late reclaimer backs off');
+    assert.equal(await reclaim(lock, abandoned), false, 'the late reclaimer backs off');
     assert.equal(readFileSync(path.join(lock, 'owner'), 'utf8'), 'live:newer'); assert.equal(existsSync(path.join(lock, 'reclaim')), false);
-    release(lock); assert.equal(existsSync(lock), false);
+    await release(lock); assert.equal(existsSync(lock), false);
     // Only the process holding an abandoned lock's exclusive claim may reclaim it.
     mkdirSync(lock); writeFileSync(path.join(lock, 'owner'), abandoned); writeFileSync(path.join(lock, 'reclaim'), String(process.ppid));
-    assert.equal(reclaim(lock, abandoned), false, 'another live reclaimer owns this instance'); assert.ok(existsSync(lock));
+    assert.equal(await reclaim(lock, abandoned), false, 'another live reclaimer owns this instance'); assert.ok(existsSync(lock));
     rmSync(lock, {recursive: true});
     // Real concurrent processes contending for a lock left by an exited holder never overlap.
     mkdirSync(lock); writeFileSync(path.join(lock, 'owner'), abandoned);
@@ -131,6 +131,51 @@ test('concurrent test files receive process-owned Cargo artifacts that a later u
     assert.deepEqual(readdirSync(queue), []);
     assert.deepEqual(readdirSync(target).sort(), ['.bilikara-test-artifacts.queue', 'host']);
   } finally {
+    rmSync(target, {recursive: true, force: true});
+  }
+});
+
+test('fixture lock renames retry transient Windows handle errors within bounds and never spin', {timeout: 60_000}, async () => {
+  const target = mkdtempSync(path.join(os.tmpdir(), 'bilikara-artifacts-')), lock = path.join(target, '.bilikara-test-artifacts.lock');
+  const original = {...lockIo};
+  const exited = async () => { const child = spawn(process.execPath, ['-e', '']); await new Promise(resolve => child.once('exit', resolve)); return child.pid; };
+  // Refuse the first `count` matching renames with `code`; count every rename attempt.
+  const refuse = (count, code, matches) => {
+    let left = count, calls = 0;
+    lockIo.rename = (from, to) => { calls++; if (matches(from, to) && left-- > 0) throw Object.assign(Error(code), {code}); return renameSync(from, to); };
+    return () => calls;
+  };
+  try {
+    // Persistent EPERM on acquisition with no lock present fails at the deadline, one attempt per poll.
+    let calls = refuse(Infinity, 'EPERM', () => true), started = Date.now();
+    await assert.rejects(exclusive(target, async () => 'never', {timeout: 400, poll: 40}),
+      /timed out waiting for the Cargo artifact lock .*\(no lock present\); last error EPERM/);
+    let elapsed = Date.now() - started;
+    assert.ok(elapsed >= 400 && elapsed < 5000, `bounded by the deadline: ${elapsed} ms`);
+    assert.ok(calls() >= 2 && calls() <= 400 / 40 + 3, `one attempt per poll interval, not a busy loop: ${calls()} attempts`);
+    // Transient EPERM on acquisition: acquired on a later poll, then released.
+    calls = refuse(2, 'EPERM', (from, to) => to === lock);
+    assert.equal(await exclusive(target, async () => 'built', {timeout: 5000, poll: 20}), 'built');
+    assert.equal(calls(), 4, 'two refused acquisitions, one acquisition, one release');
+    // Transient EACCES while releasing is retried with backoff.
+    calls = refuse(3, 'EACCES', from => from === lock);
+    assert.equal(await exclusive(target, async () => 'released', {poll: 20}), 'released');
+    assert.equal(existsSync(lock), false); assert.equal(calls(), 5, 'one acquisition, three refused releases, one release');
+    // Persistent EPERM while releasing fails clearly once the bounded retry budget is spent.
+    lockIo.retryMs = 300; calls = refuse(Infinity, 'EPERM', from => from === lock); started = Date.now();
+    await assert.rejects(exclusive(target, async () => 'held', {poll: 20}),
+      /could not release the Cargo artifact lock .* after \d+ attempt\(s\) over \d+ ms: EPERM/);
+    elapsed = Date.now() - started;
+    assert.ok(elapsed < 2000 && calls() <= 12, `bounded exponential backoff: ${calls()} attempts in ${elapsed} ms`);
+    Object.assign(lockIo, original); rmSync(lock, {recursive: true, force: true});
+    // Transient EPERM while moving an abandoned lock aside is retried; the waiting file then acquires.
+    mkdirSync(lock); writeFileSync(path.join(lock, 'owner'), `${await exited()}:abandoned`);
+    calls = refuse(2, 'EPERM', (from, to) => from === lock && path.basename(to).includes('.stale-'));
+    assert.equal(await exclusive(target, async () => 'reclaimed', {timeout: 5000, poll: 20}), 'reclaimed');
+    assert.equal(existsSync(lock), false);
+    assert.deepEqual(readdirSync(target).filter(entry => entry.startsWith('.bilikara-test-artifacts.lock')), [], 'no staging directory or tombstone remains');
+  } finally {
+    Object.assign(lockIo, original);
     rmSync(target, {recursive: true, force: true});
   }
 });
