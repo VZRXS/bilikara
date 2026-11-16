@@ -15,6 +15,17 @@ const TAURI = path.join(ROOT, "src-tauri");
 import { cargoDependencies } from './cargo_manifest_support.mjs';
 
 const AndroidAlphaBootstrapTest = {
+async test_scanner_declares_camera_permission_without_requiring_camera_hardware() {
+const manifest = readFileSync(path.join(TAURI, "gen/android/app/src/main/AndroidManifest.xml"), "utf8");
+const debug = readFileSync(path.join(TAURI, "gen/android/app/src/debug/AndroidManifest.xml"), "utf8");
+const permissions = [...manifest.matchAll(/<uses-permission\b[^>]*android:name="([^"]+)"[^>]*\/>/g)].map(match => match[1]);
+assert.equal(permissions.filter(name => name === "android.permission.CAMERA").length, 1);
+assert.match(manifest, /<uses-feature\b[^>]*android:name="android.hardware.camera"[^>]*android:required="false"[^>]*\/>/);
+for (const permission of ["RECORD_AUDIO", "READ_EXTERNAL_STORAGE", "WRITE_EXTERNAL_STORAGE", "READ_MEDIA_IMAGES"]) {
+assert.ok(!permissions.includes("android.permission." + permission), "scanner needs no " + permission);
+}
+assert.doesNotMatch(debug, /<uses-(?:permission|feature)\b/, "debug inherits main camera declarations without overrides");
+},
 async test_android_links_runtime_without_desktop_launcher() {
 let capability, cargo, dependencies, entry, forbidden, source;
 cargo = (await cargoDependencies(TAURI)).document;
@@ -166,6 +177,8 @@ result = (await runNative(node, ["-e", program], process.env, 20 * 1000, ROOT));
 assert.deepEqual(result.status, 0, concatenate(result.stdout, result.stderr));
 }
 };
+test("AndroidAlphaBootstrapTest.test_scanner_declares_camera_permission_without_requiring_camera_hardware", async () => { const instance = Object.create(AndroidAlphaBootstrapTest); await instance.test_scanner_declares_camera_permission_without_requiring_camera_hardware(); });
+
 test("AndroidAlphaBootstrapTest.test_android_links_runtime_without_desktop_launcher", async () => { const instance = Object.create(AndroidAlphaBootstrapTest); await instance.test_android_links_runtime_without_desktop_launcher(); });
 test("AndroidAlphaBootstrapTest.test_bootstrap_ipc_is_local_read_only_and_mobile_scoped", async () => { const instance = Object.create(AndroidAlphaBootstrapTest); await instance.test_bootstrap_ipc_is_local_read_only_and_mobile_scoped(); });
 test("AndroidAlphaBootstrapTest.test_android_scopes_cleartext_and_declares_private_network_media_service", async () => { const instance = Object.create(AndroidAlphaBootstrapTest); await instance.test_android_scopes_cleartext_and_declares_private_network_media_service(); });
