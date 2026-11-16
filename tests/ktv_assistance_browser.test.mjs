@@ -636,42 +636,26 @@ for(const engine of[chromium,webkit])test(`${engine.name()} GIF and BMP QR image
   // iOS Host image import and Android Host direct file input reach the real Host with the decoded text.
   for(const platform of ['ios','android'])for(const kind of ['gif','bmp']){
     const {tv,page,errors}=await scanHost(t,engine,platform);await openLocalScan(page);
-    assert.equal(await page.locator('#ktv-host-image-input').getAttribute('accept'),platform==='ios'?'image/*':'image/png,image/jpeg,image/webp,image/svg+xml');
+    assert.equal(await page.locator('#ktv-host-image-input').getAttribute('accept'),'image/*');
     assert.equal(await importOutcome(page,()=>page.locator('#ktv-host-image-input').setInputFiles(qrFile[kind](tv.description))),'prepare',`${platform} ${kind} import decodes`);
     assert.deepEqual(errors,[]);
   }
 });
 
-for(const engine of[chromium,webkit])test(`${engine.name()} Android Host picker narrows GIF only for its own picker selections`,{skip:process.platform!=='linux',timeout:180000},async t=>{
-  const gifFormat=page=>page.evaluate(()=>t('ktv.error.qr_format'));
-  const viaPicker=async(page,act)=>{const [chooser]=await Promise.all([page.waitForEvent('filechooser'),page.locator('#ktv-host-import').click()]);return act(chooser);};
-  // A GIF chosen through the Host's system picker receives the explicit guidance; nothing is submitted.
-  let {tv,page,errors}=await scanHost(t,engine,'android');await openLocalScan(page);
-  assert.deepEqual(await page.evaluate(()=>[...document.querySelectorAll('#ktv-host-image-input,#ktv-host-capture-input')].map(n=>n.accept)),
-    ['image/png,image/jpeg,image/webp,image/svg+xml','image/png,image/jpeg,image/webp,image/svg+xml']);
-  assert.equal(await importOutcome(page,()=>viaPicker(page,chooser=>chooser.setFiles(qrFile.gif(tv.description)))),await gifFormat(page));
-  const {languages}=JSON.parse(read('i18n.json'));
-  for(const language of ['zh','en','ja']){const text=languages[language]['ktv.error.qr_format'];
-    assert.ok(/Android/.test(text)&&/GIF/.test(text)&&/PNG.*JPEG.*WebP.*SVG/.test(text),`${language}: ${text}`);}
-  assert.ok(/Android/.test(await gifFormat(page))&&/GIF/.test(await gifFormat(page)),'the guidance names the Android picker and GIF');
-  // A canceled picker clears its marker: the next direct import decodes the GIF.
-  await viaPicker(page,()=>page.locator('#ktv-host-image-input').dispatchEvent('cancel'));
-  assert.equal(await importOutcome(page,()=>page.locator('#ktv-host-image-input').setInputFiles(qrFile.gif(tv.description))),'prepare','cancel clears the picker marker');
-  assert.deepEqual(errors,[]);
-  // The picker itself hides the WebView: its selection keeps the marker across hidden -> visible.
-  ({tv,page,errors}=await scanHost(t,engine,'android'));await openLocalScan(page);
-  assert.equal(await importOutcome(page,()=>viaPicker(page,async chooser=>{await setHidden(page,true);await setHidden(page,false);await chooser.setFiles(qrFile.gif(tv.description));})),await gifFormat(page));
-  // A picker closed without a selection, then the dialog closed and reopened, leaves no marker behind.
-  await viaPicker(page,async()=>{await setHidden(page,true);await setHidden(page,false);});
-  await page.locator('#purek-close').click();await page.locator('#purek-modal').waitFor({state:'hidden'});
-  await openLocalScan(page,false);
-  assert.equal(await importOutcome(page,()=>page.locator('#ktv-host-image-input').setInputFiles(qrFile.gif(tv.description))),'prepare','closing clears the picker marker');
-  assert.deepEqual(errors,[]);
-  // Static formats chosen through the same picker still decode.
-  ({tv,page,errors}=await scanHost(t,engine,'android'));await openLocalScan(page);
-  const code=qrcode(0,'M');code.addData(tv.description);code.make();
-  const svg={name:'device.svg',mimeType:'image/svg+xml',buffer:Buffer.from(code.createSvgTag({cellSize:4,margin:24,scalable:false}))};
-  assert.equal(await importOutcome(page,()=>viaPicker(page,chooser=>chooser.setFiles(svg))),'prepare','static picker selections decode');
+// The emulator recheck decoded a valid GIF chosen through the Android system picker (the earlier
+// failure was a zero-byte stale media entry), so the picker keeps image/* and the shared decoder.
+for(const engine of[chromium,webkit])test(`${engine.name()} Android Host system picker decodes GIF and BMP QR images`,{skip:process.platform!=='linux',timeout:180000},async t=>{
+  const viaPicker=async(page,act)=>{const [chooser]=await Promise.all([page.waitForEvent('filechooser'),page.locator('#ktv-host-import').click()]);
+    assert.equal(await chooser.element().getAttribute('accept'),'image/*');return act(chooser);};
+  for(const kind of ['gif','bmp']){
+    const {tv,page,errors}=await scanHost(t,engine,'android');await openLocalScan(page);
+    assert.deepEqual(await page.evaluate(()=>[...document.querySelectorAll('#ktv-host-image-input,#ktv-host-capture-input')].map(n=>n.accept)),['image/*','image/*']);
+    assert.equal(await importOutcome(page,()=>viaPicker(page,chooser=>chooser.setFiles(qrFile[kind](tv.description)))),'prepare',`picker ${kind} decodes`);
+    assert.deepEqual(errors,[]);
+  }
+  // The system picker hides the WebView; its selection after hidden -> visible still decodes.
+  const {tv,page,errors}=await scanHost(t,engine,'android');await openLocalScan(page);
+  assert.equal(await importOutcome(page,()=>viaPicker(page,async chooser=>{await setHidden(page,true);await setHidden(page,false);await chooser.setFiles(qrFile.gif(tv.description));})),'prepare','picker GIF after hidden/visible decodes');
   assert.deepEqual(errors,[]);
 });
 
