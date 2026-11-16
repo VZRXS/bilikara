@@ -45,6 +45,8 @@
       return detector;
     }
     const current=ticket=>ticket===generation;
+    const waitingForAndroidPermission=()=>document.documentElement?.dataset?.nativeHost==="true"
+      &&document.documentElement.dataset.hostPlatform==="android"&&cancelCamera!==null&&stream===null;
     function stop(){
       generation++;if(frame!==null)cancelAnimationFrame(frame);frame=null;
       const canceled=Object.assign(new Error("Scanner closed"),{name:"AbortError"});
@@ -73,6 +75,9 @@
       try{
         const value=await Promise.race([pending,new Promise((_,reject)=>{cancelCamera=reject;timer=setTimeout(()=>reject(failure("camera_permission")),30000);})]);
         if(!current(ticket)){value.getTracks().forEach(t=>t.stop());return;}
+        // A permission Activity may hide Android's WebView. Preserve its pending
+        // result, but never attach or retain a camera after a real background exit.
+        if(document.hidden){value.getTracks().forEach(t=>t.stop());stop();return;}
         stream=value;video.srcObject=value;video.hidden=false;await video.play();
         if(!current(ticket))return;
         async function scan(time){
@@ -95,7 +100,7 @@
         if(!await deliver(ticket)&&current(ticket))throw failure("qr_image");
       }finally{if(current(ticket))stop();}
     }
-    return Object.freeze({camera,file,stop});
+    return Object.freeze({camera,file,stop,waitingForAndroidPermission});
   }
   // The same acquisition surface is mounted by mobile Host and Remote.
   // A live camera is optional; HTTP uses the system picture/capture picker.
