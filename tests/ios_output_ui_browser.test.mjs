@@ -179,12 +179,19 @@ for(const [engineName,engine]of Object.entries({chromium,webkit})) {
     if(mobile){await entry.click();await page.locator('#purek-modal').waitFor({state:'visible'});
       assert.equal(await page.locator('#purek-dlna-entry').isVisible(),false,'mobile Manage opens management, not a new connection');
       await page.locator('#purek-close').click();await page.locator('#purek-modal').waitFor({state:'hidden'});}
-    // Authorized output starts and returns to local through the switch only.
+    // Authorized output starts and returns to local through the switch only. These output commands are answered
+    // by fixture snapshots, while the Host keeps polling the real Rust /api/state (target local) and playback
+    // observations keep advancing its revision; a later real poll would replace the fixture snapshot (F4, seen
+    // under parallel CI load). Pause polling for this fixture section only, after any in-flight poll settles.
+    await page.evaluate(()=>{window.realFetchState=fetchState;fetchState=async()=>false;});
+    await page.waitForFunction(()=>!state.statePollInFlight);
     await targets.click();await page.waitForFunction(()=>state.data.media_output.target==='purek'&&!BilikaraMediaOutput.busy());
     assert.deepEqual(outputPosts,[{target:'purek',experimental:true}]);assert.equal(await toggle.isChecked(),true);
     assert.equal(await page.locator('#purek-modal').isVisible(),false);
     await targets.click();await page.waitForFunction(()=>state.data.media_output.target==='local'&&!BilikaraMediaOutput.busy());
     assert.deepEqual(outputPosts.at(-1),{target:'local'});
+    // Real state again: the real Rust output never left local, so polling agrees with the fixture's final state.
+    await page.evaluate(()=>{fetchState=window.realFetchState;});
     if(!mobile){
       // Desktop keeps its disconnect shortcut; disconnecting restores the add-device role.
       await entry.click();
