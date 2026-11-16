@@ -1,7 +1,8 @@
 // Child Cargo builds, never links Runtime into xtask or selects a stale glob.
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import {appendFileSync, constants, copyFileSync, linkSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync} from 'node:fs';
+import {appendFileSync, constants, copyFileSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync} from 'node:fs';
+import {randomUUID} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import { root, runNative } from './desktop_construction_support.mjs';
 
@@ -33,29 +34,39 @@ async function selectedTargetDirectory() {
   return (targetDirectory = selected);
 }
 
-// Inter-process mutual exclusion through an atomic mkdir, granted in FIFO order: each
-// caller enqueues a timestamped ticket and only the oldest live ticket may attempt
-// the lock, so a process that releases and immediately builds again (alpha, then
-// the desktop Host) cannot starve another file's waiting build. The mkdir remains
-// the mutex, because two tickets can briefly both appear to be first. A holder
-// records its PID immediately; only a dead holder, or a directory left without a
-// PID for a minute, is reclaimed, and tickets of exited processes are dropped. The
-// deadline exceeds one bounded child build (300 s) with another file queued ahead.
-let tickets = 0;
+// Inter-process mutual exclusion granted in FIFO order: each caller enqueues a
+// timestamped ticket and only the oldest live ticket may attempt the lock, so a
+// process that releases and immediately builds again (alpha, then the desktop Host)
+// cannot starve another file's waiting build. The lock itself is the mutex, because
+// two tickets can briefly both appear to be first. Not re-entrant: an action must not
+// call exclusive() again. One target directory must not be shared by processes of
+// different operating systems (WSL and Windows cannot see each other's PIDs).
+//
+// A lock is a directory that always names its owner: it is staged with a unique
+// "pid:uuid" token and renamed into place, which fails while any lock exists, and it
+// is released by renaming it to a unique tombstone before deletion. A lock whose
+// owner has exited is reclaimed by at most one process: the reclaimer must create the
+// lock's "reclaim" claim exclusively, then confirm the same token is still present
+// before moving the lock aside. While that stale lock occupies its path nobody can
+// acquire, so a reclaimer that observed an older lock can never remove a newer one.
+let tickets = 0, uniques = 0;
+const LOCK = '.bilikara-test-artifacts.lock', BUSY = ['EEXIST', 'ENOTEMPTY', 'EPERM', 'EACCES', 'EBUSY'];
+const unique = (lock, label) => `${lock}.${label}-${process.pid}-${++uniques}`;
+
 export async function exclusive(directory, action, {timeout = 900_000, poll = 100} = {}) {
-  const lock = path.join(directory, '.bilikara-test-artifacts.lock'), owner = path.join(lock, 'owner');
-  const queue = path.join(directory, '.bilikara-test-artifacts.queue');
+  const lock = path.join(directory, LOCK), queue = path.join(directory, '.bilikara-test-artifacts.queue');
   mkdirSync(queue, {recursive: true});
   const ticket = `${String(Date.now()).padStart(15, '0')}-${String(process.pid).padStart(10, '0')}-${String(++tickets).padStart(6, '0')}`;
   writeFileSync(path.join(queue, ticket), '', {flag: 'wx'});
   try {
-    return await exclusiveTurn(lock, owner, queue, ticket, action, Date.now() + timeout, poll);
+    return await exclusiveTurn(directory, lock, queue, ticket, action, Date.now() + timeout, poll);
   } finally {
     rmSync(path.join(queue, ticket), {force: true});
   }
 }
 
-async function exclusiveTurn(lock, owner, queue, ticket, action, deadline, poll) {
+async function exclusiveTurn(directory, lock, queue, ticket, action, deadline, poll) {
+  const token = `${process.pid}:${randomUUID()}`;
   for (;;) {
     const ahead = readdirSync(queue).filter(entry => /^\d{15}-\d{10}-\d{6}$/.test(entry) && entry < ticket);
     let waiting = false;
@@ -64,42 +75,101 @@ async function exclusiveTurn(lock, owner, queue, ticket, action, deadline, poll)
       if (pid !== process.pid && !alive(pid)) rmSync(path.join(queue, entry), {force: true});
       else waiting = true;
     }
-    if (!waiting) {
-      try { mkdirSync(lock); break; } catch (error) { if (error.code !== 'EEXIST') throw error; }
-    } else {
+    if (waiting) {
       assert.ok(Date.now() < deadline, `timed out waiting for the Cargo artifact queue ${queue}`);
       await delay(poll);
       continue;
     }
-    let holder = 0, age;
-    try { holder = Number(readFileSync(owner, 'utf8')); } catch {}
+    pruneLockLeftovers(directory);
+    if (acquire(lock, token)) break;
+    let held = '', age;
+    try { held = readFileSync(path.join(lock, 'owner'), 'utf8'); } catch {}
     try { age = Date.now() - statSync(lock).mtimeMs; } catch { continue; }
-    if (Number.isSafeInteger(holder) && holder > 0 ? !alive(holder) : age > 60_000) {
-      rmSync(lock, {recursive: true, force: true});
+    const holder = Number(held.split(':')[0]);
+    if (held ? !(Number.isSafeInteger(holder) && holder > 0 && alive(holder)) : age > 60_000) {
+      reclaim(lock, held);
       continue;
     }
     assert.ok(Date.now() < deadline, `timed out waiting for the Cargo artifact lock ${lock}`);
     await delay(poll);
   }
   try {
-    writeFileSync(owner, String(process.pid), 'utf8');
     return await action();
   } finally {
-    rmSync(lock, {recursive: true, force: true});
+    release(lock);
+  }
+}
+
+export function acquire(lock, token) {
+  const staged = unique(lock, 'new');
+  mkdirSync(staged);
+  try {
+    writeFileSync(path.join(staged, 'owner'), token, 'utf8');
+    renameSync(staged, lock);
+    return true;
+  } catch (error) {
+    if (!BUSY.includes(error.code)) throw error;
+    return false;
+  } finally {
+    rmSync(staged, {recursive: true, force: true});
+  }
+}
+
+export function release(lock) {
+  const tomb = unique(lock, 'released');
+  renameSync(lock, tomb);
+  rmSync(tomb, {recursive: true, force: true});
+}
+
+// Reclaim the lock instance whose owner token was observed as stale.
+export function reclaim(lock, observed) {
+  const claim = path.join(lock, 'reclaim');
+  try {
+    writeFileSync(claim, String(process.pid), {flag: 'wx'});
+  } catch (error) {
+    if (error.code === 'ENOENT') return false; // that instance is already gone
+    if (error.code !== 'EEXIST') throw error;
+    // Another reclaimer owns this instance. Only a claim abandoned by an exited
+    // process for a minute is cleared, so the instance can be reclaimed again.
+    try {
+      const by = Number(readFileSync(claim, 'utf8'));
+      if (!(by > 0 && alive(by)) && Date.now() - statSync(claim).mtimeMs > 60_000) rmSync(claim, {force: true});
+    } catch {}
+    return false;
+  }
+  let current = '';
+  try { current = readFileSync(path.join(lock, 'owner'), 'utf8'); } catch {}
+  if (current !== observed) { rmSync(claim, {force: true}); return false; }
+  const tomb = unique(lock, 'stale');
+  renameSync(lock, tomb);
+  rmSync(tomb, {recursive: true, force: true});
+  return true;
+}
+
+// Staging directories and tombstones left by exited processes.
+function pruneLockLeftovers(directory) {
+  const pattern = new RegExp(`^${literal(LOCK)}\\.(?:new|released|stale)-(\\d+)-\\d+$`);
+  for (const entry of readdirSync(directory)) {
+    const pid = Number(pattern.exec(entry)?.[1]);
+    if (pid && pid !== process.pid && !alive(pid)) try { rmSync(path.join(directory, entry), {recursive: true, force: true}); } catch {}
   }
 }
 
 // Publish a process-owned name for the current Cargo artifact. Only names matching
 // this exact pattern beside the artifact are ever removed: this process's own at
-// exit, and those of processes that no longer exist.
-export function publish(executable, directory) {
+// exit, and those of processes that no longer exist. On Windows a name whose image is
+// still running (an orphaned Host) cannot be removed; it is kept for a later attempt
+// and never prevents publishing the new name.
+const STILL_IN_USE = ['EBUSY', 'EPERM', 'EACCES'];
+export function publish(executable, directory, {remove = unlinkSync} = {}) {
   const relative = path.relative(directory, executable);
   assert.ok(relative && !relative.startsWith('..') && !path.isAbsolute(relative), `Cargo artifact ${executable} is outside its target ${directory}`);
   const {dir, name, ext} = path.parse(executable);
   const pattern = new RegExp(`^${literal(name)}\\.bilikara-test-(\\d+)-\\d+${literal(ext)}$`);
   for (const entry of readdirSync(dir)) {
     const pid = Number(pattern.exec(entry)?.[1]);
-    if (pid && pid !== process.pid && !alive(pid)) rmSync(path.join(dir, entry), {force: true});
+    if (!pid || pid === process.pid || alive(pid)) continue;
+    try { remove(path.join(dir, entry)); } catch (error) { if (error.code !== 'ENOENT' && !STILL_IN_USE.includes(error.code)) throw error; }
   }
   const destination = path.join(dir, `${name}.bilikara-test-${process.pid}-${++sequence}${ext}`);
   try {
