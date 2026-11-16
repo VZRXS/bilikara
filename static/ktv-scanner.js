@@ -3,10 +3,6 @@
 (() => {
   "use strict";
   const failure=code=>Object.assign(new Error(code),{code});
-  // Only Android Host's system picker has a confirmed GIF transcoding issue.
-  const imageTypes=["image/png","image/jpeg","image/webp","image/svg+xml"];
-  const androidHost=()=>document.documentElement?.dataset?.nativeHost==="true"
-    &&document.documentElement.dataset.hostPlatform==="android";
   async function decode(canvas,detector=null){
     if(detector){try{
       const values=await detector.detect(canvas);
@@ -94,17 +90,9 @@
       }catch(error){if(current(ticket)){stop();throw failure(error.code||"camera_permission");}}
       finally{clearTimeout(timer);if(current(ticket))cancelCamera=null;}
     }
-    async function file(file,{androidPicker=false}={}){
+    async function file(file){
       stop();const ticket=generation;
       if(!file||file.size>12*1024*1024||(file.type&&!file.type.startsWith("image/")))throw failure("qr_image");
-      if(androidPicker&&androidHost()){
-        if(file.type==="image/gif"||/\.gif$/i.test(file.name||""))throw failure("qr_format");
-        if(file.slice){
-          const bytes=new Uint8Array(await file.slice(0,6).arrayBuffer());
-          if(!current(ticket))return;
-          if(["GIF87a","GIF89a"].includes(String.fromCharCode(...bytes)))throw failure("qr_format");
-        }
-      }
       const image=new Image();reader=image;objectUrl=URL.createObjectURL(file);
       try{
         await new Promise((resolve,reject)=>{cancelRead=reject;image.onload=()=>{cancelRead=null;resolve();};image.onerror=()=>{cancelRead=null;reject(failure("qr_image"));};image.src=objectUrl;});
@@ -117,37 +105,25 @@
   // The same acquisition surface is mounted by mobile Host and Remote.
   // A live camera is optional; HTTP uses the system picture/capture picker.
   function surface({root,prefix,translate,onDecode,onError,onCamera,onFile}){
-    const accept=androidHost()?imageTypes.join(","):"image/*",pickers=new WeakSet();
     root.classList.add("ktv-scan-view");
     root.innerHTML=`<video id="${prefix}-camera-preview" playsinline muted hidden></video>
       <button type="button" id="${prefix}-capture" class="ktv-scan-capture" data-i18n-aria-label="ktv.camera"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H4v4m12-4h4v4M4 16v4h4m12-4v4h-4M8 8h3v3H8zm5 0h3v3h-3zm-5 5h3v3H8zm5 0h3v3h-3z"/></svg></button>
       <button type="button" id="${prefix}-import" class="ktv-scan-gallery" data-i18n-aria-label="purek.import"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m4 17 5-5 4 4 3-3 5 5"/></svg></button>
-      <input id="${prefix}-image-input" type="file" accept="${accept}" hidden>
-      <input id="${prefix}-capture-input" type="file" accept="${accept}" capture="environment" hidden>`;
+      <input id="${prefix}-image-input" type="file" accept="image/*" hidden>
+      <input id="${prefix}-capture-input" type="file" accept="image/*" capture="environment" hidden>`;
     const video=root.querySelector("video"),gallery=root.querySelector(".ktv-scan-gallery"),capture=root.querySelector(".ktv-scan-capture");
     const imageInput=root.querySelector(`#${prefix}-image-input`),captureInput=root.querySelector(`#${prefix}-capture-input`);
     const scanner=create({video,onDecode,onError});
     const live=()=>window.isSecureContext&&typeof navigator.mediaDevices?.getUserMedia==="function";
     const localize=()=>{gallery.setAttribute("aria-label",translate("purek.import"));capture.setAttribute("aria-label",translate("ktv.camera"));};
     localize();document.addEventListener("bilikara:i18n",localize);
-    const pick=input=>{input.value="";if(androidHost())pickers.add(input);input.click();};
-    gallery.addEventListener("click",()=>pick(imageInput));
+    gallery.addEventListener("click",()=>{imageInput.value="";imageInput.click();});
     capture.addEventListener("click",onCamera);
-    for(const input of[imageInput,captureInput]){
-      input.addEventListener("cancel",()=>pickers.delete(input));
-      input.addEventListener("change",()=>{
-        const androidPicker=pickers.has(input);pickers.delete(input);
-        const file=input.files?.[0];if(file)onFile(file,input,{androidPicker});
-      });
-    }
+    for(const input of[imageInput,captureInput])input.addEventListener("change",()=>{const file=input.files?.[0];if(file)onFile(file,input);});
     return Object.freeze({...scanner,gallery,video,imageInput,captureInput,
       setDisabled(value){gallery.disabled=value;capture.disabled=value;},
-      stop({preservePicker=false}={}){
-        scanner.stop();
-        if(!preservePicker){pickers.delete(imageInput);pickers.delete(captureInput);}
-        imageInput.value="";captureInput.value="";
-      },
-      open(){if(live())return scanner.camera();pick(captureInput);return Promise.resolve();}
+      stop(){scanner.stop();imageInput.value="";captureInput.value="";},
+      open(){if(live())return scanner.camera();captureInput.value="";captureInput.click();return Promise.resolve();}
     });
   }
   function validOfficial(raw){try{const u=new URL(raw);return ["http:","https:"].includes(u.protocol)&&u.hostname==="wx.chunk.cn"&&u.pathname.replace(/\/$/,"")==="/projection/login"&&!u.username&&!u.password&&!u.port&&!u.hash;}catch{return false;}}

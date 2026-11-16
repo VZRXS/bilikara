@@ -61,7 +61,7 @@ test('permission visibility exemption is restricted to Android Host; page retire
  }
  const host=readFileSync(new URL('../static/purek-room.js',import.meta.url),'utf8');
  const remote=readFileSync(new URL('../static/ktv-remote.js',import.meta.url),'utf8');
- assert.match(host,/if\(document.hidden&&!scanner.waitingForAndroidPermission\(\)\)stopScan\(\{preservePicker:true\}\)/);
+ assert.match(host,/if\(document.hidden&&!scanner.waitingForAndroidPermission\(\)\)stopScan\(\)/);
  assert.match(host,/window.addEventListener\("pagehide",\(\)=>\{localLife\+\+;scanner.stop\(\)/);
  assert.match(remote,/if\(document.hidden\)scanner.stop\(\)/,'Remote retains its existing lifecycle');
 });
@@ -136,10 +136,31 @@ test('Android camera denial retains the permission hint and the same surface can
  for(const [lang,hint]of [['zh','无法打开相机，请检查权限或改用图片。'],['en','Camera could not open; check permission or import an image.'],['ja','カメラを開けません。権限を確認するか画像を選択してください。']]){
    assert.equal(languages[lang]['ktv.error.camera_permission'],hint,'existing permission guidance still offers image import');
  }
- assert.match(markup,/type="file" accept="image\/png,image\/jpeg,image\/webp,image\/svg\+xml" capture="environment"/,'system capture/photo picker remains available with the supported formats');
+ assert.match(markup,/type="file" accept="image\/\*" capture="environment"/,'system capture/photo picker remains available');
  assert.equal(surface.gallery.disabled,false);surface.gallery.click();
  assert.equal(surface.imageInput.clicks,1,'denial does not disable the gallery picker');
  surface.imageInput.files=[{size:100,type:'image/png'}];surface.imageInput.listeners.change();await loading;
+ assert.deepEqual(decoded,[text]);assert.equal(e.urls.size,0);assert.equal(e.timers.size,0);
+});
+
+test('Android system picker retains image/* and imports a valid GIF QR through the existing decoder',async()=>{
+ const text='http://192.168.1.8/description.xml',e=environment({dataset:{nativeHost:'true',hostPlatform:'android'},image:pixels(text)});
+ const code=qr(0,'M');code.addData(text);code.make();
+ const bytes=Buffer.from(code.createDataURL().split(',')[1],'base64');assert.equal(bytes.subarray(0,6).toString(),'GIF87a');
+ const file=new File([bytes],'qr.gif',{type:'image/gif'});assert.ok(file.size>0);
+ // Node supplies Image/canvas pixels; actual GIF container decoding and the
+ // Android picker were verified by the emulator. This guards the UI/file path.
+ const elements=new Map(),decoded=[];let markup='',loading;
+ const node=()=>({value:'',files:[],listeners:{},clicks:0,setAttribute(){},addEventListener(key,fn){this.listeners[key]=fn;},click(){this.clicks++;this.listeners.click?.();}});
+ for(const key of ['.ktv-scan-gallery','.ktv-scan-capture','#gif-image-input','#gif-capture-input'])elements.set(key,node());
+ elements.set('video',e.video);e.context.document.addEventListener=()=>{};
+ const root={classList:{add(){}},set innerHTML(value){markup=value;},querySelector:key=>elements.get(key)};
+ const surface=e.scanner.surface({root,prefix:'gif',translate:key=>key,onCamera(){},onDecode:raw=>decoded.push(raw),onError:error=>assert.fail(error),
+   onFile:selected=>{assert.equal(selected,file);loading=surface.file(selected);}});
+ assert.equal((markup.match(/accept="image\/\*"/g)||[]).length,2,'gallery and capture keep all browser-supported image formats');
+ surface.gallery.click();assert.equal(surface.imageInput.clicks,1);
+ e.context.document.hidden=true;surface.stop();e.context.document.hidden=false;
+ surface.imageInput.files=[file];surface.imageInput.listeners.change();await loading;
  assert.deepEqual(decoded,[text]);assert.equal(e.urls.size,0);assert.equal(e.timers.size,0);
 });
 
@@ -160,90 +181,4 @@ test('V7 cover preview decodes exactly the visible centered region in both orien
   assert.deepEqual(plain(scanner.coverRegion(480, 640, 300, 300)), {x:0,y:80,width:480,height:480});
   assert.deepEqual(plain(scanner.coverRegion(640, 480, 320, 240)), {x:0,y:0,width:640,height:480});
   assert.throws(() => scanner.coverRegion(0,480,300,300), error => error.code === 'qr_image');
-});
-
-test('only Android Host system picker rejects GIF by MIME, extension and signature without decoding',async()=>{
- for(const file of [
-   {size:100,type:'image/gif',name:'qr'},
-   {size:100,type:'',name:'qr.GIF'},
-   ...['GIF87a','GIF89a'].map(header=>({size:100,type:'image/png',name:'qr.png',slice:(start,end)=>{
-     assert.equal(start,0);assert.equal(end,6);return{arrayBuffer:async()=>new TextEncoder().encode(header).buffer};
-   }}))
- ]){
-   const e=environment({dataset:{nativeHost:'true',hostPlatform:'android'},image:pixels('must-not-be-submitted')}),scanner=e.scanner.create({video:e.video,onDecode(){assert.fail('GIF from the Android picker must not select a room');},onError:error=>assert.fail(error)});
-   await assert.rejects(scanner.file(file,{androidPicker:true}),error=>error.code==='qr_format');
-   assert.equal(e.urls.size,0);assert.equal(e.timers.size,0);
- }
- const {languages}=JSON.parse(readFileSync(new URL('../static/i18n.json',import.meta.url),'utf8'));
- for(const lang of ['zh','en','ja'])assert.match(languages[lang]['ktv.error.qr_format'],/GIF.*PNG.*JPEG.*WebP.*SVG/);
- for(const client of ['purek-room.js','ktv-remote.js']){
-   const source=readFileSync(new URL('../static/'+client,import.meta.url),'utf8');
-   assert.match(source,/"camera_permission","qr_image","qr_format"/,'both clients retain the specific format error owner');
- }
-});
-
-test('supported static image formats retain local Image/canvas QR decoding and release resources',async()=>{
- for(const type of ['image/png','image/jpeg','image/webp','image/svg+xml']){
-   const text='http://192.168.1.8/description.xml',e=environment({image:pixels(text)}),decoded=[];
-   const scanner=e.scanner.create({video:e.video,onDecode:raw=>decoded.push(raw),onError:error=>assert.fail(error)});
-   await scanner.file({size:100,type,slice:()=>({arrayBuffer:async()=>new Uint8Array([137,80,78,71,13,10]).buffer})});
-   assert.deepEqual(decoded,[text]);assert.equal(e.urls.size,0);assert.equal(e.timers.size,0);
- }
-});
-
-test('closing during an Android picker image header read does not revive image decoding',async()=>{
- const e=environment({dataset:{nativeHost:'true',hostPlatform:'android'},image:pixels('must-not-be-submitted')}),scanner=e.scanner.create({video:e.video,onDecode(){assert.fail('retired image');},onError:error=>assert.fail(error)});
- let release;const loading=scanner.file({size:100,type:'image/png',slice:()=>({arrayBuffer:()=>new Promise(resolve=>{release=resolve;})})},{androidPicker:true});
- scanner.stop();release(new Uint8Array([137,80,78,71,13,10]).buffer);await loading;
- assert.equal(e.urls.size,0);assert.equal(e.timers.size,0);
-});
-
-test('direct Android import and all other platforms retain the original GIF/BMP image decoder',async()=>{
- for(const dataset of [{},{nativeHost:'true',hostPlatform:'ios'},{nativeHost:'true',hostPlatform:'desktop'},{nativeHost:'true',hostPlatform:'android'}]){
-   for(const type of ['image/gif','image/bmp']){
-     const text='http://192.168.1.8/description.xml',e=environment({dataset,image:pixels(text)}),decoded=[];
-     const scanner=e.scanner.create({video:e.video,onDecode:raw=>decoded.push(raw),onError:error=>assert.fail(error)});
-     const file={size:100,type,name:type==='image/gif'?'qr.gif':'qr.bmp',slice(){assert.fail('original decode path must not read headers');}};
-     await scanner.file(file);assert.deepEqual(decoded,[text]);assert.equal(e.urls.size,0);
-     if(dataset.hostPlatform!=='android'){
-       await scanner.file(file,{androidPicker:true});assert.deepEqual(decoded,[text,text],'a picker flag cannot restrict another platform');
-     }else if(type==='image/bmp'){
-       await scanner.file({...file,slice:()=>({arrayBuffer:async()=>new Uint8Array([66,77,0,0,0,0]).buffer})},{androidPicker:true});
-       assert.deepEqual(decoded,[text,text],'even the Android picker policy rejects only GIF, not other decodable image types');
-     }
-   }
- }
-});
-
-test('surface restricts accept and marks only actual Android Host picker activations, clearing cancelled selections',async()=>{
- for(const dataset of [{},{nativeHost:'true',hostPlatform:'ios'},{nativeHost:'true',hostPlatform:'desktop'},{nativeHost:'true',hostPlatform:'android'}]){
-   const android=dataset.hostPlatform==='android',text='http://192.168.1.8/description.xml',e=environment({dataset,image:pixels(text)});
-   const elements=new Map(),sources=[];let markup='',loading;
-   const node=()=>({value:'',files:[],listeners:{},setAttribute(){},addEventListener(key,fn){this.listeners[key]=fn;},click(){this.listeners.click?.();}});
-   for(const key of ['.ktv-scan-gallery','.ktv-scan-capture','#picker-image-input','#picker-capture-input'])elements.set(key,node());
-   elements.set('video',e.video);e.context.document.addEventListener=()=>{};
-   const root={classList:{add(){}},set innerHTML(value){markup=value;},querySelector:key=>elements.get(key)};
-   const surface=e.scanner.surface({root,prefix:'picker',translate:key=>key,onCamera(){},onDecode:raw=>assert.equal(raw,text),onError:error=>assert.fail(error),
-     onFile:(file,input,source)=>{sources.push(source.androidPicker);loading=surface.file(file,source);}});
-   const accept=android?'image/png,image/jpeg,image/webp,image/svg+xml':'image/*';
-   assert.ok(markup.includes(`type="file" accept="${accept}" hidden`));
-   assert.ok(markup.includes(`type="file" accept="${accept}" capture="environment"`));
-   const gif={size:100,type:'image/gif',name:'qr.gif'};
-   surface.imageInput.files=[gif];surface.imageInput.listeners.change();await loading;
-   assert.equal(sources.at(-1),false,'direct injection without opening a picker preserves GIF import');
-   surface.gallery.click();surface.stop({preservePicker:true});surface.imageInput.listeners.change();
-   if(android)await assert.rejects(loading,error=>error.code==='qr_format');else await loading;
-   assert.equal(sources.at(-1),android,'system picker provenance survives visibility-only scanner cleanup');
-   // Cancelled/closed pickers cannot tag a subsequent direct import.
-   surface.gallery.click();surface.imageInput.listeners.cancel();surface.imageInput.listeners.change();await loading;
-   assert.equal(sources.at(-1),false);
-   surface.gallery.click();surface.stop();surface.imageInput.listeners.change();await loading;
-   assert.equal(sources.at(-1),false);
-   e.context.isSecureContext=false;await surface.open();surface.captureInput.files=[gif];surface.captureInput.listeners.change();
-   if(android)await assert.rejects(loading,error=>error.code==='qr_format');else await loading;
-   assert.equal(sources.at(-1),android,'HTTP capture picker follows the same scoped policy');
-   assert.equal(e.urls.size,0);assert.equal(e.timers.size,0);
- }
- const host=readFileSync(new URL('../static/purek-room.js',import.meta.url),'utf8');
- assert.match(host,/scanner.file\(file,source\)/,'Host forwards picker provenance instead of restricting every import');
 });
