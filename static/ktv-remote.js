@@ -18,7 +18,7 @@
   const ownsCandidate=()=>view?.candidate_owned===true&&["authorization_pending","error"].includes(view?.session?.status);
   function message(code){
     if(code?.startsWith("purek_")&&["qr_invalid","description_invalid","authorization","network","http","identity_changed","busy","protocol","renderer"].includes(code.slice(6)))return t(`purek.error.${code.slice(6)}`);
-    const key=String(code||"").replace(/^ktv_/,"");return t(`ktv.error.${["busy","offline","stale","scan_required","resume_unavailable","secure_transport_required","camera_secure","camera_permission","qr_image","clipboard","receiver_connected"].includes(key)?key:"failed"}`);
+    const key=String(code||"").replace(/^ktv_/,"");return t(`ktv.error.${["busy","offline","stale","scan_required","resume_unavailable","secure_transport_required","camera_secure","camera_permission","qr_image","qr_format","clipboard","receiver_connected"].includes(key)?key:"failed"}`);
   }
   function showError(error){if(error?.name==="AbortError")return;const text=message(error?.code);byId("ktv-remote-error").textContent=text;byId("ktv-remote-error").hidden=false;if(!dialog.open)setFormMessage(text,true);}
   function clearPrivate(){officialUrl="";byId("ktv-authorization-url").value="";byId("ktv-open-wechat").removeAttribute("href");byId("ktv-room-url").value="";scanner.stop();}
