@@ -320,22 +320,26 @@ fn inspect_first_start(
 }
 
 fn private_options() -> OpenOptions {
-    let mut options = OpenOptions::new();
+    let options = OpenOptions::new();
     #[cfg(unix)]
-    {
+    let options = {
         use std::os::unix::fs::OpenOptionsExt;
+        let mut options = options;
         options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
+        options
+    };
     options
 }
 
 fn directory(path: &Path) -> Result<(), String> {
-    let mut builder = fs::DirBuilder::new();
+    let builder = fs::DirBuilder::new();
     #[cfg(unix)]
-    {
+    let builder = {
         use std::os::unix::fs::DirBuilderExt;
+        let mut builder = builder;
         builder.mode(0o700);
-    }
+        builder
+    };
     builder
         .create(path)
         .map_err(|_| "Cannot create private import staging directory".into())
