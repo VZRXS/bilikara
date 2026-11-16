@@ -489,8 +489,12 @@ test('actual authenticated encrypted DataChannels carry local QR results, never 
 async function cameraHarness(context){
   await context.addInitScript(()=>{
     window.__gum={calls:0,pending:[],streams:[]};
+    // WebKit does not keep a getUserMedia replaced on the navigator.mediaDevices instance between
+    // tasks, so the prototype is replaced as well: every scan in this page reaches the scripted result.
+    const request=()=>{__gum.calls++;return new Promise((resolve,reject)=>__gum.pending.push({resolve,reject}));};
+    if(window.MediaDevices)Object.defineProperty(MediaDevices.prototype,'getUserMedia',{configurable:true,writable:true,value:request});
     if(!navigator.mediaDevices)Object.defineProperty(navigator,'mediaDevices',{configurable:true,value:{}});
-    navigator.mediaDevices.getUserMedia=()=>{__gum.calls++;return new Promise((resolve,reject)=>__gum.pending.push({resolve,reject}));};
+    navigator.mediaDevices.getUserMedia=request; // also replaces browserContext's counting wrapper
     window.__liveStream=()=>{const c=document.createElement('canvas');c.width=64;c.height=48;c.getContext('2d').fillRect(0,0,64,48);const s=c.captureStream(5);__gum.streams.push(s);return s;};
     window.__setHidden=hidden=>{
       Object.defineProperty(document,'hidden',{configurable:true,get:()=>hidden});
