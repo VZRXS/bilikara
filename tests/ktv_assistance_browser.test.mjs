@@ -483,6 +483,92 @@ test('actual authenticated encrypted DataChannels carry local QR results, never 
   assert.deepEqual(errors,[]);await shot(remote,'internet-qr-authorized','#ktv-remote-modal');
 });
 
+// Android's runtime permission Activity briefly hides the WebView while getUserMedia is pending
+// (android-camera-repro.md). Real Host DOM, real MediaStream tracks; only the permission result
+// and the visibility transition are scripted, since desktop engines show no permission Activity.
+async function cameraHarness(context){
+  await context.addInitScript(()=>{
+    window.__gum={calls:0,pending:[],streams:[]};
+    if(!navigator.mediaDevices)Object.defineProperty(navigator,'mediaDevices',{configurable:true,value:{}});
+    navigator.mediaDevices.getUserMedia=()=>{__gum.calls++;return new Promise((resolve,reject)=>__gum.pending.push({resolve,reject}));};
+    window.__liveStream=()=>{const c=document.createElement('canvas');c.width=64;c.height=48;c.getContext('2d').fillRect(0,0,64,48);const s=c.captureStream(5);__gum.streams.push(s);return s;};
+    window.__setHidden=hidden=>{
+      Object.defineProperty(document,'hidden',{configurable:true,get:()=>hidden});
+      Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>hidden?'hidden':'visible'});
+      document.dispatchEvent(new Event('visibilitychange'));
+    };
+    window.__trackStates=()=>__gum.streams.map(s=>s.getTracks().map(track=>track.readyState).join());
+  });
+}
+const preview=page=>page.evaluate(()=>{const v=document.querySelector('#ktv-host-camera-preview');return{hidden:v.hidden,attached:v.srcObject?__gum.streams.indexOf(v.srcObject):-1};});
+const settled=page=>page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,50)));
+
+for(const engine of[chromium,webkit])test(`${engine.name()} Android Host keeps a camera permission request across the permission Activity and never holds a background camera`,{skip:process.platform!=='linux',timeout:90000},async t=>{
+  const {server}=await startHost(t,alpha,true);
+  const context=await browserContext(t,engine,server,{host:true,phone:true});await cameraHarness(context);
+  const host=await context.newPage(),errors=[];host.on('pageerror',e=>errors.push(e.message));
+  await host.goto(server.base);await host.waitForFunction(()=>state.hasValidStateResponse&&window.BilikaraPureK);
+  await host.evaluate(()=>setLanguage('en'));
+  assert.equal(await host.evaluate(()=>document.documentElement.dataset.hostPlatform),'android');
+  // First permission grant: the dialog's transient hidden must not void the pending request.
+  await host.locator('[data-android-page="my"]').click();await host.locator('#purek-open').click();
+  await host.waitForFunction(()=>__gum.pending.length===1);
+  await host.evaluate(()=>__setHidden(true));await settled(host);
+  await host.evaluate(()=>__setHidden(false));await settled(host);
+  assert.equal(await host.locator('#purek-error').isVisible(),false);
+  await host.evaluate(()=>__gum.pending[0].resolve(__liveStream()));
+  await host.waitForFunction(()=>!document.querySelector('#ktv-host-camera-preview').hidden);
+  assert.deepEqual(await preview(host),{hidden:false,attached:0},'the first grant shows the preview without a second tap');
+  assert.equal(await host.evaluate(()=>__gum.calls),1);
+  assert.deepEqual(await host.evaluate(()=>__trackStates()),['live']);
+  // A running camera is released as soon as the Host really goes to the background.
+  await host.evaluate(()=>__setHidden(true));await settled(host);
+  assert.deepEqual(await host.evaluate(()=>__trackStates()),['ended'],'background releases the running camera');
+  assert.deepEqual(await preview(host),{hidden:true,attached:-1});
+  await host.evaluate(()=>__setHidden(false));await settled(host);
+  assert.equal(await host.evaluate(()=>__gum.calls),1,'returning to the foreground does not reopen the camera');
+  // Denial after the permission Activity closes still reaches the original permission hint.
+  await host.locator('#ktv-host-capture').click();await host.waitForFunction(()=>__gum.pending.length===2);
+  await host.evaluate(()=>__setHidden(true));await settled(host);
+  await host.evaluate(()=>__setHidden(false));
+  await host.evaluate(()=>__gum.pending[1].reject(new DOMException('Permission denied','NotAllowedError')));
+  await host.locator('#purek-error:not([hidden])').waitFor();
+  assert.equal(await host.locator('#purek-error').innerText(),await host.evaluate(()=>t('ktv.error.camera_permission')));
+  assert.equal(await host.locator('#ktv-host-import').isEnabled(),true,'denial keeps the image fallback');
+  // A result that arrives while the Host is still in the background stops its tracks and is never mounted.
+  await host.locator('#ktv-host-capture').click();await host.waitForFunction(()=>__gum.pending.length===3);
+  await host.evaluate(()=>__setHidden(true));await settled(host);
+  await host.evaluate(()=>__gum.pending[2].resolve(__liveStream()));await settled(host);
+  assert.deepEqual(await host.evaluate(()=>__trackStates()),['ended','ended'],'a late background grant never holds the camera');
+  assert.deepEqual(await preview(host),{hidden:true,attached:-1});
+  await host.evaluate(()=>__setHidden(false));await settled(host);
+  assert.deepEqual(await preview(host),{hidden:true,attached:-1},'no automatic reopen after returning');
+  assert.equal(await host.evaluate(()=>__gum.calls),3);
+  // Page retirement still cancels a pending request; its later stream is stopped.
+  await host.locator('#ktv-host-capture').click();await host.waitForFunction(()=>__gum.pending.length===4);
+  await host.evaluate(()=>window.dispatchEvent(new Event('pagehide')));
+  await host.evaluate(()=>__gum.pending[3].resolve(__liveStream()));await settled(host);
+  assert.deepEqual(await host.evaluate(()=>__trackStates()),['ended','ended','ended'],'pagehide cancels the pending request');
+  assert.deepEqual(errors,[]);
+});
+
+for(const engine of[chromium,webkit])test(`${engine.name()} iOS Host still stops a pending camera request when hidden`,{skip:process.platform!=='linux',timeout:90000},async t=>{
+  const {server}=await startHost(t,alpha,true);
+  const context=await browserContext(t,engine,server,{host:true,phone:true,ios:true});await cameraHarness(context);
+  const host=await context.newPage(),errors=[];host.on('pageerror',e=>errors.push(e.message));
+  await host.goto(server.base);await host.waitForFunction(()=>state.hasValidStateResponse&&window.BilikaraPureK);
+  assert.equal(await host.evaluate(()=>document.documentElement.dataset.hostPlatform),'ios');
+  await host.locator('[data-android-page="my"]').click();await host.locator('#purek-open').click();
+  await host.waitForFunction(()=>__gum.pending.length===1);
+  await host.evaluate(()=>__setHidden(true));await settled(host);
+  await host.evaluate(()=>__setHidden(false));
+  await host.evaluate(()=>__gum.pending[0].resolve(__liveStream()));await settled(host);
+  assert.deepEqual(await host.evaluate(()=>__trackStates()),['ended'],'iOS keeps its hide-to-stop policy');
+  assert.deepEqual(await preview(host),{hidden:true,attached:-1});
+  assert.equal(await host.locator('#purek-error').isVisible(),false,'a canceled request is not reported as a denial');
+  assert.deepEqual(errors,[]);
+});
+
 for(const engine of[chromium,webkit])test(`${engine.name()} Desktop explicitly retrieves Remote official links and rejects late or retired handoffs`,{skip:process.platform!=='linux',timeout:90000},async t=>{
   const {server}=await startHost(t,desktop),tv=await receiver(t),client=new HttpClient(server.base);
   await client.request('/remote');await client.api('/api/remote-identity/register',{name:'授权手机'});
