@@ -6,13 +6,16 @@ import {setTimeout as delay} from 'node:timers/promises';
 import { root, runNative } from './desktop_construction_support.mjs';
 
 // Test files run concurrently against one Cargo target (scripts/ci_tests.mjs uses
-// --test-concurrency=2). Even a fresh build re-uplifts every bin/example: Cargo
-// removes <profile>/<name> or <profile>/examples/<name> and hard-links it again.
-// Another file's no-op build could therefore make the path this process is about
-// to spawn briefly absent (spawn ENOENT). Builds and publication are serialized by
-// a lock in Cargo's selected target directory, and each process receives its own
-// hard link next to the Cargo artifact (same parent, so resource and current_exe
-// semantics are unchanged). No later uplift replaces or removes that link.
+// --test-concurrency=2). The builds below are not mutually fresh: an example
+// build (dev-dependencies unified) and a bin/integration-test build relink each
+// other's outputs, so building the desktop Host rewrites examples/native_host_alpha
+// and vice versa. Each relink removes <profile>/<name> or <profile>/examples/<name>
+// before hard-linking the new file, so another file's build could make the path
+// this process is about to spawn briefly absent (spawn ENOENT). Builds and
+// publication are serialized by a lock in Cargo's selected target directory, and
+// each process receives its own hard link next to the Cargo artifact (same parent,
+// so resource and current_exe semantics are unchanged). A later relink creates a
+// new file; it never replaces or removes that link or the inode it names.
 const manifest = path.join(root, 'rust-runtime/Cargo.toml');
 const published = [];
 let targetDirectory, sequence = 0;
