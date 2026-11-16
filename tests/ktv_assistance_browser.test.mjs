@@ -483,6 +483,198 @@ test('actual authenticated encrypted DataChannels carry local QR results, never 
   assert.deepEqual(errors,[]);await shot(remote,'internet-qr-authorized','#ktv-remote-modal');
 });
 
+// Android's runtime permission Activity briefly hides the WebView while getUserMedia is pending
+// (android-camera-repro.md). Real Host DOM, real MediaStream tracks; only the permission result
+// and the visibility transition are scripted, since desktop engines show no permission Activity.
+async function cameraHarness(context){
+  await context.addInitScript(()=>{
+    window.__gum={calls:0,pending:[],streams:[]};
+    // WebKit does not keep a getUserMedia replaced on the navigator.mediaDevices instance between
+    // tasks, so the prototype is replaced as well: every scan in this page reaches the scripted result.
+    const request=()=>{__gum.calls++;return new Promise((resolve,reject)=>__gum.pending.push({resolve,reject}));};
+    if(window.MediaDevices)Object.defineProperty(MediaDevices.prototype,'getUserMedia',{configurable:true,writable:true,value:request});
+    if(!navigator.mediaDevices)Object.defineProperty(navigator,'mediaDevices',{configurable:true,value:{}});
+    navigator.mediaDevices.getUserMedia=request; // also replaces browserContext's counting wrapper
+    window.__liveStream=()=>{const c=document.createElement('canvas');c.width=64;c.height=48;c.getContext('2d').fillRect(0,0,64,48);const s=c.captureStream(5);__gum.streams.push(s);return s;};
+    window.__setHidden=hidden=>{
+      Object.defineProperty(document,'hidden',{configurable:true,get:()=>hidden});
+      Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>hidden?'hidden':'visible'});
+      document.dispatchEvent(new Event('visibilitychange'));
+    };
+    window.__trackStates=()=>__gum.streams.map(s=>s.getTracks().map(track=>track.readyState).join());
+  });
+}
+const preview=page=>page.evaluate(()=>{const v=document.querySelector('#ktv-host-camera-preview');return{hidden:v.hidden,attached:v.srcObject?__gum.streams.indexOf(v.srcObject):-1};});
+const settled=page=>page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,50)));
+
+for(const engine of[chromium,webkit])test(`${engine.name()} Android Host keeps a camera permission request across the permission Activity and never holds a background camera`,{skip:process.platform!=='linux',timeout:90000},async t=>{
+  const {server}=await startHost(t,alpha,true);
+  const context=await browserContext(t,engine,server,{host:true,phone:true});await cameraHarness(context);
+  const host=await context.newPage(),errors=[];host.on('pageerror',e=>errors.push(e.message));
+  await host.goto(server.base);await host.waitForFunction(()=>state.hasValidStateResponse&&window.BilikaraPureK);
+  await host.evaluate(()=>setLanguage('en'));
+  assert.equal(await host.evaluate(()=>document.documentElement.dataset.hostPlatform),'android');
+  // First permission grant: the dialog's transient hidden must not void the pending request.
+  await host.locator('[data-android-page="my"]').click();await host.locator('#purek-open').click();
+  await host.waitForFunction(()=>__gum.pending.length===1);
+  await host.evaluate(()=>__setHidden(true));await settled(host);
+  await host.evaluate(()=>__setHidden(false));await settled(host);
+  assert.equal(await host.locator('#purek-error').isVisible(),false);
+  await host.evaluate(()=>__gum.pending[0].resolve(__liveStream()));
+  await host.waitForFunction(()=>!document.querySelector('#ktv-host-camera-preview').hidden);
+  assert.deepEqual(await preview(host),{hidden:false,attached:0},'the first grant shows the preview without a second tap');
+  assert.equal(await host.evaluate(()=>__gum.calls),1);
+  assert.deepEqual(await host.evaluate(()=>__trackStates()),['live']);
+  // A running camera is released as soon as the Host really goes to the background.
+  await host.evaluate(()=>__setHidden(true));await settled(host);
+  assert.deepEqual(await host.evaluate(()=>__trackStates()),['ended'],'background releases the running camera');
+  assert.deepEqual(await preview(host),{hidden:true,attached:-1});
+  await host.evaluate(()=>__setHidden(false));await settled(host);
+  assert.equal(await host.evaluate(()=>__gum.calls),1,'returning to the foreground does not reopen the camera');
+  // Denial after the permission Activity closes still reaches the original permission hint.
+  await host.locator('#ktv-host-capture').click();await host.waitForFunction(()=>__gum.pending.length===2);
+  await host.evaluate(()=>__setHidden(true));await settled(host);
+  await host.evaluate(()=>__setHidden(false));
+  await host.evaluate(()=>__gum.pending[1].reject(new DOMException('Permission denied','NotAllowedError')));
+  await host.locator('#purek-error:not([hidden])').waitFor();
+  assert.equal(await host.locator('#purek-error').innerText(),await host.evaluate(()=>t('ktv.error.camera_permission')));
+  assert.equal(await host.locator('#ktv-host-import').isEnabled(),true,'denial keeps the image fallback');
+  // A result that arrives while the Host is still in the background stops its tracks and is never mounted.
+  await host.locator('#ktv-host-capture').click();await host.waitForFunction(()=>__gum.pending.length===3);
+  await host.evaluate(()=>__setHidden(true));await settled(host);
+  await host.evaluate(()=>__gum.pending[2].resolve(__liveStream()));await settled(host);
+  assert.deepEqual(await host.evaluate(()=>__trackStates()),['ended','ended'],'a late background grant never holds the camera');
+  assert.deepEqual(await preview(host),{hidden:true,attached:-1});
+  await host.evaluate(()=>__setHidden(false));await settled(host);
+  assert.deepEqual(await preview(host),{hidden:true,attached:-1},'no automatic reopen after returning');
+  assert.equal(await host.evaluate(()=>__gum.calls),3);
+  // Page retirement still cancels a pending request; its later stream is stopped.
+  await host.locator('#ktv-host-capture').click();await host.waitForFunction(()=>__gum.pending.length===4);
+  await host.evaluate(()=>window.dispatchEvent(new Event('pagehide')));
+  await host.evaluate(()=>__gum.pending[3].resolve(__liveStream()));await settled(host);
+  assert.deepEqual(await host.evaluate(()=>__trackStates()),['ended','ended','ended'],'pagehide cancels the pending request');
+  assert.deepEqual(errors,[]);
+});
+
+for(const engine of[chromium,webkit])test(`${engine.name()} iOS Host still stops a pending camera request when hidden`,{skip:process.platform!=='linux',timeout:90000},async t=>{
+  const {server}=await startHost(t,alpha,true);
+  const context=await browserContext(t,engine,server,{host:true,phone:true,ios:true});await cameraHarness(context);
+  const host=await context.newPage(),errors=[];host.on('pageerror',e=>errors.push(e.message));
+  await host.goto(server.base);await host.waitForFunction(()=>state.hasValidStateResponse&&window.BilikaraPureK);
+  assert.equal(await host.evaluate(()=>document.documentElement.dataset.hostPlatform),'ios');
+  await host.locator('[data-android-page="my"]').click();await host.locator('#purek-open').click();
+  await host.waitForFunction(()=>__gum.pending.length===1);
+  await host.evaluate(()=>__setHidden(true));await settled(host);
+  await host.evaluate(()=>__setHidden(false));
+  await host.evaluate(()=>__gum.pending[0].resolve(__liveStream()));await settled(host);
+  assert.deepEqual(await host.evaluate(()=>__trackStates()),['ended'],'iOS keeps its hide-to-stop policy');
+  assert.deepEqual(await preview(host),{hidden:true,attached:-1});
+  assert.equal(await host.locator('#purek-error').isVisible(),false,'a canceled request is not reported as a denial');
+  assert.deepEqual(errors,[]);
+});
+
+// Independent GIF/BMP encoders (no image tooling in CI): 2-color GIF with LZW clear codes keeping
+// 3-bit codes, and an uncompressed 24-bit BMP of the same QR modules.
+function qrRaster(raw,scale=4){const code=qrcode(0,'M');code.addData(raw);code.make();const n=code.getModuleCount();
+  return {size:(n+8)*scale,dark:(x,y)=>{const c=Math.floor(x/scale)-4,r=Math.floor(y/scale)-4;return r>=0&&c>=0&&r<n&&c<n&&code.isDark(r,c);}};}
+function gifQr(raw){const {size,dark}=qrRaster(raw),out=[],word=v=>out.push(v&255,v>>8);
+  out.push(...Buffer.from('GIF89a'));word(size);word(size);out.push(0x81,0,0,255,255,255,0,0,0,0,0,0,0,0,0,0x2c);word(0);word(0);word(size);word(size);out.push(0,2);
+  const data=[];let acc=0,bits=0,count=0;const emit=code=>{acc|=code<<bits;bits+=3;while(bits>=8){data.push(acc&255);acc>>=8;bits-=8;}};
+  emit(4);for(let y=0;y<size;y++)for(let x=0;x<size;x++){if(count===2){emit(4);count=0;}emit(dark(x,y)?1:0);count++;}emit(5);if(bits)data.push(acc&255);
+  for(let i=0;i<data.length;i+=255){const chunk=data.slice(i,i+255);out.push(chunk.length,...chunk);}out.push(0,0x3b);return Buffer.from(out);}
+function bmpQr(raw){const {size,dark}=qrRaster(raw),row=Math.ceil(size*3/4)*4,data=row*size,b=Buffer.alloc(54+data);
+  b.write('BM',0);b.writeUInt32LE(54+data,2);b.writeUInt32LE(54,10);b.writeUInt32LE(40,14);b.writeInt32LE(size,18);b.writeInt32LE(size,22);b.writeUInt16LE(1,26);b.writeUInt16LE(24,28);b.writeUInt32LE(data,34);
+  for(let y=0;y<size;y++)for(let x=0;x<size;x++){const v=dark(x,size-1-y)?0:255,o=54+y*row+x*3;b[o]=b[o+1]=b[o+2]=v;}return b;}
+const qrFile={gif:raw=>({name:'device.gif',mimeType:'image/gif',buffer:gifQr(raw)}),bmp:raw=>({name:'device.bmp',mimeType:'image/bmp',buffer:bmpQr(raw)})};
+async function scanHost(t,engine,platform){
+  // Desktop uses the real desktop Host binary; the alpha fixture serves the mobile Host page.
+  const {server}=platform==='desktop'?await startHost(t,desktop):await startHost(t,alpha,true),tv=await receiver(t);
+  const context=await browserContext(t,engine,server,{host:true,phone:platform!=='desktop',ios:platform==='ios'});
+  await context.addInitScript(()=>{const deny=()=>Promise.reject(new DOMException('denied','NotAllowedError'));
+    if(window.MediaDevices)Object.defineProperty(MediaDevices.prototype,'getUserMedia',{configurable:true,writable:true,value:deny});
+    if(navigator.mediaDevices)navigator.mediaDevices.getUserMedia=deny;});
+  const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
+  await page.goto(server.base);await page.waitForFunction(()=>state.hasValidStateResponse&&window.BilikaraPureK);
+  await page.evaluate(()=>setLanguage('en'));return {server,tv,page,errors};
+}
+async function openLocalScan(page,first=true){
+  if(first)await page.locator('[data-android-page="my"]').click();
+  await page.locator('#purek-open').click();await page.waitForFunction(()=>!document.querySelector('#purek-close').disabled);
+  await page.locator('#purek-error:not([hidden])').waitFor(); // the automatic camera attempt was denied
+}
+// Resolve to 'prepare' when the decoded text reaches the real Host, otherwise to the visible error text.
+async function importOutcome(page,act){
+  await page.evaluate(()=>{document.querySelector('#purek-error').hidden=true;});
+  const prepared=page.waitForRequest('**/api/purek/prepare',{timeout:8000}).then(()=>'prepare').catch(()=>null);
+  await act();
+  const failed=page.locator('#purek-error:not([hidden])').waitFor({timeout:8000}).then(()=>page.locator('#purek-error').innerText()).catch(()=>null);
+  return (await Promise.race([prepared.then(v=>v||failed),failed.then(v=>v||prepared)]))||'nothing';
+}
+const sharedDecode=(page,file)=>page.evaluate(async([b64,type,name])=>{
+  const file=new File([Uint8Array.from(atob(b64),c=>c.charCodeAt(0))],name,{type});let decoded=null;
+  const scanner=BilikaraKtvScanner.create({video:document.createElement('video'),onDecode:raw=>{decoded=raw;},onError(){}});
+  try{await scanner.file(file);return decoded;}catch(error){return 'error:'+error.code;}
+},[file.buffer.toString('base64'),file.mimeType,file.name]);
+const setHidden=(page,hidden)=>page.evaluate(hidden=>{
+  Object.defineProperty(document,'hidden',{configurable:true,get:()=>hidden});
+  Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>hidden?'hidden':'visible'});
+  document.dispatchEvent(new Event('visibilitychange'));},hidden);
+
+for(const engine of[chromium,webkit])test(`${engine.name()} GIF and BMP QR images decode on Remote, desktop, iOS and direct Android Host import as before`,{skip:process.platform!=='linux',timeout:180000},async t=>{
+  const raw='http://192.168.1.10:8200/description.xml';
+  // Remote and desktop Host keep image/* and the shared Image/canvas decoder (desktop has no local import UI).
+  const {server,page:desktop,errors}=await scanHost(t,engine,'desktop');
+  assert.equal(await desktop.evaluate(()=>document.documentElement.dataset.hostPlatform),'desktop');
+  assert.equal(await desktop.locator('#ktv-host-image-input').getAttribute('accept'),'image/*');
+  const remote=await desktop.context().newPage();await remote.goto(server.base+'/remote');await remote.waitForFunction(()=>window.BilikaraKtvScanner);
+  assert.deepEqual(await remote.evaluate(()=>[...document.querySelectorAll('#ktv-image-input,#ktv-capture-input')].map(n=>n.accept)),['image/*','image/*']);
+  for(const kind of ['gif','bmp']){
+    assert.equal(await sharedDecode(remote,qrFile[kind](raw)),raw,`Remote decodes ${kind}`);
+    assert.equal(await sharedDecode(desktop,qrFile[kind](raw)),raw,`desktop Host decodes ${kind}`);
+  }
+  assert.deepEqual(errors,[]);
+  // iOS Host image import and Android Host direct file input reach the real Host with the decoded text.
+  for(const platform of ['ios','android'])for(const kind of ['gif','bmp']){
+    const {tv,page,errors}=await scanHost(t,engine,platform);await openLocalScan(page);
+    assert.equal(await page.locator('#ktv-host-image-input').getAttribute('accept'),platform==='ios'?'image/*':'image/png,image/jpeg,image/webp,image/svg+xml');
+    assert.equal(await importOutcome(page,()=>page.locator('#ktv-host-image-input').setInputFiles(qrFile[kind](tv.description))),'prepare',`${platform} ${kind} import decodes`);
+    assert.deepEqual(errors,[]);
+  }
+});
+
+for(const engine of[chromium,webkit])test(`${engine.name()} Android Host picker narrows GIF only for its own picker selections`,{skip:process.platform!=='linux',timeout:180000},async t=>{
+  const gifFormat=page=>page.evaluate(()=>t('ktv.error.qr_format'));
+  const viaPicker=async(page,act)=>{const [chooser]=await Promise.all([page.waitForEvent('filechooser'),page.locator('#ktv-host-import').click()]);return act(chooser);};
+  // A GIF chosen through the Host's system picker receives the explicit guidance; nothing is submitted.
+  let {tv,page,errors}=await scanHost(t,engine,'android');await openLocalScan(page);
+  assert.deepEqual(await page.evaluate(()=>[...document.querySelectorAll('#ktv-host-image-input,#ktv-host-capture-input')].map(n=>n.accept)),
+    ['image/png,image/jpeg,image/webp,image/svg+xml','image/png,image/jpeg,image/webp,image/svg+xml']);
+  assert.equal(await importOutcome(page,()=>viaPicker(page,chooser=>chooser.setFiles(qrFile.gif(tv.description)))),await gifFormat(page));
+  const {languages}=JSON.parse(read('i18n.json'));
+  for(const language of ['zh','en','ja']){const text=languages[language]['ktv.error.qr_format'];
+    assert.ok(/Android/.test(text)&&/GIF/.test(text)&&/PNG.*JPEG.*WebP.*SVG/.test(text),`${language}: ${text}`);}
+  assert.ok(/Android/.test(await gifFormat(page))&&/GIF/.test(await gifFormat(page)),'the guidance names the Android picker and GIF');
+  // A canceled picker clears its marker: the next direct import decodes the GIF.
+  await viaPicker(page,()=>page.locator('#ktv-host-image-input').dispatchEvent('cancel'));
+  assert.equal(await importOutcome(page,()=>page.locator('#ktv-host-image-input').setInputFiles(qrFile.gif(tv.description))),'prepare','cancel clears the picker marker');
+  assert.deepEqual(errors,[]);
+  // The picker itself hides the WebView: its selection keeps the marker across hidden -> visible.
+  ({tv,page,errors}=await scanHost(t,engine,'android'));await openLocalScan(page);
+  assert.equal(await importOutcome(page,()=>viaPicker(page,async chooser=>{await setHidden(page,true);await setHidden(page,false);await chooser.setFiles(qrFile.gif(tv.description));})),await gifFormat(page));
+  // A picker closed without a selection, then the dialog closed and reopened, leaves no marker behind.
+  await viaPicker(page,async()=>{await setHidden(page,true);await setHidden(page,false);});
+  await page.locator('#purek-close').click();await page.locator('#purek-modal').waitFor({state:'hidden'});
+  await openLocalScan(page,false);
+  assert.equal(await importOutcome(page,()=>page.locator('#ktv-host-image-input').setInputFiles(qrFile.gif(tv.description))),'prepare','closing clears the picker marker');
+  assert.deepEqual(errors,[]);
+  // Static formats chosen through the same picker still decode.
+  ({tv,page,errors}=await scanHost(t,engine,'android'));await openLocalScan(page);
+  const code=qrcode(0,'M');code.addData(tv.description);code.make();
+  const svg={name:'device.svg',mimeType:'image/svg+xml',buffer:Buffer.from(code.createSvgTag({cellSize:4,margin:24,scalable:false}))};
+  assert.equal(await importOutcome(page,()=>viaPicker(page,chooser=>chooser.setFiles(svg))),'prepare','static picker selections decode');
+  assert.deepEqual(errors,[]);
+});
+
 for(const engine of[chromium,webkit])test(`${engine.name()} Desktop explicitly retrieves Remote official links and rejects late or retired handoffs`,{skip:process.platform!=='linux',timeout:90000},async t=>{
   const {server}=await startHost(t,desktop),tv=await receiver(t),client=new HttpClient(server.base);
   await client.request('/remote');await client.api('/api/remote-identity/register',{name:'授权手机'});
