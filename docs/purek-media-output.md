@@ -19,6 +19,9 @@ Android 主清单声明 `android.permission.CAMERA`，由 WebView 的视频采�
 debug 清单继承主清单，无需重复声明。与 iOS 一样，仅在用户扫码时使用相机，
 不申请录音或存储权限；拒绝相机时保留权限提示和图片导入，图片在本机解码，
 不上传图片或文件名。
+各端图库／拍照输入保留 `accept="image/*"` 和原有 `Image → canvas` 解码路径，
+Android 系统选择器也允许 GIF；有效 GIF 已在模拟器验证可原样导入，不做 GIF
+专用拒绝或提示。不可读文件仍走现有图片／唯一二维码错误处理。
 Android Host 等待 `getUserMedia` 权限结果时，权限 Activity 引起的短暂隐藏
 不取消请求：恢复可见后允许即可预览，拒绝则保留原权限提示。若结果回来时
 仍在后台，新轨道立即停止且不挂载预览；已运行相机的后台事件及 `pagehide`

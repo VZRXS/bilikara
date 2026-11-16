@@ -143,6 +143,27 @@ test('Android camera denial retains the permission hint and the same surface can
  assert.deepEqual(decoded,[text]);assert.equal(e.urls.size,0);assert.equal(e.timers.size,0);
 });
 
+test('Android system picker retains image/* and imports a valid GIF QR through the existing decoder',async()=>{
+ const text='http://192.168.1.8/description.xml',e=environment({dataset:{nativeHost:'true',hostPlatform:'android'},image:pixels(text)});
+ const code=qr(0,'M');code.addData(text);code.make();
+ const bytes=Buffer.from(code.createDataURL().split(',')[1],'base64');assert.equal(bytes.subarray(0,6).toString(),'GIF87a');
+ const file=new File([bytes],'qr.gif',{type:'image/gif'});assert.ok(file.size>0);
+ // Node supplies Image/canvas pixels; actual GIF container decoding and the
+ // Android picker were verified by the emulator. This guards the UI/file path.
+ const elements=new Map(),decoded=[];let markup='',loading;
+ const node=()=>({value:'',files:[],listeners:{},clicks:0,setAttribute(){},addEventListener(key,fn){this.listeners[key]=fn;},click(){this.clicks++;this.listeners.click?.();}});
+ for(const key of ['.ktv-scan-gallery','.ktv-scan-capture','#gif-image-input','#gif-capture-input'])elements.set(key,node());
+ elements.set('video',e.video);e.context.document.addEventListener=()=>{};
+ const root={classList:{add(){}},set innerHTML(value){markup=value;},querySelector:key=>elements.get(key)};
+ const surface=e.scanner.surface({root,prefix:'gif',translate:key=>key,onCamera(){},onDecode:raw=>decoded.push(raw),onError:error=>assert.fail(error),
+   onFile:selected=>{assert.equal(selected,file);loading=surface.file(selected);}});
+ assert.equal((markup.match(/accept="image\/\*"/g)||[]).length,2,'gallery and capture keep all browser-supported image formats');
+ surface.gallery.click();assert.equal(surface.imageInput.clicks,1);
+ e.context.document.hidden=true;surface.stop();e.context.document.hidden=false;
+ surface.imageInput.files=[file];surface.imageInput.listeners.change();await loading;
+ assert.deepEqual(decoded,[text]);assert.equal(e.urls.size,0);assert.equal(e.timers.size,0);
+});
+
 test('the full visible frame is decoded, including a QR at each edge without a reticle crop',async()=>{
   const e=environment(),text='http://192.168.1.8/description.xml',image=pixels(text,3),width=640,height=480;
   for(const [left,top] of [[0,0],[width-image.width,0],[0,height-image.height],[width-image.width,height-image.height]]){
