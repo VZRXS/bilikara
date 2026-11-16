@@ -552,11 +552,27 @@ for (const engine of [chromium, webkit]) test(`${engine.name()} Request search f
         panel.classList.toggle('has-request-session-user-notice',notice);
         if(notice){const n=document.createElement('p');n.className='request-session-user-notice';n.textContent='Visible singer notice';panel.querySelector('form').after(n);}
       },{status,notice});
-      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
-      const bounds=await page.locator('#request-search-shared').evaluate(panel=>{
-        const s=getComputedStyle(panel),r=panel.getBoundingClientRect(),frame=panel.querySelector('.android-result-frame').getBoundingClientRect();
-        const status=panel.querySelector('.search-message').getBoundingClientRect();
-        return {contentBottom:r.bottom-parseFloat(s.paddingBottom)-parseFloat(s.borderBottomWidth),frameBottom:frame.bottom,statusHeight:status.height};
+      // F5: inserting the notice re-fits the pager (ResizeObserver) and may re-decide the short-landscape owner, and
+      // the sheet may still be in its entry motion. Two frames can sample mid-change under parallel CI load, so wait
+      // for idle pagers and finished sheet animations, then for three identical consecutive frames (bounded).
+      const bounds=await page.locator('#request-search-shared').evaluate(async panel=>{
+        const frame=()=>new Promise(resolve=>requestAnimationFrame(resolve));
+        const sheet=panel.closest('#host-workspace-region')||panel;
+        await Promise.allSettled(document.getAnimations().filter(a=>{const target=a.effect?.target;
+          return a.effect?.getTiming().iterations!==Infinity&&target&&(sheet.contains(target)||target.contains(sheet));}).map(a=>a.finished));
+        const read=()=>{
+          const s=getComputedStyle(panel),r=panel.getBoundingClientRect(),frameBox=panel.querySelector('.android-result-frame').getBoundingClientRect();
+          const status=panel.querySelector('.search-message').getBoundingClientRect();
+          return {contentBottom:r.bottom-parseFloat(s.paddingBottom)-parseFloat(s.borderBottomWidth),frameBottom:frameBox.bottom,statusHeight:status.height};
+        };
+        let last=null,same=0,frames=0;
+        for(;frames<60&&same<3;frames++){
+          await frame();
+          const busy=[...panel.querySelectorAll('.result-pager')].some(p=>p.getAttribute('aria-busy')==='true');
+          const value=read(),key=JSON.stringify(value);
+          same=!busy&&key===last?same+1:0;last=key;
+        }
+        return {...read(),stableFrames:frames};
       });
       assert.ok(Math.abs(bounds.frameBottom-bounds.contentBottom)<=1,JSON.stringify({width,height,status,notice,bounds}));
       if(!status)assert.equal(bounds.statusHeight,0,'empty status contributes neither a track nor a gap');
