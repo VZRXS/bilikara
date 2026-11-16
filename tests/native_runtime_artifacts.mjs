@@ -33,15 +33,44 @@ async function selectedTargetDirectory() {
   return (targetDirectory = selected);
 }
 
-// Inter-process mutual exclusion through an atomic mkdir. A holder records its PID
-// immediately; only a dead holder, or a directory left without a PID for a minute,
-// is reclaimed. The deadline exceeds one bounded child build (300 s).
+// Inter-process mutual exclusion through an atomic mkdir, granted in FIFO order: each
+// caller enqueues a timestamped ticket and only the oldest live ticket may attempt
+// the lock, so a process that releases and immediately builds again (alpha, then
+// the desktop Host) cannot starve another file's waiting build. The mkdir remains
+// the mutex, because two tickets can briefly both appear to be first. A holder
+// records its PID immediately; only a dead holder, or a directory left without a
+// PID for a minute, is reclaimed, and tickets of exited processes are dropped. The
+// deadline exceeds one bounded child build (300 s) with another file queued ahead.
+let tickets = 0;
 export async function exclusive(directory, action, {timeout = 900_000, poll = 100} = {}) {
   const lock = path.join(directory, '.bilikara-test-artifacts.lock'), owner = path.join(lock, 'owner');
-  mkdirSync(directory, {recursive: true});
-  const deadline = Date.now() + timeout;
+  const queue = path.join(directory, '.bilikara-test-artifacts.queue');
+  mkdirSync(queue, {recursive: true});
+  const ticket = `${String(Date.now()).padStart(15, '0')}-${String(process.pid).padStart(10, '0')}-${String(++tickets).padStart(6, '0')}`;
+  writeFileSync(path.join(queue, ticket), '', {flag: 'wx'});
+  try {
+    return await exclusiveTurn(lock, owner, queue, ticket, action, Date.now() + timeout, poll);
+  } finally {
+    rmSync(path.join(queue, ticket), {force: true});
+  }
+}
+
+async function exclusiveTurn(lock, owner, queue, ticket, action, deadline, poll) {
   for (;;) {
-    try { mkdirSync(lock); break; } catch (error) { if (error.code !== 'EEXIST') throw error; }
+    const ahead = readdirSync(queue).filter(entry => /^\d{15}-\d{10}-\d{6}$/.test(entry) && entry < ticket);
+    let waiting = false;
+    for (const entry of ahead) {
+      const pid = Number(entry.split('-')[1]);
+      if (pid !== process.pid && !alive(pid)) rmSync(path.join(queue, entry), {force: true});
+      else waiting = true;
+    }
+    if (!waiting) {
+      try { mkdirSync(lock); break; } catch (error) { if (error.code !== 'EEXIST') throw error; }
+    } else {
+      assert.ok(Date.now() < deadline, `timed out waiting for the Cargo artifact queue ${queue}`);
+      await delay(poll);
+      continue;
+    }
     let holder = 0, age;
     try { holder = Number(readFileSync(owner, 'utf8')); } catch {}
     try { age = Date.now() - statSync(lock).mtimeMs; } catch { continue; }

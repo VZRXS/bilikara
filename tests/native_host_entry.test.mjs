@@ -71,12 +71,25 @@ test('concurrent test files receive process-owned Cargo artifacts that a later u
     assert.equal(existsSync(lock), false, 'the lock is released after its holder');
     await assert.rejects(exclusive(target, async () => { throw Error('build failed'); }), /build failed/);
     assert.equal(existsSync(lock), false, 'a failed build releases the lock');
+    // A file that releases and immediately builds again (alpha, then Host) must not starve a waiting file.
+    const turns = []; let stop = false;
+    const greedy = (async () => { for (let n = 0; n < 40 && !stop; n++) await exclusive(target, async () => { turns.push('greedy'); await new Promise(resolve => setTimeout(resolve, 20)); }, {poll: 5}); })();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    await exclusive(target, async () => { turns.push('waiter'); stop = true; }, {poll: 5});
+    await greedy;
+    assert.ok(turns.indexOf('waiter') >= 1 && turns.indexOf('waiter') <= 2, `the waiter is served next in FIFO order: ${turns}`);
+    const queue = path.join(target, '.bilikara-test-artifacts.queue');
+    assert.deepEqual(readdirSync(queue), [], 'every ticket leaves the queue');
     mkdirSync(lock); writeFileSync(path.join(lock, 'owner'), String(await exited()));
     assert.equal(await exclusive(target, async () => 'reclaimed', {timeout: 5000}), 'reclaimed', 'a lock left by an exited process is reclaimed');
     mkdirSync(lock); writeFileSync(path.join(lock, 'owner'), String(process.ppid));
     await assert.rejects(exclusive(target, async () => 'acquired', {timeout: 300, poll: 20}), /timed out waiting for the Cargo artifact lock/);
     assert.ok(existsSync(lock), 'a live holder keeps its lock');
-    assert.deepEqual(readdirSync(target).sort(), ['.bilikara-test-artifacts.lock', 'host']);
+    // An exited process's ticket ahead in the queue is dropped instead of blocking the line.
+    rmSync(lock, {recursive: true}); writeFileSync(path.join(queue, `${'0'.repeat(15)}-${String(await exited()).padStart(10, '0')}-000001`), '');
+    assert.equal(await exclusive(target, async () => 'next', {timeout: 5000}), 'next');
+    assert.deepEqual(readdirSync(queue), []);
+    assert.deepEqual(readdirSync(target).sort(), ['.bilikara-test-artifacts.queue', 'host']);
   } finally {
     rmSync(target, {recursive: true, force: true});
   }
