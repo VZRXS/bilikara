@@ -6,7 +6,8 @@ use super::{
     startup::{Failure, Progress, Stage},
 };
 use crate::{
-    AppStateRequest, AppStateSeed, PlayerSettingsSeed, execute_app_state, initialize_native_host,
+    AppStateRequest, AppStateSeed, PlayerSettingsSeed,
+    app_state::initialize_native_host_for_startup, execute_app_state,
 };
 use std::{
     path::Path,
@@ -51,7 +52,7 @@ pub fn start_diagnosed(directory: &Path, assets: AssetSource) -> Result<NativeHo
         .duration_since(UNIX_EPOCH)
         .map_err(|_| Failure::new(Stage::Clock, None, "host_startup_failed"))?
         .as_secs_f64();
-    let response = initialize_native_host(
+    let response = initialize_native_host_for_startup(
         directory,
         AppStateSeed {
             last_playback_generation: 0,
