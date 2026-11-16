@@ -3,9 +3,6 @@
 (() => {
   "use strict";
   const failure=code=>Object.assign(new Error(code),{code});
-  // Android's photo picker can transform GIF frames before returning a file.
-  // Use the existing Image/canvas decoder for these explicit image formats.
-  const imageTypes=["image/png","image/jpeg","image/webp","image/svg+xml"];
   async function decode(canvas,detector=null){
     if(detector){try{
       const values=await detector.detect(canvas);
@@ -96,14 +93,6 @@
     async function file(file){
       stop();const ticket=generation;
       if(!file||file.size>12*1024*1024||(file.type&&!file.type.startsWith("image/")))throw failure("qr_image");
-      if((file.type&&!imageTypes.includes(file.type))||/\.gif$/i.test(file.name||""))throw failure("qr_format");
-      // A picker may omit or mislabel MIME/name. Reject GIF bytes as well;
-      // never try arbitrary animation frames and risk selecting another room.
-      if(file.slice){
-        const bytes=new Uint8Array(await file.slice(0,6).arrayBuffer());
-        if(!current(ticket))return;
-        if(["GIF87a","GIF89a"].includes(String.fromCharCode(...bytes)))throw failure("qr_format");
-      }
       const image=new Image();reader=image;objectUrl=URL.createObjectURL(file);
       try{
         await new Promise((resolve,reject)=>{cancelRead=reject;image.onload=()=>{cancelRead=null;resolve();};image.onerror=()=>{cancelRead=null;reject(failure("qr_image"));};image.src=objectUrl;});
@@ -120,8 +109,8 @@
     root.innerHTML=`<video id="${prefix}-camera-preview" playsinline muted hidden></video>
       <button type="button" id="${prefix}-capture" class="ktv-scan-capture" data-i18n-aria-label="ktv.camera"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H4v4m12-4h4v4M4 16v4h4m12-4v4h-4M8 8h3v3H8zm5 0h3v3h-3zm-5 5h3v3H8zm5 0h3v3h-3z"/></svg></button>
       <button type="button" id="${prefix}-import" class="ktv-scan-gallery" data-i18n-aria-label="purek.import"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m4 17 5-5 4 4 3-3 5 5"/></svg></button>
-      <input id="${prefix}-image-input" type="file" accept="${imageTypes.join(",")}" hidden>
-      <input id="${prefix}-capture-input" type="file" accept="${imageTypes.join(",")}" capture="environment" hidden>`;
+      <input id="${prefix}-image-input" type="file" accept="image/*" hidden>
+      <input id="${prefix}-capture-input" type="file" accept="image/*" capture="environment" hidden>`;
     const video=root.querySelector("video"),gallery=root.querySelector(".ktv-scan-gallery"),capture=root.querySelector(".ktv-scan-capture");
     const imageInput=root.querySelector(`#${prefix}-image-input`),captureInput=root.querySelector(`#${prefix}-capture-input`);
     const scanner=create({video,onDecode,onError});

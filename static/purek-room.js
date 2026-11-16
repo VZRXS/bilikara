@@ -113,7 +113,7 @@
     }
     for(const node of existing.values())node.remove();
   }
-  const errorKey=code=>["camera_secure","camera_permission","qr_image","qr_format","clipboard"].includes(code)?`ktv.error.${code}`
+  const errorKey=code=>["camera_secure","camera_permission","qr_image","clipboard"].includes(code)?`ktv.error.${code}`
       :code.startsWith("purek_")&&["qr_invalid","qr_required","authorization","network","http","identity_changed","busy","protocol","renderer"].includes(code.slice(6))?`purek.error.${code.slice(6)}`:`ktv.error.${code.startsWith("ktv_")&&["busy","offline","stale","confirmation_required","secure_transport_required","scan_required","resume_unavailable","receiver_connected"].includes(code.slice(4))?code.slice(4):"failed"}`;
   // Host-only stage and stable code for support reports; never addresses or URLs.
   const errorText=code=>{
