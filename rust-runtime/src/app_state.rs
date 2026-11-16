@@ -1179,6 +1179,8 @@ pub struct AppState {
     analysis_verification: Option<automatic_volume::VerificationSignal>,
     data: Option<AppStateData>,
     native_storage: Option<NativeHostStorage>,
+    // Process-local startup transaction, completed at Ready or discarded on Shutdown.
+    native_startup_pending: bool,
     next_cache_attempt_token: u64,
     next_item_incarnation_id: u64,
     next_artifact_set_id: u64,
@@ -1234,6 +1236,7 @@ impl Default for AppState {
             #[cfg(feature = "native-host")]
             analysis_verification: None,
             native_storage: None,
+            native_startup_pending: false,
             next_cache_attempt_token: 0,
             next_item_incarnation_id: 0,
             next_artifact_set_id: 0,
@@ -5601,6 +5604,7 @@ impl AppState {
                 self.notify_analysis(true);
                 let was_initialized = self.data.take().is_some();
                 self.native_storage = None;
+                self.native_startup_pending = false;
                 self.internet_remote_peers.clear();
                 self.player_controls.clear();
                 self.shutdown_artifact_lifetime();
@@ -6183,6 +6187,20 @@ pub fn initialize_native_host(directory: &Path, initial: AppStateSeed) -> AppSta
         return internal_error_response("Rust AppState lock is poisoned");
     };
     state.initialize_native(directory, initial)
+}
+
+/// Mobile startup owns no usable Host yet. Keep its checkpoint unchanged until
+/// recovery and worker creation succeed; AppState remains the only authority.
+#[cfg(feature = "native-host")]
+pub(crate) fn initialize_native_host_for_startup(
+    directory: &Path,
+    initial: AppStateSeed,
+) -> AppStateResponse {
+    let state = APP_STATE.get_or_init(|| Mutex::new(AppState::default()));
+    let Ok(mut state) = state.lock() else {
+        return internal_error_response("Rust AppState lock is poisoned");
+    };
+    state.initialize_native_startup(directory, initial)
 }
 
 pub(crate) fn begin_cache_attempt_for_runtime(

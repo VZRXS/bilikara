@@ -625,6 +625,24 @@ fn start_observed(
             purek::controller::maintain(output_context)
         })
         .map_err(|_| ApiError::new(503, "runtime", "无法创建播放输出线程"))?;
+    with_app(|app| {
+        let response = app.commit_native_startup();
+        if let Some(error) = response.error() {
+            let mut failure = ApiError::new(503, &error.kind, &error.message);
+            if let Some(details) = error.details.as_ref() {
+                failure.io_facts = details["io_kind"].as_str().map(|kind| {
+                    Box::new((
+                        kind.to_owned(),
+                        details["os_error"]
+                            .as_i64()
+                            .and_then(|n| i32::try_from(n).ok()),
+                    ))
+                });
+            }
+            return Err(failure);
+        }
+        Ok(())
+    })?;
     progress.enter(Stage::Ready);
     Ok(host)
 }
