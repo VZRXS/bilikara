@@ -1,10 +1,13 @@
 import {desktopWorkflow, desktopChecks} from './ci_workflow_support.mjs';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import path from 'node:path';
+import os from 'node:os';
+import { spawn } from 'node:child_process';
 import { root, runNative } from './desktop_construction_support.mjs';
 import { csvRows } from './native_export_support.mjs';
+import { exclusive, publish } from './native_runtime_artifacts.mjs';
 
 test('independent CSV reader preserves BOM, Unicode, quoted separators/newlines and escaped quotes', () => {
   assert.deepEqual(csvRows(Buffer.from('\uFEFFid,title\r\n1,"开场, ""合唱""\n第二行"\r\n2,last\r\n')),
@@ -35,6 +38,60 @@ test('declared missing Host fails; no ambient/stale/fixture fallback', async () 
   for (const entry of ['native_host_business', 'native_host_sources', 'native_host_recheck']) {
     const result = await runNative(process.execPath, ['--test', `tests/${entry}.test.mjs`], env);
     assert.notEqual(result.status, 0); assert.match(result.stdout + result.stderr, /declared native Host must exist/);
+  }
+});
+
+test('concurrent test files receive process-owned Cargo artifacts that a later uplift cannot remove', async () => {
+  const target = mkdtempSync(path.join(os.tmpdir(), 'bilikara-artifacts-'));
+  const exited = async () => { const child = spawn(process.execPath, ['-e', '']); await new Promise(resolve => child.once('exit', resolve)); return child.pid; };
+  try {
+    const examples = path.join(target, 'host', 'debug', 'examples'), suffix = process.platform === 'win32' ? '.exe' : '';
+    const cargo = path.join(examples, `native_host_alpha${suffix}`);
+    mkdirSync(examples, {recursive: true}); writeFileSync(cargo, 'first build');
+    const dead = await exited(), stale = path.join(examples, `native_host_alpha.bilikara-test-${dead}-1${suffix}`);
+    const live = path.join(examples, `native_host_alpha.bilikara-test-${process.ppid}-1${suffix}`), unrelated = path.join(examples, `native_host_alpha.bilikara-test-x${suffix}`);
+    for (const file of [stale, live, unrelated]) writeFileSync(file, 'other');
+    const first = publish(cargo, target), second = publish(cargo, target);
+    assert.notEqual(first, second); assert.equal(path.dirname(first), examples, 'same parent keeps resource and current_exe semantics');
+    assert.match(path.basename(first), new RegExp(`^native_host_alpha\\.bilikara-test-${process.pid}-\\d+${suffix.replace('.', '\\.')}$`));
+    assert.equal(existsSync(stale), false, 'names owned by exited processes are reclaimed');
+    assert.ok(existsSync(live) && existsSync(unrelated), 'live or nonmatching names are never removed');
+    // Cargo's fresh-build uplift: remove the uplifted path, then link a new one.
+    rmSync(cargo); assert.equal(readFileSync(first, 'utf8'), 'first build');
+    writeFileSync(cargo, 'second build'); assert.equal(readFileSync(second, 'utf8'), 'first build');
+    assert.equal(readFileSync(publish(cargo, target), 'utf8'), 'second build');
+    const outside = path.join(os.tmpdir(), `native_host_alpha-outside${suffix}`);
+    assert.throws(() => publish(outside, target), /outside its target/);
+
+    const events = [];
+    const hold = name => exclusive(target, async () => { events.push(`${name}+`); await new Promise(resolve => setTimeout(resolve, 50)); events.push(`${name}-`); });
+    await Promise.all([hold('a'), hold('b'), hold('c')]);
+    assert.deepEqual(events.filter((_, index) => index % 2 === 0).map(event => event[0]), events.filter((_, index) => index % 2).map(event => event[0]), `holders never overlap: ${events}`);
+    const lock = path.join(target, '.bilikara-test-artifacts.lock');
+    assert.equal(existsSync(lock), false, 'the lock is released after its holder');
+    await assert.rejects(exclusive(target, async () => { throw Error('build failed'); }), /build failed/);
+    assert.equal(existsSync(lock), false, 'a failed build releases the lock');
+    // A file that releases and immediately builds again (alpha, then Host) must not starve a waiting file.
+    const turns = []; let stop = false;
+    const greedy = (async () => { for (let n = 0; n < 40 && !stop; n++) await exclusive(target, async () => { turns.push('greedy'); await new Promise(resolve => setTimeout(resolve, 20)); }, {poll: 5}); })();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    await exclusive(target, async () => { turns.push('waiter'); stop = true; }, {poll: 5});
+    await greedy;
+    assert.ok(turns.indexOf('waiter') >= 1 && turns.indexOf('waiter') <= 2, `the waiter is served next in FIFO order: ${turns}`);
+    const queue = path.join(target, '.bilikara-test-artifacts.queue');
+    assert.deepEqual(readdirSync(queue), [], 'every ticket leaves the queue');
+    mkdirSync(lock); writeFileSync(path.join(lock, 'owner'), String(await exited()));
+    assert.equal(await exclusive(target, async () => 'reclaimed', {timeout: 5000}), 'reclaimed', 'a lock left by an exited process is reclaimed');
+    mkdirSync(lock); writeFileSync(path.join(lock, 'owner'), String(process.ppid));
+    await assert.rejects(exclusive(target, async () => 'acquired', {timeout: 300, poll: 20}), /timed out waiting for the Cargo artifact lock/);
+    assert.ok(existsSync(lock), 'a live holder keeps its lock');
+    // An exited process's ticket ahead in the queue is dropped instead of blocking the line.
+    rmSync(lock, {recursive: true}); writeFileSync(path.join(queue, `${'0'.repeat(15)}-${String(await exited()).padStart(10, '0')}-000001`), '');
+    assert.equal(await exclusive(target, async () => 'next', {timeout: 5000}), 'next');
+    assert.deepEqual(readdirSync(queue), []);
+    assert.deepEqual(readdirSync(target).sort(), ['.bilikara-test-artifacts.queue', 'host']);
+  } finally {
+    rmSync(target, {recursive: true, force: true});
   }
 });
 
