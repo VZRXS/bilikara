@@ -55,23 +55,32 @@ for(const engine of [chromium,webkit])test(`${engine.name()} real standalone L1 
  assert.equal((await remote.request('/api/player/output',{target:'native',experimental:true})).status,403);
  assert.equal((await host.request('/api/player/output',{target:'native'})).status,400);
  await page.locator('[data-android-page="my"]').click();
- const target=page.locator('[data-media-output="settings"] .media-output-targets');assert.equal(await target.locator('input').isEnabled(),true);
+ // B5b (R8 §14.3, 4554dce): with no device connected the DLNA switch is off and disabled and never starts a
+ // pipeline. The explicit standalone test starts from the output group's own action (7a6aaa8, AGENTS §5.3).
+ const group=page.locator('[data-media-output="settings"]'),target=group.locator('.media-output-targets'),pipeline=group.locator('.media-output-pipeline-test');
+ assert.equal(await target.locator('input').isDisabled(),true,'no device: the DLNA switch is disabled');
+ assert.equal(await target.locator('input').isChecked(),false);
  const kind=await page.evaluate(()=>BilikaraNativeOutput.decoderKind());
  let decoderLoads=0;
  if(kind==='mse')await page.route('**/vendor/hls/hls.light.min.js',route=>++decoderLoads===1?route.abort():route.continue());
- await target.click();
  if(kind==='unavailable'){
-   // Linux GTK WebKit lacks native HLS. It must reject this experimental
-   // sink explicitly before stopping the working Web player. Apple hardware
-   // native HLS is a separate device gate; no simulated decoder acceptance.
+   // Linux GTK WebKit lacks native HLS. AGENTS §5.3: report the pipeline unavailable and keep the working Web
+   // player; the test action is not offered and the disabled switch cannot start it. Apple hardware native HLS
+   // is a separate device gate; no simulated decoder acceptance.
    assert.equal(engine.name(),'webkit');
    assert.equal(await page.evaluate(()=>document.createElement('video').canPlayType('application/vnd.apple.mpegurl')),'');
-   await page.waitForFunction(()=>document.querySelector('[data-media-output="settings"] .media-output-status').textContent===t('mediaOutput.actionFailed'));
-   assert.ok((await page.locator('#purek-info .media-output-error').textContent()).includes(await page.evaluate(()=>t('mediaOutput.decoderUnavailable'))));
+   assert.equal((await host.api('/api/state')).media_output.available,true,'the real companion is available; only the decoder is missing');
+   assert.equal(await pipeline.isVisible(),false,'no local decoder: the pipeline test action is not offered');
+   assert.ok(await page.evaluate(()=>[...document.querySelectorAll('.media-output-note')].some(n=>n.textContent===t('mediaOutput.decoderUnavailable'))),'the output group reports the decoder as unavailable');
+   await target.click({force:true});await page.waitForTimeout(500);
+   assert.equal(await page.locator('#purek-modal').isVisible(),false,'the switch never opens Scan/Manage');
    assert.equal((await host.api('/api/state')).media_output.target,'local');
    assert.deepEqual(await page.evaluate(()=>({same:webPair.video===state.hostPlaybackSession.video&&webPair.audio===state.hostPlaybackSession.audio,playing:!webPair.video.paused&&!webPair.audio.paused})),{same:true,playing:true});
    assert.deepEqual(requests.filter(path=>path==='/api/player/output'),[]);assert.deepEqual(errors,[]);return;
  }
+ assert.equal(await pipeline.isVisible(),true,'companion and local decoder available: the pipeline test action is offered');
+ assert.equal(await pipeline.isEnabled(),true);
+ await pipeline.click();
  if(kind==='mse'){
    try {await page.waitForFunction(()=>state.data.media_output.last_error==='purek_output_preview_decode');}
    catch(error){
