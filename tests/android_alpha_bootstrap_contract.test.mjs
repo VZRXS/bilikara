@@ -31,7 +31,7 @@ mod android;`, entry));
 source = readFileSync(path.join(TAURI, "src/android.rs"), "utf8");
 const sharedStartup = readFileSync(path.join(ROOT, "rust-runtime/src/native_host/mobile.rs"), "utf8");
 assert.ok(contains("bilikara_runtime::native_host::mobile::start(", source));
-assert.ok(contains("initialize_native_host(", sharedStartup));
+assert.ok(contains("initialize_native_host_for_startup(", sharedStartup));
 assert.match(source, new RegExp("app\\s*\\.path\\(\\)\\s*\\.app_data_dir\\(\\)",""));
 assert.ok(contains("execute_app_state(AppStateRequest::Snapshot", source));
 for (const forbidden of iterableValues(["Command::new", "backend_process::", "execute_app_state_json", "CString"])) {
