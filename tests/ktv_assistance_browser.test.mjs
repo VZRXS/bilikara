@@ -587,7 +587,8 @@ function bmpQr(raw){const {size,dark}=qrRaster(raw),row=Math.ceil(size*3/4)*4,da
   for(let y=0;y<size;y++)for(let x=0;x<size;x++){const v=dark(x,size-1-y)?0:255,o=54+y*row+x*3;b[o]=b[o+1]=b[o+2]=v;}return b;}
 const qrFile={gif:raw=>({name:'device.gif',mimeType:'image/gif',buffer:gifQr(raw)}),bmp:raw=>({name:'device.bmp',mimeType:'image/bmp',buffer:bmpQr(raw)})};
 async function scanHost(t,engine,platform){
-  const {server}=await startHost(t,alpha,true),tv=await receiver(t);
+  // Desktop uses the real desktop Host binary; the alpha fixture serves the mobile Host page.
+  const {server}=platform==='desktop'?await startHost(t,desktop):await startHost(t,alpha,true),tv=await receiver(t);
   const context=await browserContext(t,engine,server,{host:true,phone:platform!=='desktop',ios:platform==='ios'});
   await context.addInitScript(()=>{const deny=()=>Promise.reject(new DOMException('denied','NotAllowedError'));
     if(window.MediaDevices)Object.defineProperty(MediaDevices.prototype,'getUserMedia',{configurable:true,writable:true,value:deny});
@@ -649,7 +650,10 @@ for(const engine of[chromium,webkit])test(`${engine.name()} Android Host picker 
   assert.deepEqual(await page.evaluate(()=>[...document.querySelectorAll('#ktv-host-image-input,#ktv-host-capture-input')].map(n=>n.accept)),
     ['image/png,image/jpeg,image/webp,image/svg+xml','image/png,image/jpeg,image/webp,image/svg+xml']);
   assert.equal(await importOutcome(page,()=>viaPicker(page,chooser=>chooser.setFiles(qrFile.gif(tv.description)))),await gifFormat(page));
-  assert.match(await gifFormat(page),/Android.*GIF.*PNG.*JPEG.*WebP.*SVG/);
+  const {languages}=JSON.parse(read('i18n.json'));
+  for(const language of ['zh','en','ja']){const text=languages[language]['ktv.error.qr_format'];
+    assert.ok(/Android/.test(text)&&/GIF/.test(text)&&/PNG.*JPEG.*WebP.*SVG/.test(text),`${language}: ${text}`);}
+  assert.ok(/Android/.test(await gifFormat(page))&&/GIF/.test(await gifFormat(page)),'the guidance names the Android picker and GIF');
   // A canceled picker clears its marker: the next direct import decodes the GIF.
   await viaPicker(page,()=>page.locator('#ktv-host-image-input').dispatchEvent('cancel'));
   assert.equal(await importOutcome(page,()=>page.locator('#ktv-host-image-input').setInputFiles(qrFile.gif(tv.description))),'prepare','cancel clears the picker marker');
