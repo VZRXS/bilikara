@@ -136,7 +136,7 @@ test('Android camera denial retains the permission hint and the same surface can
  for(const [lang,hint]of [['zh','无法打开相机，请检查权限或改用图片。'],['en','Camera could not open; check permission or import an image.'],['ja','カメラを開けません。権限を確認するか画像を選択してください。']]){
    assert.equal(languages[lang]['ktv.error.camera_permission'],hint,'existing permission guidance still offers image import');
  }
- assert.match(markup,/type="file" accept="image\/\*" capture="environment"/,'system capture/photo picker remains available');
+ assert.match(markup,/type="file" accept="image\/png,image\/jpeg,image\/webp,image\/svg\+xml" capture="environment"/,'system capture/photo picker remains available with the supported formats');
  assert.equal(surface.gallery.disabled,false);surface.gallery.click();
  assert.equal(surface.imageInput.clicks,1,'denial does not disable the gallery picker');
  surface.imageInput.files=[{size:100,type:'image/png'}];surface.imageInput.listeners.change();await loading;
@@ -160,4 +160,40 @@ test('V7 cover preview decodes exactly the visible centered region in both orien
   assert.deepEqual(plain(scanner.coverRegion(480, 640, 300, 300)), {x:0,y:80,width:480,height:480});
   assert.deepEqual(plain(scanner.coverRegion(640, 480, 320, 240)), {x:0,y:0,width:640,height:480});
   assert.throws(() => scanner.coverRegion(0,480,300,300), error => error.code === 'qr_image');
+});
+
+test('GIF import is rejected by MIME, extension and signature with no decode or object URL ownership',async()=>{
+ for(const file of [
+   {size:100,type:'image/gif',name:'qr'},
+   {size:100,type:'',name:'qr.GIF'},
+   ...['GIF87a','GIF89a'].map(header=>({size:100,type:'image/png',name:'qr.png',slice:(start,end)=>{
+     assert.equal(start,0);assert.equal(end,6);return{arrayBuffer:async()=>new TextEncoder().encode(header).buffer};
+   }}))
+ ]){
+   const e=environment({image:pixels('must-not-be-submitted')}),scanner=e.scanner.create({video:e.video,onDecode(){assert.fail('GIF must not select a room');},onError:error=>assert.fail(error)});
+   await assert.rejects(scanner.file(file),error=>error.code==='qr_format');
+   assert.equal(e.urls.size,0);assert.equal(e.timers.size,0);
+ }
+ const {languages}=JSON.parse(readFileSync(new URL('../static/i18n.json',import.meta.url),'utf8'));
+ for(const lang of ['zh','en','ja'])assert.match(languages[lang]['ktv.error.qr_format'],/GIF.*PNG.*JPEG.*WebP.*SVG/);
+ for(const client of ['purek-room.js','ktv-remote.js']){
+   const source=readFileSync(new URL('../static/'+client,import.meta.url),'utf8');
+   assert.match(source,/"camera_permission","qr_image","qr_format"/,'both clients retain the specific format error owner');
+ }
+});
+
+test('supported static image formats retain local Image/canvas QR decoding and release resources',async()=>{
+ for(const type of ['image/png','image/jpeg','image/webp','image/svg+xml']){
+   const text='http://192.168.1.8/description.xml',e=environment({image:pixels(text)}),decoded=[];
+   const scanner=e.scanner.create({video:e.video,onDecode:raw=>decoded.push(raw),onError:error=>assert.fail(error)});
+   await scanner.file({size:100,type,slice:()=>({arrayBuffer:async()=>new Uint8Array([137,80,78,71,13,10]).buffer})});
+   assert.deepEqual(decoded,[text]);assert.equal(e.urls.size,0);assert.equal(e.timers.size,0);
+ }
+});
+
+test('closing during a pending image header read does not revive image decoding',async()=>{
+ const e=environment({image:pixels('must-not-be-submitted')}),scanner=e.scanner.create({video:e.video,onDecode(){assert.fail('retired image');},onError:error=>assert.fail(error)});
+ let release;const loading=scanner.file({size:100,type:'image/png',slice:()=>({arrayBuffer:()=>new Promise(resolve=>{release=resolve;})})});
+ scanner.stop();release(new Uint8Array([137,80,78,71,13,10]).buffer);await loading;
+ assert.equal(e.urls.size,0);assert.equal(e.timers.size,0);
 });
