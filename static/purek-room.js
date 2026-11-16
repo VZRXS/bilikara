@@ -12,10 +12,10 @@
   let officialUrl="", officialOwner="", localLife=0, localAcquisition=false;
   const scanner=window.BilikaraKtvScanner.surface({root:byId("ktv-host-scan-view"),prefix:"ktv-host",translate:t,
     onCamera:()=>void openScanner(),
-    onFile:(file,input,source)=>void action(scanner.gallery,async()=>{localAcquisition=true;try{await scanner.file(file,source);}finally{localAcquisition=false;input.value="";}}),
+    onFile:(file,input)=>void action(scanner.gallery,async()=>{localAcquisition=true;try{await scanner.file(file);}finally{localAcquisition=false;input.value="";}}),
     onDecode:raw=>pending?(localAcquisition?prepareLocal(raw):stopScan()):action(scanner.gallery,()=>prepareLocal(raw)),
     onError:showError});
-  function stopScan({preservePicker=false}={}){localLife++;scanner.stop({preservePicker});paint();}
+  function stopScan(){localLife++;scanner.stop();paint();}
   async function prepareLocal(raw,{manual=false}={}){
     if(!opened||(!mobile&&!manual)||active()||snapshot?.connected)return;
     const ticket=localLife;
@@ -165,7 +165,7 @@
       else{const input=byId("ktv-host-authorization-url");input.focus();input.select();if(!document.execCommand("copy"))throw Error();}setAppMessage(t("purek.authorizationCopied"));}
     catch{throw Object.assign(new Error(),{code:"clipboard"});}
   }));
-  document.addEventListener("visibilitychange",()=>{if(document.hidden&&!scanner.waitingForAndroidPermission())stopScan({preservePicker:true});});
+  document.addEventListener("visibilitychange",()=>{if(document.hidden&&!scanner.waitingForAndroidPermission())stopScan();});
   window.addEventListener("pagehide",()=>{localLife++;scanner.stop();officialUrl="";officialOwner="";byId("ktv-host-authorization-url").value="";});
   byId("ktv-host-pair").addEventListener("click",event=>{event.stopPropagation();close();window.BilikaraHostLayout?.selectPage?.("playback");document.querySelector('[data-android-page="playback"]')?.click();setRemoteQrPinned(true);});
   for(const [id,operation]of[["ktv-host-approve","approve"],["ktv-host-reject","decline"],["ktv-host-cancel","cancel"]])byId(id).addEventListener("click",()=>void action(byId(id),async()=>{
