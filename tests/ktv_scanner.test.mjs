@@ -68,6 +68,33 @@ test('insecure camera has an explicit photo fallback and canceling image input r
  const loading=scanner.file({size:100,type:'image/png'});assert.equal(e.urls.size,1);scanner.stop();await assert.rejects(loading,error=>error.name==='AbortError');assert.equal(e.urls.size,0);
 });
 
+test('Android camera denial retains the permission hint and the same surface can import a QR image',async()=>{
+ const text='http://192.168.1.8/description.xml',e=environment({dataset:{nativeHost:'true',hostPlatform:'android'},image:pixels(text)});
+ const elements=new Map(),decoded=[];let loading,markup='',constraints;
+ const node=()=>({value:'',files:[],disabled:false,clicks:0,listeners:{},attributes:{},
+   setAttribute(key,value){this.attributes[key]=value;},addEventListener(key,fn){this.listeners[key]=fn;},
+   click(){this.clicks++;if(!this.disabled)this.listeners.click?.();}});
+ for(const key of ['.ktv-scan-gallery','.ktv-scan-capture','#denied-image-input','#denied-capture-input'])elements.set(key,node());
+ elements.set('video',e.video);
+ const root={classList:{add(){}},set innerHTML(value){markup=value;},querySelector:key=>elements.get(key)};
+ e.context.document.addEventListener=()=>{};
+ e.context.navigator.mediaDevices.getUserMedia=async value=>{constraints=value;throw new DOMException('Permission denied','NotAllowedError');};
+ const surface=e.scanner.surface({root,prefix:'denied',translate:key=>key,onDecode:raw=>decoded.push(raw),
+   onError:error=>assert.fail(error),onCamera(){},onFile:file=>{loading=surface.file(file);}});
+ await assert.rejects(surface.open(),error=>error.code==='camera_permission');
+ assert.equal(constraints.audio,false);assert.equal(constraints.video.facingMode.ideal,'environment');
+ assert.equal(e.timers.size,0);assert.equal(e.video.srcObject,null);assert.equal(e.video.hidden,true);
+ const {languages}=JSON.parse(readFileSync(new URL('../static/i18n.json',import.meta.url),'utf8'));
+ for(const [lang,hint]of [['zh','无法打开相机，请检查权限或改用图片。'],['en','Camera could not open; check permission or import an image.'],['ja','カメラを開けません。権限を確認するか画像を選択してください。']]){
+   assert.equal(languages[lang]['ktv.error.camera_permission'],hint,'existing permission guidance still offers image import');
+ }
+ assert.match(markup,/type="file" accept="image\/\*" capture="environment"/,'system capture/photo picker remains available');
+ assert.equal(surface.gallery.disabled,false);surface.gallery.click();
+ assert.equal(surface.imageInput.clicks,1,'denial does not disable the gallery picker');
+ surface.imageInput.files=[{size:100,type:'image/png'}];surface.imageInput.listeners.change();await loading;
+ assert.deepEqual(decoded,[text]);assert.equal(e.urls.size,0);assert.equal(e.timers.size,0);
+});
+
 test('the full visible frame is decoded, including a QR at each edge without a reticle crop',async()=>{
   const e=environment(),text='http://192.168.1.8/description.xml',image=pixels(text,3),width=640,height=480;
   for(const [left,top] of [[0,0],[width-image.width,0],[0,height-image.height],[width-image.width,height-image.height]]){
