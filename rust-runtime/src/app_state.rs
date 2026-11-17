@@ -1,4 +1,5 @@
 pub mod audio_supplement;
+pub mod cast;
 use crate::internet_remote::{
     InternetRemoteError, InternetRemotePeers, InternetRemoteValidation,
     PlaylistAddBindingSelection, project_remote_state,
@@ -1138,6 +1139,7 @@ impl AppStateResponse {
 
 #[derive(Debug, Clone, PartialEq)]
 struct AppStateData {
+    cast: cast::Preferences,
     queue_departures: Vec<QueueDeparture>,
     stable_cycle_cursor: Option<StableCycleCursor>,
     audio_supplements: HashMap<String, audio_supplement::AudioSupplement>,
@@ -1179,6 +1181,8 @@ pub struct AppState {
     analysis_verification: Option<automatic_volume::VerificationSignal>,
     data: Option<AppStateData>,
     native_storage: Option<NativeHostStorage>,
+    cast_storage: Option<cast::storage::Storage>,
+    cast_startup_dirty: bool,
     // Process-local startup transaction, completed at Ready or discarded on Shutdown.
     native_startup_pending: bool,
     next_cache_attempt_token: u64,
@@ -1236,6 +1240,8 @@ impl Default for AppState {
             #[cfg(feature = "native-host")]
             analysis_verification: None,
             native_storage: None,
+            cast_storage: None,
+            cast_startup_dirty: false,
             native_startup_pending: false,
             next_cache_attempt_token: 0,
             next_item_incarnation_id: 0,
@@ -2069,6 +2075,7 @@ impl AppStateData {
             .filter(|value| *value <= MAX_SAFE_JSON_INTEGER)
             .ok_or_else(|| rejected("invalid_initial_state", "playback generation exhausted"))?;
         let mut data = Self {
+            cast: Default::default(),
             queue_departures: seed.queue_departures,
             stable_cycle_cursor: seed.stable_cycle_cursor,
             automatic_volume: seed.automatic_volume,
@@ -5167,6 +5174,61 @@ impl AppState {
         {
             return execute_error_response(error);
         }
+        #[cfg(feature = "native-host")]
+        if self.native_session.cast.owns_playback
+            && matches!(
+                &request,
+                AppStateRequest::SetKeyShift { .. }
+                    | AppStateRequest::ApplyAvDelay {
+                        action: AvDelayCommand::SetEffective { .. }
+                            | AvDelayCommand::SetPersistent { .. }
+                            | AvDelayCommand::Adjust { .. }
+                            | AvDelayCommand::ResetLocal
+                            | AvDelayCommand::ToggleLock,
+                        ..
+                    }
+            )
+        {
+            return execute_error_response(rejected(
+                "cast_setting_unavailable",
+                "Pitch and AV delay cannot change during casting",
+            ));
+        }
+        #[cfg(feature = "native-host")]
+        if self.native_session.cast.owns_playback && !self.native_session.cast.worker_mutation {
+            let control = match &request {
+                AppStateRequest::IssuePlayerControl { control, .. } => Some(
+                    json!({"action":control.action,"playback_generation":control.playback_generation,"item_id":control.item_id,"expected_queue_version":control.expected_queue_version,"delta_seconds":control.delta_seconds,"target_seconds":control.target_seconds}),
+                ),
+                AppStateRequest::AdvanceToNext {
+                    expected_playback_generation,
+                    expected_queue_version,
+                    ..
+                } => Some(
+                    json!({"action":"next","playback_generation":expected_playback_generation,"expected_queue_version":expected_queue_version}),
+                ),
+                AppStateRequest::ApplyPlayerStatusObservation { .. } => {
+                    return execute_error_response(rejected(
+                        "cast_owns_playback",
+                        "Receiver owns playback",
+                    ));
+                }
+                AppStateRequest::SetAudioVariant { .. }
+                | AppStateRequest::RestartPlaybackProgram { .. } => {
+                    return execute_error_response(rejected(
+                        "cast_command_unsupported",
+                        "This cast command is not supported in R1",
+                    ));
+                }
+                _ => None,
+            };
+            if let Some(control) = control {
+                return match crate::native_host::cast_session::enqueue(self, &control) {
+                    Ok(()) => self.execute_inner(AppStateRequest::Snapshot { schema_version: 1 }),
+                    Err(e) => execute_error_response(rejected(&e.code, &e.message)),
+                };
+            }
+        }
         let terminal = match &request {
             AppStateRequest::ApplyCacheEvent {
                 item_id,
@@ -5604,6 +5666,8 @@ impl AppState {
                 self.notify_analysis(true);
                 let was_initialized = self.data.take().is_some();
                 self.native_storage = None;
+                self.cast_storage = None;
+                self.cast_startup_dirty = false;
                 self.native_startup_pending = false;
                 self.internet_remote_peers.clear();
                 self.player_controls.clear();
@@ -5799,8 +5863,11 @@ impl AppState {
                         // including a restart that retains the same item/files.
                         #[cfg(feature = "native-host")]
                         if !output_audio_selection {
-                            self.native_session.purek.program_epoch =
-                                self.native_session.purek.program_epoch.wrapping_add(1);
+                            self.native_session.local_output.program_epoch = self
+                                .native_session
+                                .local_output
+                                .program_epoch
+                                .wrapping_add(1);
                         }
                     }
                     self.data = Some(next);

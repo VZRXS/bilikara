@@ -59,11 +59,17 @@ pub(super) fn dispatch(
         return purek::assistance::lan_route(context, identity, &body);
     }
     if path == "/api/player/output-preview" && matches!(*method, Method::GET | Method::POST) {
-        return purek::preview::endpoint(identity, (*method == Method::POST).then_some(&body));
+        return native_output::preview::endpoint(
+            identity,
+            (*method == Method::POST).then_some(&body),
+        );
     }
     if path.starts_with("/api/purek/") {
         with_app(|app| app.native_authorize(identity, true))?;
         return purek::route(context, method, path, &body);
+    }
+    if path.starts_with("/api/cast/") {
+        return cast_session::route(context, identity, method, path, &body);
     }
     if context.desktop {
         if path.starts_with("/api/app/") {
@@ -404,7 +410,7 @@ pub(super) fn dispatch(
         return with_app(|app| app.native_snapshot(host));
     }
     if path == "/api/player/output" {
-        return purek::controller::command(identity, &body);
+        return cast_session::output_command(context, identity, &body);
     }
     with_app(|app| {
         let now = now();
@@ -532,7 +538,13 @@ pub(super) fn dispatch(
                 command["key"] = json!(key);
             }
             "/api/player/next" => {
-                if app.native().purek.controller.owns_playback {
+                if app.native().cast.owns_playback {
+                    let mut command = body.clone();
+                    command["action"] = json!("next");
+                    cast_session::enqueue(app, &command)?;
+                    return app.native_snapshot(host);
+                }
+                if app.native().local_output.controller.owns_playback {
                     let facts = app.native_output_audio_facts()?;
                     app.native_control(identity,&json!({"action":"next-track","item_id":facts.source.0,"playback_generation":body["playback_generation"],"expected_queue_version":body["expected_queue_version"]}),now)?;
                     return app.native_snapshot(host);

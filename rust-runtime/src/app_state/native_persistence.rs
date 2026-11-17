@@ -122,6 +122,16 @@ impl AppState {
                 return storage_error_response(error);
             }
             self.native_startup_pending = false;
+            if self.cast_startup_dirty {
+                if let Some(storage) = &self.cast_storage
+                    && storage.save(&data.cast).is_err()
+                {
+                    eprintln!(
+                        "[cast-storage] startup preferences unavailable; preserving original file"
+                    );
+                }
+                self.cast_startup_dirty = false;
+            }
         }
         self.execute(AppStateRequest::Snapshot {
             schema_version: SCHEMA_VERSION,
@@ -178,6 +188,9 @@ impl AppState {
             // prompt. Reloading a WebView/re-entering initialization is not a
             // new launch; reopening the checkpoint in a new process is.
             data.native_session_choice_pending = needs_session_choice;
+            let (storage, preferences) = cast::storage::Storage::load(directory);
+            data.cast = preferences;
+            self.cast_storage = Some(storage);
         }
         response
     }
@@ -315,6 +328,57 @@ mod tests {
         assert_eq!(saved(&directory).last_playback_generation, 1);
         assert_eq!(snapshot(app.commit_native_startup()), pending);
         assert_eq!(directory.bytes(), committed);
+    }
+
+    #[cfg(feature = "native-host")]
+    #[test]
+    fn cast_preferences_wait_for_ready_and_failed_startup_discards_pending_changes() {
+        use super::cast::{Device, Mode};
+        let directory = TestDirectory::new();
+        let path = directory.0.join("cast-devices.json");
+        let key = "0123456789abcdef0123456789abcdef";
+        let mut app = AppState::default();
+        let revision = snapshot(app.initialize_native_startup(&directory.0, seed())).revision;
+        app.cast_set_device(
+            key,
+            revision,
+            Device {
+                mode: Mode::Live,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!path.exists());
+        assert!(!directory.0.join("cast-devices.pending").exists());
+        app.execute(AppStateRequest::Shutdown { schema_version: 1 });
+        let revision = snapshot(app.initialize_native_startup(&directory.0, seed())).revision;
+        assert!(app.cast_preferences().unwrap().devices.is_empty());
+        app.cast_set_device(
+            key,
+            revision,
+            Device {
+                mode: Mode::File,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!path.exists());
+        snapshot(app.commit_native_startup());
+        let stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored["devices"][key]["mode"], "file");
+        assert!(!String::from_utf8_lossy(&directory.bytes()).contains("\"cast\""));
+        app.execute(AppStateRequest::Shutdown { schema_version: 1 });
+        std::fs::write(&path, b"{broken").unwrap();
+        let revision = snapshot(app.initialize_native_startup(&directory.0, seed())).revision;
+        assert_eq!(
+            app.cast_set_device(key, revision, Device::default())
+                .unwrap_err()
+                .code,
+            "persistence_error"
+        );
+        snapshot(app.commit_native_startup());
+        assert_eq!(std::fs::read(&path).unwrap(), b"{broken");
     }
 
     #[cfg(feature = "native-host")]

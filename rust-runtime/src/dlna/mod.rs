@@ -361,3 +361,7 @@ async fn http_request(
         } => result,
     }
 }
+
+#[cfg(test)]
+#[path = "../native_host/cast_session/transport_fixture.rs"]
+pub(crate) mod session_fixture;

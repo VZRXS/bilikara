@@ -1,4 +1,5 @@
-// Required real native artifacts. No CLI, browser DSP or semantic stand-in.
+// Required real native pipelines. FFmpeg only constructs independent fixtures;
+// application output still runs through the native DSP, AAC and TS companion.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createHash} from 'node:crypto';
@@ -48,6 +49,17 @@ test('P2 native Signalsmith, AAC/FLAC L1, independent TS and live Host edits',{t
     assert.equal(result.status,0,result.stdout+result.stderr);assert.match(result.stdout,/1 passed; 0 failed; 0 ignored/);
   }
   for(const name of ['splice','gradual'])inspectTs(readFileSync(path.join(env.BILIKARA_TEST_L1_OUTPUT,name+'.ts')),{channels:2,sampleRate:48000});
+  // P6 retains standalone L1 HLS instead of the retired receiver transport.
+  // A one-second GOP keeps startup inside its six-segment window; the former
+  // all-IDR fixture made a segment per frame and evicted the first two seconds.
+  // Still require all 144 video frames and the same complete TS/audio checks.
+  env.BILIKARA_TEST_PUREK_VIDEO=path.join(home,'l1-video.mp4');
+  const fixture=await runNative(process.env.BILIKARA_TEST_FIXTURE_FFMPEG||'ffmpeg',[
+    '-hide_banner','-loglevel','error','-y','-f','lavfi','-i','color=c=blue:s=320x180:r=24000/1001',
+    '-frames:v','144','-c:v','libx264','-preset','ultrafast','-g','24','-keyint_min','24','-sc_threshold','0','-pix_fmt','yuv420p',
+    '-movflags','+faststart',env.BILIKARA_TEST_PUREK_VIDEO,
+  ],process.env,30000);
+  assert.equal(fixture.status,0,fixture.stderr);
   env.BILIKARA_TEST_PUREK_L1='1';env.BILIKARA_TEST_PUREK_HOME=path.join(home,'data');mkdirSync(env.BILIKARA_TEST_PUREK_HOME);
   env.BILIKARA_TEST_NODE=process.execPath;env.BILIKARA_CF_API_URL='';env.BILIKARA_CATALOG_SHEETS_URL='';
   const result=await runNative(binary,['--exact','native_host::purek::tests::node_receiver_live_output_integration','--ignored','--nocapture'],env,90000,root);

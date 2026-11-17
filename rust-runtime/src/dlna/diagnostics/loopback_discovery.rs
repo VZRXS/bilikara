@@ -51,3 +51,16 @@ pub(crate) async fn discover(
     assert!(operation.result.unwrap_err().is_cancelled());
     found.expect("discovery must publish the real HTTP description before cancellation")
 }
+
+pub(crate) async fn load(location: &str, cancel: &CancellationToken) -> Operation<Renderer> {
+    load_on(
+        location,
+        "",
+        "",
+        &[Ipv4Addr::LOCALHOST],
+        NetworkPolicy::LoopbackFixture,
+        HTTP_TIMEOUT,
+        cancel,
+    )
+    .await
+}

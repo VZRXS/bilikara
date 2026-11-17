@@ -8,13 +8,15 @@ import http from 'node:http';
 import path from 'node:path';
 import {root} from './desktop_construction_support.mjs';
 import {buildNativeAlpha, buildNativeHost} from './native_runtime_artifacts.mjs';
-import {HttpClient, RunningHost, isolatedEnvironment} from './native_host_support.mjs';
+import {HttpClient, RunningHost, isolatedEnvironment, waitFor} from './native_host_support.mjs';
 let desktop, alpha;
 before(async()=>{
   if(process.platform!=='linux')return;
   desktop=process.env.BILIKARA_TEST_NATIVE_HOST_BINARY||await buildNativeHost();
   alpha=process.env.BILIKARA_TEST_NATIVE_ALPHA_BINARY||await buildNativeAlpha();
 },{timeout:300000});
+const roomState=async server=>(await server.api('/api/state')).purek;
+async function disconnect(server){await server.api('/api/cast/disconnect',{});return waitFor(async()=>{const s=await server.api('/api/state');return s.cast.phase==='idle'&&!s.cast.busy&&s.purek;},'receiver cleanup');}
 function qr(base='http://192.168.123.231',token='synthetic-only-secret'){
   const inner=new URL('https://conn.dolphinstar.cn/Remote');inner.searchParams.set('url',base);inner.searchParams.set('token',token);inner.searchParams.set('name','Fixture room');
   const outer=new URL('https://wx.chunk.cn/projection/login');outer.searchParams.set('projection_url',Buffer.from(inner.href).toString('base64url'));outer.searchParams.set('place_code','fixture');return outer.href;
@@ -31,13 +33,13 @@ test('Pure K API is Host-only, validates offline, and never persists the room to
   const remote=new HttpClient(server.base);await remote.request('/remote');
   assert.equal((await remote.request('/api/purek/state')).status,403);
   assert.equal((await remote.request('/api/purek/prepare',{qr_url:qr()})).status,403);
-  assert.equal((await remote.request('/api/purek/output/probe',{})).status,403);
-  assert.equal((await server.request('/api/purek/output/probe',{})).status,409);
-  assert.equal((await server.request('/api/purek/output/probe',{control_url:'http://example.invalid'})).status,400);
-  assert.equal((await server.api('/api/purek/state')).connected,false);
-  const ordered=await server.api('/api/purek/state');
+  assert.equal((await remote.request('/api/cast/probe',{})).status,403);
+  assert.equal((await server.request('/api/cast/probe',{})).status,409);
+  assert.equal((await server.request('/api/cast/probe',{control_url:'http://example.invalid'})).status,400);
+  assert.equal((await roomState(server)).connected,false);
+  const ordered=await roomState(server);
   assert.ok(Number.isSafeInteger(ordered.revision));assert.equal(typeof ordered.state_epoch,'string');
-  const output=(await server.api('/api/purek/state')).output;
+  const output=(await roomState(server)).output;
   assert.equal(output.schema_version,1);assert.equal(output.status,'stopped');
   assert.equal(output.target_room_id,null);assert.equal(output.pipeline_level,null);
   assert.equal(output.capabilities.supports_live_stream,false);
@@ -55,18 +57,19 @@ test('Pure K API is Host-only, validates offline, and never persists the room to
   }
   // Parsing a hostname grants no permission to resolve it or register a device.
   assert.equal((await server.api('/api/purek/prepare',{qr_url:qr('http://public.example')})).connection_type,'purek');
-  const unconfirmed=await server.request('/api/purek/connect',{});
-  assert.equal(unconfirmed.status,409);assert.equal(JSON.parse(unconfirmed.body).code,'purek_address_confirmation_required');
+  await server.api('/api/cast/connect',{});
+  const unconfirmed=await waitFor(async()=>{const s=await server.api('/api/state');return s.cast.phase==='idle'&&s.cast.error_code&&s;},'hostname approval failure');
+  assert.equal(unconfirmed.cast.error_code,'cast_purek_address_confirmation_required');
   const prepared=await server.api('/api/purek/prepare',{qr_url:qr()});assert.equal(prepared.room_name,'Fixture room');assert.equal(prepared.authorization_url,qr());
   const snapshot=await server.api('/api/state');assert.equal(snapshot.purek.room_name,'Fixture room');assert.equal(snapshot.purek.connected,false);
   assert.equal(snapshot.purek.auto_discovery,false);assert.ok(!JSON.stringify(snapshot.purek).includes('secret'));assert.ok(!JSON.stringify(snapshot.purek).includes('projection_url'));
-  const invalid=await server.request('/api/purek/preferences',{auto_discovery:'true'});assert.equal(invalid.status,400);
-  await server.api('/api/purek/preferences',{auto_discovery:false});
+  const invalid=await server.request('/api/cast/preferences',{auto_discovery:'true'});assert.equal(invalid.status,400);
+  await server.api('/api/cast/preferences',{auto_discovery:false});
   const files=readdirSync(path.join(home,'data'));assert.ok(files.includes('native-preferences.json'));
   assert.ok(!readFileSync(path.join(home,'data','native-preferences.json'),'utf8').includes('secret'));
-  const disconnected=await server.api('/api/purek/disconnect',{});assert.equal(disconnected.room_name,null);
+  const disconnected=await disconnect(server);assert.equal(disconnected.room_name,null);
   assert.equal(disconnected.output.status,'stopped');assert.ok(disconnected.output.generation>output.generation);
-  assert.equal((await server.request('/api/purek/connect',{})).status,409);
+  assert.equal((await server.request('/api/cast/connect',{})).status,400);
 });
 
 test('Pure K confirmation compares only UDN and revokes the original registration endpoint', {skip:process.platform!=='linux',timeout:60000}, async t=>{
@@ -93,10 +96,12 @@ test('Pure K confirmation compares only UDN and revokes the original registratio
     await new Promise(resolve=>receiver.listen(0,'0.0.0.0',resolve));
     t.after(async()=>{receiver.closeAllConnections();await new Promise(resolve=>receiver.close(resolve));});
     await server.api('/api/purek/prepare',{qr_url:qr(`http://${ip}:${receiver.address().port}/room?secret=qr-only#room`)});
-    const response=await server.request('/api/purek/connect',{});
-    if(changedIdentity){assert.equal(response.status,409);assert.equal(JSON.parse(response.body).code,'purek_identity_changed');assert.equal((await server.api('/api/purek/state')).connected,false);}
-    else{assert.equal(response.status,200);assert.equal(JSON.parse(response.body).data.connected,true);assert.equal(registered,true);assert.ok(seen.some(item=>item.action==='GetProtocolInfo'));}
-    await server.api('/api/purek/disconnect',{});
+    const response=await server.request('/api/cast/connect',{});
+    assert.equal(response.status,200);
+    const result=await waitFor(async()=>{const s=await server.api('/api/state');return (s.cast.connected||s.cast.error_code)&&!s.purek.busy&&s;},'asynchronous room confirmation');
+    if(changedIdentity){assert.equal(result.cast.error_code,'cast_purek_identity_changed');assert.equal(result.purek.connected,false);}
+    else{assert.equal(result.purek.connected,true);assert.equal(registered,true);assert.ok(seen.some(item=>item.action==='GetProtocolInfo'));}
+    await disconnect(server);
     assert.equal(registered,false);assert.equal(seen.filter(item=>item.body.includes('<Enable>0</Enable>')).length,1);
     assert.ok(seen.every(item=>!item.path.includes('qr-only')));
   }

@@ -120,9 +120,9 @@ impl Candidate {
     fn current(&self, epoch: &str, room: &RoomState) -> bool {
         self.origin.host_epoch == epoch
             && self.binding.host_epoch == epoch
-            && self.binding.room_generation == room.generation
+            && self.binding.room_generation == room.room_generation
             && room.room.is_some()
-            && room.connected.is_none()
+            && !room.connected
             && Instant::now() < self.deadline
     }
     fn owned(&self, session: &Session, epoch: &str, room: &RoomState) -> bool {
@@ -137,7 +137,7 @@ pub(crate) struct Assistance {
     connections: HashMap<String, Presence>,
     session: Option<Session>,
     candidate: Option<Candidate>,
-    pub(super) connecting: Option<(u64, String)>,
+    pub(crate) connecting: Option<(u64, String)>,
 }
 fn error(code: &str) -> ApiError {
     ApiError::new(
@@ -191,7 +191,7 @@ impl Assistance {
             .connections
             .get(connection)
             .is_some_and(|p| p.identity.is_some());
-        let available = room.connected.is_none();
+        let available = !room.connected;
         let secure = self
             .connections
             .get(connection)
@@ -222,9 +222,11 @@ pub(crate) fn room_status(room: &RoomState, assistance: &Assistance) -> Value {
     let recovery = assistance
         .candidate
         .as_ref()
-        .is_some_and(|c| c.recoverable && c.binding.room_generation == room.generation);
-    let status = if room.connected.is_some() {
-        let output = room.output.snapshot();
+        .is_some_and(|c| c.recoverable && c.binding.room_generation == room.room_generation);
+    let status = if room.connected && room.capability_unverified() {
+        "capability_unverified"
+    } else if room.connected {
+        let output = &room.room_snapshot()["output"];
         match output["status"].as_str() {
             Some("unsupported") => "unsupported",
             Some("unverified" | "probing") => "capability_unverified",
@@ -238,9 +240,9 @@ pub(crate) fn room_status(room: &RoomState, assistance: &Assistance) -> Value {
             Some("error") => "error",
             _ => "connected",
         }
-    } else if room.busy && room.room.is_some() {
+    } else if room.room_busy && room.room.is_some() {
         "connecting"
-    } else if room.error.is_some() {
+    } else if room.room_error.is_some() {
         "error"
     } else if room.room.is_some() && !recovery {
         "authorization_pending"
@@ -248,7 +250,7 @@ pub(crate) fn room_status(room: &RoomState, assistance: &Assistance) -> Value {
         "disconnected"
     };
     // Do not project names, addresses, UDNs, raw SOAP errors or authorization URLs.
-    json!({"status":status,"connected":room.connected.is_some(),"connection_type":room.room.as_ref().map(Room::connection_type)})
+    json!({"status":status,"connected":room.connected,"connection_type":room.room.as_ref().map(Room::connection_type)})
 }
 pub(crate) fn host_snapshot(state: &NativeSession) -> Value {
     let mut value = state.ktv.host_snapshot();
@@ -259,7 +261,7 @@ pub(crate) fn host_snapshot(state: &NativeSession) -> Value {
             .ktv
             .candidate
             .as_ref()
-            .is_some_and(|candidate| candidate.owned(session, &state.state_epoch, &state.purek))
+            .is_some_and(|candidate| candidate.owned(session, &state.state_epoch, &state.cast))
     });
     value["candidate_owned"] = json!(owned);
     value["authorization_link_available"] = json!(
@@ -270,7 +272,7 @@ pub(crate) fn host_snapshot(state: &NativeSession) -> Value {
                 .as_ref()
                 .is_some_and(|s| matches!(s.phase, Phase::AuthorizationPending | Phase::Error))
             && state
-                .purek
+                .cast
                 .room
                 .as_ref()
                 .is_some_and(|room| room.authorization.is_some())
@@ -311,36 +313,36 @@ fn retire(app: &mut AppState, phase: Phase) {
             let keep = phase == Phase::Disconnected
                 && s.confidential
                 && s.phase != Phase::Connecting
-                && !state.purek.busy
+                && !state.cast.room_busy
                 && state
                     .ktv
                     .candidate
                     .as_ref()
-                    .is_some_and(|c| c.current(&state.state_epoch, &state.purek));
+                    .is_some_and(|c| c.current(&state.state_epoch, &state.cast));
             if keep {
                 // This is an explicitly owned, bounded recovery record, not a
                 // live authorization capability. Only approve_resume can rebind.
                 state.ktv.candidate.as_mut().unwrap().recoverable = true;
-                state.purek.error = None;
+                state.cast.room_error = None;
             } else {
                 discard_candidate(state);
             }
         }
         let s = state.ktv.session.as_mut().unwrap();
         if s.phase == Phase::Connecting
-            && state.purek.connected.is_none()
+            && !state.cast.connected
             && state
                 .ktv
                 .connecting
                 .as_ref()
                 .is_some_and(|(generation, epoch)| {
-                    *generation == state.purek.generation && *epoch == state.state_epoch
+                    *generation == state.cast.room_generation && *epoch == state.state_epoch
                 })
         {
-            if let Some(cancel) = state.purek.connection_cancel.take() {
+            if let Some(cancel) = state.cast.connection_cancel.take() {
                 cancel.cancel();
             }
-            state.purek.generation += 1;
+            state.cast.room_generation += 1;
         }
         s.phase = phase;
         s.error = None;
@@ -360,16 +362,16 @@ fn discard_candidate(state: &mut NativeSession) {
                 && *epoch == candidate.binding.host_epoch
         });
     if candidate.binding.host_epoch == state.state_epoch
-        && state.purek.connected.is_none()
-        && state.purek.generation == candidate.binding.room_generation
-        && (!state.purek.busy || owned_io)
+        && !state.cast.connected
+        && state.cast.room_generation == candidate.binding.room_generation
+        && (!state.cast.room_busy || owned_io)
     {
-        if let Some(cancel) = state.purek.connection_cancel.take() {
+        if let Some(cancel) = state.cast.connection_cancel.take() {
             cancel.cancel();
         }
-        state.purek.room = None;
-        state.purek.error = None;
-        state.purek.generation += 1;
+        state.cast.room = None;
+        state.cast.room_error = None;
+        state.cast.room_generation += 1;
     }
     // Never release busy/connecting here: a retired worker owns its rollback.
 }
@@ -429,7 +431,7 @@ pub(crate) fn refresh(app: &mut AppState) {
                 .is_some_and(|(_, id, g)| *id == s.user && *g == s.generation)
             {
                 Some(Phase::Disconnected)
-            } else if !s.replacing && s.room_generation != state.purek.generation {
+            } else if !s.replacing && s.room_generation != state.cast.room_generation {
                 Some(Phase::Canceled)
             } else {
                 None
@@ -453,7 +455,7 @@ fn refresh_candidate(app: &mut AppState) {
     let Some(candidate) = &state.ktv.candidate else {
         return;
     };
-    if valid_user && candidate.current(&state.state_epoch, &state.purek) {
+    if valid_user && candidate.current(&state.state_epoch, &state.cast) {
         return;
     }
     let phase = if Instant::now() >= candidate.deadline {
@@ -479,13 +481,13 @@ pub(crate) fn connection_frame(app: &mut AppState, id: &str) -> Value {
     let state = app.native();
     state
         .ktv
-        .private_snapshot(id, &state.state_epoch, &state.purek, state.revision)
+        .private_snapshot(id, &state.state_epoch, &state.cast, state.revision)
 }
 pub(crate) fn internet_events(app: &mut AppState) -> Value {
     refresh(app);
     let state = app.native();
     json!(state.ktv.connections.values().filter_map(|p|match &p.owner {
-        Owner::Internet(peer,epoch)=>Some(json!({"peer_id":peer,"peer_epoch":epoch,"data":state.ktv.private_snapshot(&p.id,&state.state_epoch,&state.purek,state.revision)})),_=>None,
+        Owner::Internet(peer,epoch)=>Some(json!({"peer_id":peer,"peer_epoch":epoch,"data":state.ktv.private_snapshot(&p.id,&state.state_epoch,&state.cast,state.revision)})),_=>None,
     }).collect::<Vec<_>>())
 }
 fn start(app: &mut AppState, connection: &str, phase: Phase) -> Result<(), ApiError> {
@@ -494,7 +496,7 @@ fn start(app: &mut AppState, connection: &str, phase: Phase) -> Result<(), ApiEr
     if state.ktv.session.as_ref().is_some_and(|s| s.phase.active()) {
         return Err(error("busy"));
     }
-    if state.purek.connected.is_some() {
+    if state.cast.connected {
         return Err(error("receiver_connected"));
     }
     let presence = state
@@ -503,7 +505,7 @@ fn start(app: &mut AppState, connection: &str, phase: Phase) -> Result<(), ApiEr
         .get(connection)
         .ok_or_else(|| error("offline"))?;
     let confidential = matches!(presence.owner, Owner::Internet(..));
-    if phase == Phase::PendingRemote && state.purek.busy {
+    if phase == Phase::PendingRemote && state.cast.room_busy {
         return Err(busy());
     }
     let (_, user, generation) = state
@@ -517,7 +519,7 @@ fn start(app: &mut AppState, connection: &str, phase: Phase) -> Result<(), ApiEr
         connection: connection.into(),
         user,
         generation,
-        room_generation: state.purek.generation,
+        room_generation: state.cast.room_generation,
         phase,
         deadline: Instant::now() + INVITATION_TTL,
         error: None,
@@ -551,12 +553,8 @@ fn accept(app: &mut AppState, connection: &str, binding: (&str, &str)) -> Result
         return Err(error("stale"));
     }
     s.phase = Phase::PendingHost;
-    let room = &app.native().purek;
-    if room.connected.is_none()
-        && !room.busy
-        && room.output.running.is_none()
-        && !room.controller.owns_playback
-    {
+    let room = &app.native().cast;
+    if !room.connected && !room.room_busy && !room.owns_playback && !room.owns_playback {
         activate_scan(app.native());
     }
     app.native().revision += 1;
@@ -573,7 +571,7 @@ fn activate_scan(state: &mut NativeSession) {
     // Starting a freshly approved scan never inherits a previous candidate.
     discard_candidate(state);
     let session = state.ktv.session.as_mut().unwrap();
-    session.room_generation = state.purek.generation;
+    session.room_generation = state.cast.room_generation;
     session.phase = Phase::Accepted;
     session.deadline = Instant::now() + ASSISTANCE_TTL;
 }
@@ -605,11 +603,7 @@ fn approve_resume(app: &mut AppState, binding: (&str, &str)) -> Result<Value, Ap
         return Err(error("stale"));
     }
     let state = app.native();
-    if state.purek.busy
-        || state.purek.connected.is_some()
-        || state.purek.output.running.is_some()
-        || state.purek.controller.owns_playback
-    {
+    if state.cast.room_busy || state.cast.connected || state.cast.owns_playback {
         return Err(busy());
     }
     let candidate = state
@@ -626,13 +620,13 @@ fn approve_resume(app: &mut AppState, binding: (&str, &str)) -> Result<Value, Ap
                         .unwrap()
                         .resume_candidate
                         .as_ref()
-                && c.current(&state.state_epoch, &state.purek)
+                && c.current(&state.state_epoch, &state.cast)
         })
         .ok_or_else(|| error("resume_unavailable"))?;
     let deadline = candidate.deadline;
-    state.purek.generation += 1;
+    state.cast.room_generation += 1;
     let session = state.ktv.session.as_mut().unwrap();
-    session.room_generation = state.purek.generation;
+    session.room_generation = state.cast.room_generation;
     session.phase = Phase::AuthorizationPending;
     session.deadline = deadline.min(Instant::now() + ASSISTANCE_TTL);
     let new_binding = CandidateBinding::new(session, &state.state_epoch);
@@ -707,7 +701,7 @@ pub(crate) fn host_route(
             host_candidate_connection(app, (&request_id, &host_epoch))?;
             let authorization = app
                 .native()
-                .purek
+                .cast
                 .room
                 .as_ref()
                 .and_then(|room| room.authorization.as_ref())
@@ -758,13 +752,11 @@ pub(crate) fn host_route(
             if s.resume_candidate.is_some() {
                 return Err(error("confirmation_required"));
             }
-            if app.native().purek.busy {
+            if app.native().cast.room_busy {
                 return Err(busy());
             }
-            let room = &app.native().purek;
-            let disconnect = room.connected.is_some()
-                || room.output.running.is_some()
-                || room.controller.owns_playback;
+            let room = &app.native().cast;
+            let disconnect = room.connected || room.owns_playback;
             if disconnect && !replace_connected {
                 return Err(error("confirmation_required"));
             }
@@ -772,8 +764,13 @@ pub(crate) fn host_route(
             Ok(disconnect)
         })?;
         if disconnect
-            && let Err(error) =
-                super::route(context, &Method::POST, "/api/purek/disconnect", &json!({}))
+            && let Err(error) = super::super::cast_session::route(
+                context,
+                identity,
+                &Method::POST,
+                "/api/cast/disconnect",
+                &json!({}),
+            )
         {
             with_app(|app| {
                 retire(app, Phase::Canceled);
@@ -782,9 +779,13 @@ pub(crate) fn host_route(
             return Err(error);
         }
         if disconnect {
-            super::controller::command(identity, &json!({"target":"local"}))?;
-            let deadline = Instant::now() + Duration::from_secs(3);
-            while with_app(|app| Ok(app.native().purek.controller.owns_playback))? {
+            // T9 release owns a three-second budget; leave time for publication.
+            let deadline = Instant::now() + Duration::from_secs(4);
+            while with_app(|app| {
+                Ok(app.native().cast.owns_playback
+                    || app.native().cast.connected
+                    || app.native().cast.pending.is_some())
+            })? {
                 if Instant::now() >= deadline {
                     return Err(busy());
                 }
@@ -805,7 +806,7 @@ pub(crate) fn host_route(
                         && state.state_epoch == host_epoch
                 })
                 .ok_or_else(|| error("stale"))?;
-            s.room_generation = state.purek.generation;
+            s.room_generation = state.cast.room_generation;
             s.replacing = false;
             refresh(app);
             let state = app.native();
@@ -962,7 +963,7 @@ fn remote(
             KtvRequestV1::Link { .. } => {
                 validate_check(app, connection, request.binding().unwrap())?;
                 let state = app.native();
-                return Ok(json!({"authorization_url":state.purek.room.as_ref()
+                return Ok(json!({"authorization_url":state.cast.room.as_ref()
                     .and_then(Room::authorization_url)}));
             }
             KtvRequestV1::Accept { .. } => {
@@ -987,7 +988,7 @@ fn remote(
         let state = app.native();
         Ok(state
             .ktv
-            .private_snapshot(connection, &state.state_epoch, &state.purek, state.revision))
+            .private_snapshot(connection, &state.state_epoch, &state.cast, state.revision))
     })
 }
 fn stage_candidate(
@@ -1002,19 +1003,15 @@ fn stage_candidate(
     let room = Room::from_input(url)?;
     let candidate_id = random_id()?;
     let state = app.native();
-    if state.purek.connected.is_some()
-        || state.purek.busy
-        || state.purek.output.running.is_some()
-        || state.purek.controller.owns_playback
-    {
+    if state.cast.connected || state.cast.room_busy || state.cast.owns_playback {
         return Err(busy());
     }
     let authorization = room.authorization_url().map(str::to_owned);
-    state.purek.generation += 1;
-    state.purek.error = None;
-    state.purek.room = Some(room);
+    state.cast.room_generation += 1;
+    state.cast.room_error = None;
+    state.cast.room = Some(room);
     let session = state.ktv.session.as_mut().unwrap();
-    session.room_generation = state.purek.generation;
+    session.room_generation = state.cast.room_generation;
     session.phase = Phase::AuthorizationPending;
     let owner = CandidateBinding::new(session, &state.state_epoch);
     state.ktv.candidate = Some(Candidate {
@@ -1028,7 +1025,7 @@ fn stage_candidate(
     let mut value =
         state
             .ktv
-            .private_snapshot(connection, &state.state_epoch, &state.purek, state.revision);
+            .private_snapshot(connection, &state.state_epoch, &state.cast, state.revision);
     value["authorization_url"] = json!(authorization);
     Ok(value)
 }
@@ -1058,7 +1055,7 @@ fn validate_candidate(app: &mut AppState, connection: &str) -> Result<(), ApiErr
                 .ktv
                 .candidate
                 .as_ref()
-                .is_some_and(|c| c.owned(s, &state.state_epoch, &state.purek))
+                .is_some_and(|c| c.owned(s, &state.state_epoch, &state.cast))
         })
     {
         Ok(())
@@ -1076,8 +1073,8 @@ pub(super) fn begin_check(
     let s = state.ktv.session.as_mut().unwrap();
     s.phase = Phase::Connecting;
     s.error = None;
-    state.purek.error = None;
-    s.room_generation = state.purek.generation + 1;
+    state.cast.room_error = None;
+    s.room_generation = state.cast.room_generation + 1;
     state
         .ktv
         .candidate
@@ -1088,7 +1085,7 @@ pub(super) fn begin_check(
     state.revision += 1;
     Ok(())
 }
-pub(super) fn check_current(
+pub(crate) fn check_current(
     app: &mut AppState,
     connection: &str,
     binding: (&str, &str),
@@ -1098,7 +1095,7 @@ pub(super) fn check_current(
     }
     validate_candidate(app, connection)
 }
-pub(super) fn checked(
+pub(crate) fn checked(
     app: &mut AppState,
     connection: &str,
     success: bool,
@@ -1126,9 +1123,9 @@ pub(super) fn checked(
     }
     state
         .ktv
-        .private_snapshot(connection, &state.state_epoch, &state.purek, state.revision)
+        .private_snapshot(connection, &state.state_epoch, &state.cast, state.revision)
 }
-pub(super) fn release_io(app: &mut AppState, generation: u64, epoch: &str) {
+pub(crate) fn release_io(app: &mut AppState, generation: u64, epoch: &str) {
     let state = app.native();
     if state.state_epoch == epoch
         && state
@@ -1138,8 +1135,8 @@ pub(super) fn release_io(app: &mut AppState, generation: u64, epoch: &str) {
             .is_some_and(|(g, e)| *g == generation && e == epoch)
     {
         state.ktv.connecting = None;
-        state.purek.connection_cancel = None;
-        state.purek.busy = false;
+        state.cast.connection_cancel = None;
+        state.cast.room_busy = false;
         state.revision += 1;
     }
 }
@@ -1239,7 +1236,7 @@ mod tests {
                         app.native().ktv.candidate.as_mut().unwrap().deadline = Instant::now()
                     }
                     "epoch" => app.native().state_epoch = "new-host".into(),
-                    "generation" => app.native().purek.generation += 1,
+                    "generation" => app.native().cast.room_generation += 1,
                     _ => unreachable!(),
                 }
                 assert_eq!(
@@ -1327,11 +1324,11 @@ mod tests {
         assert!(validate_check(&mut app, &stranger, (&request, "host-epoch")).is_err());
         app.native().ktv.session.as_mut().unwrap().deadline = Instant::now();
         assert!(validate_check(&mut app, &id, (&request, "host-epoch")).is_err());
-        assert!(app.native().purek.room.is_none());
+        assert!(app.native().cast.room.is_none());
         staged(&mut app, &id);
         close(&mut app, &id);
         assert!(app.native().ktv.candidate.is_none());
-        assert!(app.native().purek.room.is_none());
+        assert!(app.native().cast.room.is_none());
         assert_eq!(
             app.native().ktv.session.as_ref().unwrap().phase,
             Phase::Disconnected
@@ -1344,17 +1341,8 @@ mod tests {
         let (_, lan_id) = lan(&mut app, "phone", true);
         let internet_id = secure(&mut app, "internet-phone");
         let room = Room::from_input("http://192.168.1.8/description.xml").unwrap();
-        app.native().purek.connected = Some(super::super::Connection {
-            room: room.clone(),
-            renderer: super::super::Renderer {
-                udn: "uuid:fixture".into(),
-                name: "Fixture".into(),
-                services: Default::default(),
-            },
-            local: "192.168.1.2".parse().unwrap(),
-            lease: None,
-            target_room_id: "fixture".into(),
-        });
+        app.native().cast.connected = true;
+        app.native().cast.room = Some(room);
         for id in [&lan_id, &internet_id] {
             let view = connection_frame(&mut app, id);
             assert_eq!(view["room"]["connected"], true);
@@ -1370,7 +1358,7 @@ mod tests {
                 "ktv_receiver_connected"
             );
         }
-        app.native().purek.connected = None;
+        app.native().cast.connected = false;
         for id in [&lan_id, &internet_id] {
             assert_eq!(connection_frame(&mut app, id)["capabilities"]["scan"], true);
         }
@@ -1402,7 +1390,7 @@ mod tests {
         );
         // A failed/waiting TV output can still own playback after connection
         // loss. Accepting an invitation must request explicit Host replacement.
-        app.native().purek.controller.owns_playback = true;
+        app.native().cast.owns_playback = true;
         start(&mut app, &id, Phase::PendingRemote).unwrap();
         let request = app.native().ktv.session.as_ref().unwrap().id.clone();
         accept(&mut app, &id, (&request, "host-epoch")).unwrap();
@@ -1418,42 +1406,42 @@ mod tests {
         let id = secure(&mut app, "phone");
         let request = staged(&mut app, &id);
         begin_check(&mut app, &id, (&request, "host-epoch")).unwrap();
-        app.native().purek.generation += 1;
-        app.native().purek.busy = true;
-        let g = app.native().purek.generation;
+        app.native().cast.room_generation += 1;
+        app.native().cast.room_busy = true;
+        let g = app.native().cast.room_generation;
         app.native().ktv.connecting = Some((g, "host-epoch".into()));
         let cancel = crate::dlna::CancellationToken::new();
-        app.native().purek.connection_cancel = Some(cancel.clone());
+        app.native().cast.connection_cancel = Some(cancel.clone());
         retire(&mut app, Phase::Canceled);
         assert!(
             cancel.is_cancelled(),
             "retiring the grant cancels its T9 registration"
         );
         assert!(app.native().ktv.candidate.is_none());
-        assert!(app.native().purek.room.is_none());
+        assert!(app.native().cast.room.is_none());
         assert!(check_current(&mut app, &id, (&request, "host-epoch")).is_err());
         assert!(
-            app.native().purek.busy,
+            app.native().cast.room_busy,
             "no new receiver registration may race the retired rollback"
         );
         release_io(&mut app, g, "other-epoch");
-        assert!(app.native().purek.busy);
+        assert!(app.native().cast.room_busy);
         release_io(&mut app, g, "host-epoch");
-        assert!(!app.native().purek.busy);
-        assert!(app.native().purek.connected.is_none());
+        assert!(!app.native().cast.room_busy);
+        assert!(!app.native().cast.connected);
     }
     #[test]
     fn room_generation_change_or_restart_revokes_the_old_permission() {
         let mut app = setup();
         let id = secure(&mut app, "phone");
         let request = staged(&mut app, &id);
-        app.native().purek.generation += 1;
-        app.native().purek.room = Some(Room::dlna("http://192.168.1.9/new.xml").unwrap());
+        app.native().cast.room_generation += 1;
+        app.native().cast.room = Some(Room::dlna("http://192.168.1.9/new.xml").unwrap());
         refresh(&mut app);
         assert!(app.native().ktv.candidate.is_none());
         assert_eq!(
             app.native()
-                .purek
+                .cast
                 .room
                 .as_ref()
                 .unwrap()
@@ -1471,7 +1459,7 @@ mod tests {
         assert!(permission(&mut restarted, &id, (&request, "host-epoch")).is_err());
         let state = restarted.native();
         assert_eq!(
-            room_status(&state.purek, &state.ktv)["status"],
+            room_status(&state.cast, &state.ktv)["status"],
             "disconnected"
         );
     }
@@ -1537,7 +1525,7 @@ mod tests {
             "https://wx.chunk.cn/projection/login?place_code=fixture&projection_url={}",
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(inner)
         );
-        app.native().purek.room = Some(Room::parse(&raw).unwrap());
+        app.native().cast.room = Some(Room::parse(&raw).unwrap());
         let public = app.native_snapshot(false).unwrap().to_string();
         for private in [
             "wx.chunk.cn",
@@ -1550,7 +1538,7 @@ mod tests {
         }
         let state = app.native();
         assert_eq!(
-            room_status(&state.purek, &state.ktv)["status"],
+            room_status(&state.cast, &state.ktv)["status"],
             "authorization_pending"
         );
     }
@@ -1560,7 +1548,7 @@ mod tests {
         let a = secure(&mut app, "tab-a");
         let b = secure(&mut app, "tab-b");
         let original = staged(&mut app, &a);
-        let room_generation = app.native().purek.generation;
+        let room_generation = app.native().cast.room_generation;
         let candidate = app.native().ktv.candidate.as_ref().unwrap();
         assert_eq!(candidate.origin.request, original);
         assert_eq!(candidate.origin.connection, a);
@@ -1568,7 +1556,7 @@ mod tests {
         assert_eq!(candidate.origin.room_generation, room_generation);
         assert!(validate_check(&mut app, &b, (&original, "host-epoch")).is_err());
         retire(&mut app, Phase::Canceled);
-        assert!(app.native().purek.room.is_none());
+        assert!(app.native().cast.room.is_none());
         assert!(app.native().ktv.candidate.is_none());
         start(&mut app, &b, Phase::PendingRemote).unwrap();
         let next = app.native().ktv.session.as_ref().unwrap().id.clone();
@@ -1617,7 +1605,7 @@ mod tests {
         app.native().ktv.candidate.as_mut().unwrap().deadline =
             Instant::now() - Duration::from_secs(1);
         refresh(&mut app);
-        assert!(app.native().purek.room.is_none());
+        assert!(app.native().cast.room.is_none());
         assert!(app.native().ktv.candidate.is_none());
         assert_eq!(
             app.native().ktv.session.as_ref().unwrap().phase,
@@ -1627,13 +1615,13 @@ mod tests {
         retire(&mut app, Phase::Disconnected);
         request_resume(&mut app, &id).unwrap();
         let request = app.native().ktv.session.as_ref().unwrap().id.clone();
-        app.native().purek.generation += 1;
-        app.native().purek.room = Some(Room::dlna("http://192.168.1.9/host-owned.xml").unwrap());
+        app.native().cast.room_generation += 1;
+        app.native().cast.room = Some(Room::dlna("http://192.168.1.9/host-owned.xml").unwrap());
         refresh(&mut app);
         assert!(approve_resume(&mut app, (&request, "host-epoch")).is_err());
         assert_eq!(
             app.native()
-                .purek
+                .cast
                 .room
                 .as_ref()
                 .unwrap()
@@ -1650,15 +1638,15 @@ mod tests {
         let deadline = app.native().ktv.candidate.as_ref().unwrap().deadline;
         begin_check(&mut app, &id, (&request, "host-epoch")).unwrap();
         let state = app.native();
-        state.purek.generation += 1;
-        state.purek.error = Some("purek_authorization".into());
+        state.cast.room_generation += 1;
+        state.cast.room_error = Some("purek_authorization".into());
         checked(&mut app, &id, false, Some("purek_authorization".into()));
         assert!(app.native().ktv.session.as_ref().unwrap().error.is_some());
         begin_check(&mut app, &id, (&request, "host-epoch")).unwrap();
         let state = app.native();
         assert_eq!(state.ktv.session.as_ref().unwrap().phase, Phase::Connecting);
         assert!(state.ktv.session.as_ref().unwrap().error.is_none());
-        assert!(state.purek.error.is_none());
+        assert!(state.cast.room_error.is_none());
         let candidate = state.ktv.candidate.as_ref().unwrap();
         assert_eq!(candidate.binding.connection, id);
         assert_eq!(candidate.binding.request, request);

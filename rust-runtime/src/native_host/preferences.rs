@@ -463,7 +463,7 @@ pub(super) fn update(
                 &context.directory,
                 &next,
                 app.native().ui_language,
-                app.native().purek.auto_discovery,
+                app.native().cast.auto_discovery,
             )?;
             app.native().cache_policy = next;
             app.native().revision += 1;
@@ -507,7 +507,7 @@ pub(super) fn language(
                     &context.directory,
                     &session.cache_policy,
                     next,
-                    session.purek.auto_discovery,
+                    session.cast.auto_discovery,
                 )?;
                 session.ui_language = next;
                 session.revision += 1;

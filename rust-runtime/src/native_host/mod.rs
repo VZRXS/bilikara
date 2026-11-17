@@ -4,6 +4,8 @@ mod announcements;
 mod api;
 mod automatic_volume;
 mod cache;
+pub(crate) mod cast_session;
+pub use cast_session::platform_stopped as cast_platform_stopped;
 mod catalog;
 mod catalog_append;
 mod client;
@@ -27,6 +29,7 @@ mod admin;
 mod maintenance;
 pub mod mobile;
 mod monthly;
+pub(crate) mod native_output;
 mod network;
 pub mod output_platform;
 mod owner_enrichment;
@@ -128,9 +131,7 @@ impl ApiError {
         self.diagnostic = Some(Box::new(diagnostic));
         self
     }
-    pub(crate) fn diagnostic(&self) -> Option<&Value> {
-        self.diagnostic.as_deref()
-    }
+
     pub(crate) fn invalid(message: impl Into<String>) -> Self {
         Self::new(400, "invalid_request", message)
     }
@@ -496,7 +497,7 @@ fn start_observed(
         }
         session.cache_policy = saved_preferences.cache;
         session.ui_language = saved_preferences.language;
-        session.purek.auto_discovery = saved_preferences.purek_auto_discovery;
+        session.cast.auto_discovery = saved_preferences.purek_auto_discovery;
         session.remote_access = remote_access;
         Ok(())
     })?;
@@ -622,7 +623,7 @@ fn start_observed(
     let output_context = context.clone();
     context
         .spawn("purek-output-controller", move || {
-            purek::controller::maintain(output_context)
+            native_output::controller::maintain(output_context)
         })
         .map_err(|_| ApiError::new(503, "runtime", "无法创建播放输出线程"))?;
     with_app(|app| {
@@ -925,7 +926,7 @@ async fn handle_inner(
         }
         if path.starts_with("/media/native-output/") {
             return tokio::task::spawn_blocking(move || {
-                purek::preview::media(&path, method == Method::HEAD)
+                native_output::preview::media(&path, method == Method::HEAD)
             })
             .await
             .map_err(|_| ApiError::new(500, "output_task", "本机输出读取失败"))?;

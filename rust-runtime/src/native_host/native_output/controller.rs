@@ -95,7 +95,7 @@ impl Controller {
             self.completed = true;
         }
     }
-    pub(crate) fn projection(&self, room: &RoomState, host: bool) -> Value {
+    pub(crate) fn projection(&self, room: &LocalOutput, host: bool) -> Value {
         let output = room.output.snapshot();
         let status = if !self.owns_playback {
             output["status"].as_str().unwrap_or("stopped")
@@ -119,9 +119,9 @@ impl Controller {
         } else {
             output["status"].as_str().unwrap_or("starting")
         };
-        json!({"schema_version":1,"target":if self.owns_playback{if self.local_preview{"native"}else{"purek"}}else{"local"},
-            "requested_target":if self.selected{if self.local_preview{"native"}else{"purek"}}else{"local"},"status":status,
-            "available":crate::media_routing::output_companion().is_some(),"authorized":room.connected.is_some(),
+        json!({"schema_version":1,"target":if self.owns_playback{"native"}else{"local"},
+            "requested_target":if self.selected{"native"}else{"local"},"status":status,
+            "available":crate::media_routing::output_companion().is_some(),"authorized":false,
             "can_manage":host,"experimental":true,"qualified":false,"busy":room.busy||self.pending,
             "desired_playing":self.playing,"position":self.position,"duration":self.duration,
             "transition_remaining_ms":self.transition_remaining,"pipeline_level":output["pipeline_level"],"stream_generation":output["generation"],"producer_eof":self.local_preview&&room.local_preview.as_ref().is_some_and(|p|p.eof()),"preview_tail_sequence":if self.local_preview{room.local_preview.as_ref().and_then(|p|p.tail())}else{None},
@@ -131,7 +131,7 @@ impl Controller {
             // Host-only stable stage/code; Remote keeps the shared code only.
             "failure":if host {room.diagnostics.output_failure()} else {Value::Null}})
     }
-    pub(crate) fn observation(&self, item: &str, generation: u64, room: &RoomState) -> Value {
+    pub(crate) fn observation(&self, item: &str, generation: u64, room: &LocalOutput) -> Value {
         let phase = if self.error.is_some() {
             "failed"
         } else if !self.playing || !self.selected {
@@ -163,7 +163,7 @@ pub(crate) fn command(identity: &Identity, body: &Value) -> Result<Value, ApiErr
                 Some("gradual") => bilikara_rust::output_audio::OffsetMode::Gradual,
                 _ => return Err(ApiError::invalid("offset_mode must be splice or gradual")),
             };
-            let room = &mut app.native().purek;
+            let room = &mut app.native().local_output;
             if room.busy {
                 return Err(busy());
             }
@@ -177,10 +177,13 @@ pub(crate) fn command(identity: &Identity, body: &Value) -> Result<Value, ApiErr
             room.output.mode = mode;
         } else {
             app.native_authorize(identity, true)?;
+            if app.native().cast.connected || app.native().cast.owns_playback {
+                return Err(busy());
+            }
             let target = body["target"]
                 .as_str()
-                .filter(|s| matches!(*s, "local" | "purek" | "native"))
-                .ok_or_else(|| ApiError::invalid("target must be local, purek or native"))?;
+                .filter(|s| matches!(*s, "local" | "native"))
+                .ok_or_else(|| ApiError::invalid("target must be local or native"))?;
             if object
                 .keys()
                 .any(|k| !matches!(k.as_str(), "target" | "experimental"))
@@ -192,28 +195,20 @@ pub(crate) fn command(identity: &Identity, body: &Value) -> Result<Value, ApiErr
                     "实验性电视输出需要明确确认",
                 ));
             }
-            if app.native().purek.busy {
+            if app.native().local_output.busy {
                 return Err(busy());
             }
-            if target != "local" {
-                if crate::media_routing::output_companion().is_none() {
-                    return Err(failure(
-                        501,
-                        "output_backend_unavailable",
-                        "此构建没有原生媒体输出",
-                    ));
-                }
-                if target == "purek" && app.native().purek.connected.is_none() {
-                    return Err(failure(409, "not_authorized", "请先在 Host 授权房台"));
-                }
-                if target == "purek" {
-                    app.native().purek.output.protocol()?;
-                }
+            if target != "local" && crate::media_routing::output_companion().is_none() {
+                return Err(failure(
+                    501,
+                    "output_backend_unavailable",
+                    "此构建没有原生媒体输出",
+                ));
             }
             let observation = app.native_snapshot(true)?["player_status"].clone();
             let program = output::signature(app, true).ok();
-            let active = app.native().purek.output.running.is_some();
-            let c = &mut app.native().purek.controller;
+            let active = app.native().local_output.output.running.is_some();
+            let c = &mut app.native().local_output.controller;
             if target != "local" {
                 c.local_preview = target == "native";
                 if !c.owns_playback {
@@ -237,7 +232,7 @@ pub(crate) fn command(identity: &Identity, body: &Value) -> Result<Value, ApiErr
                 c.release_platform = true;
             }
             app.native_clear_output_controls();
-            app.native().purek.controller.bump();
+            app.native().local_output.controller.bump();
         }
         app.native().revision += 1;
         app.native_snapshot(host)
@@ -348,11 +343,11 @@ struct Plan {
     position: f64,
 }
 fn plan(app: &mut AppState, instant: Instant, paint: bool) -> Result<Option<Plan>, ApiError> {
-    let mut c = app.native().purek.controller.clone();
+    let mut c = app.native().local_output.controller.clone();
     if !c.owns_playback && !c.selected {
         return Ok(None);
     }
-    if app.native().purek.busy {
+    if app.native().local_output.busy {
         return Ok(None);
     }
     let facts = match app.native_output_audio_facts() {
@@ -388,29 +383,20 @@ fn plan(app: &mut AppState, instant: Instant, paint: bool) -> Result<Option<Plan
         c.position = c.position_at(instant);
         c.status_sequence = c.status_sequence.saturating_add(1);
     }
-    let action = if c.error.is_some() && !c.local_preview && app.native().purek.connected.is_none()
-    {
-        if app.native().purek.output.running.is_some() {
-            Action::Stop
-        } else {
-            Action::Keep
-        }
-    } else {
-        policy::decide(Facts {
-            selected: c.selected,
-            authorized: c.local_preview || app.native().purek.connected.is_some(),
-            busy: false,
-            blocked: c.error.is_some(),
-            has_item: facts.is_some(),
-            cache_ready: facts.as_ref().is_some_and(|f| f.cache_ready),
-            active: app.native().purek.output.running.is_some(),
-            same_program: c.started == program,
-            playing: c.playing,
-            restart: c.restart,
-            completed: c.completed,
-            waiting_for_transition: c.transition.is_some(),
-        })
-    };
+    let action = policy::decide(Facts {
+        selected: c.selected,
+        authorized: true,
+        busy: false,
+        blocked: c.error.is_some(),
+        has_item: facts.is_some(),
+        cache_ready: facts.as_ref().is_some_and(|f| f.cache_ready),
+        active: app.native().local_output.output.running.is_some(),
+        same_program: c.started == program,
+        playing: c.playing,
+        restart: c.restart,
+        completed: c.completed,
+        waiting_for_transition: c.transition.is_some(),
+    });
     let plan = Plan {
         action,
         version: c.version,
@@ -425,7 +411,7 @@ fn plan(app: &mut AppState, instant: Instant, paint: bool) -> Result<Option<Plan
     } else {
         None
     };
-    app.native().purek.controller = c;
+    app.native().local_output.controller = c;
     if paint {
         app.native().revision += 1;
     }
@@ -466,12 +452,12 @@ pub(crate) fn maintain(context: Arc<HostContext>) {
                     ))
                 }
                 Action::Advance => with_app(|app| {
-                    let mut c = app.native().purek.controller.clone();
+                    let mut c = app.native().local_output.controller.clone();
                     if c.version == plan.version
                         && output::signature(app, true).ok() == plan.program
                     {
                         advance(app, &mut c, None, instant)?;
-                        app.native().purek.controller = c;
+                        app.native().local_output.controller = c;
                         app.native().revision += 1;
                     }
                     Ok(())
@@ -479,24 +465,36 @@ pub(crate) fn maintain(context: Arc<HostContext>) {
                 Action::Keep | Action::Wait => Ok(()),
             };
             let _ = with_app(|app| {
-                if app.native().purek.controller.version != plan.version {
+                if app.native().local_output.controller.version != plan.version {
                     return Ok(());
                 }
                 if let Err(error) = result {
                     if error.code != "purek_busy" {
-                        app.native().purek.controller.fail(&error.code);
+                        app.native().local_output.controller.fail(&error.code);
                         app.native().revision += 1;
                     }
                     return Ok(());
                 }
                 if plan.action == Action::Start {
-                    let duration = app.native().purek.output.running.as_ref().map_or(0.0, |r| {
-                        r.duration_us.load(Ordering::Acquire) as f64 / 1_000_000.0
-                    });
-                    let delivered = app.native().purek.output.running.as_ref().is_some_and(|r| {
-                        r.played.load(Ordering::Acquire) && r.delivered.load(Ordering::Acquire)
-                    });
-                    let c = &mut app.native().purek.controller;
+                    let duration = app
+                        .native()
+                        .local_output
+                        .output
+                        .running
+                        .as_ref()
+                        .map_or(0.0, |r| {
+                            r.duration_us.load(Ordering::Acquire) as f64 / 1_000_000.0
+                        });
+                    let delivered = app
+                        .native()
+                        .local_output
+                        .output
+                        .running
+                        .as_ref()
+                        .is_some_and(|r| {
+                            r.played.load(Ordering::Acquire) && r.delivered.load(Ordering::Acquire)
+                        });
+                    let c = &mut app.native().local_output.controller;
                     c.started = plan.program;
                     c.anchor = c.position;
                     c.clock = None;
@@ -508,16 +506,16 @@ pub(crate) fn maintain(context: Arc<HostContext>) {
                     c.pending = false;
                     app.native().revision += 1;
                 } else if matches!(plan.action, Action::Stop | Action::Pause) {
-                    let c = &mut app.native().purek.controller;
+                    let c = &mut app.native().local_output.controller;
                     c.freeze(instant);
                     c.restart = false;
                     c.pending = false;
                     app.native().revision += 1;
                 }
-                if !app.native().purek.controller.selected
-                    && app.native().purek.output.running.is_none()
+                if !app.native().local_output.controller.selected
+                    && app.native().local_output.output.running.is_none()
                 {
-                    let c = app.native().purek.controller.clone();
+                    let c = app.native().local_output.controller.clone();
                     if let Ok(f) = app.native_output_audio_facts() {
                         for action in [
                             json!({"action":"seek-absolute","target_seconds":c.position}),
@@ -537,7 +535,7 @@ pub(crate) fn maintain(context: Arc<HostContext>) {
                             })?;
                         }
                     }
-                    app.native().purek.controller = Controller::default();
+                    app.native().local_output.controller = Controller::default();
                     app.native().revision += 1;
                 }
                 Ok(())
@@ -545,7 +543,7 @@ pub(crate) fn maintain(context: Arc<HostContext>) {
         }
         let desired = with_app(|app| {
             use super::super::output_platform::OutputActivity::*;
-            let room = &app.native().purek;
+            let room = &app.native().local_output;
             Ok(if room.controller.release_platform {
                 Stopped
             } else if room.output.running.is_some() {
@@ -564,7 +562,7 @@ pub(crate) fn maintain(context: Arc<HostContext>) {
                 Ok(()) => (),
                 Err(error) => {
                     let _ = with_app(|app| {
-                        app.native().purek.controller.fail(&error.code);
+                        app.native().local_output.controller.fail(&error.code);
                         app.native().revision += 1;
                         Ok(())
                     });
@@ -576,53 +574,4 @@ pub(crate) fn maintain(context: Arc<HostContext>) {
     let _ = super::super::output_platform::apply(
         super::super::output_platform::OutputActivity::Stopped,
     );
-}
-
-/// A user-selected standard DLNA endpoint has no mirroring operation. This
-/// describes the selected endpoint, not other protocols on the physical TV.
-/// Unknown advertisements and AirPlay/native screens never imply DLNA-only.
-pub(super) fn default_for_receiver(app: &mut AppState) -> Result<(), ApiError> {
-    let room = &app.native().purek;
-    if room.default_output_applied
-        || room
-            .connected
-            .as_ref()
-            .is_none_or(|c| c.room.connection_type() != "dlna")
-        || !room.output.declared_ts_endpoint()
-    {
-        return Ok(());
-    }
-    app.native().purek.default_output_applied = true;
-    if crate::media_routing::output_companion().is_none() {
-        let room = &mut app.native().purek;
-        room.output.end(
-            room.generation,
-            false,
-            Some("purek_output_backend_unavailable"),
-        );
-        return Ok(());
-    }
-    let snapshot = app.native_snapshot(true)?;
-    let program = output::signature(app, true).ok();
-    let c = &mut app.native().purek.controller;
-    c.local_preview = false;
-    c.selected = true;
-    c.owns_playback = true;
-    c.position = snapshot["player_status"]["current_time"]
-        .as_f64()
-        .unwrap_or(0.0);
-    c.duration = snapshot["player_status"]["duration"]
-        .as_f64()
-        .unwrap_or(0.0);
-    c.program = program;
-    c.playing = snapshot["player_status"]["is_paused"] != true;
-    c.restart = true;
-    c.error = None;
-    c.release_platform = false;
-    c.completed = false;
-    c.transition = None;
-    c.bump();
-    app.native_clear_output_controls();
-    app.native().revision += 1;
-    Ok(())
 }

@@ -61,7 +61,7 @@ pub fn interrupted(reason: i32) {
         _ => "purek_output_platform_stopped",
     };
     let _ = with_app(|app| {
-        app.native().purek.interrupt_output(code);
+        app.native().local_output.interrupt_output(code);
         app.native().revision += 1;
         Ok(())
     });
@@ -69,7 +69,10 @@ pub fn interrupted(reason: i32) {
 #[cfg(target_os = "android")]
 pub fn thermal(status: i32, headroom: f32) {
     let _ = with_app(|app| {
-        app.native().purek.controller.thermal(status, headroom);
+        app.native()
+            .local_output
+            .controller
+            .thermal(status, headroom);
         app.native().revision += 1;
         Ok(())
     });

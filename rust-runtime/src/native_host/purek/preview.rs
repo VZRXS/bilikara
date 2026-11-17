@@ -323,7 +323,7 @@ impl Preview {
 
 pub(crate) fn media(path: &str, head: bool) -> Result<Response, ApiError> {
     let (preview, running, file) = with_app(|app| {
-        let room = &app.native().purek;
+        let room = &app.native().local_output;
         if !room.controller.local_preview || !room.controller.selected {
             return Err(failure(410, "output_retired", "此输出已结束"));
         }
@@ -356,7 +356,7 @@ pub(crate) fn endpoint(identity: &Identity, body: Option<&Value>) -> Result<Valu
         app.native_authorize(identity, true)?;
         let running = app
             .native()
-            .purek
+            .local_output
             .output
             .running
             .clone()
@@ -374,11 +374,11 @@ pub(crate) fn endpoint(identity: &Identity, body: Option<&Value>) -> Result<Valu
                         return Err(busy());
                     }
                     let signature = super::output::signature(app, true)?;
-                    app.native().purek.controller.finish(&signature);
+                    app.native().local_output.controller.finish(&signature);
                 }
                 Some("error") => app
                     .native()
-                    .purek
+                    .local_output
                     .controller
                     .fail("purek_output_preview_decode"),
                 _ => return Err(ApiError::invalid("invalid output preview observation")),

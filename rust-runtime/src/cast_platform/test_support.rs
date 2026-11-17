@@ -24,6 +24,8 @@ pub(crate) fn scoped<T>(action: impl FnOnce() -> T) -> T {
 pub(crate) struct RecordingPlatform {
     active: Mutex<BTreeSet<u64>>,
     pub events: Mutex<Vec<(u64, bool)>>,
+    pub facts_reads: std::sync::atomic::AtomicUsize,
+    pub on_begin: Option<fn()>,
 }
 impl RecordingPlatform {
     pub fn active(&self) -> usize {
@@ -47,10 +49,20 @@ impl CastPlatform for RecordingPlatform {
     fn discovery_begin(&self, id: u64) -> bool {
         assert!(self.active.lock().unwrap().insert(id));
         self.events.lock().unwrap().push((id, true));
+        if let Some(check) = self.on_begin {
+            check();
+        }
         true
     }
     fn discovery_end(&self, id: u64) {
         assert!(self.active.lock().unwrap().remove(&id));
         self.events.lock().unwrap().push((id, false));
+    }
+    fn output_active(&self, _: u64, _: bool) -> Result<(), PlatformError> {
+        Ok(())
+    }
+    fn network_facts(&self) -> NetworkFacts {
+        self.facts_reads.fetch_add(1, Ordering::Relaxed);
+        NetworkFacts::default()
     }
 }

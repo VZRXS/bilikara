@@ -13,6 +13,10 @@ async function check(phone,binding){
   return waitFor(async()=>{const view=await phone.send('ktv.status.get');return ['completed','error'].includes(view.session?.status)&&view;},'actual asynchronous receiver verification');
 }
 
+const roomState=async server=>(await server.api('/api/state')).purek;
+async function disconnect(server){await server.api('/api/cast/disconnect',{});return waitFor(async()=>{const s=await server.api('/api/state');return s.cast.phase==='idle'&&!s.cast.busy&&s.purek;},'awaited receiver disconnect');}
+async function probe(server){await server.api('/api/cast/probe',{});return waitFor(async()=>{const s=await roomState(server);return !s.busy&&s;},'advisory capability refresh');}
+
 async function lanPhone(t,server,name='Same singer',registeredClient=null){
   const client=registeredClient||new HttpClient(server.base);
   if(!registeredClient){await client.request('/remote');await client.api('/api/remote-identity/register',{name});}
@@ -66,7 +70,7 @@ test('registered LAN and Internet peers are eligible and invitations stay exact-
     const rejected=await phone.request('/api/ktv/remote',{connection_id:second.connection_id,request:{operation:'ktv.scan.submit',...binding,url}},{'X-Forwarded-Proto':'https'});
     assert.equal(rejected.status,409,'a LAN connection cannot use an Internet connection grant');
   }
-  assert.equal((await server.api('/api/purek/state')).room_name,null);
+  assert.equal((await roomState(server)).room_name,null);
   await b.close();await waitFor(async()=>(await server.api('/api/ktv/host')).devices.length===3,'retired LAN tab leaves only its exact presence');
   assert.equal((await two.send('ktv.status.get')).session.status,'accepted','unrelated LAN closure does not retire a secure grant');
   await two.close();assert.equal((await server.api('/api/ktv/host')).session.status,'disconnected');
@@ -76,17 +80,17 @@ for(const transport of ['internet','lan'])test(`${transport} requests require Ho
   const {server,home}=await startHost(t,binary),tv=await receiver(t),phone=transport==='internet'?await peer(server,'phone'):await lanPhone(t,server);
   const logs=[];for(const pipe of [server.process.stdout,server.process.stderr])pipe.on('data',chunk=>logs.push(chunk));
   const initial=await phone.send('ktv.scan.request');assert.equal(initial.session.status,'approval_pending');const binding={request_id:initial.session.request_id,host_epoch:initial.host_epoch};
-  await assert.rejects(phone.send('ktv.scan.submit',{...binding,url:roomQr(tv.base)}),e=>e.code==='ktv_stale');assert.equal((await server.api('/api/purek/state')).room_name,null);
+  await assert.rejects(phone.send('ktv.scan.submit',{...binding,url:roomQr(tv.base)}),e=>e.code==='ktv_stale');assert.equal((await roomState(server)).room_name,null);
   await server.api('/api/ktv/host',{operation:'approve',...binding});
   await assert.rejects(phone.send('ktv.scan.submit',{...binding,url:roomQr(tv.base).replace('wx.chunk.cn','evil.invalid')}),e=>e.code==='purek_description_invalid');
   const prepared=await phone.send('ktv.scan.submit',{...binding,url:roomQr(tv.base)});assert.equal(prepared.authorization_url,roomQr(tv.base));assert.equal(prepared.session.status,'authorization_pending');
   assert.equal(tv.state.actions.length,0,'scanning/authorization navigation never registers the receiver');
   for(const projection of [await server.api('/api/state'),await server.api('/api/internet-remote/state')])for(const secret of ['synthetic-ktv-private','projection_url',tv.description])assert.ok(!JSON.stringify(projection).includes(secret));
-  tv.state.deny=true;let result=await check(phone,binding);assert.equal(result.session.status,'error');assert.equal(result.room.status,'error');assert.equal((await server.api('/api/purek/state')).connected,false);
+  tv.state.deny=true;let result=await check(phone,binding);assert.equal(result.session.status,'error');assert.equal(result.room.status,'error');assert.equal((await roomState(server)).connected,false);
   tv.state.deny=false;let releaseRetry;tv.state.hold=new Promise(resolve=>{releaseRetry=resolve;});t.after(()=>releaseRetry());
   const retry=await phone.send('ktv.authorization.check',binding);assert.equal(retry.session.status,'connecting');assert.equal(retry.session.error_code,null,'the current retry cannot advertise the previous authorization failure');assert.equal(retry.room.status,'connecting');
   tv.state.hold=null;releaseRetry();await waitFor(async()=>(await phone.send('ktv.status.get')).session.status==='completed','actual authorized retry completes');
-  result=await phone.send('ktv.status.get');assert.equal(result.session.status,'completed');assert.equal((await server.api('/api/purek/state')).connected,true);
+  result=await phone.send('ktv.status.get');assert.equal(result.session.status,'completed');assert.equal((await roomState(server)).connected,true);
   assert.ok(tv.state.actions.includes('SetDeviceAuthorization'));assert.ok(tv.state.actions.includes('GetProtocolInfo'));assert.ok(tv.state.descriptions>=3,'actual receiver identity was re-read');
   await assert.rejects(phone.send('ktv.authorization.check',binding),e=>e.code==='ktv_stale');
   await assert.rejects(phone.send('ktv.scan.cancel',binding),e=>e.code==='ktv_stale');assert.equal(tv.state.authorized,true,'retiring a completed grant cannot disconnect the receiver');
@@ -95,20 +99,20 @@ for(const transport of ['internet','lan'])test(`${transport} requests require Ho
   await assert.rejects(phone.send('ktv.scan.request'),e=>e.code==='ktv_receiver_connected');
   assert.equal((await server.request('/api/ktv/host',{operation:'invite',connection_id:current.connection_id})).status,409);
   assert.equal(tv.state.authorized,true);
-  await server.api('/api/purek/disconnect',{});assert.equal(tv.state.authorized,false);
+  await disconnect(server);assert.equal(tv.state.authorized,false);
   assert.equal((await phone.send('ktv.status.get')).capabilities.scan,true);
   const again=await phone.send('ktv.scan.request'),next={request_id:again.session.request_id,host_epoch:again.host_epoch};
   await server.api('/api/ktv/host',{operation:'approve',...next});
   tv.state.actions=[];await phone.send('ktv.scan.submit',{...next,url:tv.description});result=await check(phone,next);
   assert.equal(result.room.connection_type,'dlna');assert.equal(result.session.status,'completed');assert.ok(!tv.state.actions.includes('SetDeviceAuthorization'),'ordinary DLNA never uses WeChat registration');
   assert.ok(tv.state.actions.includes('GetProtocolInfo'));
-  tv.state.protocol='';await server.api('/api/purek/output/probe',{});assert.equal((await phone.send('ktv.status.get')).room.status,'capability_unverified');
-  tv.state.protocol='http-get:*:audio/aac:*';await server.api('/api/purek/output/probe',{});assert.equal((await phone.send('ktv.status.get')).room.status,'capability_unverified');
-  const advisory=(await server.api('/api/purek/state')).output;
+  tv.state.protocol='';await probe(server);assert.equal((await phone.send('ktv.status.get')).room.status,'capability_unverified');
+  tv.state.protocol='http-get:*:audio/aac:*';await probe(server);assert.equal((await phone.send('ktv.status.get')).room.status,'capability_unverified');
+  const advisory=(await roomState(server)).output;
   assert.equal(advisory.capabilities.protocol_info_state,'reported');
   assert.deepEqual(advisory.capabilities.sink_formats,[{mime:'audio/aac',profile:null}]);
   for(const [key,value]of Object.entries(advisory.capabilities))if(key.startsWith('supports_'))assert.equal(value,false);
-  tv.state.protocolError=true;await server.api('/api/purek/output/probe',{});assert.equal((await phone.send('ktv.status.get')).room.status,'capability_unverified');assert.equal((await server.api('/api/purek/state')).connected,true,'a failed media query does not undo actual receiver authorization');
+  tv.state.protocolError=true;await probe(server);assert.equal((await phone.send('ktv.status.get')).room.status,'capability_unverified');assert.equal((await roomState(server)).connected,true,'a failed media query does not undo actual receiver authorization');
   for(const projection of [JSON.stringify(logs.map(x=>x.toString('utf8'))),JSON.stringify(phone.events?.frames||[]),JSON.stringify(await server.api('/api/ktv/internet-events'))])for(const secret of ['synthetic-ktv-private','projection_url',tv.description])assert.equal(projection.includes(secret),false,'credentials must not enter logs or event streams');
   const diagnostics=JSON.stringify(await server.api('/api/diagnostics/native'));assert.ok(!diagnostics.includes('synthetic-ktv-private'));assert.ok(!diagnostics.includes('projection_url'));
   for(const entry of readdirSync(home,{recursive:true,withFileTypes:true}).filter(x=>x.isFile())){
@@ -147,7 +151,7 @@ for(const transport of ['internet','lan'])test(`${transport} trusted Host retrie
   assert.equal((await server.api('/api/ktv/host',link)).authorization_url,roomQr(tv.base),'a failed official check remains explicitly retryable');
   tv.state.deny=false;await server.api('/api/ktv/host',checkRequest);
   await waitFor(async()=>(await server.api('/api/ktv/host')).session.status==='completed','trusted Host completes the bound asynchronous registration');
-  assert.equal((await server.api('/api/purek/state')).connected,true);
+  assert.equal((await roomState(server)).connected,true);
   assert.equal((await server.api('/api/ktv/host')).authorization_link_available,false);
   assert.equal((await server.request('/api/ktv/host',link)).status,409);
   for(const entry of readdirSync(home,{recursive:true,withFileTypes:true}).filter(x=>x.isFile())){
@@ -163,16 +167,16 @@ for(const transport of ['internet','lan'])test(`${transport} cancellation of in-
   let release;tv.state.hold=new Promise(resolve=>{release=resolve;});t.after(()=>release());
   const checking=await phone.send('ktv.authorization.check',bound);assert.equal(checking.session.status,'connecting');
   await waitFor(()=>tv.state.actions.includes('SetDeviceAuthorization'),'registration reached independent receiver');
-  await server.api('/api/ktv/host',{operation:'cancel',...bound});assert.equal((await server.api('/api/purek/state')).busy,true,'rollback still owns the receiver lease');
-  assert.equal((await server.api('/api/purek/state')).room_name,null,'the canceled candidate is no longer staged');
+  await server.api('/api/ktv/host',{operation:'cancel',...bound});assert.equal((await roomState(server)).busy,true,'rollback still owns the receiver lease');
+  assert.equal((await roomState(server)).room_name,null,'the canceled candidate is no longer staged');
   assert.equal((await server.api('/api/internet-remote/state')).ktv_room.status,'disconnected');
   assert.equal((await server.request('/api/purek/prepare',{url:tv.description})).status,409,'rollback cannot be replaced by another room');
   tv.state.hold=null;release();
-  await waitFor(async()=>!(await server.api('/api/purek/state')).busy,'retired I/O released its own lease');assert.equal(tv.state.authorized,false);
-  assert.equal((await server.api('/api/purek/state')).connected,false);assert.equal((await server.api('/api/ktv/host')).session.status,'canceled');
+  await waitFor(async()=>!(await roomState(server)).busy,'retired I/O released its own lease');assert.equal(tv.state.authorized,false);
+  assert.equal((await roomState(server)).connected,false);assert.equal((await server.api('/api/ktv/host')).session.status,'canceled');
   await server.api('/api/purek/prepare',{url:tv.description});
   await assert.rejects(phone.send('ktv.scan.cancel',bound),e=>e.code==='ktv_stale');
-  assert.equal((await server.api('/api/purek/state')).connection_type,'dlna','late cancellation leaves unrelated Host-owned staging alone');
+  assert.equal((await roomState(server)).connection_type,'dlna','late cancellation leaves unrelated Host-owned staging alone');
 });
 
 test('LAN disconnect discards private staging and a new connection cannot reclaim the old grant',options,async t=>{
@@ -185,7 +189,7 @@ test('LAN disconnect discards private staging and a new connection cannot reclai
   await assert.rejects(b.send('ktv.authorization.link.get',old),e=>e.code==='ktv_stale');
   await assert.rejects(a.send('ktv.authorization.check',{...old,host_epoch:'obsolete-epoch'}),e=>e.code==='ktv_stale');
   await a.close();await waitFor(async()=>(await server.api('/api/ktv/host')).session?.status==='disconnected','LAN stream retirement');
-  assert.equal((await server.api('/api/purek/state')).room_name,null);
+  assert.equal((await roomState(server)).room_name,null);
   assert.equal((await server.request('/api/ktv/host',{operation:'authorization_link',...old})).status,409,'a trusted Host cannot resurrect disconnected LAN staging');
   assert.equal((await b.send('ktv.status.get')).recovery_available,false);
   assert.equal((await b.send('ktv.status.get')).capabilities.resume,false);
@@ -204,7 +208,7 @@ test('LAN disconnect discards private staging and a new connection cannot reclai
   assert.equal((await c.send('ktv.status.get')).capabilities.scan,false);
   assert.equal((await server.request('/api/ktv/host',{operation:'authorization_link',...registered})).status,409,'removed identity revokes Host link retrieval too');
   await assert.rejects(c.send('ktv.authorization.check',registered),e=>e.code==='ktv_stale');
-  assert.equal((await server.api('/api/purek/state')).room_name,null);assert.deepEqual(tv.state.actions,[]);
+  assert.equal((await roomState(server)).room_name,null);assert.deepEqual(tv.state.actions,[]);
 });
 
 test('A cancels X; a same-user tab with fresh Host approval cannot check X without its own scan',options,async t=>{
@@ -213,7 +217,7 @@ test('A cancels X; a same-user tab with fresh Host approval cannot check X witho
   const first=await a.send('ktv.scan.request'),old={request_id:first.session.request_id,host_epoch:first.host_epoch};
   await server.api('/api/ktv/host',{operation:'approve',...old});await a.send('ktv.scan.submit',{...old,url:roomQr(tv.base)});
   await a.send('ktv.scan.cancel',old);
-  assert.equal((await server.api('/api/purek/state')).room_name,null);
+  assert.equal((await roomState(server)).room_name,null);
   assert.equal((await server.api('/api/internet-remote/state')).ktv_room.status,'disconnected');
   const request=await b.send('ktv.scan.request'),bound={request_id:request.session.request_id,host_epoch:request.host_epoch};
   await server.api('/api/ktv/host',{operation:'approve',...bound});
@@ -221,11 +225,11 @@ test('A cancels X; a same-user tab with fresh Host approval cannot check X witho
   await assert.rejects(b.send('ktv.authorization.link.get',bound),e=>e.code==='ktv_scan_required');
   await assert.rejects(a.send('ktv.authorization.check',old),e=>e.code==='ktv_stale');
   assert.equal((await b.send('ktv.status.get')).candidate_owned,false);
-  assert.equal((await server.api('/api/purek/state')).connected,false);assert.deepEqual(tv.state.actions,[]);
+  assert.equal((await roomState(server)).connected,false);assert.deepEqual(tv.state.actions,[]);
   await b.send('ktv.scan.cancel',bound);await server.api('/api/purek/prepare',{url:tv.description});
   const fresh=await b.send('ktv.scan.request'),next={request_id:fresh.session.request_id,host_epoch:fresh.host_epoch};
   await server.api('/api/ktv/host',{operation:'approve',...next});
-  assert.equal((await server.api('/api/purek/state')).connection_type,'dlna','fresh approval preserves unrelated Host-owned staging');
+  assert.equal((await roomState(server)).connection_type,'dlna','fresh approval preserves unrelated Host-owned staging');
   await assert.rejects(b.send('ktv.authorization.check',next),e=>e.code==='ktv_scan_required');
   await assert.rejects(b.send('ktv.authorization.link.get',next),e=>e.code==='ktv_scan_required');assert.deepEqual(tv.state.actions,[],'a nonempty room alone cannot authorize a fresh Remote');
 });
@@ -254,8 +258,8 @@ test('disconnected staging needs separate explicit resume approval, even for the
   assert.equal((await server.request('/api/ktv/host',{operation:'authorization_link',...old})).status,409,'old request IDs cannot read a newly approved binding');
   for(const projection of[await server.api('/api/internet-remote/state'),await server.api('/api/ktv/internet-events')])assert.ok(!JSON.stringify(projection).includes('projection_url'));
   assert.equal((await b.send('ktv.authorization.link.get',bound)).authorization_url,roomQr(tv.base));
-  tv.state.deny=true;assert.equal((await check(b,bound)).session.status,'error');assert.equal((await server.api('/api/purek/state')).connected,false);
-  tv.state.deny=false;assert.equal((await check(b,bound)).session.status,'completed');assert.equal((await server.api('/api/purek/state')).connected,true);
+  tv.state.deny=true;assert.equal((await check(b,bound)).session.status,'error');assert.equal((await roomState(server)).connected,false);
+  tv.state.deny=false;assert.equal((await check(b,bound)).session.status,'completed');assert.equal((await roomState(server)).connected,true);
   assert.ok(tv.state.actions.includes('SetDeviceAuthorization'));assert.ok(tv.state.actions.includes('GetProtocolInfo'));
 });
 
@@ -266,7 +270,7 @@ test('a fresh approved scan discards recovery instead of silently rebinding a pr
   assert.equal((await b.send('ktv.status.get')).recovery_available,true);
   const fresh=await b.send('ktv.scan.request'),bound={request_id:fresh.session.request_id,host_epoch:fresh.host_epoch};
   await server.api('/api/ktv/host',{operation:'approve',...bound});
-  assert.equal((await server.api('/api/purek/state')).room_name,null);
+  assert.equal((await roomState(server)).room_name,null);
   assert.equal((await b.send('ktv.status.get')).recovery_available,false);
   await assert.rejects(b.send('ktv.authorization.check',bound),e=>e.code==='ktv_scan_required');assert.deepEqual(tv.state.actions,[]);
 });
@@ -281,18 +285,18 @@ test('real invitation deadline expires without an offline queue and rejects a la
   const pending=await phone.send('ktv.status.get');assert.ok(pending.session.remaining_seconds>=55&&pending.session.remaining_seconds<=60);
   await waitFor(async()=>(await server.api('/api/ktv/host')).session.status==='expired','server monotonic invitation deadline',66000);
   await assert.rejects(phone.send('ktv.scan.accept',{request_id:pending.session.request_id,host_epoch:pending.host_epoch}),e=>e.code==='ktv_stale');
-  assert.equal((await server.api('/api/purek/state')).room_name,null);
+  assert.equal((await roomState(server)).room_name,null);
 });
 
 test('actual Host restart retires old epochs, grants and staged private credentials',options,async t=>{
   const fixture=await startHost(t,binary),phone=await peer(fixture.server,'restart-phone');
   const pending=await phone.send('ktv.scan.request'),bound={request_id:pending.session.request_id,host_epoch:pending.host_epoch};
   await fixture.server.api('/api/ktv/host',{operation:'approve',...bound});await phone.send('ktv.scan.submit',{...bound,url:roomQr()});
-  const restarted=await fixture.restart();assert.equal((await restarted.api('/api/purek/state')).room_name,null);
+  const restarted=await fixture.restart();assert.equal((await roomState(restarted)).room_name,null);
   assert.equal((await restarted.request('/api/internet-remote/peer/open',{peer_id:'early',epoch:'abcdefghijklmnopqrstuv',profile:'controller'})).status,409,'existing startup-session consent remains required');
   await restarted.api('/api/session/startup-choice',{choice:'continue'});
   const next=await peer(restarted,'restart-phone'),current=await next.send('ktv.status.get');assert.notEqual(current.host_epoch,bound.host_epoch);assert.equal(current.session,null);
   assert.equal(current.recovery_available,false);await assert.rejects(next.send('ktv.authorization.resume.request'),e=>e.code==='ktv_resume_unavailable');
   await assert.rejects(next.send('ktv.authorization.check',bound),e=>e.code==='ktv_stale');
-  assert.equal((await restarted.api('/api/purek/state')).connected,false);
+  assert.equal((await roomState(restarted)).connected,false);
 });
