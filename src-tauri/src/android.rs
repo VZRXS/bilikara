@@ -230,6 +230,7 @@ fn initialize(app: &tauri::App) -> Result<NativeHost, String> {
     initialize_platform_tls(app)?;
     crate::android_cast::initialize(app);
     crate::android_media::initialize(app);
+    crate::android_samples::initialize(app);
     let directory = app
         .path()
         .app_data_dir()

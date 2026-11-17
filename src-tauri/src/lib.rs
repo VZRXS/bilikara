@@ -37,6 +37,8 @@ mod android;
 mod android_cast;
 #[cfg(target_os = "android")]
 mod android_media;
+#[cfg(target_os = "android")]
+mod android_samples;
 
 #[cfg(target_os = "ios")]
 mod ios;
