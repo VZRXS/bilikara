@@ -25,7 +25,12 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("Desktop task failed: {error}");
+        let task = if env::args().nth(1).as_deref() == Some("android-libav") {
+            "Android libav"
+        } else {
+            "Desktop"
+        };
+        eprintln!("{task} task failed: {error}");
         std::process::exit(1);
     }
 }

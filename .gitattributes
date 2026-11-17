@@ -1,1 +1,24 @@
 scripts/msvc-bash-env.sh text eol=lf
+# Preserve the 22 exact upstream files pinned by Signalsmith sources.json.
+media-libav/signalsmith/LICENSE.txt text eol=lf
+media-libav/signalsmith/signalsmith-stretch.h text eol=lf
+media-libav/signalsmith/signalsmith-linear/LICENSE.txt text eol=lf
+media-libav/signalsmith/signalsmith-linear/approx.h text eol=lf
+media-libav/signalsmith/signalsmith-linear/fft.h text eol=lf
+media-libav/signalsmith/signalsmith-linear/include/signalsmith-linear/approx.h text eol=lf
+media-libav/signalsmith/signalsmith-linear/include/signalsmith-linear/fft.h text eol=lf
+media-libav/signalsmith/signalsmith-linear/include/signalsmith-linear/linear.h text eol=lf
+media-libav/signalsmith/signalsmith-linear/include/signalsmith-linear/stft.h text eol=lf
+media-libav/signalsmith/signalsmith-linear/linear.h text eol=lf
+media-libav/signalsmith/signalsmith-linear/platform/approx-cmsisdsp.h text eol=lf
+media-libav/signalsmith/signalsmith-linear/platform/basic-fill-warnings.h text eol=lf
+media-libav/signalsmith/signalsmith-linear/platform/fft-accelerate.h text eol=lf
+media-libav/signalsmith/signalsmith-linear/platform/fft-cmsisdsp.h text eol=lf
+media-libav/signalsmith/signalsmith-linear/platform/fft-ipp.h text eol=lf
+media-libav/signalsmith/signalsmith-linear/platform/fft-linear.h text eol=lf
+media-libav/signalsmith/signalsmith-linear/platform/fft-pffft-double.h text eol=lf
+media-libav/signalsmith/signalsmith-linear/platform/fft-pffft.h text eol=lf
+media-libav/signalsmith/signalsmith-linear/platform/linear-accelerate.h text eol=lf
+media-libav/signalsmith/signalsmith-linear/platform/linear-cmsisdsp.h text eol=lf
+media-libav/signalsmith/signalsmith-linear/platform/linear-xsimd.h text eol=lf
+media-libav/signalsmith/signalsmith-linear/stft.h text eol=lf
