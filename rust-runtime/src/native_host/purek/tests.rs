@@ -1,4 +1,5 @@
 use super::*;
+use bilikara_rust::dlna_policy::{PolicyError, bounded_xml};
 use std::{
     io::{Read, Write},
     net::TcpListener,
@@ -46,6 +47,10 @@ fn network_xml_depth_is_bounded_on_a_two_mib_stack() {
                     "<n>".repeat(depth),
                     "</n>".repeat(depth)
                 );
+                assert_eq!(
+                    bounded_xml(&text, protocol::MAX_XML_BYTES).unwrap_err(),
+                    PolicyError::TooDeep
+                );
                 let error = protocol::xml(&text).err().unwrap();
                 assert_eq!(error.code, "purek_protocol");
                 assert!(error.to_string().contains("嵌套过深"));
@@ -78,10 +83,16 @@ fn network_xml_depth_is_bounded_on_a_two_mib_stack() {
                     );
                     let doc = protocol::xml(&text).unwrap();
                     assert_eq!(doc.descendants().filter(|n| n.is_element()).count(), depth);
+                    let doc = bounded_xml(&text, protocol::MAX_XML_BYTES).unwrap();
+                    assert_eq!(doc.descendants().filter(|n| n.is_element()).count(), depth);
                 }
             }
             let empty_leaf_at_65 = format!("{}<n/>{}", "<n>".repeat(64), "</n>".repeat(64));
             assert!(protocol::xml(&empty_leaf_at_65).is_err());
+            assert_eq!(
+                bounded_xml(&empty_leaf_at_65, protocol::MAX_XML_BYTES).unwrap_err(),
+                PolicyError::TooDeep
+            );
             Renderer::parse(&media_description(), &location).unwrap();
             protocol::authorization_result(SOAP, service).unwrap();
             renderer::protocol_info(&protocol_reply("http-get:*:video/MP2T:*"), service).unwrap();
@@ -102,6 +113,7 @@ fn network_xml_scan_respects_lexical_sections_and_quoted_attributes() {
         "</n>".repeat(63)
     );
     let doc = protocol::xml(&text).unwrap();
+    assert!(bounded_xml(&text, protocol::MAX_XML_BYTES).is_ok());
     assert_eq!(doc.descendants().filter(|n| n.is_element()).count(), 64);
     let leaf = doc.descendants().find(|n| n.has_tag_name("叶")).unwrap();
     assert_eq!(leaf.attribute("a"), Some("> /> <"));
@@ -119,6 +131,10 @@ fn network_xml_scan_respects_lexical_sections_and_quoted_attributes() {
     for decoy in ["<!-- </n> -->", "<![CDATA[</n>]]>", "<?pi </n>?>"] {
         let text = format!("{}{decoy}<n/>{}", "<n>".repeat(64), "</n>".repeat(64));
         assert!(protocol::xml(&text).is_err());
+        assert_eq!(
+            bounded_xml(&text, protocol::MAX_XML_BYTES).unwrap_err(),
+            PolicyError::TooDeep
+        );
     }
     for invalid in [
         "<n a='<fake>'/>",
@@ -131,6 +147,10 @@ fn network_xml_scan_respects_lexical_sections_and_quoted_attributes() {
         "<!DOCTYPE n [<!ENTITY x '<n/>'>]><n>&x;</n>",
     ] {
         assert_eq!(protocol::xml(invalid).err().unwrap().code, "purek_protocol");
+        assert_eq!(
+            bounded_xml(invalid, protocol::MAX_XML_BYTES).unwrap_err(),
+            PolicyError::InvalidXml
+        );
     }
 }
 
@@ -139,10 +159,15 @@ fn network_xml_size_budget_also_applies_to_direct_parser_calls() {
     let mut text = format!("<root>{}</root>", "x".repeat(1024 * 1024 - 13));
     assert_eq!(text.len(), 1024 * 1024);
     assert!(protocol::xml(&text).is_ok());
+    assert!(bounded_xml(&text, protocol::MAX_XML_BYTES).is_ok());
     text.push(' ');
     let error = protocol::xml(&text).err().unwrap();
     assert_eq!(error.code, "purek_protocol");
     assert_eq!(error.message, "房台响应过大");
+    assert_eq!(
+        bounded_xml(&text, protocol::MAX_XML_BYTES).unwrap_err(),
+        PolicyError::TooLarge
+    );
 }
 
 fn protocol_reply(sink: &str) -> String {

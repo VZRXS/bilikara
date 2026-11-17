@@ -394,6 +394,22 @@ These services are independent third parties. bilikara is not affiliated with, e
 
 Use of these services may be subject to their own terms, rate limits, access restrictions, privacy policies, and legal requirements. bilikara does not grant any license to platform content, media, accounts, APIs, paid access, or service names and trademarks.
 
+## DLNA protocol policy
+
+- Source: [VZRXS/bilikara PR #120](https://github.com/VZRXS/bilikara/pull/120)
+  by FMPeach (MIT), commit `297ae1de`; `rust-runtime/src/show_dlna.rs`
+  and `rust-runtime/src/show_dlna/discovery.rs`, including their fixtures.
+- Adaptation: media-backend-independent pure protocol policy in
+  `rust/src/dlna_policy.rs`, ported from bilikara R1/T1 at `b49e1ae`.
+  The upstream MIT notice is retained in the repository's `LICENSE`
+  (Copyright (c) 2026 bilikara contributors).
+- SOAP/DIDL formatting and MPEG-TS MIME preference follow Kirakara-App (MIT),
+  commit `e449070`, `lib/services/dlna/dlna_control_point.dart`.
+  Its copyright and permission notice are retained in
+  `third_party/Kirakara-App-LICENSE.txt`.
+- XML parsing uses `roxmltree` 0.20.0 (MIT OR Apache-2.0); URL parsing uses the
+  `url` crate (MIT OR Apache-2.0). No Kirakara Show binary is required.
+
 ## ChunK-Helper / Pure K room protocol integration
 
 The room QR validation, device-authorization SOAP flow and SSDP announcement

@@ -2,6 +2,7 @@
 //! e223fac61e3991689bf7ef7125297583f5b56b9e; attribution in third-party notices.
 use super::*;
 use base64::engine::general_purpose::STANDARD;
+use bilikara_rust::dlna_policy::{PolicyError, bounded_xml};
 use std::collections::HashMap;
 
 #[derive(Clone)]
@@ -196,92 +197,19 @@ impl Room {
         })
     }
 }
-// Match the existing HTTP body budget, including direct parser callers.
-pub(super) const MAX_XML_BYTES: usize = 1024 * 1024;
-const MAX_XML_DEPTH: usize = 64;
+// HTTP reads and direct parser calls share the domain's maximum byte budget.
+pub(super) use bilikara_rust::dlna_policy::MAX_XML_BYTES;
 
 fn invalid_xml() -> ApiError {
     failure(502, "protocol", "房台返回了无效的协议响应")
 }
 
-/// Bound recursive roxmltree parsing with a linear, constant-space lexical scan.
-/// This only tracks element nesting; roxmltree still validates XML syntax/names.
-fn check_xml_bounds(text: &str) -> Result<(), ApiError> {
-    if text.len() > MAX_XML_BYTES {
-        return Err(failure(502, "protocol", "房台响应过大"));
-    }
-    let mut rest = text.as_bytes();
-    let mut depth = 0usize;
-    while let Some(start) = rest.iter().position(|b| *b == b'<') {
-        rest = &rest[start..];
-        let special = if rest.starts_with(b"<!--") {
-            Some((4, b"-->".as_slice()))
-        } else if rest.starts_with(b"<![CDATA[") {
-            Some((9, b"]]>".as_slice()))
-        } else if rest.starts_with(b"<?") {
-            Some((2, b"?>".as_slice()))
-        } else {
-            None
-        };
-        if let Some((prefix, terminator)) = special {
-            rest = &rest[prefix..];
-            let end = rest
-                .windows(terminator.len())
-                .position(|w| w == terminator)
-                .ok_or_else(invalid_xml)?;
-            rest = &rest[end + terminator.len()..];
-            continue;
-        }
-        // DTDs (including entity declarations) remain forbidden. Reject unknown
-        // declarations rather than risk hiding markup from the depth counter.
-        if rest.starts_with(b"<!") {
-            return Err(invalid_xml());
-        }
-        let closing = rest.starts_with(b"</");
-        let mut quote = None;
-        let mut end = 1;
-        while let Some(&byte) = rest.get(end) {
-            match byte {
-                b'<' => return Err(invalid_xml()), // Also illegal in attribute values.
-                b'\'' | b'"' if quote == Some(byte) => quote = None,
-                b'\'' | b'"' if quote.is_none() => quote = Some(byte),
-                b'>' if quote.is_none() => break,
-                _ => {}
-            }
-            end += 1;
-        }
-        if end == rest.len() {
-            return Err(invalid_xml());
-        }
-        if closing {
-            depth = depth.checked_sub(1).ok_or_else(invalid_xml)?;
-        } else {
-            // Count empty elements too: a leaf below 64 open parents is level 65.
-            if depth == MAX_XML_DEPTH {
-                return Err(failure(502, "protocol", "房台协议响应的 XML 嵌套过深"));
-            }
-            if rest[end - 1] != b'/' {
-                depth += 1;
-            }
-        }
-        rest = &rest[end + 1..];
-    }
-    if depth != 0 {
-        return Err(invalid_xml());
-    }
-    Ok(())
-}
-
 pub(super) fn xml(text: &str) -> Result<roxmltree::Document<'_>, ApiError> {
-    check_xml_bounds(text)?;
-    roxmltree::Document::parse_with_options(
-        text,
-        roxmltree::ParsingOptions {
-            allow_dtd: false,
-            nodes_limit: 8192,
-        },
-    )
-    .map_err(|_| invalid_xml())
+    bounded_xml(text, MAX_XML_BYTES).map_err(|error| match error {
+        PolicyError::TooLarge => failure(502, "protocol", "房台响应过大"),
+        PolicyError::TooDeep => failure(502, "protocol", "房台协议响应的 XML 嵌套过深"),
+        _ => invalid_xml(),
+    })
 }
 fn field<'a>(node: roxmltree::Node<'a, '_>, name: &str) -> &'a str {
     node.children()
