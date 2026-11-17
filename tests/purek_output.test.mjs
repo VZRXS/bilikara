@@ -16,7 +16,7 @@ let binary;
 if(!standaloneReceiver)before(async()=>{binary=await buildPurekTests();},{timeout:300000});
 
 if(standaloneReceiver){
-  if(process.argv.includes('--receiver-l1'))await import('./native_output_receiver.mjs');
+  if(process.argv.includes('--receiver-l1'))await import(process.env.BILIKARA_TEST_L1_T4==='1'?'./cast_l1_receiver.mjs':'./native_output_receiver.mjs');
   else await import('./cast_output_receiver.mjs');
 }else {
 test('P1 real native pipeline and isolated Node MediaRenderer',{timeout:180000},async t=>{

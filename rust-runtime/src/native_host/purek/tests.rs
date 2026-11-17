@@ -237,6 +237,12 @@ fn node_receiver_live_output_integration() {
         .unwrap()
         .join("tests/fixtures/bbdown");
     let l1 = std::env::var_os("BILIKARA_TEST_PUREK_L1").is_some();
+    let original_audio = std::env::var_os("BILIKARA_TEST_PUREK_AUDIO")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| fixtures.join("audio.m4a"));
+    let instrumental_audio = std::env::var_os("BILIKARA_TEST_PUREK_SECOND_AUDIO")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| fixtures.join("audio-flac.mp4"));
     let long_video = directory.join("synthetic-l1-video.mp4");
     if l1 {
         if let Some(video) = std::env::var_os("BILIKARA_TEST_PUREK_VIDEO") {
@@ -256,9 +262,9 @@ fn node_receiver_live_output_integration() {
             let relative=&reservation.artifact_relative_directory;
             let path=host.context.cache_root.join(relative);std::fs::create_dir_all(&path).unwrap();
             std::fs::copy(if l1{long_video.clone()}else{fixtures.join("video-reordered-start.mp4")},path.join("video.mp4")).unwrap();
-            std::fs::copy(fixtures.join("audio.m4a"),path.join("audio.m4a")).unwrap();
+            std::fs::copy(&original_audio,path.join("audio.m4a")).unwrap();
             let mut variants=vec![json!({"id":"original","label":"Original","page":1,"audio_url":format!("/media/{relative}/audio.m4a")})];
-            if l1 {std::fs::copy(fixtures.join("audio-flac.mp4"),path.join("instrumental.mp4")).unwrap();variants.push(json!({"id":"instrumental","label":"Instrumental","page":1,"audio_url":format!("/media/{relative}/instrumental.mp4")}));}
+            if l1 {std::fs::copy(&instrumental_audio,path.join("instrumental.mp4")).unwrap();variants.push(json!({"id":"instrumental","label":"Instrumental","page":1,"audio_url":format!("/media/{relative}/instrumental.mp4")}));}
             let event:CacheEvent=serde_json::from_value(json!({"kind":"ready","message":"ready","video_relative_path":format!("{relative}/video.mp4"),"video_media_url":format!("/media/{relative}/video.mp4"),"audio_variants":variants,"selected_audio_variant_id":"original","item_incarnation_id":reservation.item_incarnation_id,"artifact_set_id":reservation.artifact_set_id,"artifact_relative_directory":relative})).unwrap();
             app.native_execute(AppStateRequest::ApplyCacheEvent{schema_version:1,item_id:id,cache_attempt_token:reservation.cache_attempt_token,event,now:3.0})?;
         }Ok(())

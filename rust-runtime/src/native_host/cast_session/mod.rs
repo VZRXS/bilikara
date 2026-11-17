@@ -5,6 +5,7 @@ use crate::app_state::native_session::text;
 use crate::dlna::{CancellationToken, Renderer, diagnostics::SessionTrace};
 use std::sync::Arc;
 
+mod l1;
 mod media;
 mod projection;
 mod worker;
@@ -78,6 +79,8 @@ pub(crate) struct State {
     pub platform_stop_error: Option<&'static str>,
     pub phase: Phase,
     pub owns_playback: bool,
+    /// Actual admitted live L1 pipeline; never inferred from receiver metadata.
+    pub l1: bool,
     // A suspended output retains its worker, renderer and Pure K registration.
     // Existing clients continue to use owns_playback/local_media for playback.
     pub connected: bool,
@@ -155,6 +158,7 @@ impl State {
         self.resume = None;
         self.published_resume = None;
         self.delivered = false;
+        self.l1 = false;
     }
 }
 

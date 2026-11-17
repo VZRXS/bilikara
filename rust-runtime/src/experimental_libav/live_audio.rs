@@ -4,6 +4,23 @@ use super::{LibavMetadataProbe, ProbeError};
 use bilikara_rust::output_audio::OffsetMode;
 use std::{path::Path, sync::atomic::AtomicBool};
 
+mod events;
+
+#[derive(Clone, Copy, Debug)]
+pub struct Start {
+    pub source_start_us: i64,
+    pub timestamp_origin_us: i64,
+}
+
+pub enum Event<'a> {
+    Start(Start),
+    Data {
+        bytes: &'a [u8],
+        time_us: i64,
+        key: bool,
+    },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Control {
     pub offset_ms: i32,
@@ -212,7 +229,73 @@ impl LibavMetadataProbe {
             target_os = "macos"
         ))]
         {
-            native::run(self, video, audio, start_us, stop, visit, controls)
+            native::run(self, video, audio, start_us, stop, visit, &mut |_| {
+                controls()
+            })
+        }
+        #[cfg(not(any(
+            target_os = "android",
+            target_os = "linux",
+            target_os = "windows",
+            target_os = "macos"
+        )))]
+        {
+            let _ = (video, audio, start_us, stop, visit, controls);
+            Err(ProbeError::Unavailable("L1 platform not packaged".into()))
+        }
+    }
+
+    /// T4 event adapter for the existing descriptor-only L1 ABI. The native
+    /// source origin and first video PES establish Start before any Data;
+    /// initial AAC priming belongs to the first keyframe group. Standalone
+    /// previews keep using render_live_ts and receive exactly the old bytes.
+    pub fn render_live_ts_with_events(
+        &self,
+        video: &Path,
+        audio: &[&Path],
+        start_us: i64,
+        stop: &AtomicBool,
+        visit: &mut dyn FnMut(Event<'_>) -> bool,
+        controls: &mut dyn FnMut() -> Result<Control, ProbeError>,
+    ) -> Result<(), ProbeError> {
+        #[cfg(any(
+            target_os = "android",
+            target_os = "linux",
+            target_os = "windows",
+            target_os = "macos"
+        ))]
+        {
+            let source = std::cell::Cell::new(None);
+            let mut adapter = events::Events::default();
+            let mut error = None;
+            let result = native::run(
+                self,
+                video,
+                audio,
+                start_us,
+                stop,
+                &mut |bytes, time, key| match adapter.push(source.get(), bytes, time, key, visit) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        error = Some(e);
+                        false
+                    }
+                },
+                &mut |start| {
+                    if source.get().is_some_and(|previous| previous != start) {
+                        return Err(ProbeError::BackendFailure(
+                            "L1 source origin changed".into(),
+                        ));
+                    }
+                    source.set(Some(start));
+                    controls()
+                },
+            );
+            if let Some(error) = error {
+                return Err(error);
+            }
+            result?;
+            adapter.finish()
         }
         #[cfg(not(any(
             target_os = "android",
@@ -690,7 +773,7 @@ mod native {
         cancellation: &'a Cancellation<'a>,
         stop: &'a AtomicBool,
         visit: &'a mut dyn FnMut(&[u8], i64, bool) -> bool,
-        controls: &'a mut dyn FnMut() -> Result<Control, ProbeError>,
+        controls: &'a mut dyn FnMut(i64) -> Result<Control, ProbeError>,
         processor: Processor,
         error: Option<ProbeError>,
         tracks: usize,
@@ -760,7 +843,7 @@ mod native {
             {
                 return Err(backend_error("invalid L1 render request"));
             }
-            let control = (c.controls)()?;
+            let control = (c.controls)(source_us)?;
             if control.track >= c.tracks {
                 return Err(backend_error("uncached L1 audio track"));
             }
@@ -794,7 +877,7 @@ mod native {
         start: i64,
         stop: &AtomicBool,
         visit: &mut dyn FnMut(&[u8], i64, bool) -> bool,
-        controls: &mut dyn FnMut() -> Result<Control, ProbeError>,
+        controls: &mut dyn FnMut(i64) -> Result<Control, ProbeError>,
     ) -> Result<(), ProbeError> {
         if audio.is_empty() || audio.len() > 2 || !(0..=21_600_000_000).contains(&start) {
             return Err(backend_error("invalid L1 sources"));

@@ -244,6 +244,7 @@ pub(super) fn restore(id: u64, failure: Option<String>) {
         }
         if state.operation == id || matches!(state.pending, Some(Request::Disconnect)) {
             state.owns_playback = false;
+            state.l1 = false;
             state.platform_output_id = None;
             state.connected = false;
             state.connection_id = None;
@@ -302,6 +303,7 @@ fn suspend_failed_output(id: u64, failure: ApiError, stage: &'static str) -> Res
         s.error_code = Some(failure.code);
         s.output_enabled = false;
         s.owns_playback = false;
+        s.l1 = false;
         s.phase = Phase::Active;
         s.control = None;
         s.control_busy = false;
@@ -459,6 +461,7 @@ struct Output {
     item: PlaylistItem,
     playback_generation: u64,
     live: Option<media::Live>,
+    l1: bool,
     began: Instant,
     start: f64,
     receiver_origin: f64,
@@ -668,6 +671,7 @@ async fn play_session(
                         let snap = app.native_cast_input()?;
                         let s = &mut app.native().cast;
                         s.owns_playback = false;
+                        s.l1 = false;
                         s.control = None;
                         s.control_busy = false;
                         s.resume = Some(json!({"playback_generation":snap.playback_generation,
@@ -678,7 +682,7 @@ async fn play_session(
                         Ok(())
                     })?;
                 }
-                update(id, |s| {s.phase = Phase::Active; s.owns_playback = false; s.control_busy = false;});
+                update(id, |s| {s.phase = Phase::Active; s.owns_playback = false; s.l1 = false; s.control_busy = false;});
                 // Keep the connection/room lease, but do not monitor the receiver
                 // while output is off. Restart detects a receiver that went away.
                 tokio::time::sleep(Duration::from_millis(30)).await;
@@ -722,15 +726,25 @@ async fn play_session(
             }
             output_ids.insert(out.generation, out.id);
             drain_http(trace, &mut events, &output_ids, Some((id, out)));
-            let (snap, mut control, mode) = with_app(|app| {
+            let (snap, mut control, mode, audio_generation) = with_app(|app| {
                 Ok((
                     app.native_cast_input()?,
                     app.native().cast.control.take(),
                     app.native().cast.mode,
+                    app.native().cast.playback_generation,
                 ))
             })?;
+            if out.l1
+                && snap.playback_generation == audio_generation
+                && let Some(item) = snap.current_item.as_ref().filter(|i|
+                    i.item_incarnation_id == out.item.item_incarnation_id
+                    && i.artifact_set_id == out.item.artifact_set_id) {
+                out.item.selected_audio_variant_id = item.selected_audio_variant_id.clone();
+                out.playback_generation = snap.playback_generation;
+            }
             if snap.current_item.as_ref().is_none_or(|i| {
                 i.item_incarnation_id != out.item.item_incarnation_id
+                    || i.artifact_set_id != out.item.artifact_set_id
                     || i.selected_audio_variant_id != out.item.selected_audio_variant_id
             }) || snap.playback_generation != out.playback_generation
             {
@@ -1236,6 +1250,7 @@ async fn start_output_once(
     }
     let generation = update(id, |s| {
         s.generation += 1;
+        s.l1 = false;
         s.delivered = false;
         s.published_resume = None;
         s.playback_generation = snap.playback_generation;
@@ -1269,7 +1284,14 @@ async fn start_output_once(
     let duration;
     let mut origin = position;
     let published = if mode == Mode::Live {
-        let producer = media::live(context.clone(), item.clone(), position, cancel).await?;
+        let producer = media::live(
+            context.clone(),
+            item.clone(),
+            position,
+            (id, generation),
+            cancel,
+        )
+        .await?;
         origin = producer.stream.snapshot().start.unwrap().source_start_us as f64 / 1_000_000.0;
         let publication = endpoint.publish_live(generation, producer.stream.clone(), TsMime::Mp2t);
         match publication {
@@ -1366,6 +1388,7 @@ async fn start_output_once(
     update(id, |s| {
         s.phase = Phase::Active;
         s.owns_playback = true;
+        s.l1 = live.as_ref().is_some_and(|live| live.l1);
         s.connected = true;
         s.paused = false;
         s.duration = duration;
@@ -1378,6 +1401,7 @@ async fn start_output_once(
         generation,
         item,
         playback_generation: snap.playback_generation,
+        l1: live.as_ref().is_some_and(|live| live.l1),
         live,
         began: Instant::now(),
         start: origin,

@@ -5176,6 +5176,7 @@ impl AppState {
         }
         #[cfg(feature = "native-host")]
         if self.native_session.cast.owns_playback
+            && !self.native_session.cast.l1
             && matches!(
                 &request,
                 AppStateRequest::SetKeyShift { .. }
@@ -5213,8 +5214,13 @@ impl AppState {
                         "Receiver owns playback",
                     ));
                 }
-                AppStateRequest::SetAudioVariant { .. }
-                | AppStateRequest::RestartPlaybackProgram { .. } => {
+                AppStateRequest::SetAudioVariant { .. } if !self.native_session.cast.l1 => {
+                    return execute_error_response(rejected(
+                        "cast_command_unsupported",
+                        "Audio track changes require L1 output",
+                    ));
+                }
+                AppStateRequest::RestartPlaybackProgram { .. } => {
                     return execute_error_response(rejected(
                         "cast_command_unsupported",
                         "This cast command is not supported in R1",
@@ -5229,6 +5235,10 @@ impl AppState {
                 };
             }
         }
+        #[cfg(feature = "native-host")]
+        let l1_track_change = self.native_session.cast.owns_playback
+            && self.native_session.cast.l1
+            && matches!(&request, AppStateRequest::SetAudioVariant { .. });
         let terminal = match &request {
             AppStateRequest::ApplyCacheEvent {
                 item_id,
@@ -5288,6 +5298,15 @@ impl AppState {
             self.settle_artifact_attempt(&item, token);
         }
         self.observe_artifact_program();
+        #[cfg(feature = "native-host")]
+        if l1_track_change
+            && response.error().is_none()
+            && let Some(data) = &self.data
+        {
+            // The new program generation names a track change inside the same
+            // L1 producer; all other program changes still retire its URI.
+            self.native_session.cast.playback_generation = data.playback_generation;
+        }
         response
     }
 

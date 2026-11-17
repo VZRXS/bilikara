@@ -98,7 +98,7 @@ impl State {
             "authorized":self.connected,"can_manage":host,"experimental":true,"qualified":false,
             "busy":self.room_busy || self.pending.is_some() || self.control_busy,
             "desired_playing":self.output_enabled && !self.paused,"position":self.position,"duration":self.duration,
-            "transition_remaining_ms":0,"pipeline_level":if self.owns_playback {Some("L0")} else {None},
+            "transition_remaining_ms":0,"pipeline_level":if self.owns_playback {Some(if self.l1 {"L1"} else {"L0"})} else {None},
             "stream_generation":self.generation.max(self.room_generation),"producer_eof":false,"preview_tail_sequence":null,
             "offset_mode":match self.offset_mode {bilikara_rust::output_audio::OffsetMode::Splice=>"splice",bilikara_rust::output_audio::OffsetMode::Gradual=>"gradual"},"last_error":self.output_error(),
             "measured_adjust_latency_ms":null,"position_source":"sender_estimate",
@@ -240,10 +240,10 @@ impl State {
                     "has_connection_manager":self.connected && renderer.is_some_and(|r|r.description.connection_manager.is_some()),
                     "protocol_info_state":self.protocol_state.unwrap_or(crate::dlna::diagnostics::ProtocolState::NotChecked),"protocol_info_error":self.protocol_error.as_deref().map(legacy_protocol_error),
                     "supports_play":false,"supports_pause":false,"supports_seek":false,
-                    "supports_live_stream":false,"supports_midstream_param_change":false,
-                    "supports_runtime_av_offset":false,"supports_track_switch":false,"supports_pitch_shift":false,
+                    "supports_live_stream":self.l1,"supports_midstream_param_change":self.l1,
+                    "supports_runtime_av_offset":self.l1,"supports_track_switch":self.l1,"supports_pitch_shift":self.l1,
                     "sink_formats":self.sink_formats()},
-                "pipeline_level":if self.owns_playback {Some("L0")} else {None},
+                "pipeline_level":if self.owns_playback {Some(if self.l1 {"L1"} else {"L0"})} else {None},
                 "offset_mode":match self.offset_mode {bilikara_rust::output_audio::OffsetMode::Splice=>"splice",bilikara_rust::output_audio::OffsetMode::Gradual=>"gradual"},"last_error":self.output_error(),
                 "measured_adjust_latency_ms":null}})
     }
@@ -301,8 +301,7 @@ pub(crate) fn output_command(
                     "Select output on Host first",
                 ));
             }
-            // P8 connects the same setting to L1; raw R1 delivery cannot apply it.
-            if mode != bilikara_rust::output_audio::OffsetMode::Splice {
+            if !app.native().cast.l1 && mode != bilikara_rust::output_audio::OffsetMode::Splice {
                 return Err(ApiError::new(
                     409,
                     "purek_output_l1_required",

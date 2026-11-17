@@ -10,6 +10,7 @@ use std::path::Component;
 pub(super) struct Inputs {
     pub(super) video: PathBuf,
     pub(super) audio: PathBuf,
+    pub(super) tracks: Vec<(String, PathBuf)>,
     leases: Vec<String>,
 }
 impl Drop for Inputs {
@@ -47,6 +48,9 @@ fn path(root: &Path, route: &str) -> Result<PathBuf, ApiError> {
     Ok(path)
 }
 pub(super) fn inputs(context: &HostContext, item: &PlaylistItem) -> Result<Inputs, ApiError> {
+    inputs_for(context, item, false)
+}
+fn inputs_for(context: &HostContext, item: &PlaylistItem, l1: bool) -> Result<Inputs, ApiError> {
     let audio = item
         .audio_variants
         .iter()
@@ -62,6 +66,7 @@ pub(super) fn inputs(context: &HostContext, item: &PlaylistItem) -> Result<Input
     let mut input = Inputs {
         video: PathBuf::new(),
         audio: PathBuf::new(),
+        tracks: Vec::new(),
         leases: Vec::new(),
     };
     with_app(|app| {
@@ -73,6 +78,23 @@ pub(super) fn inputs(context: &HostContext, item: &PlaylistItem) -> Result<Input
     })?;
     input.video = path(&context.cache_root, &item.video_media_url)?;
     input.audio = path(&context.cache_root, audio)?;
+    if l1 {
+        for variant in &item.audio_variants {
+            let id = variant["id"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| ApiError::invalid("Invalid L1 track"))?;
+            let route = variant["audio_url"]
+                .as_str()
+                .ok_or_else(|| ApiError::invalid("Uncached L1 track"))?;
+            input
+                .leases
+                .push(with_app(|app| app.native_pin_media(route))?);
+            input
+                .tracks
+                .push((id.to_owned(), path(&context.cache_root, route)?));
+        }
+    }
     Ok(input)
 }
 pub(super) fn probe() -> Result<LibavMetadataProbe, ApiError> {
@@ -130,6 +152,7 @@ pub(super) fn file(
 }
 pub(super) struct Live {
     pub stream: Arc<LiveStream>,
+    pub l1: bool,
     task: Option<tokio::task::JoinHandle<Result<(), ApiError>>>,
 }
 impl Live {
@@ -154,6 +177,7 @@ pub(super) async fn live(
     context: Arc<HostContext>,
     item: PlaylistItem,
     position: f64,
+    identity: (u64, u64),
     cancel: &CancellationToken,
 ) -> Result<Live, ApiError> {
     // Fail before publishing a URI when the selected input or companion is absent.
@@ -164,8 +188,12 @@ pub(super) async fn live(
     let task = tokio::task::spawn_blocking(move || {
         // The companion handle is thread-affine on Windows; initialize and use
         // it on this producer, acknowledge readiness before publishing its URI.
-        let prepared = (|| Ok((inputs(&context, &item)?, probe()?)))();
-        let (input, probe) = match prepared {
+        let prepared = (|| {
+            let probe = probe()?;
+            let l1 = probe.live_l1_available() && (1..=2).contains(&item.audio_variants.len());
+            Ok((inputs_for(&context, &item, l1)?, probe, l1))
+        })();
+        let (input, probe, l1) = match prepared {
             Ok(prepared) => prepared,
             Err(e) => {
                 let _ = ready.send(Err(e));
@@ -173,11 +201,16 @@ pub(super) async fn live(
                 return Ok(());
             }
         };
-        if ready.send(Ok(())).is_err() {
+        if ready.send(Ok(l1)).is_err() {
             producing.cancel();
             return Ok(());
         }
-        let result = producer
+        if l1 {
+            return super::l1::generate(
+                &probe, &input, &item, position, identity, producing, producer,
+            );
+        }
+        producer
             .generate(
                 &probe,
                 &CastInputs {
@@ -188,11 +221,7 @@ pub(super) async fn live(
                 MAX_BYTES,
             )
             .map(|_| ())
-            .map_err(|_| ApiError::new(409, "cast_prepare_failed", "Cannot generate live media"));
-        if result.is_err() {
-            producing.cancel();
-        }
-        result
+            .map_err(|_| ApiError::new(409, "cast_prepare_failed", "Cannot generate live media"))
     });
     let initialized = started.await.unwrap_or_else(|_| {
         Err(ApiError::new(
@@ -201,13 +230,17 @@ pub(super) async fn live(
             "Live producer failed",
         ))
     });
-    if let Err(e) = initialized {
-        stream.cancel();
-        let _ = task.await;
-        return Err(e);
-    }
+    let l1 = match initialized {
+        Ok(l1) => l1,
+        Err(e) => {
+            stream.cancel();
+            let _ = task.await;
+            return Err(e);
+        }
+    };
     let mut live = Live {
         stream,
+        l1,
         task: Some(task),
     };
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
