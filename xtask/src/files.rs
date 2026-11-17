@@ -166,6 +166,7 @@ pub fn stage_resources(
         }
     }
     fs::set_permissions(&assets, fs::metadata(&source_static)?.permissions())?;
+    stage_cast_samples(&config.root, resources)?;
     if source_static.join("vendor").is_dir() {
         tree(&source_static.join("vendor"), &vendor, true)?;
         for name in ["LICENSE.txt", "README.md"] {
@@ -220,4 +221,45 @@ pub fn stage_resources(
         libav::stage(config, prefix, &layout)?;
     }
     Ok(())
+}
+
+pub(crate) fn stage_cast_samples(root: &Path, resources: &Path) -> Result<()> {
+    tree(
+        &root.join("resources/cast-samples"),
+        &resources.join("cast-samples"),
+        false,
+    )
+}
+
+#[cfg(test)]
+mod cast_sample_tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn desktop_cast_samples_preserve_pinned_bytes_and_provenance() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        stage_cast_samples(root, destination.path()).unwrap();
+        let samples = destination.path().join("cast-samples");
+        let bytes = fs::read(samples.join("sample-b.ts")).unwrap();
+        assert_eq!(bytes.len(), 12_079_564);
+        let hash = format!("{:x}", Sha256::digest(&bytes));
+        assert_eq!(
+            hash,
+            "8624fbee0c7f4653e6f1c7c2f7a6de9aca5d2b3a3a729a218d7f740b9417aef3"
+        );
+        assert!(
+            fs::read_to_string(samples.join("SOURCE.md"))
+                .unwrap()
+                .contains(&hash)
+        );
+        let mut names = fs::read_dir(&samples)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(names, ["SOURCE.md", "sample-b.ts"]);
+        assert!(!destination.path().join("static/cast-samples").exists());
+    }
 }

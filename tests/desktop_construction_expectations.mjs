@@ -92,6 +92,7 @@ export function expectedPackage(fixture, environment, { development, prefix, mac
   }
   directory(vendor); directoryIfMissing(`${resources}/vendor`);
   for (const name of ['bilikara-desktop-host', 'bilikara-updater']) copy(fixture, `${code}/${name}${suffix}`);
+  tree(path.join(root, 'resources/cast-samples'), `${resources}/cast-samples`);
   tree(path.join(root, 'static'), `${resources}/static`, name => name === 'vendor');
   tree(path.join(root, 'static/vendor'), `${resources}/vendor`, name => ['LICENSE.txt', 'README.md'].includes(name));
   for (const name of ['LICENSE.txt', 'README.md']) {

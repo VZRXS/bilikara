@@ -58,6 +58,9 @@ preparation('repeated staging preserves user data and replaces stale static reso
   const stale = path.join(output, '_internal/static/stale-generated-file'); writeFileSync(stale, 'remove');
   for (const name of [`bilikara-updater${suffix}`, 'static/desktop-startup.html']) assert.ok(existsSync(path.join(output, '_internal', name)));
   assert.equal(existsSync(path.join(output, '_internal/static/vendor')), false);
+  assert.equal(existsSync(path.join(output, '_internal/static/cast-samples')), false);
+  assert.deepEqual(readFileSync(path.join(output, '_internal/cast-samples/sample-b.ts')), readFileSync(path.join(root, 'resources/cast-samples/sample-b.ts')));
+  assert.equal(existsSync(path.join(output, '_internal/cast-samples/sample-b.mp4')), false);
   const retained = new Map([...inventory(output)].filter(([name]) => name === 'runtime' || name.startsWith('runtime/')));
   await c.checkPreparation({}, [], undefined, retained);
   assert.equal(existsSync(stale), false); assert.equal(readFileSync(path.join(data, 'sentinel'), 'utf8'), 'never remove');
