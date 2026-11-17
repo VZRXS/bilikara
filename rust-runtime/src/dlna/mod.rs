@@ -6,6 +6,7 @@
 pub mod cast_http;
 pub mod control;
 pub mod discovery;
+pub mod purek;
 #[cfg(test)]
 mod test_support;
 
