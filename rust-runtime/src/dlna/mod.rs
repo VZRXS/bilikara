@@ -3,6 +3,7 @@
 //! Media-backend-independent native DLNA I/O. Session ownership stays with
 //! AppState; these operations return typed, recordable facts for its worker.
 
+pub mod cast_http;
 pub mod control;
 pub mod discovery;
 #[cfg(test)]
