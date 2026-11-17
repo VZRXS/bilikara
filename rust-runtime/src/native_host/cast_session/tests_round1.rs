@@ -45,10 +45,34 @@ fn empty_room_connection_and_probe_never_control_unrelated_receiver_playback() {
             host.wait(|s| s["cast"]["connected"] == true && s["cast"]["phase"] == "active");
         assert_eq!(snapshot["cast"]["owns_playback"], false);
         assert_eq!(snapshot["media_output"]["status"], "waiting");
+        receiver.state.lock().unwrap().fault_on = Some("GetProtocolInfo");
+        receiver.query_hold.store(true, Ordering::Release);
         host.post("/api/cast/probe", json!({})).unwrap();
-        host.wait(|s| s["cast"]["busy"] == false);
+        let probing = host.wait(|s| s["media_output"]["status"] == "probing");
+        assert_eq!(probing["purek"]["output"]["status"], "probing");
+        receiver.query_hold.store(false, Ordering::Release);
+        let unverified = host.wait(|s| s["cast"]["busy"] == false);
+        assert_eq!(unverified["media_output"]["status"], "unverified");
+        assert_eq!(unverified["purek"]["output"]["status"], "unverified");
+        assert_eq!(
+            unverified["purek"]["output"]["capabilities"]["protocol_info_state"],
+            "unavailable"
+        );
+        assert_eq!(
+            unverified["media_output"]["last_error"],
+            "purek_protocol_info"
+        );
+        assert_eq!(
+            unverified["purek"]["output"]["last_error"],
+            "purek_protocol_info"
+        );
+        assert_eq!(unverified["purek"]["error_code"], Value::Null);
         host.post("/api/cast/output", json!({"enabled":false}))
             .unwrap();
+        host.wait(|s| s["cast"]["busy"] == false);
+        assert_eq!(host.snapshot()["media_output"]["status"], "unverified");
+        receiver.state.lock().unwrap().fault_on = None;
+        host.post("/api/cast/probe", json!({})).unwrap();
         host.wait(|s| s["media_output"]["status"] == "authorized");
         host.post("/api/cast/disconnect", json!({})).unwrap();
         host.wait(|s| s["cast"]["phase"] == "idle" && s["cast"]["busy"] == false);
@@ -68,6 +92,25 @@ fn empty_room_connection_and_probe_never_control_unrelated_receiver_playback() {
                 >= 2
         );
         assert_eq!(state.releases > 0, vendor);
+        drop(state);
+        if vendor {
+            receiver.state.lock().unwrap().fault_on = Some("SetDeviceAuthorization");
+            host.post("/api/cast/connect", json!({"purek_qr":receiver.qr()}))
+                .unwrap();
+            let rejected =
+                host.wait(|s| s["cast"]["error_code"].is_string() && s["cast"]["busy"] == false);
+            assert_eq!(
+                rejected["cast"]["error_code"],
+                "cast_purek_authorization_rejected"
+            );
+            assert_eq!(rejected["purek"]["error_code"], "purek_authorization");
+            assert_eq!(rejected["purek"]["error_stage"], "authorization");
+            assert_eq!(rejected["purek"]["connected"], false);
+            host.post("/api/purek/prepare", json!({"qr_url":receiver.qr()}))
+                .unwrap();
+            assert_eq!(host.snapshot()["purek"]["error_code"], Value::Null);
+            assert_eq!(host.snapshot()["purek"]["error_stage"], Value::Null);
+        }
     }
 }
 

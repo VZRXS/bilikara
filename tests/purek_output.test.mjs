@@ -9,6 +9,7 @@ import {buildPurekTests} from './native_runtime_artifacts.mjs';
 import {runNative,root} from './desktop_construction_support.mjs';
 import {isolatedEnvironment} from './native_host_support.mjs';
 import {inspectTs} from './purek_ts_observer.mjs';
+import {testCompanionName} from './libav_prerequisite_support.mjs';
 
 const standaloneReceiver=process.argv.includes('--receiver')||process.argv.includes('--receiver-l1');
 let binary;
@@ -34,9 +35,25 @@ test('P1 real native pipeline and isolated Node MediaRenderer',{timeout:180000},
 });
 
  test('R1 T4 Range, peer aliases, concurrent GETs, keyframe joins and 15-second write-stall contract',{timeout:300000},async()=>{
-   const env={...process.env,BILIKARA_TEST_CAST_COMPANION:process.env.BILIKARA_TEST_CAST_COMPANION||process.env.BILIKARA_TEST_LIBAV_COMPANION};
+   // The existing --test build produces both libraries. Local invocations may
+   // export only the product path, but T4 must load the sibling fixture exports.
+   const product=process.env.BILIKARA_TEST_LIBAV_COMPANION;
+   const companion=process.env.BILIKARA_TEST_CAST_COMPANION||(product&&testCompanionName&&path.join(path.dirname(product),testCompanionName));
+   assert.ok(companion&&path.isAbsolute(companion)&&existsSync(companion),
+     'T4 requires a native test companion: build with libav-companion --test and set BILIKARA_TEST_CAST_COMPANION, or keep the test library beside BILIKARA_TEST_LIBAV_COMPANION; this required suite cannot skip missing inputs');
+   const env={...process.env,BILIKARA_TEST_CAST_COMPANION:companion};
    const result=await runNative(binary,['dlna::cast_http::','--include-ignored','--test-threads=1','--nocapture'],env,240000,root);
    assert.equal(result.status,0,result.stdout+result.stderr);
-   for(const name of ['file_range_boundaries_head_and_common_headers','lan_peer_alias_is_allowed_and_mismatch_is_structured','fifth_get_closes_oldest_and_all_new_gets_return_200','live_midstream_join_uses_playback_keyframe_and_ignores_every_range','real_backpressure_pauses_three_and_ten_seconds_then_resumes','real_backpressure_disconnects_only_after_fifteen_seconds_without_progress'])assert.match(result.stdout,new RegExp(name+' \.\.\. ok'));
+   for(const name of [
+     'file_range_boundaries_head_and_common_headers',
+     'lan_peer_alias_is_allowed_and_mismatch_is_structured',
+     'fifth_get_closes_oldest_and_all_new_gets_return_200',
+     'live_midstream_join_uses_playback_keyframe_and_ignores_every_range',
+     'real_backpressure_pauses_three_and_ten_seconds_then_resumes',
+     'real_backpressure_disconnects_only_after_fifteen_seconds_without_progress',
+     'real_companion_file_ts_mp4_live_http_and_t3_lease_cleanup',
+     'real_companion_default_burst_join_after_one_point_five_seconds_keeps_all_bytes',
+   ])assert.match(result.stdout,new RegExp(name+' \\.\\.\\. ok'));
+   assert.match(result.stdout,/0 failed; 0 ignored/,'the full T4 group must execute, including real companion fixtures');
  });
 }

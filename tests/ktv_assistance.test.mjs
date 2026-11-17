@@ -15,7 +15,11 @@ async function check(phone,binding){
 
 const roomState=async server=>(await server.api('/api/state')).purek;
 async function disconnect(server){await server.api('/api/cast/disconnect',{});return waitFor(async()=>{const s=await server.api('/api/state');return s.cast.phase==='idle'&&!s.cast.busy&&s.purek;},'awaited receiver disconnect');}
-async function probe(server){await server.api('/api/cast/probe',{});return waitFor(async()=>{const s=await roomState(server);return !s.busy&&s;},'advisory capability refresh');}
+async function probe(server){
+  await waitFor(async()=>{const s=await server.api('/api/state');return s.cast.phase==='active'&&!s.cast.busy;},'receiver ready for capability refresh');
+  await server.api('/api/cast/probe',{});
+  return waitFor(async()=>{const s=await roomState(server);return !s.busy&&s;},'advisory capability refresh');
+}
 
 async function lanPhone(t,server,name='Same singer',registeredClient=null){
   const client=registeredClient||new HttpClient(server.base);
@@ -87,6 +91,8 @@ for(const transport of ['internet','lan'])test(`${transport} requests require Ho
   assert.equal(tv.state.actions.length,0,'scanning/authorization navigation never registers the receiver');
   for(const projection of [await server.api('/api/state'),await server.api('/api/internet-remote/state')])for(const secret of ['synthetic-ktv-private','projection_url',tv.description])assert.ok(!JSON.stringify(projection).includes(secret));
   tv.state.deny=true;let result=await check(phone,binding);assert.equal(result.session.status,'error');assert.equal(result.room.status,'error');assert.equal((await roomState(server)).connected,false);
+  assert.equal((await roomState(server)).error_code,'purek_authorization');
+  assert.equal((await roomState(server)).error_stage,'authorization');
   tv.state.deny=false;let releaseRetry;tv.state.hold=new Promise(resolve=>{releaseRetry=resolve;});t.after(()=>releaseRetry());
   const retry=await phone.send('ktv.authorization.check',binding);assert.equal(retry.session.status,'connecting');assert.equal(retry.session.error_code,null,'the current retry cannot advertise the previous authorization failure');assert.equal(retry.room.status,'connecting');
   tv.state.hold=null;releaseRetry();await waitFor(async()=>(await phone.send('ktv.status.get')).session.status==='completed','actual authorized retry completes');

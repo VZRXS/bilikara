@@ -14,7 +14,7 @@ fn failure(status: u16, code: &str, message: &str) -> ApiError {
 fn busy() -> ApiError {
     failure(409, "busy", "房间操作正在进行，请稍后重试")
 }
-fn authorization_error(error: &t9::PureKError) -> ApiError {
+pub(super) fn authorization_error(error: &t9::PureKError) -> ApiError {
     use crate::dlna::ErrorCode as Cause;
     use t9::PureKErrorCode as Code;
     let (status, code) = match error.code {
@@ -154,6 +154,8 @@ pub(super) fn route(
         }
         session.cast.room_generation += 1;
         session.cast.room_error = None;
+        session.cast.error_code = None;
+        session.cast.room_failure = None;
         let value = json!({"room_name":room.name,"connection_type":room.connection_type(),
                 "authorization_url":room.authorization_url()});
         session.cast.room = Some(room);

@@ -72,7 +72,7 @@ for(const [engineName,engine]of Object.entries({chromium,webkit})) {
     await page.locator('#purek-dlna-url').fill(tv.description);
     await page.locator('#purek-dlna-connect').click();
     await page.waitForFunction(()=>state.data?.purek?.connected===true);
-    assert.equal((await host.api('/api/purek/state')).connection_type,'dlna');
+    assert.equal((await host.api('/api/state')).purek.connection_type,'dlna');
     assert.ok(tv.state.actions.includes('GetProtocolInfo'));
     assert.equal(tv.state.actions.includes('SetDeviceAuthorization'),false,'Plain DLNA classification comes from Rust, never a fabricated Pure K authorization');
     assert.deepEqual(outputPosts,[],'connection does not issue a browser-side duplicate output command');

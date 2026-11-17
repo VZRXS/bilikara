@@ -2,12 +2,68 @@
 //! No connection, output selection or playback state is owned by this adapter.
 use super::*;
 
+// Keep the existing next vocabulary on compatibility fields. The cast snapshot
+// and T7 report retain the original R1 code for more detailed diagnostics.
+pub(super) fn legacy_error(code: &str) -> &str {
+    match code {
+        "cast_purek_address_confirmation_required" | "purek_address_confirmation_required" => {
+            "purek_qr_invalid"
+        }
+        "cast_purek_cancelled" | "cancelled" | "purek_cancelled" => "purek_stopped",
+        code if code.starts_with("purek_") => code,
+        "cast_purek_qr_invalid" | "cast_purek_address_not_allowed" => "purek_qr_invalid",
+        "cast_purek_authorization_rejected" => "purek_authorization",
+        "cast_purek_identity_changed" | "cast_purek_route_changed" => "purek_identity_changed",
+        "cast_purek_registration_unavailable"
+        | "missing_av_transport"
+        | "not_renderer"
+        | "cast_renderer_unavailable" => "purek_renderer",
+        "cast_purek_unavailable" | "unavailable" => "purek_unavailable",
+        "cast_purek_http" | "http_status" => "purek_http",
+        "cast_purek_description"
+        | "invalid_xml"
+        | "invalid_utf8"
+        | "response_too_large"
+        | "xml_too_deep"
+        | "invalid_service"
+        | "external_control"
+        | "invalid_soap" => "purek_protocol",
+        "cast_purek_resolve"
+        | "cast_purek_route"
+        | "route_unavailable"
+        | "route_not_local"
+        | "no_interfaces"
+        | "connect"
+        | "timeout"
+        | "io"
+        | "http_initialization" => "purek_network",
+        "soap_fault" => "purek_receiver_fault",
+        "cast_busy" => "purek_busy",
+        _ => "purek_output_pipeline",
+    }
+}
+
+fn legacy_protocol_error(code: &str) -> &str {
+    match code {
+        "connect" | "timeout" | "io" => "purek_network",
+        "http_status" => "purek_http",
+        "unavailable" => "purek_output_no_connection_manager",
+        _ => "purek_protocol_info",
+    }
+}
+
 impl State {
     fn status(&self) -> &'static str {
-        if self.error_code.is_some() || self.room_error.is_some() {
+        if self.error_code.as_deref() == Some("missing_av_transport") {
+            "unsupported"
+        } else if self.error_code.is_some() || self.room_error.is_some() {
             "error"
         } else if self.owns_playback && !self.output_enabled {
             "stopping"
+        } else if !self.owns_playback
+            && (self.capability_probe_running || matches!(self.control, Some(Control::Probe)))
+        {
+            "probing"
         } else if self.phase == Phase::Connecting || self.room_busy {
             "starting"
         } else if self.control_busy {
@@ -21,7 +77,9 @@ impl State {
                 "starting"
             }
         } else if self.connected {
-            if self.output_enabled {
+            if self.capability_unverified() {
+                "unverified"
+            } else if self.output_enabled {
                 "waiting"
             } else {
                 "authorized"
@@ -41,18 +99,58 @@ impl State {
             "desired_playing":self.output_enabled && !self.paused,"position":self.position,"duration":self.duration,
             "transition_remaining_ms":0,"pipeline_level":if self.owns_playback {Some("L0")} else {None},
             "stream_generation":self.generation.max(self.room_generation),"producer_eof":false,"preview_tail_sequence":null,
-            "offset_mode":match self.offset_mode {bilikara_rust::output_audio::OffsetMode::Splice=>"splice",bilikara_rust::output_audio::OffsetMode::Gradual=>"gradual"},"last_error":self.error_code.as_ref().or(self.room_error.as_ref()),
+            "offset_mode":match self.offset_mode {bilikara_rust::output_audio::OffsetMode::Splice=>"splice",bilikara_rust::output_audio::OffsetMode::Gradual=>"gradual"},"last_error":self.output_error(),
             "measured_adjust_latency_ms":null,"position_source":"sender_estimate",
             "thermal_status":null,"thermal_headroom":null,
             "failure":if host {self.failure()} else {Value::Null}})
     }
 
     fn failure(&self) -> Value {
-        self.error_code
-            .as_ref()
-            .or(self.room_error.as_ref())
-            .map(|code| json!({"stage":"cast","code":code}))
+        self.room_error_projection()
+            .map(|(code, stage)| json!({"stage":stage,"code":code}))
             .unwrap_or(Value::Null)
+    }
+
+    fn room_error_projection(&self) -> Option<(&str, &str)> {
+        let raw = self.room_error.as_deref().or(self.error_code.as_deref())?;
+        Some(
+            self.room_failure
+                .as_ref()
+                .map(|(code, stage)| (code.as_str(), *stage))
+                .unwrap_or_else(|| {
+                    (
+                        legacy_error(raw),
+                        match raw {
+                            "cast_purek_qr_invalid"
+                            | "cast_purek_address_not_allowed"
+                            | "cast_purek_address_confirmation_required"
+                            | "cast_purek_resolve"
+                            | "cast_purek_route"
+                            | "route_unavailable"
+                            | "route_not_local" => "route",
+                            "cast_purek_authorization_rejected" => "authorization",
+                            "cast_purek_identity_changed" | "cast_purek_route_changed" => {
+                                "revalidation"
+                            }
+                            "cast_purek_unavailable" => "health_check",
+                            _ => "description",
+                        },
+                    )
+                }),
+        )
+    }
+
+    fn output_error(&self) -> Option<&str> {
+        match self.status() {
+            "unsupported" => Some("purek_output_no_av_transport"),
+            "unverified" => Some(
+                self.protocol_error
+                    .as_deref()
+                    .map(legacy_protocol_error)
+                    .unwrap_or("purek_output_capabilities_unverified"),
+            ),
+            _ => self.room_error_projection().map(|(code, _)| code),
+        }
     }
 
     fn sink_formats(&self) -> Vec<Value> {
@@ -94,10 +192,17 @@ impl State {
     pub(crate) fn capability_unverified(&self) -> bool {
         self.protocol_state != Some(crate::dlna::diagnostics::ProtocolState::Reported)
             || !self.sink_formats().iter().any(|f| {
-                matches!(
-                    f["mime"].as_str(),
-                    Some("video/mp2t" | "video/mpeg" | "*" | "video/*")
-                )
+                // Preserve next's 188-byte AVC/AAC TS assessment. Receiver
+                // profiles restrict the advertisement; they do not qualify
+                // actual playback or prevent R1's explicit trial.
+                let profile = f["profile"].as_str();
+                let aac_ts = profile.is_none_or(|p| p.starts_with("AVC_TS_") && p.contains("AAC"));
+                match f["mime"].as_str() {
+                    Some("video/mp2t") => aac_ts,
+                    Some("video/mpeg") => aac_ts && profile.is_none_or(|p| p.ends_with("_ISO")),
+                    Some("*" | "video/*") => profile.is_none(),
+                    _ => false,
+                }
             })
     }
 
@@ -110,21 +215,21 @@ impl State {
             "connected":self.connected,"room_name":self.room.as_ref().map(|r| &r.name),
             "connection_type":self.room.as_ref().map(super::super::purek::Room::connection_type),
             "discovered":self.renderers.iter().map(|r|r.description.name.chars().take(100).collect::<String>()).collect::<Vec<_>>(),
-            "error_code":self.room_error.as_ref().or(self.error_code.as_ref()),
-            "error_stage":if self.room_error.is_some() || self.error_code.is_some(){Some("cast")}else{None},
+            "error_code":self.room_error_projection().map(|(code,_)|code),
+            "error_stage":self.room_error_projection().map(|(_,stage)|stage),
             "capabilities":{"dlna_sender":false,"airplay":"system"},
             "output":{"schema_version":1,"target_room_id":self.connection_id,"generation":self.generation.max(self.room_generation),
                 "status":self.status(),"capabilities":{
                     "has_av_transport":self.connected && renderer.is_some(),
                     "has_rendering_control":self.connected && renderer.is_some_and(|r|r.description.rendering_control.is_some()),
                     "has_connection_manager":self.connected && renderer.is_some_and(|r|r.description.connection_manager.is_some()),
-                    "protocol_info_state":self.protocol_state.unwrap_or(crate::dlna::diagnostics::ProtocolState::NotChecked),"protocol_info_error":self.protocol_error,
+                    "protocol_info_state":self.protocol_state.unwrap_or(crate::dlna::diagnostics::ProtocolState::NotChecked),"protocol_info_error":self.protocol_error.as_deref().map(legacy_protocol_error),
                     "supports_play":false,"supports_pause":false,"supports_seek":false,
                     "supports_live_stream":false,"supports_midstream_param_change":false,
                     "supports_runtime_av_offset":false,"supports_track_switch":false,"supports_pitch_shift":false,
                     "sink_formats":self.sink_formats()},
                 "pipeline_level":if self.owns_playback {Some("L0")} else {None},
-                "offset_mode":match self.offset_mode {bilikara_rust::output_audio::OffsetMode::Splice=>"splice",bilikara_rust::output_audio::OffsetMode::Gradual=>"gradual"},"last_error":self.error_code,
+                "offset_mode":match self.offset_mode {bilikara_rust::output_audio::OffsetMode::Splice=>"splice",bilikara_rust::output_audio::OffsetMode::Gradual=>"gradual"},"last_error":self.output_error(),
                 "measured_adjust_latency_ms":null}})
     }
 
@@ -289,4 +394,49 @@ pub(crate) fn resume_local(app: &mut crate::app_state::AppState) -> Result<(), A
     }
     app.native().cast.published_resume = Some(resume);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn advisory_and_unsupported_snapshots_preserve_next_status_contract() {
+        let mut state = State {
+            connected: true,
+            phase: Phase::Active,
+            ..Default::default()
+        };
+        for protocols in [
+            vec![],
+            vec!["http-get:*:audio/aac:*".into()],
+            vec!["http-get:*:video/MP2T:DLNA.ORG_PN=AVC_TS_HD_50_AC3".into()],
+            vec!["http-get:*:video/mpeg:DLNA.ORG_PN=MPEG_PS_PAL".into()],
+        ] {
+            state.protocol_state = Some(crate::dlna::diagnostics::ProtocolState::Reported);
+            state.sink_protocols = protocols;
+            assert_eq!(state.output_projection(false)["status"], "unverified");
+            assert_eq!(state.room_snapshot()["output"]["status"], "unverified");
+            assert_eq!(
+                state.output_projection(false)["last_error"],
+                "purek_output_capabilities_unverified"
+            );
+            // Advisory metadata must not relabel actual, already delivered media.
+            state.owns_playback = true;
+            state.output_enabled = true;
+            state.delivered = true;
+            assert_eq!(state.output_projection(false)["status"], "streaming");
+            state.owns_playback = false;
+        }
+        state.connected = false;
+        state.error_code = Some("missing_av_transport".into());
+        assert_eq!(state.output_projection(true)["status"], "unsupported");
+        assert_eq!(state.room_snapshot()["output"]["status"], "unsupported");
+        assert_eq!(
+            state.output_projection(true)["last_error"],
+            "purek_output_no_av_transport"
+        );
+        assert_eq!(state.room_snapshot()["error_code"], "purek_renderer");
+        assert_eq!(state.room_snapshot()["error_stage"], "description");
+    }
 }

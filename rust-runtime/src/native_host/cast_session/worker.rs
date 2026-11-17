@@ -259,6 +259,7 @@ pub(super) fn restore(id: u64, failure: Option<String>) {
                 state.platform_stop_error = None;
             }
             state.control_busy = false;
+            state.capability_probe_running = false;
             state.receiver_state = None;
         }
         projection::resume_local(app)?;
@@ -311,17 +312,35 @@ async fn connect(
     let renderer = if let Some(qr) = qr {
         let operation = connect_room(&qr, confirmed, cancel).await;
         trace.record_purek_operation(connection, &operation);
+        if operation.result.is_err() {
+            record_room_failure(id, &operation);
+        }
         let session = operation.result.map_err(|e| error(e.code.as_str()))?;
         let renderer = session.renderer();
         room = Some(session);
         renderer.map_err(|e| error(e.code.as_str()))
     } else if let Some(location) = location {
-        record(
-            &trace,
-            connection,
-            None,
-            load_renderer(&location, cancel).await,
-        )
+        let operation = load_renderer(&location, cancel).await;
+        if let Err(failure) = &operation.result {
+            let stage = if operation
+                .stages
+                .iter()
+                .rev()
+                .find(|s| s.result.is_err())
+                .is_some_and(|s| s.stage == crate::dlna::Stage::Route)
+            {
+                "route"
+            } else {
+                "description"
+            };
+            update(id, |s| {
+                s.room_failure = Some((
+                    projection::legacy_error(failure.code.as_str()).into(),
+                    stage,
+                ))
+            });
+        }
+        record(&trace, connection, None, operation)
     } else {
         renderer.ok_or_else(|| error("cast_renderer_unavailable"))
     };
@@ -575,6 +594,15 @@ async fn play_session(
                         health.result,
                         Ok(purek::HealthState::Online | purek::HealthState::Suspect)
                     ) {
+                        record_room_failure(id, &health);
+                        update(id, |s| {
+                            let code = if matches!(health.result, Ok(purek::HealthState::IdentityChanged)) {
+                                "purek_identity_changed".into()
+                            } else {
+                                s.room_failure.take().map(|f| f.0).unwrap_or_else(|| "purek_unavailable".into())
+                            };
+                            s.room_failure = Some((code, "health_check"));
+                        });
                         return Err(error("cast_purek_unavailable"));
                     }
                 }
@@ -1316,6 +1344,7 @@ async fn query_capabilities(
     output: Option<u64>,
     cancel: &CancellationToken,
 ) -> Vec<String> {
+    update(id, |s| s.capability_probe_running = true);
     let query = record(
         trace,
         connection,
@@ -1348,11 +1377,45 @@ async fn query_capabilities(
         );
     }
     update(id, |s| {
+        s.capability_probe_running = false;
         s.protocol_state = Some(state);
         s.protocol_error = error;
         s.sink_protocols = sinks.clone();
     });
     sinks
+}
+
+fn record_room_failure<T>(id: u64, operation: &purek::PureKOperation<T>) {
+    let failed = operation.stages.iter().rev().find(|s| {
+        s.stage.result.is_err()
+            && !matches!(s.phase, purek::Phase::Revoke | purek::Phase::Announcement)
+    });
+    // Health checks return a terminal HealthState, with the cause in their
+    // stage list. Ignore later revoke errors when presenting that cause.
+    let staged_error = failed.and_then(|s| {
+        Some(purek::PureKError {
+            code: s.error_code?,
+            cause: s.stage.result.as_ref().err()?.clone(),
+        })
+    });
+    let Some(error) = operation.result.as_ref().err().or(staged_error.as_ref()) else {
+        return;
+    };
+    let stage = failed
+        .map(|s| match s.phase {
+            purek::Phase::Parse | purek::Phase::Resolve | purek::Phase::Route => "route",
+            purek::Phase::DescriptionBefore => "description",
+            purek::Phase::Register | purek::Phase::Revoke | purek::Phase::Announcement => {
+                "authorization"
+            }
+            purek::Phase::Confirm => "revalidation",
+            purek::Phase::Health => "health_check",
+        })
+        .unwrap_or("route");
+    let code = super::super::purek::authorization_error(error).code;
+    update(id, |s| {
+        s.room_failure = Some((projection::legacy_error(&code).into(), stage))
+    });
 }
 
 async fn load_renderer(location: &str, cancel: &CancellationToken) -> Operation<Renderer> {
@@ -1369,7 +1432,9 @@ async fn connect_room(
     cancel: &CancellationToken,
 ) -> purek::PureKOperation<purek::Session> {
     #[cfg(test)]
-    if std::env::var_os("BILIKARA_TEST_CAST_COMPANION").is_some() {
+    if purek::diagnostic_fixture::parse(qr)
+        .is_ok_and(|room| room.description_url().host_str() == Some("127.0.0.1"))
+    {
         return purek::diagnostic_fixture::client()
             .connect(
                 qr,

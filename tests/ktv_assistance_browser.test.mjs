@@ -14,6 +14,11 @@ const qrcode=createRequire(import.meta.url)('../static/qrcode-generator.js');
 const read=name=>readFileSync(path.join(root,'static',name),'utf8');
 let desktop,alpha;before(async()=>{if(process.platform!=='linux')return;desktop=process.env.BILIKARA_TEST_NATIVE_HOST_BINARY||await buildNativeHost();alpha=process.env.BILIKARA_TEST_NATIVE_ALPHA_BINARY||await buildNativeAlpha();},{timeout:300000});
 const evidence=process.env.BILIKARA_KTV_EVIDENCE;
+const roomState=async server=>(await server.api('/api/state')).purek;
+async function disconnect(server){
+  await server.api('/api/cast/disconnect',{});
+  return waitFor(async()=>{const s=await server.api('/api/state');return s.cast.phase==='idle'&&!s.cast.busy&&s.purek;},'awaited receiver cleanup');
+}
 async function settleLayout(page,scope='#purek-modal'){
   await page.evaluate(async scope=>{
     await document.fonts.ready;
@@ -230,17 +235,17 @@ for(const engine of [chromium,webkit])for(const platform of ['android','ios'])te
     assert.equal(await host.locator('#purek-close').isDisabled(),true);
     release();await host.locator('#ktv-host-authorization:not([hidden])').waitFor();await host.unroute('**/api/purek/prepare',hold);
     assert.equal(await host.locator('#ktv-host-authorization-url').inputValue(),roomQr(tv.base));
-    assert.equal((await server.api('/api/purek/state')).connected,false,'decoding is not authorization');
+    assert.equal((await roomState(server)).connected,false,'decoding is not authorization');
     tv.state.deny=true;await host.locator('#purek-submit').click();await host.locator('#purek-error:not([hidden])').waitFor();
-    assert.equal((await server.api('/api/purek/state')).connected,false,'official authorization denial cannot be bypassed');
-    tv.state.deny=false;await host.locator('#purek-submit').click();await waitFor(async()=>(await server.api('/api/purek/state')).connected,'authorized fixture connected');
+    assert.equal((await roomState(server)).connected,false,'official authorization denial cannot be bypassed');
+    tv.state.deny=false;await host.locator('#purek-submit').click();await waitFor(async()=>(await roomState(server)).connected,'authorized fixture connected');
     await host.waitForFunction(()=>document.querySelector('#ktv-host-authorization-url').value==='');
     assert.equal(await host.locator('#purek-open').textContent(),await host.evaluate(()=>t('purek.manage')));
     assert.equal(await host.locator('#ktv-host-local-scan').isVisible(),false,'connected device management has no idle scanner');
     await host.locator('#purek-close').click();
     await host.locator('#purek-open').click();
     assert.equal(await host.locator('#purek-modal').isVisible(),true,'mobile management stays separate from the output switch');
-    await host.locator('#purek-submit').click();await waitFor(async()=>!(await server.api('/api/purek/state')).connected,'Host management disconnect');
+    await host.locator('#purek-submit').click();await waitFor(async()=>!(await roomState(server)).connected,'Host management disconnect');
     await host.locator('#purek-close').click();
     await host.locator('#purek-open').click();await host.waitForFunction(()=>!document.querySelector('#purek-close').disabled);
     await host.waitForFunction(()=>document.querySelector('#purek-open').textContent===t('ktv.scan'));
@@ -248,7 +253,7 @@ for(const engine of [chromium,webkit])for(const platform of ['android','ios'])te
     await host.locator('#ktv-host-image-input').setInputFiles(image(tv.description));
     await host.waitForFunction(()=>state.data.purek.connection_type==='dlna'&&!document.querySelector('#purek-submit').disabled);
     assert.equal(await host.locator('#ktv-host-authorization').isVisible(),false);
-    await host.locator('#purek-submit').click();await waitFor(async()=>(await server.api('/api/purek/state')).connected,'DLNA fixture connected');
+    await host.locator('#purek-submit').click();await waitFor(async()=>(await roomState(server)).connected,'DLNA fixture connected');
     assert.equal(tv.state.actions.filter(a=>a==='SetDeviceAuthorization').length,authorizations,'DLNA does not perform Pure K registration');
     const lan=new HttpClient(server.base);await lan.request('/remote');
     assert.equal((await lan.request('/api/purek/prepare',{url:roomQr(tv.base)})).status,403);
@@ -411,8 +416,8 @@ test('actual authenticated encrypted DataChannels carry local QR results, never 
   // UA fixture checks the conditional official-link boundary, not WeChat launch.
   await remote.evaluate(()=>{const original=navigator.userAgent;Object.defineProperty(navigator,'userAgent',{configurable:true,value:original+' MicroMessenger'});document.dispatchEvent(new Event('bilikara:i18n'));});
   assert.equal(await remote.locator('#ktv-open-wechat').isVisible(),true);assert.equal(await remote.locator('#ktv-open-wechat').getAttribute('href'),roomQr(tv.base));
-  tv.state.deny=true;await remote.locator('#ktv-check').click();await remote.locator('#ktv-remote-error:not([hidden])').waitFor();assert.equal((await server.api('/api/purek/state')).connected,false);
-  tv.state.deny=false;await remote.locator('#ktv-check').click();await waitFor(async()=>(await server.api('/api/purek/state')).connected,'real Host registration verified');
+  tv.state.deny=true;await remote.locator('#ktv-check').click();await remote.locator('#ktv-remote-error:not([hidden])').waitFor();assert.equal((await roomState(server)).connected,false);
+  tv.state.deny=false;await remote.locator('#ktv-check').click();await waitFor(async()=>(await roomState(server)).connected,'real Host registration verified');
   await waitFor(async()=>(await server.api('/api/ktv/host')).session.status==='completed','Host completes authorization and its capability probe');
   const verifiedRoom=(await server.api('/api/internet-remote/state')).ktv_room.status;
   await remote.waitForFunction(status=>document.querySelector('#ktv-session-status').textContent===t(`ktv.room.${status}`),verifiedRoom);
@@ -421,8 +426,8 @@ test('actual authenticated encrypted DataChannels carry local QR results, never 
   // An actual probe response is held after real receiver I/O. Busy state must
   // survive SSE/localization; older snapshots must not restore that busy state.
   let releaseProbe;const heldProbe=new Promise(resolve=>{releaseProbe=resolve;});t.after(()=>releaseProbe());
-  const beforeProbe=await server.api('/api/purek/state');
-  await host.route('**/api/purek/output/probe',async route=>{const response=await route.fetch();await heldProbe;await route.fulfill({response});});
+  const beforeProbe=await roomState(server);
+  await host.route('**/api/cast/probe',async route=>{const response=await route.fetch();await heldProbe;await route.fulfill({response});});
   await host.locator('#purek-probe').click();await host.waitForFunction(()=>document.querySelector('#purek-probe').getAttribute('aria-busy')==='true');
   await host.evaluate(()=>setLanguage('ja'));assert.equal(await host.locator('#purek-probe').isDisabled(),true);
   assert.match(await host.locator('#purek-probe').innerText(),/処理中/);releaseProbe();
@@ -432,16 +437,16 @@ test('actual authenticated encrypted DataChannels carry local QR results, never 
   assert.ok(!JSON.stringify(wire).includes('projection_url'));assert.ok(!JSON.stringify(wire).includes('synthetic-ktv-private'));
   assert.ok(!httpBodies.some(body=>body.includes('projection_url')||body.includes('synthetic-ktv-private')||body.includes('pixels')));
   assert.equal(await remote.evaluate(()=>[...Array(localStorage.length)].map((_,i)=>localStorage.getItem(localStorage.key(i))).some(v=>v?.includes('projection_url'))),false);
-  await remote.locator('#ktv-remote-close').click();await server.api('/api/purek/disconnect',{});tv.state.actions=[];
+  await remote.locator('#ktv-remote-close').click();await disconnect(server);tv.state.actions=[];
   await remote.locator('#remote-menu-toggle').click();await remote.locator('#ktv-menu-toggle').click();await remote.locator('#ktv-menu-scan').click();
   await host.locator('#ktv-host-approve:not([hidden])').waitFor();await host.locator('#ktv-host-approve').click();await remote.locator('#ktv-scanner:not([hidden])').waitFor();
   await remote.locator('#ktv-advanced summary').click();await remote.locator('#ktv-room-url').fill('http://8.8.8.8/description.xml');await remote.locator('#ktv-submit-url').click();await remote.locator('#ktv-remote-error:not([hidden])').waitFor();
-  assert.equal((await server.api('/api/purek/state')).room_name,null);
+  assert.equal((await roomState(server)).room_name,null);
   await remote.locator('#ktv-room-url').fill(tv.description);await remote.locator('#ktv-submit-url').click();await remote.locator('#ktv-check:not([hidden])').waitFor();
   assert.equal(await remote.locator('#ktv-authorization').isVisible(),false,'ordinary DLNA has no WeChat step');await remote.locator('#ktv-check').click();
-  await waitFor(async()=>(await server.api('/api/purek/state')).connected,'ordinary DLNA through the relocated input');
+  await waitFor(async()=>(await roomState(server)).connected,'ordinary DLNA through the relocated input');
   assert.ok(tv.state.actions.includes('GetProtocolInfo'));assert.ok(!tv.state.actions.includes('SetDeviceAuthorization'));
-  await remote.locator('#ktv-remote-close').click();await server.api('/api/purek/disconnect',{});tv.state.actions=[];
+  await remote.locator('#ktv-remote-close').click();await disconnect(server);tv.state.actions=[];
   await remote.locator('#remote-menu-toggle').click();await remote.locator('#ktv-menu-toggle').click();await remote.locator('#ktv-menu-scan').click();
   await host.locator('#ktv-host-approve:not([hidden])').waitFor();await host.locator('#ktv-host-approve').click();await remote.locator('#ktv-scanner:not([hidden])').waitFor();
   await remote.locator('#ktv-room-url').fill(roomQr(tv.base));await remote.locator('#ktv-submit-url').click();await remote.locator('#ktv-authorization:not([hidden])').waitFor();
@@ -449,9 +454,9 @@ test('actual authenticated encrypted DataChannels carry local QR results, never 
   await remote.locator('#ktv-check').click();await waitFor(()=>tv.state.actions.includes('SetDeviceAuthorization'),'actual DataChannel check reaches gated SOAP');
   await remote.locator('#ktv-cancel-session').click();
   await waitFor(async()=>(await server.api('/api/ktv/host')).session.status==='canceled','Remote cancellation must reach Rust before the blocked SOAP check completes',4000);
-  assert.equal((await server.api('/api/purek/state')).busy,true,'cancel retains the actual pending I/O lease');
-  tv.state.hold=null;finishRegistration();await waitFor(async()=>!(await server.api('/api/purek/state')).busy,'canceled DataChannel verification rolls back');
-  assert.equal(tv.state.authorized,false);assert.equal((await server.api('/api/purek/state')).connected,false);
+  assert.equal((await roomState(server)).busy,true,'cancel retains the actual pending I/O lease');
+  tv.state.hold=null;finishRegistration();await waitFor(async()=>!(await roomState(server)).busy,'canceled DataChannel verification rolls back');
+  assert.equal(tv.state.authorized,false);assert.equal((await roomState(server)).connected,false);
   const canceledActions=[...tv.state.actions];
   await other.locator('#remote-menu-toggle').click();await other.locator('#ktv-menu-toggle').click();await other.locator('#ktv-menu-scan').click();
   await host.locator('#ktv-host-approve:not([hidden])').waitFor();await host.locator('#ktv-host-approve').click();await other.locator('#ktv-scanner:not([hidden])').waitFor();
@@ -773,11 +778,11 @@ for(const engine of[chromium,webkit])test(`${engine.name()} non-loopback HTTP LA
   await (await choosing).setFiles({name:'private-image.svg',mimeType:'image/svg+xml',buffer:Buffer.from(code.createSvgTag({cellSize:4,margin:24,scalable:false}))});
   await page.locator('#ktv-authorization').waitFor({state:'visible'});
   assert.equal(await page.locator('#ktv-authorization-url').inputValue(),roomQr(tv.base));
-  assert.equal((await server.api('/api/purek/state')).connected,false);
+  assert.equal((await roomState(server)).connected,false);
   assert.equal((await client.request('/api/purek/prepare',{url:roomQr(tv.base)})).status,403);
   const projection=JSON.stringify(await client.api('/api/state'));
   assert.ok(!projection.includes('projection_url')&&!projection.includes('synthetic-ktv-private'));
-  await page.locator('#ktv-check').click();await waitFor(async()=>(await server.api('/api/purek/state')).connected,'LAN authorized receiver check');
+  await page.locator('#ktv-check').click();await waitFor(async()=>(await roomState(server)).connected,'LAN authorized receiver check');
   await page.waitForFunction(()=>document.querySelector('#ktv-authorization-url').value==='');
   await shot(page,`http-lan-authorized-${engine.name()}`,'#ktv-remote-modal');
   await page.locator('#ktv-remote-close').click();
@@ -794,7 +799,7 @@ for(const engine of[chromium,webkit])test(`${engine.name()} non-loopback HTTP LA
   await page.locator('#ktv-room-url').fill(tv.description);
   const before=tv.state.actions.filter(x=>x==='SetDeviceAuthorization').length;
   await page.locator('#ktv-submit-url').click();await page.locator('#ktv-check').waitFor({state:'visible'});
-  await page.locator('#ktv-check').click();await waitFor(async()=>(await server.api('/api/purek/state')).connected,'LAN pasted DLNA connects');
+  await page.locator('#ktv-check').click();await waitFor(async()=>(await roomState(server)).connected,'LAN pasted DLNA connects');
   assert.equal(tv.state.actions.filter(x=>x==='SetDeviceAuthorization').length,before);
   assert.ok(bodies.some(body=>body.includes('ktv.scan.submit')));
   assert.ok(bodies.every(body=>!body.includes('private-image.svg')&&!body.includes('pixels')&&!body.includes('image/svg')&&!body.includes('data:image')));

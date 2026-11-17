@@ -8,6 +8,19 @@
   let snapshot=null, assistance={devices:[],session:null},pending=false,opened=false,previousFocus=null,inert=[];
   const retiredEpochs=new Set();
   const request=(route,body={})=>apiPost(route,body,{timeoutMs:25000});
+  async function readState(){
+    const response=await fetch("/api/state",{cache:"no-store"}),payload=await response.json();
+    if(!response.ok||payload.ok!==true)throw Error();
+    return payload.data;
+  }
+  // Cast commands acknowledge admission; completion and errors arrive through
+  // the authoritative snapshot. Preserve the existing snapshot ordering guard.
+  async function castAction(operation){
+    await request(`/api/cast/${operation}`);
+    const value=await readState();
+    if(stale(value.purek))return;
+    apply(value.purek);applyAssistance(value.ktv_assistance);
+  }
   const mobile = ["android","ios"].includes(document.documentElement.dataset.hostPlatform);
   let officialUrl="", officialOwner="", localLife=0, localAcquisition=false;
   const scanner=window.BilikaraKtvScanner.surface({root:byId("ktv-host-scan-view"),prefix:"ktv-host",translate:t,
@@ -22,10 +35,9 @@
     const prepared=await request("/api/purek/prepare",{url:raw});
     if(ticket!==localLife||!opened)return;
     officialOwner="";officialUrl=window.BilikaraKtvScanner.validOfficial(prepared.authorization_url)?prepared.authorization_url:"";
-    const response=await fetch("/api/purek/state",{cache:"no-store"}),payload=await response.json();
-    if(!response.ok||payload.ok!==true)throw Error();
+    const value=await readState();
     if(ticket!==localLife||!opened){officialUrl="";return;}
-    apply(payload.data);
+    apply(value.purek);applyAssistance(value.ktv_assistance);
     return prepared;
   }
   function position(){
@@ -144,7 +156,7 @@
     if(!opened||!mobile||active()||snapshot?.connected||pending)return;
     await action(byId("purek-open"),()=>scanner.open());
   }
-  byId("purek-open").addEventListener("click",()=>{if(snapshot?.connected&&!mobile){void action(byId("purek-open"),async()=>apply(await request("/api/purek/disconnect")));return;}show();if(mobile&&!snapshot?.room_name)void openScanner();if(!mobile)void action(byId("purek-open"),async()=>{const r=await fetch("/api/ktv/host",{cache:"no-store"});const p=await r.json();if(!r.ok||!p.ok)throw Error();applyAssistance(p.data);});});
+  byId("purek-open").addEventListener("click",()=>{if(snapshot?.connected&&!mobile){void action(byId("purek-open"),()=>castAction("disconnect"));return;}show();if(mobile&&!snapshot?.room_name)void openScanner();if(!mobile)void action(byId("purek-open"),async()=>{const r=await fetch("/api/ktv/host",{cache:"no-store"});const p=await r.json();if(!r.ok||!p.ok)throw Error();applyAssistance(p.data);});});
   byId("purek-output-manage").addEventListener("click",()=>{state.presentationSettingsOpen=false;syncPresentationPanelVisibility();show();});
   byId("purek-close").addEventListener("click",close);byId("purek-cancel").addEventListener("click",close);
   let backdrop=false;
@@ -178,9 +190,9 @@
     if(!snapshot.connected&&active()){
       if(assistance.candidate_owned!==true||!["authorization_pending","error"].includes(s?.status))return;
       applyAssistance(await request("/api/ktv/host",{operation:"check",request_id:s.request_id,host_epoch:assistance.host_epoch}));
-    }else apply(await request(snapshot.connected?"/api/purek/disconnect":"/api/purek/connect"));
+    }else await castAction(snapshot.connected?"disconnect":"connect");
   }));
-  byId("purek-probe").addEventListener("click",()=>void action(byId("purek-probe"),async()=>apply(await request("/api/purek/output/probe"))));
+  byId("purek-probe").addEventListener("click",()=>void action(byId("purek-probe"),()=>castAction("probe")));
   byId("purek-dlna-form").addEventListener("submit",event=>{
     event.preventDefault();
     if(pending||!opened||snapshot?.connected||active())return;
@@ -190,7 +202,7 @@
       const prepared=await prepareLocal(byId("purek-dlna-url").value.trim(),{manual:true});
       // Rust classifies and validates the address; official Pure K flows keep
       // their existing authorization step and never take this direct path.
-      if(ticket===localLife&&opened&&prepared?.connection_type==="dlna")apply(await request("/api/purek/connect"));
+      if(ticket===localLife&&opened&&prepared?.connection_type==="dlna")await castAction("connect");
     });
   });
   document.addEventListener("keydown",event=>{

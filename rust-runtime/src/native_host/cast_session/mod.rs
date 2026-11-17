@@ -57,12 +57,15 @@ pub(crate) struct State {
     pub delivered: bool,
     pub protocol_state: Option<crate::dlna::diagnostics::ProtocolState>,
     pub protocol_error: Option<String>,
+    pub capability_probe_running: bool,
     pub sink_protocols: Vec<String>,
     pub auto_discovery: bool,
     pub room_generation: u64,
     pub room_busy: bool,
     pub room: Option<super::purek::Room>,
     pub room_error: Option<String>,
+    // Sanitized next-compatible code/stage derived from the failed transport operation.
+    pub room_failure: Option<(String, &'static str)>,
     pub connection_id: Option<String>,
     pub connection_cancel: Option<CancellationToken>,
     pub offset_mode: bilikara_rust::output_audio::OffsetMode,
@@ -140,6 +143,12 @@ impl State {
         self.control = None;
         self.control_busy = false;
         self.error_code = None;
+        self.room_error = None;
+        self.room_failure = None;
+        self.capability_probe_running = false;
+        self.protocol_state = None;
+        self.protocol_error = None;
+        self.sink_protocols.clear();
         self.resume = None;
         self.published_resume = None;
         self.delivered = false;

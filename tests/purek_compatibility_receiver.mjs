@@ -42,7 +42,11 @@ for(const c of cases){
       for(const [key,value] of Object.entries(caps))if(key.startsWith('supports_'))assert.equal(value,false);
       const body=await transfer(f.uri);assert.equal(body.status,200);inspectTs(body.bytes,{profile:'cast-file'});
       s=await f.status('streaming');assert.equal(s.media_output.qualified,false);assert.equal(s.current_item.id,'purek-fixture-0');report.played.push(c.name);
-      await f.client.api('/api/player/output',{target:'local'});s=await f.status('authorized');assert.equal(s.cast.connected,true);assert.equal(f.releases,0);
+      await f.client.api('/api/player/output',{target:'local'});
+      const suspendedStatus=c.state||c.advisory?'unverified':'authorized';
+      s=await f.status(suspendedStatus);
+      assert.equal(s.purek.output.status,suspendedStatus,c.name);
+      assert.equal(s.cast.connected,true);assert.equal(f.releases,0);
     }
     await f.disconnect();assert.equal(f.releases>0,Boolean(c.vendor));
   }finally{await f.close();}

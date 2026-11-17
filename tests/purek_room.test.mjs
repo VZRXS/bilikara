@@ -99,7 +99,7 @@ test('Pure K confirmation compares only UDN and revokes the original registratio
     const response=await server.request('/api/cast/connect',{});
     assert.equal(response.status,200);
     const result=await waitFor(async()=>{const s=await server.api('/api/state');return (s.cast.connected||s.cast.error_code)&&!s.purek.busy&&s;},'asynchronous room confirmation');
-    if(changedIdentity){assert.equal(result.cast.error_code,'cast_purek_identity_changed');assert.equal(result.purek.connected,false);}
+    if(changedIdentity){assert.equal(result.cast.error_code,'cast_purek_identity_changed');assert.equal(result.purek.error_code,'purek_identity_changed');assert.equal(result.purek.error_stage,'revalidation');assert.equal(result.purek.connected,false);}
     else{assert.equal(result.purek.connected,true);assert.equal(registered,true);assert.ok(seen.some(item=>item.action==='GetProtocolInfo'));}
     await disconnect(server);
     assert.equal(registered,false);assert.equal(seen.filter(item=>item.body.includes('<Enable>0</Enable>')).length,1);
