@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import vm from 'node:vm';
-import {openManage,idle,dictionary,appSection} from './cast_browser_support.mjs';
+import {openManage,idle,dictionary,appSection,read} from './cast_browser_support.mjs';
 
 test('native presentation snapshots keep one renderer owner and reject mismatched or stale counters',()=>{
   const normalize=vm.runInNewContext(appSection('const presentationModes =','function presentationPhaseRank(')+'normalizePresentationSession');
@@ -201,20 +201,40 @@ test('temporary preferences and Manage geometry remain stable at 700/360/320px i
 
 test('Host DSP controls follow L0/L1 availability without losing pending guards or help access',async t=>{
   const page=await openManage(t);
-  await page.evaluate(()=>{
-    document.body.insertAdjacentHTML('beforeend','<section id="dsp-key"><button data-step="-1">-1</button><input><button id="dsp-reset">Reset</button><button class="cache-advanced-info-button">i</button><span id="host-key-shift-info"></span></section><section id="dsp-delay"><button data-step="-50">-50</button><input><button id="delay-reset">Reset</button><button id="delay-lock">Lock</button><button class="cache-advanced-info-button">i</button><span id="host-av-sync-info"></span></section>');
-    window.elements={keyShiftPanel:document.getElementById('dsp-key'),keyShiftInput:document.querySelector('#dsp-key input'),keyShiftResetButton:document.getElementById('dsp-reset'),avSyncPanel:document.getElementById('dsp-delay'),avOffsetInput:document.querySelector('#dsp-delay input'),avOffsetResetButton:document.getElementById('delay-reset'),avDelayLockButton:document.getElementById('delay-lock')};
+  await page.locator('#purek-close').click();
+  await page.evaluate(html=>{
+    const host=new DOMParser().parseFromString(html,'text/html');
+    for(const id of ['key-shift-panel','av-sync-panel'])document.body.append(host.getElementById(id));
+    document.body.insertAdjacentHTML('beforeend','<span id="dsp-existing-description" hidden>Existing description</span>');
+    document.getElementById('key-shift-input').setAttribute('aria-describedby','dsp-existing-description');
+    window.elements={keyShiftPanel:document.getElementById('key-shift-panel'),keyShiftInput:document.getElementById('key-shift-input'),keyShiftResetButton:document.getElementById('key-shift-reset-button'),avSyncPanel:document.getElementById('av-sync-panel'),avOffsetInput:document.getElementById('av-offset-input'),avOffsetResetButton:document.getElementById('av-offset-reset-button'),avDelayLockButton:document.getElementById('av-delay-lock-button')};
     window.setClassToggle=(n,k,v)=>n.classList.toggle(k,v);window.setTextContent=(n,v)=>n.textContent=v;window.currentAvOffsetMs=()=>0;window.activeLocalPlayerElements=()=>({});
-  });
+  },read('index.html'));
   await page.addScriptTag({content:appSection('function networkDspUnavailable()', 'async function setLocalPlayerKeyShift(')+appSection('function renderAvSyncControls(', 'function createSplitPlayerStartupSynchronizer(')});
-  for(const [target,level,blocked]of [['purek','L0',true],['purek',null,true],['purek','L1',false],['local','L0',false],['native','L1',false]]){
-    await page.evaluate(({target,level})=>{state.data.media_output={target,pipeline_level:level};state.data.player_settings.key_shift=2;renderKeyShiftControls('local');renderAvSyncControls('local',{av_delay:{has_local_adjustment:true,lock_button_enabled:true}});},{target,level});
-    for(const control of await page.locator('#dsp-key input,#dsp-delay input,#dsp-key button:not(.cache-advanced-info-button),#dsp-delay button:not(.cache-advanced-info-button)').all()){
-      assert.equal(await control.isDisabled(),blocked);assert.match(await control.getAttribute('aria-describedby'),/host-(key-shift|av-sync)-info/);
+  const client=await page.context().newCDPSession(page);
+  const {root}=await client.send('DOM.getDocument');
+  for(const language of ['zh','en','ja'])for(const [target,level,blocked]of [['purek','L0',true],['purek',null,true],['purek','L1',false],['local','L0',false],['native','L1',false]]){
+    await page.evaluate(({language,target,level})=>{fixture.language(language);state.data.media_output={target,pipeline_level:level};state.data.player_settings.key_shift=2;renderKeyShiftControls('local');renderAvSyncControls('local',{av_delay:{has_local_adjustment:true,lock_button_enabled:true}});},{language,target,level});
+    for(const [panel,kind,key]of [['key-shift-panel','key-shift','player.keyShiftHint'],['av-sync-panel','av-sync','player.avSyncHint']]){
+      const helpId=`host-${kind}-network-dsp`,infoId=`host-${kind}-info`;
+      const trigger=page.locator(`button[aria-describedby="${infoId}"]`);
+      assert.equal(await trigger.count(),1,'Only the info trigger describes the positioned bubble');
+      assert.equal(await trigger.isEnabled(),true);
+      assert.equal(await page.locator(`#${infoId} > span:not([hidden])`).textContent(),dictionary[language][blocked?'mediaOutput.dspUnavailable':key]);
+      for(const control of await page.locator(`#${panel} input,#${panel} button:not(.cache-advanced-info-button)`).all()){
+        assert.equal(await control.isDisabled(),blocked);
+        const ids=(await control.getAttribute('aria-describedby')||'').split(/\s+/).filter(Boolean);
+        assert.equal(ids.includes(infoId),false);
+        assert.equal(ids.includes(helpId),blocked);
+        assert.equal(ids.length,new Set(ids).size);
+      }
+      const {nodeId}=await client.send('DOM.querySelector',{nodeId:root.nodeId,selector:`#${panel} button.av-sync-step-button`});
+      const {nodes}=await client.send('Accessibility.getPartialAXTree',{nodeId,fetchRelatives:false});
+      assert.equal(nodes[0].ignored,false);
+      assert.equal(nodes[0].description?.value||'',blocked?dictionary[language]['mediaOutput.dspUnavailable']:'','Disabled controls retain a localized accessible description even when the bubble is closed');
     }
-    assert.equal(await page.locator('#dsp-key .cache-advanced-info-button').isEnabled(),true);
-    if(blocked)assert.equal(await page.locator('#host-key-shift-info').innerText(),dictionary.zh['mediaOutput.dspUnavailable']);
+    assert.equal(await page.locator('#key-shift-input').getAttribute('aria-describedby'),blocked?'dsp-existing-description host-key-shift-network-dsp':'dsp-existing-description');
   }
   await page.evaluate(()=>{elements.keyShiftResetButton.setAttribute('aria-busy','true');state.avOffsetSaving=true;renderKeyShiftControls('local');renderAvSyncControls('local',{});});
-  assert.equal(await page.locator('#dsp-reset').isDisabled(),true);assert.equal(await page.locator('#dsp-delay input').isDisabled(),true);
+  assert.equal(await page.locator('#key-shift-reset-button').isDisabled(),true);assert.equal(await page.locator('#av-offset-input').isDisabled(),true);
 });

@@ -15699,15 +15699,21 @@ function networkDspUnavailable() {
   return output?.target === "purek" && output.pipeline_level !== "L1";
 }
 
-function renderNetworkDspHelp(panel, helpId, defaultKey) {
+function renderNetworkDspHelp(panel, helpId) {
   const help = document.getElementById(helpId);
   if (!help) return;
-  help.dataset.i18n = networkDspUnavailable() ? "mediaOutput.dspUnavailable" : defaultKey;
-  setTextContent(help, t(help.dataset.i18n));
+  const unavailable = networkDspUnavailable();
+  help.hidden = !unavailable;
+  help.parentElement.querySelector("[data-network-dsp-default]").hidden = unavailable;
+  setTextContent(help, t("mediaOutput.dspUnavailable"));
+  // Keep the positioned bubble associated only with its info trigger.
+  // Disabled controls describe the reason itself, including while the bubble is closed.
   for (const control of panel.querySelectorAll("input,button:not(.cache-advanced-info-button)")) {
     const ids = new Set((control.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean));
-    ids.add(helpId);
-    control.setAttribute("aria-describedby", [...ids].join(" "));
+    if (unavailable) ids.add(helpId);
+    else ids.delete(helpId);
+    if (ids.size) control.setAttribute("aria-describedby", [...ids].join(" "));
+    else control.removeAttribute("aria-describedby");
   }
 }
 
@@ -15722,7 +15728,7 @@ function renderKeyShiftControls(playbackMode) {
   for (const control of elements.keyShiftPanel.querySelectorAll("input,button:not(.cache-advanced-info-button)")) {
     control.disabled = unavailable || control.getAttribute("aria-busy") === "true";
   }
-  renderNetworkDspHelp(elements.keyShiftPanel, "host-key-shift-info", "player.keyShiftHint");
+  renderNetworkDspHelp(elements.keyShiftPanel, "host-key-shift-network-dsp");
 
   const keyShift = Number(state.pendingPlayerKeyShift?.value ?? state.data?.player_settings?.key_shift ?? 0);
   if (document.activeElement !== elements.keyShiftInput) {
@@ -16382,7 +16388,7 @@ function renderAvSyncControls(playbackMode, playerSettings) {
   const offsetMs = currentAvOffsetMs();
   const delayState = playerSettings?.av_delay || {};
   const unavailable = networkDspUnavailable();
-  renderNetworkDspHelp(elements.avSyncPanel, "host-av-sync-info", "player.avSyncHint");
+  renderNetworkDspHelp(elements.avSyncPanel, "host-av-sync-network-dsp");
   elements.avOffsetInput.disabled = unavailable || state.avOffsetSaving;
   elements.avSyncPanel.querySelectorAll("button[data-step]").forEach((button) => {
     button.disabled = unavailable || state.avOffsetSaving;
