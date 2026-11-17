@@ -138,6 +138,47 @@ test('Manage self-test opens for its receiver, stays above Manage, and restores 
   assert.equal(await trigger.evaluate(n=>n===document.activeElement),true);
 });
 
+for(const [platform,width]of [['desktop',700],['desktop',360],['android',360],['ios',360]])test(`nested self-test layering follows ${platform} Host rules at ${width}px`,async t=>{
+  const page=await openManage(t,{platform,width,selfTest:true});
+  await page.evaluate(()=>{
+    const reference=document.createElement('dialog');reference.className='history-export-dialog';reference.id='reference-large-dialog';document.body.append(reference);
+  });
+  const trigger=page.locator('[data-cast-device="one"] [data-cast-compatibility-test]');
+  await trigger.click();
+  for(const theme of ['light','dark','blue']){
+    await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
+    const layer=await page.locator('#cast-self-test').evaluate(async dialog=>{
+      await Promise.all(dialog.getAnimations({subtree:true}).map(animation=>animation.finished.catch(()=>{})));
+      const backdrop=getComputedStyle(dialog,'::backdrop');
+      return {background:backdrop.backgroundColor,blur:backdrop.backdropFilter,opacity:backdrop.opacity,
+        reference:getComputedStyle(document.getElementById('reference-large-dialog'),'::backdrop').backgroundColor,
+        manageBlur:getComputedStyle(document.getElementById('purek-modal')).backdropFilter};
+    });
+    assert.equal(layer.background,layer.reference,`${platform}/${theme}: use the shared large-dialog surface`);
+    assert.equal(layer.blur,'none');assert.equal(layer.manageBlur,'none');
+    assert.equal(layer.opacity,'1');
+    assert.equal(layer.background==='rgba(0, 0, 0, 0)',platform==='desktop');
+  }
+  await page.locator('#cast-discover').click({force:true});
+  assert.equal(await page.evaluate(()=>fixture.calls.length),0,'the top-layer dialog must block underlying Manage actions');
+  await page.emulateMedia({reducedMotion:'reduce'});
+  if(platform!=='desktop')assert.equal(await page.locator('#cast-self-test').evaluate(n=>getComputedStyle(n,'::backdrop').animationDuration),'0.001s');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#purek-modal').isVisible(),true);
+  assert.equal(await trigger.evaluate(n=>n===document.activeElement),true);
+});
+
+test('Manage active-session text follows actual output in every language',async t=>{
+  const page=await openManage(t);
+  for(const language of ['zh','en','ja']){
+    await page.evaluate(language=>fixture.language(language),language);
+    for(const [target,output_enabled,key]of [['local',false,'purek.connected'],['local',true,'purek.connected'],['native',true,'purek.connected'],['purek',true,'cast.phase.active'],['purek',false,'purek.connected'],['purek',undefined,'cast.phase.active']]){
+      await page.evaluate(({target,output_enabled})=>fixture.update({cast:{phase:'active',connected:true,owns_playback:true,output_enabled},media_output:{target}}),{target,output_enabled});
+      assert.equal(await page.locator('#cast-status').innerText(),dictionary[language][key],`${language}/${target}/${output_enabled}`);
+    }
+  }
+});
+
 test('temporary preferences and Manage geometry remain stable at 700/360/320px in three languages',async t=>{
   const page=await openManage(t,{selfTest:true});
   await page.evaluate(()=>window.originalRow=document.querySelector('[data-cast-device="one"]'));

@@ -139,7 +139,7 @@
         trigger.disabled = Boolean(adapter.castBusy?.() || adapter.physicalBusy());
       }
       for (const node of dialog.querySelectorAll("[data-test-text]")) node.textContent = labelText(node.dataset.testText);
-      el("[data-test-close]").setAttribute("aria-label", labelText("close"));
+      el("[data-test-close]").setAttribute("aria-label", adapter.translate("common.close"));
       el("[data-test-close]").disabled = running || buttons.size > 0;
       const select = el("[data-test-device]");
       if (!running && !buttons.size) {
@@ -178,7 +178,7 @@
       el("[data-test-start]").dataset.testText = test.report_available ? 'retest' : 'start';
       el("[data-test-start]").textContent = labelText(test.report_available ? 'retest' : 'start');
       for (const name of ["copy", "save"]) { el(`[data-test-${name}]`).hidden = !test.report_available; el(`[data-test-${name}]`).disabled = running || loadingReport; }
-      for (const button of buttons) { button.disabled = true; if (button.dataset.testText) button.textContent = labelText("busy"); }
+      for (const button of buttons) { button.disabled = true; if (button.dataset.testText) button.textContent = adapter.translate("purek.working"); }
       if (test.report_available && !running && reportKey !== String(test.generation) && !loadingReport) void loadReport(test.generation);
       const row = report?.diagnostics?.cast_self_test?.conclusion?.decision_row;
       el("[data-test-result]").textContent = report ? labelText(row ? `result.${row}` : "inconclusive") : "";

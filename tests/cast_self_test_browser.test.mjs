@@ -22,16 +22,16 @@ async function open(t, width = 700, language = 'zh', hasTouch = true) {
   const page = await browser.newPage({ viewport: { width, height: 800 }, hasTouch });
   const errors = []; page.on('pageerror', e => errors.push(e.message)); t.after(() => assert.deepEqual(errors, []));
   const trigger = '<button type="button" class="toolbar-button purek-action" data-cast-compatibility-test></button>';
-  await page.setContent(`<style>${read('styles.css')}\n${read('ui-surfaces.css')}\n${read('purek-room.css')}</style><div class="purek-device">${trigger}<button id="purek-close">Close</button></div><button id="purek-open">Manage</button><video id="retained-video"></video>`);
+  await page.setContent(`<style>${read('accent-palette.css')}\n${read('styles.css')}\n${read('ui-surfaces.css')}\n${read('purek-room.css')}</style><div class="purek-device">${trigger}<button id="purek-close">Close</button></div><button id="purek-open">Manage</button><video id="retained-video"></video>`);
   await page.addScriptTag({ content: read('cast-self-test.js') });
   await page.evaluate(({ dictionary, language }) => {
     const state = { cast: { phase: 'idle', renderers: [{ device_key: 'one', label: 'Living room' }], self_test: {} } };
-    const calls = [], pending = new Map(), errors = [], rejections = new Map();
+    const calls = [], pending = new Map(), errors = [], rejections = new Map(), translations = [];
     let copied = '', saved = false;
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: text => { copied = text; return new Promise(resolve => pending.set('copy', resolve)); } } });
     const report = { diagnostics: { cast_self_test: { schema_version: 1, conclusion: { decision_row: 2 }, cells: [] } }, text: 'Safe diagnostic summary' };
     const controller = BilikaraCastSelfTest.create({
-      snapshot: () => state, translate: key => dictionary[language][key] || key,
+      snapshot: () => state, translate: key => { translations.push(key); return dictionary[language][key] || key; },
       physicalBusy: () => false, castBusy: () => false, closePhysical: async () => {}, disconnect: async () => {},
       refresh: async () => controller.render(), error: message => errors.push(message),
       post: async (path, payload) => { calls.push({ path, payload }); return new Promise(resolve => pending.set(path.split('/').at(-1), resolve)); },
@@ -39,7 +39,7 @@ async function open(t, width = 700, language = 'zh', hasTouch = true) {
       saveReport: () => new Promise((resolve, reject) => { rejections.set('save', reject); pending.set('save', result => { saved = result !== 'cancelled'; resolve(result || 'saved'); }); }),
     });
     document.querySelector('[data-cast-compatibility-test]').addEventListener('click', event => controller.open(event.currentTarget, 'one'));
-    window.fixture = { state, calls, errors, report, video: document.querySelector('video'),
+    window.fixture = { state, calls, errors, report, translations, video: document.querySelector('video'),
       update(test) { Object.assign(state.cast.self_test, test); controller.render(); },
       resolve(action, result) { const resolve = pending.get(action); if (!resolve) throw new Error(`Not pending: ${action}`); pending.delete(action); resolve(result); },
       reject(action) { rejections.get(action)(new Error('private native detail')); },
@@ -50,6 +50,18 @@ async function open(t, width = 700, language = 'zh', hasTouch = true) {
   await page.locator('[data-cast-compatibility-test]').click();
   return page;
 }
+
+for (const language of ['zh', 'en', 'ja']) test(`self-test reuses shared close and busy labels ${language}`, async t => {
+  const page = await open(t, 700, language);
+  assert.equal(await page.locator('[data-test-close]').getAttribute('aria-label'), dictionary[language]['common.close']);
+  await page.locator('[data-test-start]').click();
+  assert.equal(await page.locator('[data-test-start]').innerText(), dictionary[language]['purek.working']);
+  const translated = await page.evaluate(() => fixture.translations);
+  assert.equal(translated.includes('cast.test.close') || translated.includes('cast.test.busy'), false);
+  assert.ok(translated.includes('common.close') && translated.includes('purek.working'));
+  await page.evaluate(() => fixture.resolve('start'));
+  await page.waitForFunction(() => !document.querySelector('[data-test-start]').hasAttribute('aria-busy'));
+});
 
 test('closing compatibility dialog restores Manage focus when its receiver row disappears', async t => {
   const page = await open(t);
@@ -217,6 +229,8 @@ test('self-test reuses shared controls in all themes and interaction states', { 
       }
     }
     backgrounds.push((await observe('[data-test-copy]', 'normal')).backgroundColor);
+    const primary = await observe('[data-test-save]', 'normal');
+    assert.ok(!['transparent', 'rgba(0, 0, 0, 0)'].includes(primary.backgroundColor), `${theme}: primary fill must be visible`);
     const close = await page.locator('[data-test-close]').evaluate(node => {
       const rect = node.getBoundingClientRect(), icon = node.querySelector('svg').getBoundingClientRect();
       return { width: rect.width, height: rect.height, contained: icon.left >= rect.left && icon.right <= rect.right && icon.top >= rect.top && icon.bottom <= rect.bottom };

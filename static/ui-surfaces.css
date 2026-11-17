@@ -959,7 +959,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
 }
 :root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) :is(.selection-modal-backdrop, .remote-identity-backdrop, .song-detail-backdrop,
   .rating-modal-backdrop, .binding-sheet-backdrop, .playback-sheet-backdrop),
-:root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) .history-export-dialog::backdrop {
+:root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) :is(.history-export-dialog, .cast-self-test)::backdrop {
   background: var(--modal-dim-bg);
 }
 @media (orientation: portrait) and (max-width: 699px) {
@@ -984,12 +984,12 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   to { opacity: 0; }
 }
 :root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) :is(.selection-modal-backdrop, .remote-identity-backdrop, .song-detail-backdrop, .rating-modal-backdrop),
-:root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) .history-export-dialog[open]::backdrop {
+:root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) :is(.history-export-dialog, .cast-self-test)[open]::backdrop {
   animation: remote-backdrop-in 200ms ease-out both;
 }
 :root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) .confirm-export-backdrop.closing,
 :root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) .closing :is(.selection-modal-backdrop, .remote-identity-backdrop, .song-detail-backdrop, .rating-modal-backdrop),
-:root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) .history-export-dialog.closing::backdrop {
+:root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) :is(.history-export-dialog, .cast-self-test).closing::backdrop {
   animation: remote-backdrop-out 200ms ease-out forwards;
 }
 :root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) .song-detail-view { animation: none; }
@@ -999,7 +999,7 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
 @media (prefers-reduced-motion: reduce) {
   :root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) :is(.selection-modal-backdrop, .remote-identity-backdrop, .song-detail-backdrop,
     .rating-modal-backdrop, .binding-sheet-backdrop, .playback-sheet-backdrop),
-  :root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) .history-export-dialog::backdrop {
+  :root:is([data-ui-client="remote"], [data-host-platform="android"], [data-host-platform="ios"]) :is(.history-export-dialog, .cast-self-test)::backdrop {
     animation-duration: 1ms !important;
     transition-duration: 1ms !important;
   }

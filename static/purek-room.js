@@ -98,7 +98,10 @@
     text(cancel,t(actions.has(cancel)?"purek.working":"common.cancel"));
     const hint=["cellular_default","wifi_unvalidated","vpn_active","multicast_unavailable","battery_restricted"].includes(value.network_hint)?t(`cast.network.${value.network_hint}`):"";
     const status=byId("cast-status");
-    text(status,[value.error_code?castError(value.error_code):value.phase&&value.phase!=="idle"?t(`cast.phase.${value.phase}`):"",hint].filter(Boolean).join(" · "));
+    // An active connection can stay authorized while next plays locally.
+    const casting=state.data?.media_output?.target==="purek"&&value.output_enabled!==false;
+    const phaseKey=value.phase==="active"&&!casting?"purek.connected":`cast.phase.${value.phase}`;
+    text(status,[value.error_code?castError(value.error_code):value.phase&&value.phase!=="idle"?t(phaseKey):"",hint].filter(Boolean).join(" · "));
     status.hidden=!status.textContent;
     const keys=new Set(devices.map(device=>device.device_key));
     for(const [key,row]of rows)if(!keys.has(key)){row.remove();rows.delete(key);}

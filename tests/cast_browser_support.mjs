@@ -16,7 +16,7 @@ export async function openManage(t,{width=700,height=800,language='zh',platform=
   t.after(()=>browser.close());
   const page=await browser.newPage({viewport:{width,height},hasTouch});
   const errors=[];page.on('pageerror',error=>errors.push(error.message));t.after(()=>assert.deepEqual(errors,[]));
-  await page.setContent(`<html data-host-platform="${platform}"><head><style>${['styles.css','request-tabs.css','song-detail.css','ui-surfaces.css','media-output.css','purek-room.css'].map(read).join('\n')}
+  await page.setContent(`<html data-host-platform="${platform}"><head><style>${['accent-palette.css','styles.css','request-tabs.css','song-detail.css','ui-surfaces.css','media-output.css','purek-room.css'].map(read).join('\n')}
     body{margin:0;min-width:0;}#settings{padding:14px;max-width:440px;}#settings .purek-settings{display:block;}
     </style></head><body><main id="settings">${settings}</main>${modal}<div id="android-my-scroll"></div></body></html>`);
   await page.evaluate(({dictionary,language,selfTest})=>{
