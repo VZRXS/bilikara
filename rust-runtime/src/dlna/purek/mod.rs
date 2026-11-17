@@ -234,6 +234,18 @@ impl PureKClient {
             notify_destination: (Ipv4Addr::new(239, 255, 255, 250), 1900).into(),
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn loopback_fixture(notify_destination: SocketAddr) -> Self {
+        Self {
+            policy: NetworkPolicy::LoopbackFixture,
+            interfaces: Some(vec![Ipv4Addr::LOCALHOST]),
+            retry_interval: Duration::from_millis(1),
+            route_lookup: |_| Ok(Ipv4Addr::LOCALHOST),
+            notify_destination,
+            ..Self::new()
+        }
+    }
     fn interfaces(&self) -> Vec<Ipv4Addr> {
         self.interfaces
             .clone()
@@ -457,6 +469,18 @@ pub struct Session {
     health: health::Checks,
     next_announcement: Instant,
 }
+
+/// Borrowed connection metadata for the transitional native Host output adapter.
+/// Unlike `renderer`, this also describes an authorized room whose AVTransport
+/// service has not appeared yet. Raw endpoints must never enter diagnostics.
+pub(crate) struct ConnectionInfo<'a> {
+    pub local: Ipv4Addr,
+    pub udn: &'a str,
+    pub name: &'a str,
+    pub manager: Option<&'a ServiceEndpoint>,
+    pub av_transport: Option<&'a ServiceEndpoint>,
+    pub rendering: Option<&'a ServiceEndpoint>,
+}
 impl std::fmt::Debug for Session {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Session")
@@ -468,6 +492,18 @@ impl std::fmt::Debug for Session {
     }
 }
 impl Session {
+    pub(crate) fn connection_info(&self) -> Option<ConnectionInfo<'_>> {
+        let description = self.description.as_ref().filter(|_| !self.closed)?;
+        Some(ConnectionInfo {
+            local: self.local,
+            udn: &description.udn,
+            name: &description.name,
+            manager: description.manager.as_ref(),
+            av_transport: description.av_transport.as_ref(),
+            rendering: description.rendering.as_ref(),
+        })
+    }
+
     pub fn context(&self) -> &DeviceContext {
         &self.context
     }

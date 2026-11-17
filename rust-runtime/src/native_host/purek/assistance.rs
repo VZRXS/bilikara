@@ -337,6 +337,9 @@ fn retire(app: &mut AppState, phase: Phase) {
                     *generation == state.purek.generation && *epoch == state.state_epoch
                 })
         {
+            if let Some(cancel) = state.purek.connection_cancel.take() {
+                cancel.cancel();
+            }
             state.purek.generation += 1;
         }
         s.phase = phase;
@@ -361,6 +364,9 @@ fn discard_candidate(state: &mut NativeSession) {
         && state.purek.generation == candidate.binding.room_generation
         && (!state.purek.busy || owned_io)
     {
+        if let Some(cancel) = state.purek.connection_cancel.take() {
+            cancel.cancel();
+        }
         state.purek.room = None;
         state.purek.error = None;
         state.purek.generation += 1;
@@ -707,7 +713,7 @@ pub(crate) fn host_route(
                 .and_then(|room| room.authorization.as_ref())
                 .ok_or_else(|| error("scan_required"))?;
             // Read-only: no deadline renewal, receiver I/O, event or persistence.
-            Ok(json!({"authorization_url":authorization.url}))
+            Ok(json!({"authorization_url":authorization.authorization_url()}))
         });
     }
     if let HostRequest::Check {
@@ -957,7 +963,7 @@ fn remote(
                 validate_check(app, connection, request.binding().unwrap())?;
                 let state = app.native();
                 return Ok(json!({"authorization_url":state.purek.room.as_ref()
-                    .and_then(|room|room.authorization.as_ref()).map(|authorization|&authorization.url)}));
+                    .and_then(Room::authorization_url)}));
             }
             KtvRequestV1::Accept { .. } => {
                 accept(app, connection, request.binding().unwrap())?;
@@ -1003,7 +1009,7 @@ fn stage_candidate(
     {
         return Err(busy());
     }
-    let authorization = room.authorization.as_ref().map(|a| a.url.clone());
+    let authorization = room.authorization_url().map(str::to_owned);
     state.purek.generation += 1;
     state.purek.error = None;
     state.purek.room = Some(room);
@@ -1132,6 +1138,7 @@ pub(super) fn release_io(app: &mut AppState, generation: u64, epoch: &str) {
             .is_some_and(|(g, e)| *g == generation && e == epoch)
     {
         state.ktv.connecting = None;
+        state.purek.connection_cancel = None;
         state.purek.busy = false;
         state.revision += 1;
     }
@@ -1342,12 +1349,10 @@ mod tests {
             renderer: super::super::Renderer {
                 udn: "uuid:fixture".into(),
                 name: "Fixture".into(),
-                control: room.description.clone(),
-                service: "fixture".into(),
-                identities: vec![],
                 services: Default::default(),
             },
             local: "192.168.1.2".parse().unwrap(),
+            lease: None,
             target_room_id: "fixture".into(),
         });
         for id in [&lan_id, &internet_id] {
@@ -1417,7 +1422,13 @@ mod tests {
         app.native().purek.busy = true;
         let g = app.native().purek.generation;
         app.native().ktv.connecting = Some((g, "host-epoch".into()));
+        let cancel = crate::dlna::CancellationToken::new();
+        app.native().purek.connection_cancel = Some(cancel.clone());
         retire(&mut app, Phase::Canceled);
+        assert!(
+            cancel.is_cancelled(),
+            "retiring the grant cancels its T9 registration"
+        );
         assert!(app.native().ktv.candidate.is_none());
         assert!(app.native().purek.room.is_none());
         assert!(check_current(&mut app, &id, (&request, "host-epoch")).is_err());

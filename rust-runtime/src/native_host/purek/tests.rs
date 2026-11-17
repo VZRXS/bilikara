@@ -1,5 +1,5 @@
 use super::*;
-use bilikara_rust::dlna_policy::{PolicyError, bounded_xml};
+use bilikara_rust::dlna_policy::{PolicyError, SoapAction, bounded_xml, validate_soap_response};
 use std::{
     io::{Read, Write},
     net::TcpListener,
@@ -60,14 +60,8 @@ fn network_xml_depth_is_bounded_on_a_two_mib_stack() {
                     "purek_protocol"
                 );
                 assert_eq!(
-                    protocol::authorization_result(&text, service)
-                        .unwrap_err()
-                        .code,
-                    "purek_protocol"
-                );
-                assert_eq!(
-                    protocol::authorization_fault(&text, service).code,
-                    "purek_http"
+                    validate_soap_response(&text, SoapAction::SetDeviceAuthorization),
+                    Err(PolicyError::TooDeep)
                 );
                 assert_eq!(
                     renderer::protocol_info(&text, service).err().unwrap().code,
@@ -94,7 +88,7 @@ fn network_xml_depth_is_bounded_on_a_two_mib_stack() {
                 PolicyError::TooDeep
             );
             Renderer::parse(&media_description(), &location).unwrap();
-            protocol::authorization_result(SOAP, service).unwrap();
+            validate_soap_response(SOAP, SoapAction::SetDeviceAuthorization).unwrap();
             renderer::protocol_info(&protocol_reply("http-get:*:video/MP2T:*"), service).unwrap();
         })
         .unwrap()
@@ -257,10 +251,10 @@ impl Drop for Fixture {
 }
 
 #[test]
-fn qr_is_strict_and_preserves_opaque_tokens() {
+fn qr_uses_t9_bounds_and_keeps_private_authorization_out_of_snapshots() {
     let raw = qr("http://192.168.1.8:1234/render", "a+b/c=&<");
     let room = Room::parse(&raw).unwrap();
-    assert_eq!(room.authorization.as_ref().unwrap().token, "a+b/c=&<");
+    assert_eq!(room.authorization_url(), Some(raw.as_str()));
     assert_eq!(
         room.description.as_str(),
         "http://192.168.1.8:1234/render/description.xml"
@@ -269,7 +263,6 @@ fn qr_is_strict_and_preserves_opaque_tokens() {
         raw.replace("wx.chunk.cn", "evil.example"),
         format!("{raw}&place_code=duplicate"),
         qr("http://8.8.8.8", "x"),
-        qr("http://example.com", "x"),
         qr("http://user:pass@192.168.1.8", "x"),
     ] {
         assert!(Room::parse(&raw).is_err());
@@ -333,10 +326,7 @@ fn ordinary_dlna_connect_and_release_use_only_standard_services() {
         }
     });
     let room = Room::dlna(&format!("{}/renderer/device.xml", fixture.base)).unwrap();
-    let connection = connect_with(room, |_, _| {
-        panic!("ordinary DLNA never advertises the receiver")
-    })
-    .unwrap();
+    let connection = connect_fixture(room).unwrap();
     assert_eq!(connection.room.name, "Fixture room");
     assert_eq!(renderer::probe(&connection).unwrap().formats.len(), 1);
     release(&connection).unwrap();
@@ -416,11 +406,8 @@ fn ordinary_dlna_avtransport_uses_service_version_instance_zero_and_standard_act
                 ),
             )
         });
-        let connection = connect_with(
-            Room::dlna(&format!("{}/device.xml", fixture.base)).unwrap(),
-            |_, _| panic!("no SSDP impersonation"),
-        )
-        .unwrap();
+        let connection =
+            connect_fixture(Room::dlna(&format!("{}/device.xml", fixture.base)).unwrap()).unwrap();
         renderer::start_transport(
             &connection,
             "http://127.0.0.1/live.ts?a=1&b=2",
@@ -477,7 +464,7 @@ fn renderer_rejects_external_controls_and_dtd() {
         .is_err()
     );
     assert!(Renderer::parse(&description("fixture\r\nX:evil", "/control"), &location).is_err());
-    assert!(protocol::authorization_result("<root>ok</root>", "urn:x").is_err());
+    assert!(validate_soap_response("<root>ok</root>", SoapAction::SetDeviceAuthorization).is_err());
 }
 #[test]
 fn real_http_authorization_success_and_explicit_revoke() {
@@ -491,31 +478,40 @@ fn real_http_authorization_success_and_explicit_revoke() {
             },
         )
     });
-    let publications = Mutex::new(Vec::new());
-    let connection = connect_with(fixture.room(), |_, alive| {
-        publications.lock().unwrap().push(alive);
-        Ok(())
-    })
+    let notifications = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    notifications
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    let room = fixture.room();
+    let mut steps = trace::ConnectTrace::new(&room);
+    let connection = authorization::connect_with_client(
+        room,
+        &mut steps,
+        &crate::dlna::CancellationToken::new(),
+        crate::dlna::purek::PureKClient::loopback_fixture(notifications.local_addr().unwrap()),
+    )
     .unwrap();
     assert_eq!(connection.local, Ipv4Addr::LOCALHOST);
-    register(&connection, false).unwrap();
+    let mut packet = [0; 4096];
+    let size = notifications.recv(&mut packet).unwrap();
+    let advertisement = std::str::from_utf8(&packet[..size]).unwrap();
+    assert!(advertisement.contains("NTS: ssdp:alive"));
+    assert!(advertisement.contains(&format!("LOCATION: {}/description.xml", fixture.base)));
+    assert!(!advertisement.contains("synthetic") && !advertisement.contains("Token"));
+    release(&connection).unwrap();
+    release(&connection.clone()).unwrap();
     let requests = fixture.seen.lock().unwrap();
-    assert_eq!(requests.len(), 4);
+    assert_eq!(
+        requests.len(),
+        4,
+        "clones share one idempotent registration lease"
+    );
     assert!(requests[1].contains("<DeviceIP>127.0.0.1</DeviceIP>"));
     assert!(requests[1].contains("synthetic+secret&lt;&amp;"));
     assert!(requests[1].contains("<Enable>1</Enable>"));
     assert!(requests[3].contains("<Enable>0</Enable>"));
-    assert_eq!(*publications.lock().unwrap(), [true]);
-    let advertisement = String::from_utf8(protocol::advertisement(
-        &connection.room,
-        &connection.renderer,
-        &connection.renderer.udn,
-        true,
-    ))
-    .unwrap();
-    assert!(advertisement.contains("LOCATION:"));
-    assert!(!advertisement.contains("synthetic"));
-    assert!(!advertisement.contains("Token"));
+    assert!(requests[1].contains("<?xml version=\"1.0\" encoding=\"utf-8\"?>"));
+    assert!(requests[1].contains("encodingStyle="));
 }
 #[test]
 fn changed_identity_rolls_back_before_claiming_connected() {
@@ -529,7 +525,7 @@ fn changed_identity_rolls_back_before_claiming_connected() {
             },
         )
     });
-    let error = connect_with(fixture.room(), |_, _| Ok(())).err().unwrap();
+    let error = connect_fixture(fixture.room()).err().unwrap();
     assert_eq!(error.code, "purek_identity_changed");
     assert!(
         fixture
@@ -553,17 +549,32 @@ fn failed_publication_keeps_the_direct_registration() {
             },
         )
     });
-    let publications = Mutex::new(Vec::new());
-    let connection = connect_with(fixture.room(), |_, alive| {
-        publications.lock().unwrap().push(alive);
-        if alive { Err(network_error()) } else { Ok(()) }
-    })
+    let room = fixture.room();
+    let mut steps = trace::ConnectTrace::new(&room);
+    // An IPv4-bound announcement socket cannot send to an IPv6 destination.
+    let connection = authorization::connect_with_client(
+        room,
+        &mut steps,
+        &crate::dlna::CancellationToken::new(),
+        crate::dlna::purek::PureKClient::loopback_fixture("[::1]:9".parse().unwrap()),
+    )
     .unwrap();
     assert_eq!(connection.local, Ipv4Addr::LOCALHOST);
-    assert_eq!(*publications.lock().unwrap(), [true]);
-    let requests = fixture.seen.lock().unwrap();
-    assert!(requests.iter().any(|r| r.contains("<Enable>1</Enable>")));
-    assert!(!requests.iter().any(|r| r.contains("<Enable>0</Enable>")));
+    let entry = steps.finish(None);
+    let publication = entry["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["stage"] == "ssdp")
+        .unwrap();
+    assert_eq!(publication["outcome"], "failed");
+    assert_eq!(publication["disposition"], "ignored");
+    {
+        let requests = fixture.seen.lock().unwrap();
+        assert!(requests.iter().any(|r| r.contains("<Enable>1</Enable>")));
+        assert!(!requests.iter().any(|r| r.contains("<Enable>0</Enable>")));
+    }
+    release(&connection).unwrap();
 }
 #[test]
 fn health_checks_release_only_after_repeated_transient_failures_or_a_change() {
@@ -587,7 +598,7 @@ fn stale_health_completion_cannot_release_a_reconnected_room() {
             (200, SOAP.into())
         }
     });
-    let connection = connect_with(fixture.room(), |_, _| Ok(())).unwrap();
+    let connection = connect_fixture(fixture.room()).unwrap();
     let identity = connection.target_room_id.clone();
     let mut state = RoomState {
         generation: 2,
@@ -657,7 +668,7 @@ fn only_a_unique_validated_701_stop_fault_allows_a_new_transport() {
             }
             (200, transport_reply("SetAVTransportURI", ""))
         });
-        let connection = connect_with(fixture.room(), |_, _| Ok(())).unwrap();
+        let connection = connect_fixture(fixture.room()).unwrap();
         let trace = trace::OutputTrace::new(false);
         let result = renderer::start_transport_traced(
             &connection,
@@ -685,7 +696,7 @@ fn only_a_unique_validated_701_stop_fault_allows_a_new_transport() {
             (200, SOAP.into())
         }
     });
-    let connection = connect_with(fixture.room(), |_, _| Ok(())).unwrap();
+    let connection = connect_fixture(fixture.room()).unwrap();
     drop(fixture);
     let error = renderer::start_transport(
         &connection,
@@ -715,7 +726,7 @@ fn rejected_stop_does_not_abort_transport_start() {
         }
         panic!("unexpected receiver action")
     });
-    let connection = connect_with(fixture.room(), |_, _| Ok(())).unwrap();
+    let connection = connect_fixture(fixture.room()).unwrap();
     renderer::start_transport(
         &connection,
         "http://127.0.0.1/fixture.ts",
@@ -746,13 +757,11 @@ fn only_unreachable_receivers_count_as_interrupted_monitoring() {
 #[test]
 fn redirects_and_soap_faults_do_not_authorize() {
     let fixture = Fixture::start(|_, _| (302, "synthetic echoed secret".into()));
-    let error = connect_with(fixture.room(), |_, _| panic!("must not publish"))
-        .err()
-        .unwrap();
+    let error = connect_fixture(fixture.room()).err().unwrap();
     assert_eq!(error.code, "purek_http");
     assert!(!error.to_string().contains("secret"));
     assert_eq!(fixture.seen.lock().unwrap().len(), 1);
-    assert!(protocol::authorization_result("<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><s:Fault/></s:Body></s:Envelope>","urn:x").is_err());
+    assert!(validate_soap_response("<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><s:Fault/></s:Body></s:Envelope>",SoapAction::SetDeviceAuthorization).is_err());
 }
 #[test]
 fn qr_image_decode_works_without_browser_barcode_detector() {
@@ -977,7 +986,7 @@ fn all_media_services_are_pinned_to_the_authorized_origin() {
 }
 
 #[test]
-fn media_service_changes_invalidate_authorization_identity() {
+fn media_service_changes_preserve_udn_authorization_and_update_endpoints() {
     let fixture = Fixture::start(|request, count| {
         (
             200,
@@ -992,8 +1001,28 @@ fn media_service_changes_invalidate_authorization_identity() {
             },
         )
     });
-    let error = connect_with(fixture.room(), |_, _| Ok(())).err().unwrap();
-    assert_eq!(error.code, "purek_identity_changed");
+    let connection = connect_fixture(fixture.room()).unwrap();
+    assert_eq!(connection.renderer.udn, "uuid:fixture");
+    assert_eq!(
+        connection
+            .renderer
+            .services
+            .av_transport
+            .as_ref()
+            .unwrap()
+            .control
+            .path(),
+        "/changed"
+    );
+    assert!(
+        !fixture
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| request.contains("<Enable>0</Enable>"))
+    );
+    release(&connection).unwrap();
     assert!(
         fixture
             .seen
@@ -1051,7 +1080,7 @@ fn g0_uses_real_http_without_transmitting_room_credentials() {
             },
         )
     });
-    let connection = connect_with(fixture.room(), |_, _| Ok(())).unwrap();
+    let connection = connect_fixture(fixture.room()).unwrap();
     let formats = renderer::probe(&connection).unwrap();
     assert_eq!(formats.formats[0].mime, "video/mp2t");
     let requests = fixture.seen.lock().unwrap();
@@ -1117,7 +1146,7 @@ fn g0_fault_redirect_and_oversized_reply_are_errors_not_empty_sinks() {
                 (200, SOAP.into())
             }
         });
-        let connection = connect_with(fixture.room(), |_, _| Ok(())).unwrap();
+        let connection = connect_fixture(fixture.room()).unwrap();
         let error = renderer::probe(&connection).err().unwrap();
         assert_eq!(error.code, expected);
         assert!(!error.to_string().contains("credential"));
@@ -1295,23 +1324,17 @@ fn standard_av_transport_only_receivers_do_not_gain_vendor_authorization() {
         (200, "<root><device><deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType><UDN>uuid:av-only</UDN><serviceList><service><serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType><controlURL>/av</controlURL></service></serviceList></device></root>".into())
     });
     let location = fixture.room().description.clone();
-    let standard = connect_with(Room::dlna(location.as_str()).unwrap(), |_, _| {
-        panic!("standard DLNA must not publish vendor announcements")
-    })
-    .unwrap();
+    let standard = connect_fixture(Room::dlna(location.as_str()).unwrap()).unwrap();
     assert!(standard.renderer.services.connection_manager.is_none());
     assert!(standard.renderer.services.av_transport.is_some());
-    register(&standard, true).unwrap();
+    release(&standard).unwrap();
     assert_eq!(
         renderer::probe(&standard).err().unwrap().code,
         "purek_output_no_connection_manager"
     );
     assert_eq!(fixture.seen.lock().unwrap().len(), 2);
     assert_eq!(
-        connect_with(fixture.room(), |_, _| Ok(()))
-            .err()
-            .unwrap()
-            .code,
+        connect_fixture(fixture.room()).err().unwrap().code,
         "purek_renderer"
     );
     assert_eq!(fixture.seen.lock().unwrap().len(), 3);
@@ -1338,7 +1361,7 @@ fn app_state_probe_publishes_busy_and_stale_results_cannot_release_a_new_lease()
             },
         )
     });
-    let connection = connect_with(fixture.room(), |_, _| Ok(())).unwrap();
+    let connection = connect_fixture(fixture.room()).unwrap();
     with_app(|app| {
         app.native().purek = RoomState {
             connected: Some(connection),
@@ -1394,7 +1417,7 @@ fn app_state_probe_retry_preserves_authorization_and_current_results_publish_onc
             },
         )
     });
-    let connection = connect_with(fixture.room(), |_, _| Ok(())).unwrap();
+    let connection = connect_fixture(fixture.room()).unwrap();
     let target = connection.target_room_id.clone();
     with_app(|app| {
         let mut state = RoomState {
@@ -1495,7 +1518,7 @@ fn receiver_didl_is_escaped_and_empty_metadata_retries_only_a_real_fault() {
             }
             panic!("unexpected receiver action")
         });
-        let connection = connect_with(fixture.room(), |_, _| Ok(())).unwrap();
+        let connection = connect_fixture(fixture.room()).unwrap();
         let uri = "http://127.0.0.1/fixture.ts?a=1&b=2";
         let result = renderer::start_transport(&connection, uri, "http-get:*:video/MP2T:*");
         if fault {
@@ -1722,7 +1745,7 @@ const UPNP_FAULT: &str = "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/
 
 fn traced(room: Room) -> (Result<Connection, ApiError>, Value) {
     let mut steps = trace::ConnectTrace::new(&room);
-    let result = connect_traced(room, |_, _| Ok(()), &mut steps);
+    let result = connect(room, &mut steps, &crate::dlna::CancellationToken::new());
     let entry = steps.finish(result.as_ref().err());
     (result, entry)
 }
@@ -1742,15 +1765,25 @@ fn qr_and_remote_submission_forward_exact_tokens_into_set_device_authorization()
     // append_pair percent-encodes each value, as the vendor QR does.
     let token = "a+b/c==%2F&x=%;'\"<>";
     let room = Room::from_input(&qr(&fixture.base, token)).unwrap();
-    assert_eq!(room.authorization.as_ref().unwrap().token, token);
-    connect_with(room, |_, _| Ok(())).unwrap();
+    assert_eq!(
+        room.authorization_url(),
+        Some(qr(&fixture.base, token).as_str())
+    );
+    connect_fixture(room).unwrap();
     let requests = fixture.seen.lock().unwrap();
     let soap = &requests[1];
     assert!(soap.starts_with("POST /control "));
     assert!(soap.contains("<DeviceIP>127.0.0.1</DeviceIP>"));
-    assert!(
-        soap.contains("<Token>a+b/c==%2F&amp;x=%;&apos;&quot;&lt;&gt;</Token>"),
-        "{soap}"
+    let document = roxmltree::Document::parse(soap.split_once("\r\n\r\n").unwrap().1).unwrap();
+    let tokens: Vec<_> = document
+        .descendants()
+        .filter(|node| node.is_element() && node.tag_name().name() == "Token")
+        .collect();
+    assert_eq!(tokens.len(), 1);
+    assert_eq!(
+        tokens[0].text(),
+        Some(token),
+        "the receiver must recover every opaque token byte"
     );
     assert!(!soap.contains("wx.chunk.cn") && !soap.contains("projection_url"));
 }
@@ -1776,6 +1809,226 @@ fn description_path_is_appended_once() {
 }
 
 #[test]
+fn host_room_adapter_preserves_t9_qr_acceptance_and_address_confirmation() {
+    for base in [
+        "http://192.168.1.8:8200/room?private=query#fragment",
+        "http://100.64.0.1:8200/room?private=query#fragment",
+        "http://100.127.255.254:8200/room",
+        "http://169.254.1.8:8200/room",
+    ] {
+        let mut outer = Url::parse(&qr(base, "opaque+a/b==")).unwrap();
+        let encoded = outer
+            .query_pairs()
+            .find(|(key, _)| key == "projection_url")
+            .unwrap()
+            .1
+            .into_owned();
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(encoded)
+            .unwrap();
+        let mut inner = Url::parse(std::str::from_utf8(&bytes).unwrap()).unwrap();
+        inner.set_host(Some("CONN.DOLPHINSTAR.CN")).unwrap();
+        inner.set_port(Some(8443)).unwrap();
+        inner.set_path("/remote/");
+        inner.set_fragment(Some("inner"));
+        outer.set_host(Some("WX.CHUNK.CN")).unwrap();
+        outer.set_port(Some(8443)).unwrap();
+        outer.set_path("/PROJECTION/LOGIN/");
+        outer.set_fragment(Some("outer"));
+        outer.set_query(None);
+        outer
+            .query_pairs_mut()
+            .append_pair("place_code", "fixture")
+            .append_pair("projection_url", &STANDARD.encode(inner.as_str()));
+        let room = Room::from_input(outer.as_str()).unwrap();
+        assert_eq!(room.connection_type(), "purek");
+        assert_eq!(room.description.path(), "/room/description.xml");
+        assert!(room.description.query().is_none() && room.description.fragment().is_none());
+        outer.set_fragment(None);
+        assert_eq!(room.authorization_url(), Some(outer.as_str()));
+    }
+    for base in [
+        "http://8.8.8.8",
+        "http://100.63.255.255",
+        "http://100.128.0.1",
+    ] {
+        assert!(Room::parse(&qr(base, "private")).is_err());
+    }
+    let room = Room::parse(&qr("http://receiver.invalid", "private")).unwrap();
+    assert!(
+        room.authorization
+            .as_ref()
+            .unwrap()
+            .facts()
+            .requires_address_confirmation
+    );
+    let (result, entry) = traced(room);
+    assert_eq!(
+        result.err().unwrap().code,
+        "purek_address_confirmation_required"
+    );
+    assert_eq!(entry["failure_stage"], "resolve");
+    assert_eq!(
+        entry["steps"].as_array().unwrap().len(),
+        2,
+        "no route or I/O without hostname approval"
+    );
+}
+
+#[test]
+fn t9_health_updates_services_but_revokes_a_different_udn() {
+    let mode = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = Arc::clone(&mode);
+    let fixture = Fixture::start(move |request, _| {
+        if !request.starts_with("GET ") {
+            return (200, SOAP.into());
+        }
+        (
+            200,
+            match observed.load(Ordering::Acquire) {
+                0 => media_description(),
+                1 => media_description()
+                    .replace("uuid:fixture", "uuid:FIXTURE")
+                    .replace("/transport", "/new-transport")
+                    .replace(">/control<", ">/new-manager<"),
+                _ => media_description().replace("uuid:fixture", "uuid:other"),
+            },
+        )
+    });
+    let mut connection = connect_fixture(fixture.room()).unwrap();
+    mode.store(1, Ordering::Release);
+    assert!(authorization::sample_now(&mut connection));
+    assert_eq!(
+        connection
+            .renderer
+            .services
+            .av_transport
+            .as_ref()
+            .unwrap()
+            .control
+            .path(),
+        "/new-transport"
+    );
+    assert_eq!(
+        connection
+            .renderer
+            .services
+            .connection_manager
+            .as_ref()
+            .unwrap()
+            .control
+            .path(),
+        "/new-manager"
+    );
+    assert!(
+        !fixture
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| request.contains("<Enable>0</Enable>"))
+    );
+    mode.store(2, Ordering::Release);
+    assert!(!authorization::sample_now(&mut connection));
+    release(&connection).unwrap();
+    let requests = fixture.seen.lock().unwrap();
+    let revoked: Vec<_> = requests
+        .iter()
+        .filter(|request| request.contains("<Enable>0</Enable>"))
+        .collect();
+    assert_eq!(revoked.len(), 1);
+    assert!(
+        revoked[0].starts_with("POST /control "),
+        "revoke the original endpoint even after a service update"
+    );
+}
+
+#[test]
+fn t9_health_adapter_preserves_five_failure_tolerance_without_double_counting() {
+    let offline = Arc::new(AtomicBool::new(false));
+    let observed = Arc::clone(&offline);
+    let fixture = Fixture::start(move |request, _| {
+        if request.starts_with("GET ") {
+            if observed.load(Ordering::Acquire) {
+                (503, "temporarily unavailable".into())
+            } else {
+                (200, media_description())
+            }
+        } else {
+            (200, SOAP.into())
+        }
+    });
+    let mut connection = connect_fixture(fixture.room()).unwrap();
+    offline.store(true, Ordering::Release);
+    for _ in 0..4 {
+        assert!(authorization::sample_now(&mut connection));
+    }
+    assert!(
+        !fixture
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| request.contains("<Enable>0</Enable>"))
+    );
+    assert!(!authorization::sample_now(&mut connection));
+    release(&connection).unwrap();
+    assert_eq!(
+        fixture
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request.contains("<Enable>0</Enable>"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn cancellation_reaches_t9_and_releases_registration_before_returning() {
+    let (reached, waiting) = std::sync::mpsc::channel();
+    let (reply_ready, resume_reply) = std::sync::mpsc::channel();
+    let fixture = Fixture::start(move |request, _| {
+        if request.starts_with("GET ") {
+            return (200, media_description());
+        }
+        if request.contains("<Enable>1</Enable>") {
+            reached.send(()).unwrap();
+            resume_reply.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        (200, SOAP.into())
+    });
+    let cancel = crate::dlna::CancellationToken::new();
+    let worker_cancel = cancel.clone();
+    let room = fixture.room();
+    let worker = thread::spawn(move || {
+        let mut steps = trace::ConnectTrace::new(&room);
+        connect(room, &mut steps, &worker_cancel)
+    });
+    waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+    cancel.cancel();
+    reply_ready.send(()).unwrap();
+    match worker.join().unwrap() {
+        Err(error) => assert_eq!(error.code, "purek_cancelled"),
+        Ok(connection) => {
+            release(&connection).unwrap();
+            panic!("cancellation must precede confirmation");
+        }
+    }
+    assert_eq!(
+        fixture
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request.contains("<Enable>0</Enable>"))
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn authorization_soap_fault_is_a_rejection_not_a_device_http_error() {
     let fixture = Fixture::start(|request, _| {
         if request.starts_with("GET ") {
@@ -1792,7 +2045,12 @@ fn authorization_soap_fault_is_a_rejection_not_a_device_http_error() {
     assert_eq!(entry["failure_stage"], "authorization");
     assert_eq!(entry["result"], "failed");
     assert_eq!(entry["retryable"], true);
-    let step = &entry["steps"][2];
+    let step = entry["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["stage"] == "authorization")
+        .unwrap();
     assert_eq!(step["stage"], "authorization");
     assert_eq!(step["http_status"], 500);
     assert_eq!(step["soap_fault"], true);
@@ -1818,14 +2076,14 @@ fn receiver_http_failures_keep_their_operation_stage_and_status() {
     let (result, entry) = traced(plain.room());
     assert_eq!(result.err().unwrap().code, "purek_http");
     assert_eq!(entry["failure_stage"], "authorization");
-    assert_eq!(entry["steps"][2]["http_status"], 500);
-    assert!(entry["steps"][2].get("soap_fault").is_none());
+    assert_eq!(entry["steps"][4]["http_status"], 500);
+    assert!(entry["steps"][4].get("soap_fault").is_none());
 
     let missing = Fixture::start(|_, _| (404, "synthetic secret".into()));
     let (result, entry) = traced(missing.room());
     assert_eq!(result.err().unwrap().code, "purek_http");
     assert_eq!(entry["failure_stage"], "description");
-    assert_eq!(entry["steps"][1]["http_status"], 404);
+    assert_eq!(entry["steps"][3]["http_status"], 404);
     assert_eq!(entry["route"]["local_class"], "loopback");
     assert_eq!(entry["route"]["same_subnet_24"], true);
     assert_eq!(
@@ -1834,7 +2092,7 @@ fn receiver_http_failures_keep_their_operation_stage_and_status() {
         "no registration without a description"
     );
 
-    // A 200 SetDeviceAuthorization reply without its response element stays invalid.
+    // T9 records a nonstandard 200 acknowledgement, then requires UDN confirmation.
     let invalid = Fixture::start(|request, _| {
         if request.starts_with("GET ") {
             (200, description("fixture", "/control"))
@@ -1843,9 +2101,11 @@ fn receiver_http_failures_keep_their_operation_stage_and_status() {
         }
     });
     let (result, entry) = traced(invalid.room());
-    assert_eq!(result.err().unwrap().code, "purek_authorization");
-    assert_eq!(entry["steps"][2]["response"], "invalid");
-    assert_eq!(entry["steps"][2]["soap_fault"], false);
+    let connection = result.unwrap();
+    assert_eq!(entry["result"], "connected");
+    assert_eq!(entry["steps"][4]["response"], "unconfirmed");
+    assert_eq!(entry["steps"][6]["udn_same"], true);
+    release(&connection).unwrap();
 }
 
 #[test]
@@ -1857,7 +2117,7 @@ fn unreachable_receiver_is_a_network_failure_with_transport_category() {
     assert_eq!(result.err().unwrap().code, "purek_network");
     assert_eq!(entry["failure_stage"], "description");
     assert!(matches!(
-        entry["steps"][1]["transport"].as_str(),
+        entry["steps"][3]["transport"].as_str(),
         Some("connect" | "io" | "timeout")
     ));
 }
@@ -1875,8 +2135,13 @@ fn successful_connection_trace_records_advisory_stages_without_failure() {
         )
     });
     let mut steps = trace::ConnectTrace::new(&fixture.room());
-    let connection =
-        connect_traced(fixture.room(), |_, _| Err(network_error()), &mut steps).unwrap();
+    let connection = authorization::connect_with_client(
+        fixture.room(),
+        &mut steps,
+        &crate::dlna::CancellationToken::new(),
+        crate::dlna::purek::PureKClient::loopback_fixture("[::1]:9".parse().unwrap()),
+    )
+    .unwrap();
     let entry = steps.finish(None);
     assert_eq!(entry["result"], "connected");
     assert!(entry["failure_stage"].is_null());
@@ -1889,9 +2154,12 @@ fn successful_connection_trace_records_advisory_stages_without_failure() {
     assert_eq!(
         stages,
         [
+            ("parse", "ok"),
+            ("resolve", "ok"),
             ("route", "ok"),
             ("description", "ok"),
             ("authorization", "ok"),
+            ("route", "ok"),
             ("revalidation", "ok"),
             ("ssdp", "failed")
         ]
@@ -1915,7 +2183,7 @@ fn traced_transport_start_records_each_soap_action_without_payloads() {
         }
         (200, SOAP.into())
     });
-    let connection = connect_with(fixture.room(), |_, _| Ok(())).unwrap();
+    let connection = connect_fixture(fixture.room()).unwrap();
     let trace = trace::OutputTrace::new(true);
     renderer::start_transport_traced(
         &connection,

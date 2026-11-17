@@ -337,7 +337,7 @@ fn start_inner(
             room.output.diagnostic_summary(),
         );
         if let Some(connection) = &connection
-            && let Ok(receiver) = protocol::local_address(&connection.room.description)
+            && let Ok(receiver) = connection.receiver_address()
         {
             trace.route(super::trace::route_facts(connection.local, receiver));
         }
@@ -392,11 +392,7 @@ fn start_inner(
             Ok(())
         })?;
         let uri = if let Some(connection) = &connection {
-            running.bind(
-                context,
-                connection.local,
-                protocol::local_address(&connection.room.description)?,
-            )?
+            running.bind(context, connection.local, connection.receiver_address()?)?
         } else {
             format!("{}index.m3u8", running.preview.as_ref().unwrap().base())
         };

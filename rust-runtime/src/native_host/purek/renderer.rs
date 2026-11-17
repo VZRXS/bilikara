@@ -265,7 +265,7 @@ pub(super) fn transport(
         .av_transport
         .as_ref()
         .ok_or_else(protocol_error)?;
-    if !protocol::same_origin(&service.control, &connection.room.description) {
+    if !connection.allows_service(&service.control) {
         return Err(protocol_error());
     }
     let reply = client(Some(connection.local))?.post(service.control.clone())
@@ -476,8 +476,8 @@ pub(super) fn probe(connection: &Connection) -> Result<ProtocolInfo, ApiError> {
         })?;
     // All endpoints came from the authorized receiver's validated description.
     // Check again here so a later caller cannot accidentally widen the boundary.
-    protocol::local_address(&connection.room.description)?;
-    if !protocol::same_origin(&service.control, &connection.room.description) {
+    connection.receiver_address()?;
+    if !connection.allows_service(&service.control) {
         return Err(protocol_error());
     }
     let result = client(Some(connection.local))?

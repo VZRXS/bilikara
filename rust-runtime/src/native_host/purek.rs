@@ -9,6 +9,7 @@ use std::{
 };
 use url::Url;
 pub(crate) mod assistance;
+mod authorization;
 mod capabilities;
 pub(crate) mod controller;
 mod health;
@@ -28,6 +29,48 @@ struct Connection {
     renderer: Renderer,
     local: Ipv4Addr,
     target_room_id: String,
+    lease: Option<Arc<std::sync::Mutex<authorization::Lease>>>,
+}
+impl Connection {
+    fn receiver_address(&self) -> Result<Ipv4Addr, ApiError> {
+        if self.lease.is_none() {
+            return protocol::local_address(&self.room.description);
+        }
+        let result = bilikara_rust::dlna_policy::lan_web_url(
+            self.room.description.as_str(),
+            bilikara_rust::dlna_policy::NetworkPolicy::Lan,
+        );
+        #[cfg(test)]
+        let result = result.or_else(|_| {
+            bilikara_rust::dlna_policy::lan_web_url(
+                self.room.description.as_str(),
+                bilikara_rust::dlna_policy::NetworkPolicy::LoopbackFixture,
+            )
+        });
+        result
+            .map(|(_, address)| address)
+            .map_err(|_| failure(400, "qr_invalid", "房台地址无效"))
+    }
+
+    fn allows_service(&self, service: &Url) -> bool {
+        if self.lease.is_none() {
+            return protocol::same_origin(service, &self.room.description);
+        }
+        // T9 accepts a service on another port of the same receiver, including
+        // a query in its endpoint. Do not reapply next's stricter origin rule.
+        let result = bilikara_rust::dlna_policy::lan_web_url(
+            service.as_str(),
+            bilikara_rust::dlna_policy::NetworkPolicy::Lan,
+        );
+        #[cfg(test)]
+        let result = result.or_else(|_| {
+            bilikara_rust::dlna_policy::lan_web_url(
+                service.as_str(),
+                bilikara_rust::dlna_policy::NetworkPolicy::LoopbackFixture,
+            )
+        });
+        result.is_ok_and(|(_, address)| self.receiver_address().ok() == Some(address))
+    }
 }
 #[derive(Default)]
 pub(crate) struct RoomState {
@@ -38,6 +81,7 @@ pub(crate) struct RoomState {
     local_preview: Option<Arc<preview::Preview>>,
     generation: u64,
     busy: bool,
+    connection_cancel: Option<crate::dlna::CancellationToken>,
     health: health::Checks,
     room: Option<Room>,
     connected: Option<Connection>,
@@ -147,85 +191,32 @@ fn route_address(room: &Room) -> Result<Ipv4Addr, ApiError> {
         _ => Err(network_error()),
     }
 }
-fn register(connection: &Connection, enable: bool) -> Result<(), ApiError> {
-    let Some(authorization) = &connection.room.authorization else {
-        return Ok(());
-    };
-    let result = client(Some(connection.local))?
-        .post(connection.renderer.control.clone())
-        .header("Content-Type", "text/xml; charset=utf-8")
-        .header(
-            "SOAPAction",
-            format!("\"{}#SetDeviceAuthorization\"", connection.renderer.service),
-        )
-        .body(protocol::authorization(
-            authorization,
-            &connection.renderer,
-            connection.local,
-            enable,
-        ))
-        .send()
-        .map_err(|e| trace::request_error(&e))?;
-    if result.status() == 500 {
-        // UPnP reports a rejected action as HTTP 500 with a SOAP Fault. Keep it
-        // a registration failure; never treat an arbitrary 500 as success.
-        return Err(body(result).map_or_else(
-            |_| trace::http_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
-            |text| protocol::authorization_fault(&text, &connection.renderer.service),
-        ));
-    }
-    protocol::authorization_result(&response(result)?, &connection.renderer.service)
-}
-fn announce(connection: &Connection, alive: bool) -> Result<(), ApiError> {
-    // A standard control point does not impersonate the receiver's SSDP identity.
-    if connection.room.authorization.is_none() {
-        return Ok(());
-    }
-    let socket = UdpSocket::bind((connection.local, 0)).map_err(|_| network_error())?;
-    socket
-        .set_multicast_ttl_v4(2)
-        .map_err(|_| network_error())?;
-    socket2::SockRef::from(&socket)
-        .set_multicast_if_v4(&connection.local)
-        .map_err(|_| network_error())?;
-    socket
-        .set_write_timeout(Some(Duration::from_millis(100)))
-        .map_err(|_| network_error())?;
-    let deadline = Instant::now() + Duration::from_secs(1);
-    for identity in &connection.renderer.identities {
-        if Instant::now() >= deadline {
-            return Err(network_error());
-        }
-        socket
-            .send_to(
-                &protocol::advertisement(&connection.room, &connection.renderer, identity, alive),
-                (Ipv4Addr::new(239, 255, 255, 250), 1900),
-            )
-            .map_err(|_| network_error())?;
-    }
-    Ok(())
+fn connection_id() -> Result<String, ApiError> {
+    let mut id = [0u8; 16];
+    getrandom::fill(&mut id).map_err(|_| failure(503, "random", "无法初始化房台会话，请重试"))?;
+    Ok(id.iter().map(|b| format!("{b:02x}")).collect())
 }
 fn release(connection: &Connection) -> Result<(), ApiError> {
-    let _ = announce(connection, false);
-    // Bound to the originally registered IP even after a Wi-Fi/route change.
-    register(connection, false)
+    authorization::release(connection)
 }
-fn connect(room: Room, trace: &mut trace::ConnectTrace) -> Result<Connection, ApiError> {
-    connect_traced(room, announce, trace)
+fn connect(
+    room: Room,
+    trace: &mut trace::ConnectTrace,
+    cancel: &crate::dlna::CancellationToken,
+) -> Result<Connection, ApiError> {
+    if room.authorization.is_some() {
+        return authorization::connect(room, trace, cancel);
+    }
+    connect_standard(room, trace)
 }
 #[cfg(test)]
-fn connect_with(
-    room: Room,
-    publish: impl Fn(&Connection, bool) -> Result<(), ApiError>,
-) -> Result<Connection, ApiError> {
+fn connect_fixture(room: Room) -> Result<Connection, ApiError> {
     let mut trace = trace::ConnectTrace::new(&room);
-    connect_traced(room, publish, &mut trace)
+    connect(room, &mut trace, &crate::dlna::CancellationToken::new())
 }
-/// Each receiver operation is recorded as a stage so a failure is not reduced
-/// to one ambiguous code. The trace holds no address, URL, identity or token.
-fn connect_traced(
+// Standard DLNA discovery/control remains with the next output stack until P6.
+fn connect_standard(
     mut room: Room,
-    publish: impl Fn(&Connection, bool) -> Result<(), ApiError>,
     trace: &mut trace::ConnectTrace,
 ) -> Result<Connection, ApiError> {
     let since = Instant::now();
@@ -239,36 +230,16 @@ fn connect_traced(
     let renderer = probe(&room, local);
     trace.step("description", since, &renderer);
     let renderer = renderer?;
-    if room.authorization.is_some() && renderer.services.connection_manager.is_none() {
-        let missing: Result<(), ApiError> =
-            Err(failure(502, "renderer", "房台未提供可用的设备登记接口"));
-        trace.step("connection_manager", Instant::now(), &missing);
-        return missing.map(|_| unreachable!());
-    }
-    if room.authorization.is_none()
-        && !renderer.name.is_empty()
-        && !renderer.name.chars().any(char::is_control)
-    {
+    if !renderer.name.is_empty() && !renderer.name.chars().any(char::is_control) {
         room.name.clone_from(&renderer.name);
     }
-    let mut id = [0u8; 16];
-    getrandom::fill(&mut id).map_err(|_| failure(503, "random", "无法初始化房台会话，请重试"))?;
     let connection = Connection {
         room,
         renderer,
         local,
-        target_room_id: id.iter().map(|b| format!("{b:02x}")).collect(),
+        target_room_id: connection_id()?,
+        lease: None,
     };
-    if connection.room.authorization.is_some() {
-        let since = Instant::now();
-        let registered = register(&connection, true);
-        trace.step("authorization", since, &registered);
-        if let Err(error) = registered {
-            // A timed-out response may still have registered us remotely.
-            let _ = register(&connection, false);
-            return Err(error);
-        }
-    }
     let since = Instant::now();
     let verified = probe(&connection.room, local);
     let route = route_address(&connection.room);
@@ -299,20 +270,7 @@ fn connect_traced(
         .with_diagnostic(facts))
     });
     trace.step("revalidation", since, &revalidated);
-    if let Err(error) = revalidated {
-        if connection.room.authorization.is_some() {
-            let _ = publish(&connection, false);
-        }
-        let _ = register(&connection, false);
-        return Err(error);
-    }
-    // The advertisement only helps third-party control points. bilikara drives
-    // the receiver directly from the QR address, so multicast failure is not fatal.
-    if connection.room.authorization.is_some() {
-        let since = Instant::now();
-        let published = publish(&connection, true);
-        trace.step("ssdp", since, &published);
-    }
+    revalidated?;
     Ok(connection)
 }
 
@@ -332,16 +290,13 @@ fn check_health(connection: &Connection) -> Health {
         Ok(_) => {}
     }
     match probe(&connection.room, connection.local) {
-        Ok(renderer) if same_renderer(&renderer, &connection.renderer) => {
-            let _ = announce(connection, true);
-            Health::Healthy
-        }
+        Ok(renderer) if same_renderer(&renderer, &connection.renderer) => Health::Healthy,
         Ok(_) => Health::Changed,
         Err(_) => Health::Transient,
     }
 }
 fn same_renderer(a: &Renderer, b: &Renderer) -> bool {
-    a.udn == b.udn && a.control == b.control && a.service == b.service && a.services == b.services
+    a.udn == b.udn && a.services == b.services
 }
 
 fn assisted_connect(
@@ -349,7 +304,7 @@ fn assisted_connect(
     remote: &str,
     binding: (&str, &str),
 ) -> Result<Value, ApiError> {
-    let (generation, room) = with_app(|app| {
+    let (generation, room, cancel) = with_app(|app| {
         assistance::refresh(app);
         if context.stop.load(Ordering::Acquire) {
             return Err(failure(409, "stopped", "Host stopped"));
@@ -369,7 +324,13 @@ fn assisted_connect(
         state.purek.busy = true;
         state.ktv.connecting = Some((state.purek.generation, binding.1.into()));
         state.revision += 1;
-        Ok((state.purek.generation, state.purek.room.clone().unwrap()))
+        let cancel = crate::dlna::CancellationToken::new();
+        state.purek.connection_cancel = Some(cancel.clone());
+        Ok((
+            state.purek.generation,
+            state.purek.room.clone().unwrap(),
+            cancel,
+        ))
     })?;
     let worker_context = Arc::clone(context);
     let worker_remote = remote.to_owned();
@@ -385,6 +346,7 @@ fn assisted_connect(
                 (&worker_binding.0, &worker_binding.1),
                 generation,
                 room,
+                cancel,
             );
         });
     if started.is_err() {
@@ -409,6 +371,7 @@ fn finish_assisted_connect(
     binding: (&str, &str),
     generation: u64,
     room: Room,
+    cancel: crate::dlna::CancellationToken,
 ) -> Result<Value, ApiError> {
     let current = with_app(|app| {
         assistance::check_current(app, remote, binding)?;
@@ -427,7 +390,7 @@ fn finish_assisted_connect(
     // Reuse the actual registration/identity/route checks and capability query.
     // Neither network I/O nor release runs while holding the AppState lock.
     let mut steps = trace::ConnectTrace::new(&room);
-    let result = connect(room, &mut steps);
+    let result = connect(room, &mut steps, &cancel);
     let capability = result.as_ref().ok().map(|connection| {
         let since = Instant::now();
         let probed = renderer::probe(connection);
@@ -443,6 +406,7 @@ fn finish_assisted_connect(
             return Err(busy());
         }
         state.purek.busy = false;
+        state.purek.connection_cancel = None;
         state.ktv.connecting = None;
         state.purek.error = result.as_ref().err().map(|e| e.code.clone());
         if let Ok(connection) = &result {
@@ -678,7 +642,7 @@ pub(super) fn route(
             session.purek.output.stop(session.purek.generation);
             session.purek.error = None;
             let value = json!({"room_name":room.name,"connection_type":room.connection_type(),
-                "authorization_url":room.authorization.as_ref().map(|a| &a.url)});
+                "authorization_url":room.authorization_url()});
             session.purek.room = Some(room);
             session.revision += 1;
             Ok(value)
@@ -688,7 +652,7 @@ pub(super) fn route(
         return Err(failure(404, "route", "房间接口不存在"));
     }
     let disconnect = path.ends_with("/disconnect");
-    let (generation, room, previous, active) = with_app(|app| {
+    let (generation, room, previous, active, cancel) = with_app(|app| {
         let session = app.native();
         let state = &mut session.purek;
         if state.busy {
@@ -700,6 +664,11 @@ pub(super) fn route(
         if !disconnect && state.room.is_none() {
             return Err(failure(409, "qr_required", "请先识别房间二维码"));
         }
+        if context.stop.load(Ordering::Acquire) {
+            return Err(failure(409, "stopped", "Host stopped"));
+        }
+        let cancel = crate::dlna::CancellationToken::new();
+        state.connection_cancel = Some(cancel.clone());
         state.busy = true;
         state.generation += 1;
         if disconnect && let Some(running) = &state.output.running {
@@ -711,6 +680,7 @@ pub(super) fn route(
             state.room.clone(),
             state.connected.clone(),
             state.output.running.is_some(),
+            cancel,
         ))
     })?;
     let mut connection_entry = None;
@@ -725,7 +695,7 @@ pub(super) fn route(
     } else {
         let room = room.unwrap();
         let mut steps = trace::ConnectTrace::new(&room);
-        let result = connect(room, &mut steps);
+        let result = connect(room, &mut steps, &cancel);
         connection_entry = Some(steps.finish(result.as_ref().err()));
         result.map(Some)
     };
@@ -735,9 +705,12 @@ pub(super) fn route(
         if let Some(entry) = connection_entry {
             session.purek.diagnostics.connection(entry);
         }
-        if session.purek.generation != generation {
+        if session.purek.generation != generation
+            || (!disconnect && context.stop.load(Ordering::Acquire))
+        {
             return Err(busy());
         }
+        session.purek.connection_cancel = None;
         session.purek.busy = probe_connection.is_some();
         session.purek.error = result.as_ref().err().map(|e| e.code.clone());
         match &result {
@@ -768,8 +741,15 @@ pub(super) fn route(
             session.purek.output.stop(generation);
         }
         session.revision += 1;
-        result.map(|_| snapshot(session))
-    })?;
+        Ok(snapshot(session))
+    });
+    if result_snapshot.is_err()
+        && let Some(connection) = &probe_connection
+    {
+        let _ = release(connection);
+    }
+    let result_snapshot = result_snapshot?;
+    result?;
     if let Some(connection) = probe_connection {
         finish_output_probe(generation, &connection)
     } else {
@@ -845,31 +825,45 @@ pub(super) fn maintain(context: Arc<HostContext>) {
     let mut was_automatic = false;
     while !context.stop.load(Ordering::Acquire) {
         thread::sleep(Duration::from_secs(1));
-        let Ok((automatic, busy, generation, connected, health_interval)) = with_app(|app| {
-            assistance::refresh(app);
-            let s = &mut app.native().purek;
-            let advancing = s.output.running.as_ref().is_some_and(|r| r.advancing());
-            let interval = if let Some(connection) = &s.connected {
-                s.health
-                    .interval(s.generation, &connection.target_room_id, advancing)
-            } else {
-                s.health = health::Checks::default();
-                Duration::from_secs(20)
-            };
-            Ok((
-                s.auto_discovery,
-                s.busy,
-                s.generation,
-                s.connected.clone(),
-                interval,
-            ))
-        }) else {
+        let Ok((automatic, busy, generation, connected, health_interval, output)) =
+            with_app(|app| {
+                assistance::refresh(app);
+                let s = &mut app.native().purek;
+                let advancing = s.output.running.as_ref().is_some_and(|r| r.advancing());
+                let interval = if s
+                    .connected
+                    .as_ref()
+                    .is_some_and(|connection| connection.lease.is_some())
+                {
+                    // T9 schedules probes/NOTIFY itself; only actual byte deltas are evidence.
+                    Duration::from_secs(1)
+                } else if let Some(connection) = &s.connected {
+                    s.health
+                        .interval(s.generation, &connection.target_room_id, advancing)
+                } else {
+                    s.health = health::Checks::default();
+                    Duration::from_secs(20)
+                };
+                Ok((
+                    s.auto_discovery,
+                    s.busy,
+                    s.generation,
+                    s.connected.clone(),
+                    interval,
+                    s.output
+                        .running
+                        .as_ref()
+                        .map(|running| Arc::clone(&running.trace)),
+                ))
+            })
+        else {
             break;
         };
         if busy {
             continue;
         }
-        if let Some(connection) = connected.filter(|_| last_health.elapsed() >= health_interval) {
+        if let Some(mut connection) = connected.filter(|_| last_health.elapsed() >= health_interval)
+        {
             last_health = Instant::now();
             // Claim the same operation lease as interactive connection changes.
             let admitted = with_app(|app| {
@@ -885,7 +879,15 @@ pub(super) fn maintain(context: Arc<HostContext>) {
             if !admitted {
                 continue;
             }
-            let health = check_health(&connection);
+            let health = if connection.lease.is_some() {
+                if authorization::maintain(&mut connection, output.as_ref()) {
+                    Health::Healthy
+                } else {
+                    Health::Changed
+                }
+            } else {
+                check_health(&connection)
+            };
             let released = with_app(|app| {
                 let session = app.native();
                 let Some(released) = session.purek.finish_health_check(
@@ -896,6 +898,9 @@ pub(super) fn maintain(context: Arc<HostContext>) {
                 ) else {
                     return Ok(false);
                 };
+                if !released {
+                    session.purek.connected = Some(connection.clone());
+                }
                 // Keep the operation lease through release I/O. Commit the
                 // invalidation first so an old probe cannot revoke a new room.
                 session.revision += 1;
@@ -933,6 +938,9 @@ pub(super) fn maintain(context: Arc<HostContext>) {
     }
     if let Ok(Some(connection)) = with_app(|app| {
         let session = app.native();
+        if let Some(cancel) = session.purek.connection_cancel.take() {
+            cancel.cancel();
+        }
         let connection = session.purek.connected.take();
         session.purek.generation += 1;
         session.purek.output.stop(session.purek.generation);

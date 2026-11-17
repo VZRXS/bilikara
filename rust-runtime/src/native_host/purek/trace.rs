@@ -77,6 +77,72 @@ impl ConnectTrace {
     pub fn route(&mut self, facts: Value) {
         self.route = Some(facts);
     }
+    /// Preserve T9 phase results as the old Host's bounded diagnostic summary.
+    /// Only typed facts/codes are copied; no receiver metadata or raw wire text.
+    pub fn purek(&mut self, phases: &[crate::dlna::purek::PhaseResult]) {
+        use crate::dlna::purek::{AddressClass, Phase, PureKError, PureKErrorCode};
+        for phase in phases {
+            let stage = match phase.phase {
+                Phase::Parse => "parse",
+                Phase::Resolve => "resolve",
+                Phase::Route => "route",
+                Phase::DescriptionBefore => "description",
+                Phase::Register => "authorization",
+                Phase::Confirm => "revalidation",
+                Phase::Announcement => "ssdp",
+                Phase::Health => "health_check",
+                Phase::Revoke => "revoke",
+            };
+            let mut entry = json!({"stage":stage,"elapsed_ms":phase.stage.elapsed.as_millis(),
+                "attempt":phase.stage.attempt,"outcome":if phase.stage.result.is_ok(){"ok"}else{"failed"}});
+            if let Err(cause) = &phase.stage.result {
+                let error = authorization::error(&PureKError {
+                    code: phase.error_code.unwrap_or(PureKErrorCode::Http),
+                    cause: cause.clone(),
+                });
+                entry["code"] = json!(error.code);
+                for (key, value) in error
+                    .diagnostic()
+                    .and_then(Value::as_object)
+                    .into_iter()
+                    .flatten()
+                {
+                    entry[key] = value.clone();
+                }
+            }
+            if let Some(status) = phase.stage.http_status {
+                entry["http_status"] = json!(status);
+            }
+            if phase.facts.unconfirmed_response {
+                entry["response"] = json!("unconfirmed");
+            }
+            if let Some(same) = phase.facts.udn_same {
+                entry["udn_same"] = json!(same);
+            }
+            if let Some(changed) = phase.facts.services_changed_after_auth {
+                entry["services_changed"] = json!(changed);
+            }
+            if let Some(changed) = phase.facts.registration_endpoint_changed {
+                entry["registration_endpoint_changed"] = json!(changed);
+            }
+            if phase.stage.disposition == crate::dlna::Disposition::Ignored {
+                entry["disposition"] = json!("ignored");
+            }
+            if phase.stage.disposition == crate::dlna::Disposition::Retrying {
+                entry["disposition"] = json!("retrying");
+            }
+            if let Some(class) = phase.facts.local_address_class {
+                self.route = Some(json!({"local_class":match class {
+                    AddressClass::Private => "private", AddressClass::Shared => "shared", AddressClass::LinkLocal => "link_local",
+                    AddressClass::LoopbackFixture => "loopback", AddressClass::Hostname => "hostname",
+                },"same_subnet_24":phase.facts.same_subnet_24}));
+            }
+            if self.steps.len() == STEPS {
+                self.steps.remove(1);
+            }
+            self.steps.push(entry);
+        }
+    }
     pub fn step<T>(&mut self, stage: &'static str, since: Instant, result: &Result<T, ApiError>) {
         let mut entry = json!({"stage":stage,"elapsed_ms":millis(since)});
         match result {
@@ -96,11 +162,10 @@ impl ConnectTrace {
         }
     }
     pub fn finish(self, result: Option<&ApiError>) -> Value {
-        let failed = self
-            .steps
-            .iter()
-            .rev()
-            .find(|s| s["outcome"] == "failed" && s["stage"] != "ssdp");
+        let failed =
+            self.steps.iter().rev().find(|s| {
+                s["outcome"] == "failed" && s["stage"] != "ssdp" && s["stage"] != "revoke"
+            });
         json!({"attempt":sequence(),"connection_type":self.kind,
             "elapsed_ms":millis(self.started),"route":self.route,"steps":self.steps,
             "result":if result.is_some() {"failed"} else {"connected"},

@@ -82,6 +82,16 @@ impl Room {
         &self.name
     }
 
+    /// Private Host adapter input, never a public snapshot or diagnostic field.
+    pub(crate) fn description_url(&self) -> &Url {
+        &self.description
+    }
+
+    #[cfg(test)]
+    pub(crate) fn parse_fixture(raw: &str) -> Result<Self, PureKError> {
+        Self::parse_on(raw, NetworkPolicy::LoopbackFixture)
+    }
+
     pub(super) fn parse_on(raw: &str, policy: NetworkPolicy) -> Result<Self, PureKError> {
         let raw = raw.trim();
         if raw.len() > MAX_QR_BYTES || raw.chars().any(char::is_control) {

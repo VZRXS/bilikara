@@ -1,28 +1,18 @@
 //! Pure K QR / UPnP wire validation. Protocol reference: ChunK-Helper (MIT),
 //! e223fac61e3991689bf7ef7125297583f5b56b9e; attribution in third-party notices.
 use super::*;
-use base64::engine::general_purpose::STANDARD;
 use bilikara_rust::dlna_policy::{PolicyError, bounded_xml};
-use std::collections::HashMap;
 
 #[derive(Clone)]
 pub(crate) struct Room {
     pub name: String,
     pub description: Url,
-    pub authorization: Option<RoomAuthorization>,
-}
-#[derive(Clone)]
-pub(crate) struct RoomAuthorization {
-    pub url: String,
-    pub token: String,
+    pub authorization: Option<crate::dlna::purek::Room>,
 }
 #[derive(Clone)]
 pub(crate) struct Renderer {
     pub udn: String,
     pub name: String,
-    pub control: Url,
-    pub service: String,
-    pub identities: Vec<String>,
     pub services: Services,
 }
 #[derive(Clone, PartialEq, Eq)]
@@ -38,56 +28,6 @@ pub(super) struct Services {
 }
 fn invalid() -> ApiError {
     failure(400, "qr_invalid", "请使用完整的纯 K 房间投屏二维码")
-}
-fn web(value: &str, domain: &str, path: &str) -> Result<Url, ApiError> {
-    let u = Url::parse(value).map_err(|_| invalid())?;
-    if !matches!(u.scheme(), "http" | "https")
-        || u.host_str() != Some(domain)
-        || u.path().trim_end_matches('/') != path
-        || !u.username().is_empty()
-        || u.password().is_some()
-        || u.port().is_some()
-        || u.fragment().is_some()
-    {
-        return Err(invalid());
-    }
-    Ok(u)
-}
-// Decode percent escapes without treating opaque '+' tokens as spaces.
-fn query(url: &Url) -> Result<HashMap<String, String>, ApiError> {
-    let mut fields = HashMap::new();
-    for pair in url
-        .query()
-        .unwrap_or_default()
-        .split('&')
-        .filter(|s| !s.is_empty())
-    {
-        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-        let decode = |v: &str| {
-            let protected = v.replace('+', "%2B");
-            url::form_urlencoded::parse(format!("v={protected}").as_bytes())
-                .next()
-                .map(|(_, v)| v.into_owned())
-                .unwrap_or_default()
-        };
-        let key = decode(key).to_ascii_lowercase();
-        let value = if key == "name" {
-            decode(value).replace('+', " ")
-        } else {
-            decode(value)
-        };
-        if fields.insert(key, value).is_some() {
-            return Err(invalid());
-        }
-    }
-    Ok(fields)
-}
-fn required<'a>(fields: &'a HashMap<String, String>, key: &str) -> Result<&'a str, ApiError> {
-    fields
-        .get(key)
-        .map(String::as_str)
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(invalid)
 }
 pub(super) fn local_address(url: &Url) -> Result<Ipv4Addr, ApiError> {
     let ip = url
@@ -139,61 +79,21 @@ impl Room {
         }
     }
 
+    pub fn authorization_url(&self) -> Option<&str> {
+        self.authorization
+            .as_ref()
+            .map(crate::dlna::purek::Room::authorization_url)
+    }
+
     pub fn parse(raw: &str) -> Result<Self, ApiError> {
-        if raw.len() > 32768 || raw.chars().any(char::is_control) {
-            return Err(invalid());
-        }
-        let outer = web(raw.trim(), "wx.chunk.cn", "/projection/login")?;
-        let q = query(&outer)?;
-        let place = required(&q, "place_code")?;
-        let encoded = required(&q, "projection_url")?
-            .replace('-', "+")
-            .replace('_', "/");
-        let encoded = format!("{encoded}{}", "=".repeat((4 - encoded.len() % 4) % 4));
-        let bytes = STANDARD.decode(encoded).map_err(|_| invalid())?;
-        let inner = std::str::from_utf8(&bytes).map_err(|_| invalid())?;
-        let decoded;
-        let inner = match web(inner, "conn.dolphinstar.cn", "/Remote") {
-            Ok(url) => url,
-            Err(_) => {
-                decoded = url::form_urlencoded::parse(
-                    format!("v={}", inner.replace('+', "%2B")).as_bytes(),
-                )
-                .next()
-                .map(|(_, v)| v.into_owned())
-                .ok_or_else(invalid)?;
-                web(&decoded, "conn.dolphinstar.cn", "/Remote")?
-            }
-        };
-        let fields = query(&inner)?;
-        let mut description = Url::parse(required(&fields, "url")?).map_err(|_| invalid())?;
-        local_address(&description)?;
-        // Vendor QRs carry the receiver base URL (ChunK Helper appends the
-        // same suffix). Never append it twice to an already complete path.
-        let base = description.path().trim_end_matches('/');
-        if !base.ends_with("/description.xml") {
-            let path = format!("{base}/description.xml");
-            description.set_path(&path);
-        }
-        let token = required(&fields, "token")?.to_owned();
-        if token.len() > 4096 || token.chars().any(char::is_control) {
-            return Err(invalid());
-        }
-        let name = fields
-            .get("name")
-            .filter(|s| !s.trim().is_empty())
-            .cloned()
-            .unwrap_or_else(|| format!("房间 {place}"));
-        if name.chars().count() > 100 || name.chars().any(char::is_control) {
-            return Err(invalid());
-        }
+        let parsed = crate::dlna::purek::Room::parse(raw);
+        #[cfg(test)]
+        let parsed = parsed.or_else(|_| crate::dlna::purek::Room::parse_fixture(raw));
+        let authorization = parsed.map_err(|error| super::authorization::error(&error))?;
         Ok(Self {
-            name,
-            description,
-            authorization: Some(RoomAuthorization {
-                url: outer.to_string(),
-                token,
-            }),
+            name: authorization.name().to_owned(),
+            description: authorization.description_url().clone(),
+            authorization: Some(authorization),
         })
     }
 }
@@ -306,7 +206,7 @@ impl Renderer {
         if identities.len() > 32 {
             return Err(failure(502, "renderer", "房台服务列表过大"));
         }
-        let connection = endpoints
+        endpoints
             .connection_manager
             .as_ref()
             .or(endpoints.av_transport.as_ref())
@@ -319,9 +219,6 @@ impl Renderer {
         Ok(Self {
             udn: udn.into(),
             name: field(device, "friendlyName").chars().take(100).collect(),
-            control: connection.control.clone(),
-            service: connection.service_type.clone(),
-            identities,
             services: endpoints,
         })
     }
@@ -332,27 +229,6 @@ pub(super) fn escape(text: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
-}
-pub(super) fn authorization(
-    authorization: &RoomAuthorization,
-    renderer: &Renderer,
-    address: Ipv4Addr,
-    enable: bool,
-) -> String {
-    format!(
-        "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body><u:SetDeviceAuthorization xmlns:u=\"{}\"><DeviceIP>{address}</DeviceIP><Token>{}</Token><Enable>{}</Enable></u:SetDeviceAuthorization></s:Body></s:Envelope>",
-        escape(&renderer.service),
-        escape(&authorization.token),
-        u8::from(enable)
-    )
-}
-fn authorization_failure(facts: Value) -> ApiError {
-    failure(
-        502,
-        "authorization",
-        "房台未确认设备登记，请完成官方授权后重试",
-    )
-    .with_diagnostic(facts)
 }
 /// Only a structurally valid UPnPError code is reported; never fault text.
 pub(super) fn fault_code(fault: roxmltree::Node<'_, '_>) -> Option<u32> {
@@ -380,65 +256,4 @@ pub(super) fn fault_code(fault: roxmltree::Node<'_, '_>) -> Option<u32> {
     (!code.is_empty() && code.len() <= 4 && code.bytes().all(|b| b.is_ascii_digit()))
         .then(|| code.parse().ok())
         .flatten()
-}
-fn soap_fault<'a>(doc: &'a roxmltree::Document<'a>) -> Option<roxmltree::Node<'a, 'a>> {
-    let root = doc.root_element();
-    if !root.has_tag_name(("http://schemas.xmlsoap.org/soap/envelope/", "Envelope")) {
-        return None;
-    }
-    root.children()
-        .find(|n| n.has_tag_name(("http://schemas.xmlsoap.org/soap/envelope/", "Body")))?
-        .children()
-        .find(|n| n.has_tag_name(("http://schemas.xmlsoap.org/soap/envelope/", "Fault")))
-}
-/// HTTP 500: a SOAP Fault is the receiver rejecting registration; any other
-/// body remains an HTTP failure. Neither is ever treated as success.
-pub(super) fn authorization_fault(text: &str, _service: &str) -> ApiError {
-    let Ok(doc) = xml(text) else {
-        return super::trace::http_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR);
-    };
-    match soap_fault(&doc) {
-        Some(fault) => authorization_failure(json!({"http_status":500,"soap_fault":true,
-            "upnp_error":fault_code(fault)})),
-        None => super::trace::http_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
-    }
-}
-pub(super) fn authorization_result(text: &str, service: &str) -> Result<(), ApiError> {
-    let doc = xml(text)?;
-    let body = doc
-        .root_element()
-        .children()
-        .find(|n| n.has_tag_name(("http://schemas.xmlsoap.org/soap/envelope/", "Body")));
-    if body.is_some_and(|n| {
-        n.children()
-            .any(|n| n.has_tag_name((service, "SetDeviceAuthorizationResponse")))
-    }) && !body.is_some_and(|n| n.children().any(|n| n.tag_name().name() == "Fault"))
-    {
-        return Ok(());
-    }
-    let fault = soap_fault(&doc);
-    Err(authorization_failure(json!({"http_status":200,
-        "soap_fault":fault.is_some(),"upnp_error":fault.and_then(fault_code),
-        "response":if fault.is_some() {"fault"} else {"invalid"}})))
-}
-pub(super) fn advertisement(
-    room: &Room,
-    renderer: &Renderer,
-    identity: &str,
-    alive: bool,
-) -> Vec<u8> {
-    let usn = if identity == renderer.udn {
-        identity.into()
-    } else {
-        format!("{}::{identity}", renderer.udn)
-    };
-    let location = if alive {
-        format!(
-            "CACHE-CONTROL: max-age=60\r\nLOCATION: {}\r\nSERVER: bilikara/0.8 UPnP/1.0\r\n",
-            room.description
-        )
-    } else {
-        String::new()
-    };
-    format!("NOTIFY * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\n{location}NT: {identity}\r\nNTS: ssdp:{}\r\nUSN: {usn}\r\n\r\n", if alive { "alive" } else { "byebye" }).into_bytes()
 }
