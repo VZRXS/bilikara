@@ -53,6 +53,7 @@ fn health_while_stalled(assets: AssetSource, release: &Stall, stalled: impl Fn()
     listener.set_nonblocking(true).unwrap();
     let port = listener.local_addr().unwrap().port();
     let context = Arc::new(HostContext {
+        sample_root: None,
         directory: PathBuf::new(),
         cache_root: PathBuf::new(),
         assets,

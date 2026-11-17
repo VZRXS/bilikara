@@ -112,7 +112,7 @@ pub fn start_diagnosed(directory: &Path, assets: AssetSource) -> Result<NativeHo
         stage: Stage::StateInitialize,
         last_completed: Some(Stage::CheckpointRestore),
     };
-    super::start_observed(directory, assets, false, None, &mut progress).map_err(|error| {
+    super::start_observed(directory, assets, false, None, None, &mut progress).map_err(|error| {
         // NativeHost's owned handle drains any workers/listeners before this
         // boundary. Release the storage authority on failure as well, without
         // retrying startup or writing a fresh seed over the saved checkpoint.

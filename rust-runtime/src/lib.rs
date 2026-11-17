@@ -7,6 +7,8 @@ mod cache_application;
 mod cache_runtime;
 #[cfg(feature = "native-host")]
 pub mod cast_platform;
+#[cfg(feature = "native-host")]
+pub mod cast_samples;
 pub mod catalog_maintenance;
 mod cloudflare_service;
 mod desktop_login;

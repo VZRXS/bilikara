@@ -145,7 +145,8 @@ pub(super) fn route(
     };
     with_app(|app| {
         let session = app.native();
-        if session.cast.room_busy
+        if session.cast.self_test.running
+            || session.cast.room_busy
             || session.cast.connected
             || session.cast.pending.is_some()
             || session.local_output.controller.owns_playback

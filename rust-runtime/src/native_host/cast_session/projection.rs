@@ -337,7 +337,11 @@ pub(crate) fn output_command(
         ))
     })?;
     if target == "native" || (local && target == "local") {
-        return super::super::native_output::controller::command(identity, body);
+        let result = super::super::native_output::controller::command(identity, body)?;
+        if target == "native" {
+            pipeline::start(context)?;
+        }
+        return Ok(result);
     }
     if !connected {
         if connecting {

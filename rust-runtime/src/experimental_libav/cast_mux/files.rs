@@ -215,10 +215,6 @@ impl CastSession {
     /// as generated media. The self-test supplies its pinned bundled asset;
     /// this is not an untrusted upload or a format-validation entry point.
     #[cfg(feature = "native-host")]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Remove when the T8 self-test consumer is ported")
-    )]
     pub(crate) fn retain_ts(
         &self,
         bytes: &[u8],

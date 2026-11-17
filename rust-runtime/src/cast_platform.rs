@@ -149,6 +149,10 @@ pub fn initialize_optional(initialize: impl FnOnce() -> Installed) {
     });
 }
 
+pub(crate) fn has_platform_state() -> bool {
+    installed().is_some()
+}
+
 pub fn initialization_failure() -> Option<InitializationFailure> {
     match installed() {
         Some(Err(reason)) => Some(reason),

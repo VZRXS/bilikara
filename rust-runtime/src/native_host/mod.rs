@@ -161,6 +161,7 @@ pub(crate) struct HostContext {
     directory: PathBuf,
     cache_root: PathBuf,
     assets: AssetSource,
+    sample_root: Option<PathBuf>,
     stop: Arc<AtomicBool>,
     api_slots: Arc<Semaphore>,
     export_slots: Arc<Semaphore>,
@@ -355,7 +356,14 @@ fn start(
         stage: startup::Stage::StateInitialize,
         last_completed: None,
     };
-    start_observed(directory, assets, desktop, shutdown_token, &mut progress)
+    start_observed(
+        directory,
+        assets,
+        desktop,
+        shutdown_token,
+        None,
+        &mut progress,
+    )
 }
 
 fn start_observed(
@@ -363,6 +371,7 @@ fn start_observed(
     assets: AssetSource,
     desktop: bool,
     shutdown_token: Option<String>,
+    sample_root: Option<PathBuf>,
     progress: &mut startup::Progress,
 ) -> Result<NativeHost, ApiError> {
     use startup::Stage;
@@ -503,6 +512,7 @@ fn start_observed(
     let context = Arc::new(HostContext {
         directory,
         cache_root,
+        sample_root: sample_root.or_else(crate::cast_samples::root),
         assets,
         stop: Arc::new(AtomicBool::new(false)),
         api_slots: Arc::new(Semaphore::new(32)),
@@ -909,6 +919,9 @@ async fn handle_inner(
     let host = state_task(move |app| app.native_authorize(&request_identity, false)).await?;
     if path == "/api/events" && method == Method::GET {
         return event_stream(context, identity, host).await;
+    }
+    if path == "/api/cast/self-test/download" && method == Method::GET {
+        return cast_session::self_test::download(&identity);
     }
     if matches!(
         path.as_str(),

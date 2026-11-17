@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 mod l1;
 mod media;
+pub(super) mod pipeline;
 mod projection;
+pub(super) mod self_test;
 mod worker;
 pub(crate) use projection::output_command;
 
@@ -55,6 +57,8 @@ pub(crate) enum Control {
 
 #[derive(Default)]
 pub(crate) struct State {
+    pub self_test: self_test::State,
+    pub self_test_handoff_active: bool,
     pub delivered: bool,
     pub protocol_state: Option<crate::dlna::diagnostics::ProtocolState>,
     pub protocol_error: Option<String>,
@@ -126,7 +130,7 @@ impl State {
             })
             .cloned()
             .unwrap_or_default();
-        json!({"phase":self.phase,"owns_playback":self.owns_playback,
+        json!({"self_test":self.self_test.snapshot(),"phase":self.phase,"owns_playback":self.owns_playback,
             "network_hint":self.network_facts.network_hint(),"network_facts":self.network_facts,
             "connected":self.connected,"output_enabled":self.output_enabled,
             "pipeline_running":self.pipeline_running,"pipeline_result":self.pipeline_result,
@@ -139,6 +143,7 @@ impl State {
             "busy":self.control_busy || self.pending.is_some() || self.pipeline_running,"local_media":if self.owns_playback {"retain_paused_muted"} else {"host"}})
     }
     fn replace(&mut self, request: Request, phase: Phase) {
+        self.self_test.cancel.cancel();
         self.cancel.cancel();
         self.cancel = CancellationToken::new();
         self.mux_stop.store(true, Ordering::Release);
@@ -192,6 +197,9 @@ pub(super) fn route(
     path: &str,
     body: &Value,
 ) -> Result<Value, ApiError> {
+    if path.starts_with("/api/cast/self-test/") {
+        return self_test::route(context, identity, method, path, body);
+    }
     if path == "/api/cast/capabilities" && method == Method::GET {
         with_app(|app| app.native_authorize(identity, true))?;
         return Ok(
@@ -313,7 +321,9 @@ pub(super) fn route(
             }
             return app.native_snapshot(true);
         }
-        if app.native().cast.pipeline_running && path != "/api/cast/disconnect" {
+        if (app.native().cast.pipeline_running || app.native().cast.self_test.running)
+            && path != "/api/cast/disconnect"
+        {
             return Err(ApiError::new(409, "cast_busy", "Pipeline test is running"));
         }
         match path {
@@ -655,6 +665,13 @@ pub(crate) fn admit_prepared(
 ) -> Result<(), ApiError> {
     if context.stop.load(Ordering::Acquire) {
         return Err(ApiError::new(503, "stopped", "Host stopped"));
+    }
+    if app.native().cast.self_test.running {
+        return Err(ApiError::new(
+            409,
+            "cast_busy",
+            "Compatibility test is running",
+        ));
     }
     let snapshot = app.native_snapshot(true)?;
     let has_media = app.native_cast_input()?.current_item.is_some();

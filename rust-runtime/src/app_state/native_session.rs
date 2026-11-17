@@ -1441,6 +1441,8 @@ impl AppState {
             "library_refresh":self.native_session.library_diagnostics,
             "ratings":self.native_session.ratings.events,
             "purek":self.native_session.cast.diagnostics(),
+            "cast":self.native_session.cast.trace.as_ref().map(|t|t.report().diagnostics()["cast"].clone()),
+            "cast_self_test":self.native_session.cast.self_test.trace.as_ref().map(|t|t.report().diagnostics()["cast_self_test"].clone()),
             "gatcha_task":self.native_session.login.gacha_snapshot()})
     }
 

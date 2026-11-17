@@ -357,7 +357,26 @@ pub fn run(arguments: impl Iterator<Item = String>) -> Result<(), String> {
         let shutdown = std::env::var("BILIKARA_SHUTDOWN_TOKEN")
             .ok()
             .filter(|s| !s.is_empty());
-        let host = start(&directory, source, true, shutdown).map_err(|e| e.to_string())?;
+        let sample_root = if development_assets {
+            assets
+                .parent()
+                .map(|root| root.join("resources/cast-samples"))
+        } else {
+            Some(resources.join("cast-samples"))
+        };
+        let mut progress = startup::Progress {
+            stage: startup::Stage::StateInitialize,
+            last_completed: None,
+        };
+        let host = start_observed(
+            &directory,
+            source,
+            true,
+            shutdown,
+            sample_root,
+            &mut progress,
+        )
+        .map_err(|e| e.to_string())?;
         // Only stdout's private parent pipe carries the bootstrap capability.
         println!(
             "{}",

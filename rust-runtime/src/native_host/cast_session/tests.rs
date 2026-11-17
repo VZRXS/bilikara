@@ -429,6 +429,9 @@ impl Host {
             directory: directory.clone(),
             cache_root: directory.join("media"),
             assets: Arc::new(|_| None),
+            sample_root: Some(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/cast-samples"),
+            ),
             stop: Arc::new(AtomicBool::new(false)),
             api_slots: Arc::new(Semaphore::new(1)),
             export_slots: Arc::new(Semaphore::new(1)),
@@ -982,3 +985,6 @@ fn learned_live_mode_pause_resume_mode_switch_and_connect_cancellation() {
 mod platform_tests;
 #[path = "tests_round1.rs"]
 mod round1;
+
+#[path = "self_test/scenarios.rs"]
+mod self_test_scenarios;
