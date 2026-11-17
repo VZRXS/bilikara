@@ -13,6 +13,7 @@
 ))]
 mod wire;
 
+pub mod cast_mux;
 /// Pure developer comparison semantics; never consulted by normal media work.
 pub mod comparison;
 pub mod live_audio;

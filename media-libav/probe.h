@@ -210,6 +210,38 @@ BM_EXPORT int32_t bm_stretch_process_v1(void *, const float *input, uint32_t inp
 BM_EXPORT int32_t bm_fd_from_handle_v1(void *handle);
 BM_EXPORT void bm_fd_close_v1(int32_t fd);
 #endif
+/* T3: independently negotiated cast generator. All calls are synchronous.
+ * output_kind: 0 callback TS, 1 private faststart MP4 staging file.
+ * TS callbacks start at packet boundaries; key marks the first chunk of an
+ * IDR group (PAT/PMT precede the video PES). Never retain borrowed bytes. */
+typedef struct { uint32_t schema, request_size, result_size, start_size; } BmCastInfo;
+typedef struct {
+    int64_t source_start_us, timestamp_origin_us;
+    int32_t profile, level;
+    uint32_t width, height, has_b_frames, audio_transcoded;
+} BmCastStart;
+typedef struct {
+    BmRequest video, audio;
+    int64_t start_us;
+    int32_t (*visit)(void *, const uint8_t *, uint32_t, int64_t, uint32_t);
+    void *opaque;
+    uint32_t output_kind;
+    const char *staging_path;
+    uint64_t max_bytes;
+    uint32_t ts_cbr; /* 0 file VBR, 1 live CBR; independent of Rust pacing */
+    int32_t (*on_start)(void *, const BmCastStart *); /* exactly once before bytes */
+} BmCastRequest;
+typedef struct {
+    uint32_t status, complete;
+    uint64_t packets, bytes;
+    int32_t profile, level; /* H.264 profile_idc/level_idc, -1 if unavailable */
+    uint32_t width, height, has_b_frames, audio_transcoded;
+    int64_t source_start_us, duration_us, gop_us;
+} BmCastResult;
+BM_EXPORT uint32_t bm_cast_info_v1(uint32_t size, BmCastInfo *info);
+BM_EXPORT uint32_t bm_cast_preflight_v1(const BmRequest *, BmCastResult *);
+BM_EXPORT uint32_t bm_cast_mux_v1(const BmCastRequest *, BmCastResult *);
+
 #ifdef __cplusplus
 }
 #endif
