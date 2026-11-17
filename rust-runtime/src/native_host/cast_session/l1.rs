@@ -18,6 +18,7 @@ pub(super) fn generate(
     stream: Arc<LiveStream>,
     mut producer: LiveProducer,
 ) -> Result<(), ApiError> {
+    let mut pacing_error = None;
     let result = (|| {
         let facts = probe.cast_preflight(&input.video, stream.cancellation())?;
         let CastPacing::Realtime { burst } = producer.pacing() else {
@@ -66,7 +67,13 @@ pub(super) fn generate(
                     let Some(began) = began else {
                         return false;
                     };
-                    let due = Duration::from_micros(time_us as u64).saturating_sub(lead);
+                    let due = match pacing_due(time_us, lead) {
+                        Ok(due) => due,
+                        Err(error) => {
+                            pacing_error = Some(error);
+                            return false;
+                        }
+                    };
                     while began.elapsed() < due {
                         if stream.cancellation().load(Ordering::Acquire) {
                             return false;
@@ -92,9 +99,20 @@ pub(super) fn generate(
             },
         )
     })();
-    let finished = producer.finish(result.is_ok());
+    let finished = producer.finish(result.is_ok() && pacing_error.is_none());
+    if let Some(error) = pacing_error {
+        return Err(error);
+    }
     result.map_err(|_| ApiError::new(409, "cast_prepare_failed", "Cannot generate L1 media"))?;
     finished.map_err(|_| ApiError::new(409, "cast_prepare_failed", "L1 stream terminated"))
+}
+
+fn pacing_due(time_us: i64, lead: Duration) -> Result<Duration, ApiError> {
+    // Validate before waiting: casting a negative DTS to u64 would keep the
+    // worker asleep indefinitely, before the ring can reject the event.
+    let time_us = u64::try_from(time_us)
+        .map_err(|_| ApiError::new(409, "cast_prepare_failed", "Negative L1 media timestamp"))?;
+    Ok(Duration::from_micros(time_us).saturating_sub(lead))
 }
 
 fn read_control(
@@ -132,4 +150,26 @@ fn read_control(
         track,
         mode: s.offset_mode,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pacing_rejects_negative_timestamps_before_waiting() {
+        let lead = Duration::from_millis(1900);
+        for time_us in [-1, i64::MIN] {
+            let error = pacing_due(time_us, lead).unwrap_err();
+            assert_eq!(error.status, 409);
+            assert_eq!(error.code, "cast_prepare_failed");
+            assert_eq!(error.message, "Negative L1 media timestamp");
+        }
+        assert_eq!(pacing_due(0, lead).unwrap(), Duration::ZERO);
+        assert_eq!(pacing_due(1_900_000, lead).unwrap(), Duration::ZERO);
+        assert_eq!(
+            pacing_due(2_000_000, lead).unwrap(),
+            Duration::from_millis(100)
+        );
+    }
 }
