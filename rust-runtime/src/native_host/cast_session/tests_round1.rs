@@ -1,5 +1,234 @@
 use super::*;
 
+fn start_local_playback(host: &Host) {
+    let s = host.snapshot();
+    assert_eq!(
+        host.post(
+            "/api/player/claim-program",
+            json!({
+                "playback_generation":s["playback_generation"],
+                "item_incarnation_id":s["current_item"]["item_incarnation_id"],
+                "artifact_set_id":s["current_item"]["artifact_set_id"]
+            })
+        )
+        .unwrap()["claimed"],
+        true
+    );
+    host.post(
+        "/api/player/status",
+        json!({
+            "playback_generation":s["playback_generation"],"item_id":s["current_item"]["id"],
+            "status_sequence":1,"observed_phase":"playing","is_paused":false,
+            "current_time":3.0,"duration":120.0
+        }),
+    )
+    .unwrap();
+    assert_eq!(host.snapshot()["player_status"]["is_paused"], false);
+}
+
+fn assert_output_failed_with_connection(snapshot: &Value, code: &str, stage: &str) {
+    assert_eq!(snapshot["cast"]["connected"], true, "{}", snapshot["cast"]);
+    assert_eq!(snapshot["cast"]["phase"], "active");
+    assert_eq!(snapshot["cast"]["output_enabled"], false);
+    assert_eq!(snapshot["cast"]["owns_playback"], false);
+    assert_eq!(snapshot["cast"]["local_media"], "host");
+    assert!(snapshot["cast"]["selected"].is_string());
+    assert_eq!(snapshot["purek"]["connected"], true);
+    assert!(snapshot["purek"]["output"]["target_room_id"].is_string());
+    assert_eq!(snapshot["purek"]["error_code"], Value::Null);
+    assert_eq!(snapshot["purek"]["error_stage"], Value::Null);
+    assert_eq!(snapshot["purek"]["output"]["status"], "error");
+    assert_eq!(snapshot["purek"]["output"]["last_error"], code);
+    assert_eq!(snapshot["media_output"]["target"], "local");
+    assert_eq!(snapshot["media_output"]["requested_target"], "local");
+    assert_eq!(snapshot["media_output"]["status"], "error");
+    assert_eq!(snapshot["media_output"]["last_error"], code);
+    assert_eq!(
+        snapshot["media_output"]["failure"],
+        json!({"code":code,"stage":stage})
+    );
+    assert_eq!(snapshot["current_item"]["id"], "song-one");
+    assert!(snapshot["player_control_command"].is_object());
+    assert_eq!(snapshot["cast"]["resume"]["position"], 3.0);
+    assert_eq!(snapshot["cast"]["resume"]["is_paused"], false);
+}
+
+#[test]
+fn playing_room_without_cast_backend_keeps_connection_and_local_output() {
+    // Isolate both the environment and the process-wide media configuration.
+    // This regression must also run when its parent uses a test companion.
+    if std::env::var_os("BILIKARA_TEST_CAST_ABSENCE_CHILD").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "native_host::cast_session::tests::round1::playing_room_without_cast_backend_keeps_connection_and_local_output",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("BILIKARA_TEST_CAST_ABSENCE_CHILD", "1")
+            .env_remove("BILIKARA_TEST_CAST_COMPANION")
+            .env_remove("BILIKARA_TEST_LIBAV_COMPANION")
+            .env_remove("BILIKARA_LIBAV_COMPANION")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let _serial = GLOBAL_APP_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    for vendor in [false, true] {
+        for output_mode in ["file", "live"] {
+            let host = Host::new();
+            assert_eq!(host.snapshot()["current_item"]["id"], "song-one");
+            start_local_playback(&host);
+            let receiver = Receiver::new();
+            let key = discover(&host, &receiver);
+            mode(&host, &key, output_mode);
+            if !vendor {
+                host.post(
+                    "/api/purek/prepare",
+                    json!({"url":format!("http://{}/description", receiver.address)}),
+                )
+                .unwrap();
+            }
+            host.post(
+                "/api/cast/connect",
+                if vendor {
+                    json!({"purek_qr":receiver.qr()})
+                } else {
+                    json!({})
+                },
+            )
+            .unwrap();
+            let failed = host.wait(|s| {
+                s["cast"]["error_code"] == "cast_backend_unavailable" && s["cast"]["busy"] == false
+            });
+            assert_output_failed_with_connection(
+                &failed,
+                "purek_output_backend_unavailable",
+                "media_preparation",
+            );
+            assert_eq!(failed["media_output"]["available"], false);
+            let connection = failed["purek"]["output"]["target_room_id"].clone();
+            // Retrying a still unavailable pipeline must fail only the output,
+            // without requiring another device admission or revoking Pure K.
+            host.post("/api/cast/output", json!({"enabled":true}))
+                .unwrap();
+            let retried = host.wait(|s| {
+                s["cast"]["error_code"] == "cast_backend_unavailable" && s["cast"]["busy"] == false
+            });
+            assert_output_failed_with_connection(
+                &retried,
+                "purek_output_backend_unavailable",
+                "media_preparation",
+            );
+            assert_eq!(retried["purek"]["output"]["target_room_id"], connection);
+            let state = receiver.state.lock().unwrap();
+            assert_eq!(state.releases, 0);
+            for action in ["Stop", "SetAVTransportURI", "Play", "Pause", "Seek"] {
+                assert!(
+                    !state.actions.iter().any(|a| a == action),
+                    "{action} without output"
+                );
+            }
+            assert_eq!(
+                state
+                    .actions
+                    .iter()
+                    .filter(|a| a.as_str() == "SetDeviceAuthorization")
+                    .count(),
+                usize::from(vendor)
+            );
+            drop(state);
+            host.post("/api/cast/disconnect", json!({})).unwrap();
+            host.wait(|s| s["cast"]["phase"] == "idle" && s["cast"]["busy"] == false);
+            assert_eq!(receiver.state.lock().unwrap().releases, usize::from(vendor));
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires trusted BILIKARA_TEST_CAST_COMPANION; real pipeline failure and retry"]
+fn pipeline_failure_can_retry_on_the_same_registered_connection() {
+    let _serial = GLOBAL_APP_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    for vendor in [false, true] {
+        for output_mode in ["file", "live"] {
+            let host = Host::new();
+            host.use_long_media();
+            start_local_playback(&host);
+            let snapshot = host.snapshot();
+            let video = host.context.cache_root.join(
+                snapshot["current_item"]["video_media_url"]
+                    .as_str()
+                    .unwrap()
+                    .strip_prefix("/media/")
+                    .unwrap(),
+            );
+            let valid_video = std::fs::read(&video).unwrap();
+            std::fs::write(&video, b"invalid media for pipeline failure").unwrap();
+            let receiver = Receiver::new();
+            let key = discover(&host, &receiver);
+            mode(&host, &key, output_mode);
+            host.post(
+                "/api/cast/connect",
+                if vendor {
+                    json!({"purek_qr":receiver.qr()})
+                } else {
+                    json!({"device_key":key})
+                },
+            )
+            .unwrap();
+            let failed = host.wait(|s| {
+                s["cast"]["error_code"] == "cast_prepare_failed" && s["cast"]["busy"] == false
+            });
+            assert_output_failed_with_connection(
+                &failed,
+                "purek_output_pipeline",
+                "media_preparation",
+            );
+            let connection = failed["purek"]["output"]["target_room_id"].clone();
+            assert_eq!(receiver.state.lock().unwrap().releases, 0);
+            std::fs::write(&video, valid_video).unwrap();
+            host.post("/api/cast/output", json!({"enabled":true}))
+                .unwrap();
+            let recovered = host
+                .wait(|s| s["media_output"]["status"] == "streaming" && s["cast"]["busy"] == false);
+            assert_eq!(recovered["cast"]["connected"], true);
+            assert_eq!(recovered["cast"]["output_enabled"], true);
+            assert_eq!(recovered["cast"]["owns_playback"], true);
+            assert_eq!(recovered["cast"]["error_code"], Value::Null);
+            assert_eq!(recovered["media_output"]["last_error"], Value::Null);
+            assert_eq!(recovered["media_output"]["failure"], Value::Null);
+            assert_eq!(recovered["purek"]["connected"], true);
+            assert_eq!(recovered["purek"]["output"]["target_room_id"], connection);
+            assert_eq!(recovered["purek"]["error_code"], Value::Null);
+            let state = receiver.state.lock().unwrap();
+            assert!(state.bytes > 0);
+            assert_eq!(state.releases, 0);
+            assert_eq!(
+                state
+                    .actions
+                    .iter()
+                    .filter(|a| a.as_str() == "SetDeviceAuthorization")
+                    .count(),
+                usize::from(vendor)
+            );
+            drop(state);
+            host.post("/api/cast/disconnect", json!({})).unwrap();
+            host.wait(|s| s["cast"]["phase"] == "idle" && s["cast"]["busy"] == false);
+            assert_eq!(receiver.state.lock().unwrap().releases, usize::from(vendor));
+        }
+    }
+}
+
 #[test]
 fn empty_room_connection_and_probe_never_control_unrelated_receiver_playback() {
     let _serial = GLOBAL_APP_TEST_LOCK

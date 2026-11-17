@@ -66,6 +66,8 @@ pub(crate) struct State {
     pub room_error: Option<String>,
     // Sanitized next-compatible code/stage derived from the failed transport operation.
     pub room_failure: Option<(String, &'static str)>,
+    // Local output failures do not revoke the receiver connection or room lease.
+    pub output_failure: Option<(String, &'static str)>,
     pub connection_id: Option<String>,
     pub connection_cancel: Option<CancellationToken>,
     pub offset_mode: bilikara_rust::output_audio::OffsetMode,
@@ -145,6 +147,7 @@ impl State {
         self.error_code = None;
         self.room_error = None;
         self.room_failure = None;
+        self.output_failure = None;
         self.capability_probe_running = false;
         self.protocol_state = None;
         self.protocol_error = None;
@@ -323,6 +326,9 @@ pub(super) fn route(
                     ));
                 }
                 if s.output_enabled != enabled {
+                    if enabled && s.output_failure.take().is_some() {
+                        s.error_code = None;
+                    }
                     s.output_enabled = enabled;
                     s.control_busy = true;
                 }

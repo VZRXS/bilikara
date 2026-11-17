@@ -253,6 +253,7 @@ pub(super) fn restore(id: u64, failure: Option<String>) {
             state.phase = Phase::Idle;
             state.error_code = state.platform_stop_error.map(str::to_owned).or(failure);
             state.room_error = state.error_code.clone();
+            state.output_failure = None;
             // A superseded worker drains before the queued disconnect. Keep
             // its platform failure until that final operation publishes it.
             if state.operation == id {
@@ -274,6 +275,42 @@ struct ConnectContext<'a> {
     assisted: Option<&'a Assisted>,
     cancel: &'a CancellationToken,
     stop: &'a Arc<AtomicBool>,
+}
+
+fn is_local_pipeline_failure(error: &ApiError) -> bool {
+    matches!(
+        error.code.as_str(),
+        "cast_backend_unavailable" | "cast_prepare_failed" | "cast_publish_failed"
+    )
+}
+
+fn suspend_failed_output(id: u64, failure: ApiError, stage: &'static str) -> Result<(), ApiError> {
+    with_app(|app| {
+        let snap = app.native_cast_input()?;
+        let s = &mut app.native().cast;
+        if s.operation != id || s.cancel.is_cancelled() {
+            return Err(error("cancelled"));
+        }
+        if s.playback_generation != snap.playback_generation {
+            s.position = 0.0;
+            s.paused = false;
+        }
+        s.resume = Some(json!({"playback_generation":snap.playback_generation,
+            "item_id":snap.current_item.as_ref().map(|i|&i.id),"position":s.position,
+            "is_paused":s.paused,"operation_id":id}));
+        s.output_failure = Some((failure.code.clone(), stage));
+        s.error_code = Some(failure.code);
+        s.output_enabled = false;
+        s.owns_playback = false;
+        s.phase = Phase::Active;
+        s.control = None;
+        s.control_busy = false;
+        s.delivered = false;
+        s.receiver_state = None;
+        projection::resume_local(app)?;
+        app.native().revision += 1;
+        Ok(())
+    })
 }
 async fn connect(
     admitted: ConnectContext<'_>,
@@ -545,9 +582,11 @@ async fn play_session(
     let mut output_ids = std::collections::BTreeMap::new();
     let mut prefetched: Option<Prefetch> = None;
     let mut attempted_output = false;
-    let result = async {
+    let result = loop {
+        let mut failure_stage = "media_preparation";
+        let result = async {
         let position = with_app(|app| Ok(app.native().cast.position))?;
-        if with_app(|app|Ok(app.native_cast_input()?.current_item.is_some()))? {
+        if with_app(|app|Ok(app.native().cast.output_enabled && app.native_cast_input()?.current_item.is_some()))? {
         attempted_output = true;
         output = Some(
             start_output(
@@ -660,6 +699,7 @@ async fn play_session(
                     Ok((app.native().cast.position, app.native().cast.mode, app.native().cast.paused))
                 })?;
                 attempted_output = true;
+                failure_stage = "media_preparation";
                 output = Some(start_output(OutputContext { context, id, client: &client,
                     endpoint: &endpoint, files: files.clone(), trace, connection, cancel, stop },
                     mode, position, None).await?);
@@ -677,6 +717,7 @@ async fn play_session(
             }
             let out = output.as_mut().unwrap();
             if let Some(live) = &mut out.live {
+                failure_stage = "media_pipeline";
                 live.check().await?;
             }
             output_ids.insert(out.generation, out.id);
@@ -785,6 +826,7 @@ async fn play_session(
                             stopping.store(true, Ordering::Release);
                         }
                         let cached = take_prefetch(&mut prefetched, cancel).await;
+                        failure_stage = "media_preparation";
                         output = Some(
                             start_output(
                                 OutputContext {
@@ -1014,6 +1056,38 @@ async fn play_session(
         Ok(())
     }
     .await;
+        // Decision 7 / A5: a local mux/companion failure stops only output. Retire
+        // its producer, prefetch and HTTP generation, then keep this same worker
+        // maintaining the room lease and accepting probe/output/disconnect actions.
+        // Receiver, authorization and cancellation errors still leave the session.
+        if !cancel.is_cancelled() && result.as_ref().is_err_and(is_local_pipeline_failure) {
+            if let Some((_, stopping, _)) = &prefetched {
+                stopping.store(true, Ordering::Release);
+            }
+            let _ = take_prefetch(&mut prefetched, cancel).await;
+            if let Some(mut previous) = output.take() {
+                let _ = record(
+                    trace,
+                    connection,
+                    Some(previous.id),
+                    soap(client.stop(cancel)).await,
+                );
+                if let Some(live) = previous.live.take() {
+                    live.stop().await;
+                }
+                output_ids.insert(previous.generation, previous.id);
+                trace.complete_output(previous.id, Default::default());
+            }
+            endpoint.clear_generation();
+            drain_http(trace, &mut events, &output_ids, None);
+            attempted_output = false;
+            if let Err(error) = suspend_failed_output(id, result.unwrap_err(), failure_stage) {
+                break Err(error);
+            }
+            continue;
+        }
+        break result;
+    };
     stop.store(true, Ordering::Release);
     if let Some((_, stop, _)) = &prefetched {
         stop.store(true, Ordering::Release);

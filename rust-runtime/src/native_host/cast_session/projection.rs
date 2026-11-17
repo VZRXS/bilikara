@@ -38,6 +38,7 @@ pub(super) fn legacy_error(code: &str) -> &str {
         | "io"
         | "http_initialization" => "purek_network",
         "soap_fault" => "purek_receiver_fault",
+        "cast_backend_unavailable" => "purek_output_backend_unavailable",
         "cast_busy" => "purek_busy",
         _ => "purek_output_pipeline",
     }
@@ -106,12 +107,23 @@ impl State {
     }
 
     fn failure(&self) -> Value {
-        self.room_error_projection()
+        self.output_failure
+            .as_ref()
+            .map(|(code, stage)| (legacy_error(code), *stage))
+            .or_else(|| self.room_error_projection())
             .map(|(code, stage)| json!({"stage":stage,"code":code}))
             .unwrap_or(Value::Null)
     }
 
     fn room_error_projection(&self) -> Option<(&str, &str)> {
+        if self.room_error.is_none()
+            && self
+                .output_failure
+                .as_ref()
+                .is_some_and(|(code, _)| self.error_code.as_ref() == Some(code))
+        {
+            return None;
+        }
         let raw = self.room_error.as_deref().or(self.error_code.as_deref())?;
         Some(
             self.room_failure
@@ -141,6 +153,9 @@ impl State {
     }
 
     fn output_error(&self) -> Option<&str> {
+        if let Some((code, _)) = &self.output_failure {
+            return Some(legacy_error(code));
+        }
         match self.status() {
             "unsupported" => Some("purek_output_no_av_transport"),
             "unverified" => Some(
