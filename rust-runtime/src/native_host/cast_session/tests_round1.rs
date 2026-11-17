@@ -21,12 +21,26 @@ fn empty_room_connection_and_probe_never_control_unrelated_receiver_playback() {
             .is_none()
         );
         let receiver = Receiver::new();
+        receiver.query_hold.store(true, Ordering::Release);
         if vendor {
             host.post("/api/cast/connect", json!({"purek_qr":receiver.qr()}))
                 .unwrap();
         } else {
-            host.connect(receiver.renderer());
+            let key = discover(&host, &receiver);
+            host.post("/api/cast/connect", json!({"device_key":key}))
+                .unwrap();
         }
+        assert_eq!(
+            host.post(
+                "/api/player/output",
+                json!({"target":"native","experimental":true})
+            )
+            .unwrap_err()
+            .code,
+            "purek_busy"
+        );
+        assert!(!with_app(|app| Ok(app.native().local_output.controller.owns_playback)).unwrap());
+        receiver.query_hold.store(false, Ordering::Release);
         let snapshot =
             host.wait(|s| s["cast"]["connected"] == true && s["cast"]["phase"] == "active");
         assert_eq!(snapshot["cast"]["owns_playback"], false);

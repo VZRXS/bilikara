@@ -177,7 +177,10 @@ pub(crate) fn command(identity: &Identity, body: &Value) -> Result<Value, ApiErr
             room.output.mode = mode;
         } else {
             app.native_authorize(identity, true)?;
-            if app.native().cast.connected || app.native().cast.owns_playback {
+            if app.native().cast.connected
+                || app.native().cast.owns_playback
+                || app.native().cast.room_busy
+            {
                 return Err(busy());
             }
             let target = body["target"]

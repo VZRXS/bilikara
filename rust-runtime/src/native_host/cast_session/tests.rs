@@ -38,6 +38,7 @@ struct Receiver {
     stop: Arc<AtomicBool>,
     release_ready: Arc<AtomicBool>,
     release_hold: Arc<AtomicBool>,
+    query_hold: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
 }
 fn field<'a>(s: &'a str, name: &str) -> Option<&'a str> {
@@ -81,6 +82,8 @@ impl Receiver {
         let stop = Arc::new(AtomicBool::new(false));
         let release_ready = Arc::new(AtomicBool::new(false));
         let release_hold = Arc::new(AtomicBool::new(false));
+        let query_hold = Arc::new(AtomicBool::new(false));
+        let holding_query = query_hold.clone();
         let releasing = release_ready.clone();
         let holding_release = release_hold.clone();
         let stopping = stop.clone();
@@ -138,6 +141,12 @@ impl Receiver {
                 let completed_action = action.clone();
                 let (status, body) = if let Some(action) = action {
                     state.actions.push(action.clone());
+                    while action == "GetProtocolInfo"
+                        && holding_query.load(Ordering::Acquire)
+                        && !stopping.load(Ordering::Acquire)
+                    {
+                        thread::sleep(Duration::from_millis(1));
+                    }
                     if action == "SetAVTransportURI" {
                         let uri = field(&raw, "CurrentURI").map(str::to_owned);
                         if uri != state.uri {
@@ -340,6 +349,7 @@ impl Receiver {
             stop,
             release_ready,
             release_hold,
+            query_hold,
             worker: Some(worker),
         }
     }
