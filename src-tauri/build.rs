@@ -41,6 +41,7 @@ fn main() {
         "show_presentation_display_identifiers",
         "dismiss_presentation_display_identifiers",
         "activate_local_presentation",
+        "set_network_presentation",
         "mark_presentation_host_ready",
         "mark_presentation_controller_ready",
         "send_presentation_command",

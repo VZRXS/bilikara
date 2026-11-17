@@ -319,10 +319,6 @@
               </div>
               <div class="presentation-display-list" id="presentation-host-display-list" aria-live="polite"></div>
             </div>
-            <div class="purek-output" id="purek-output" hidden>
-              <span id="purek-output-name"></span>
-              <button type="button" class="toolbar-button settings-tool-button" id="purek-output-manage" data-i18n="purek.manage">管理设备</button>
-            </div>
           </div>
         </div>
         <div class="status-chip" id="cache-settings">
@@ -1056,6 +1052,10 @@
                 </span>
               </div>
               <div data-media-output="settings" hidden></div>
+              <div class="purek-output" id="purek-output" hidden>
+                <span id="purek-output-name"></span>
+                <button type="button" class="toolbar-button settings-tool-button" id="purek-output-manage" data-i18n="purek.manage">管理设备</button>
+              </div>
             </section>
               <div class="cache-panel-footer">
                 <span class="cache-panel-version" id="cache-panel-version">bilikara</span>
@@ -1967,6 +1967,16 @@
         <button type="button" class="banner-close" id="purek-close" data-i18n-aria-label="common.close" aria-label="关闭"><svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
       </div>
       <div class="purek-body">
+        <section class="purek-receivers" aria-labelledby="cast-devices-title">
+          <div class="purek-room-line">
+            <h3 id="cast-devices-title" data-i18n="cast.devices">局域网设备</h3>
+            <button type="button" class="toolbar-button purek-action" id="cast-discover" data-i18n="cast.discover">查找设备</button>
+          </div>
+          <p id="cast-status" role="status" aria-live="polite"></p>
+          <div id="cast-devices"></div>
+          <p id="cast-empty" data-i18n="cast.empty"></p>
+          <button type="button" class="toolbar-button purek-action" id="cast-cancel-operation" data-i18n="common.cancel" hidden>取消</button>
+        </section>
         <p id="ktv-host-session" role="status" aria-live="polite"></p>
         <div id="ktv-host-devices" class="ktv-host-devices"></div>
         <div id="ktv-host-local-scan" hidden>
@@ -1983,12 +1993,13 @@
           <button type="button" class="toolbar-button purek-action" id="ktv-host-pair" data-i18n="ktv.pair">显示 Remote 连接二维码</button>
         </div>
         <details class="purek-dlna-entry" id="purek-dlna-entry">
-          <summary tabindex="0" data-i18n="purek.dlnaManual">手动连接其他 DLNA 设备</summary>
+          <summary tabindex="0" data-i18n="purek.manualAddress">手动输入设备地址或纯 K 链接</summary>
           <form id="purek-dlna-form">
-            <input type="url" class="host-text-input" id="purek-dlna-url" required autocomplete="off" spellcheck="false" data-i18n-aria-label="purek.dlnaAddress" aria-label="DLNA 设备描述地址" aria-describedby="purek-dlna-hint" placeholder="http://192.168.1.20:8200/description.xml">
+            <input type="url" class="host-text-input" id="purek-dlna-url" required autocomplete="off" spellcheck="false" data-i18n-aria-label="purek.manualAddress" aria-label="设备地址或纯 K 链接" aria-describedby="purek-dlna-hint" placeholder="http://192.168.1.20:8200/description.xml">
             <button type="submit" class="toolbar-button purek-action purek-primary" id="purek-dlna-connect" data-i18n="purek.connectShort">连接</button>
           </form>
-          <p id="purek-dlna-hint" data-i18n="purek.dlnaLocalHint">仅在其他设备提供 DLNA 连接地址时使用。纯 K 房台请使用上方扫码；连接后仍需用 DLNA 开关切换播放输出。</p>
+          <label class="purek-confirm-address"><input type="checkbox" id="purek-address-confirmed"><span data-i18n="purek.addressConfirmed">确认链接来自当前门店房台</span></label>
+          <p id="purek-dlna-hint" data-i18n="purek.manualAddressHint">输入设备提供的 DLNA 地址，或当前房台的纯 K 链接并完成授权。连接后，用 DLNA 开关切换播放输出。</p>
         </details>
         <div class="purek-assistance-actions">
           <button type="button" class="toolbar-button purek-action" id="ktv-host-reject" data-i18n="ktv.decline" hidden>拒绝</button>
@@ -2048,6 +2059,7 @@
   <script src="/native-output.js" defer></script>
   <script src="/runtime-select.js" defer></script>
   <script src="/app.js" defer></script>
+  <script src="/cast-self-test.js" defer></script>
   <script src="/purek-room.js" defer></script>
   <script src="/android-export.js" defer></script>
   <script src="/android-playback.js" defer></script>

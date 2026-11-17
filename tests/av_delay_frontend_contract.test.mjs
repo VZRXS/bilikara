@@ -135,6 +135,9 @@ cases = [[false, false, false], [false, true, true], [true, false, true], [true,
 for (const fixture of iterableValues(fixtures)) {
 [source, start_marker, end_marker, lock_key, reset_key, input_key, panel_key, busy_key, offset_helper, call] = fixture;
 function_source = source.slice(sourceIndex(source, start_marker), sourceIndex(source, end_marker, sourceIndex(source, start_marker)));
+if (source === this.host_js) {
+  function_source = source.slice(sourceIndex(source, "function networkDspUnavailable"), sourceIndex(source, "function renderKeyShiftControls")) + function_source;
+}
 for (const [locked, has_local, enabled] of iterableValues(cases)) {
 script = (`
 const currentSettings = { av_delay: { effective_delay_ms: 0, locked: ` + String(String(locked).toLowerCase()) + `,
@@ -148,7 +151,7 @@ function element() { return { disabled: false, value: '', textContent: '', title
   classList: { toggle() {} }, querySelectorAll(selector) { return selector === "[data-av-lock-icon]" ? icons : []; } }; }
 const elements = { ` + String(lock_key) + ": element(), " + String(reset_key) + ": element(), " + String(input_key) + ": element(), " + String(panel_key) + `: element() };
 const state = { ` + String(busy_key) + `: false };
-const document = { activeElement: null };
+const document = { activeElement: null, getElementById() { return null; } };
 function t(key) { return key; }
 ` + String(offset_helper) + `
 ` + String(function_source) + `

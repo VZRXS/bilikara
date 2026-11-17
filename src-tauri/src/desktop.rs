@@ -86,6 +86,7 @@ pub(crate) fn run() {
             presentation::request_presentation_output_state,
             presentation::record_presentation_video_geometry,
             presentation::deactivate_local_presentation,
+            presentation::set_network_presentation,
         ])
         .setup(move |app| {
             let startup_log = startup_log_for_setup.clone();

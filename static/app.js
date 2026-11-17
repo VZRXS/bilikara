@@ -2089,7 +2089,7 @@ function publishPresentationOutputState(session = state.hostPlaybackSession, { f
   return true;
 }
 
-const presentationModes = new Set(["singleScreen", "localDualScreen"]);
+const presentationModes = new Set(["singleScreen", "localDualScreen", "networkRenderer"]);
 const presentationPhases = new Set(["inactive", "activating", "active", "recovering"]);
 
 function normalizePresentationSession(candidate) {
@@ -2112,7 +2112,9 @@ function normalizePresentationSession(candidate) {
     || lastAppliedCommandSequence < 0
     || lastAppliedCommandSequence > lastAcceptedCommandSequence
     || candidate.playbackAuthority !== "host"
-    || candidate.mediaRendererOwner !== "host"
+    || (mode === "networkRenderer"
+      ? candidate.mediaRendererOwner !== "networkRenderer"
+      : candidate.mediaRendererOwner !== "host")
   ) {
     return null;
   }
@@ -2127,7 +2129,7 @@ function normalizePresentationSession(candidate) {
     lastAcceptedCommandSequence,
     lastAppliedCommandSequence,
     playbackAuthority: "host",
-    mediaRendererOwner: "host",
+    mediaRendererOwner: candidate.mediaRendererOwner,
     recoveryReason: String(candidate.recoveryReason || ""),
   };
 }
@@ -2784,7 +2786,9 @@ function renderPresentationOutputControl() {
     renderPresentationDisplayList();
     return;
   }
-  const session = state.presentationSession;
+  // The network lease does not turn on the physical display switch.
+  const networkRenderer = state.presentationSession.mode === "networkRenderer";
+  const session = networkRenderer ? { ...state.presentationSession, phase: "inactive" } : state.presentationSession;
   const selectedId = session.selectedOutputDisplayId || state.presentationSelectedDisplayId;
   const selected = presentationDisplayById(selectedId);
   const hostDisplayId = typeof resolvedPresentationHostDisplayId === "function"
@@ -2838,7 +2842,7 @@ function renderPresentationOutputControl() {
     && Boolean(selected?.selectable)
     && !requiresHostConfirmation;
   const canDeactivate = session.phase === "active" || session.phase === "activating";
-  const disabled = state.data?.media_output?.target === "purek" || state.presentationControlBusy
+  const disabled = networkRenderer || state.data?.media_output?.target === "purek" || state.presentationControlBusy
     || state.presentationDisplayBusy
     || !(canActivate || canDeactivate);
   const signature = JSON.stringify({
@@ -2913,7 +2917,7 @@ async function handlePresentationSession(candidate) {
   }
   await applyPresentationComposition({
     generation: session.generation,
-    composition: ["activating", "active"].includes(session.phase)
+    composition: session.mode === "localDualScreen" && ["activating", "active"].includes(session.phase)
       ? "stageOnly"
       : "combined",
   });
@@ -2930,11 +2934,12 @@ async function handlePresentationSession(candidate) {
     && session.recoveryReason.startsWith("output")) {
     setAppMessage(t("display.presentationTransitionFailed", {message:session.recoveryReason}), true);
   }
+  window.BilikaraPureK?.syncPresentation();
   return session;
 }
 
 async function activateLocalPresentation() {
-  if(state.data?.media_output?.target === "purek")throw new Error(t("mediaOutput.chooseLocal"));
+  if(state.data?.media_output?.target === "purek" || state.presentationSession.mode === "networkRenderer")throw new Error(t("mediaOutput.chooseLocal"));
   const invoke = tauriInvoke("presentation");
   const displayId = state.presentationSelectedDisplayId;
   const selected = presentationDisplayById(displayId);
@@ -2961,7 +2966,7 @@ async function deactivateLocalPresentation() {
 }
 
 async function toggleLocalPresentation() {
-  if (state.presentationControlBusy || state.presentationDisplayBusy) {
+  if (state.presentationControlBusy || state.presentationDisplayBusy || state.presentationSession.mode === "networkRenderer") {
     return;
   }
   state.presentationControlBusy = true;
@@ -15689,6 +15694,23 @@ function renderVolumeControls(playbackMode) {
   setClassToggle(elements.volumeMuteButton, "is-muted", state.localPlayerMuted);
 }
 
+function networkDspUnavailable() {
+  const output = state.data?.media_output;
+  return output?.target === "purek" && output.pipeline_level !== "L1";
+}
+
+function renderNetworkDspHelp(panel, helpId, defaultKey) {
+  const help = document.getElementById(helpId);
+  if (!help) return;
+  help.dataset.i18n = networkDspUnavailable() ? "mediaOutput.dspUnavailable" : defaultKey;
+  setTextContent(help, t(help.dataset.i18n));
+  for (const control of panel.querySelectorAll("input,button:not(.cache-advanced-info-button)")) {
+    const ids = new Set((control.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean));
+    ids.add(helpId);
+    control.setAttribute("aria-describedby", [...ids].join(" "));
+  }
+}
+
 function renderKeyShiftControls(playbackMode) {
   if (!elements.keyShiftPanel || !elements.keyShiftInput) {
     return;
@@ -15696,6 +15718,11 @@ function renderKeyShiftControls(playbackMode) {
 
   const isLocalMode = playbackMode === "local";
   setClassToggle(elements.keyShiftPanel, "hidden", !isLocalMode);
+  const unavailable = networkDspUnavailable();
+  for (const control of elements.keyShiftPanel.querySelectorAll("input,button:not(.cache-advanced-info-button)")) {
+    control.disabled = unavailable || control.getAttribute("aria-busy") === "true";
+  }
+  renderNetworkDspHelp(elements.keyShiftPanel, "host-key-shift-info", "player.keyShiftHint");
 
   const keyShift = Number(state.pendingPlayerKeyShift?.value ?? state.data?.player_settings?.key_shift ?? 0);
   if (document.activeElement !== elements.keyShiftInput) {
@@ -15703,7 +15730,7 @@ function renderKeyShiftControls(playbackMode) {
   }
 
   if (elements.keyShiftResetButton) {
-    elements.keyShiftResetButton.disabled = keyShift === 0
+    elements.keyShiftResetButton.disabled = unavailable || keyShift === 0
       || elements.keyShiftResetButton.getAttribute("aria-busy") === "true";
   }
   const pitchStatus = document.getElementById("pitch-status");
@@ -16354,12 +16381,14 @@ function renderAvSyncControls(playbackMode, playerSettings) {
   elements.avSyncPanel.classList.toggle("hidden", !isLocalMode);
   const offsetMs = currentAvOffsetMs();
   const delayState = playerSettings?.av_delay || {};
-  elements.avOffsetInput.disabled = state.avOffsetSaving;
+  const unavailable = networkDspUnavailable();
+  renderNetworkDspHelp(elements.avSyncPanel, "host-av-sync-info", "player.avSyncHint");
+  elements.avOffsetInput.disabled = unavailable || state.avOffsetSaving;
   elements.avSyncPanel.querySelectorAll("button[data-step]").forEach((button) => {
-    button.disabled = state.avOffsetSaving;
+    button.disabled = unavailable || state.avOffsetSaving;
   });
   if (elements.avOffsetResetButton) {
-    elements.avOffsetResetButton.disabled = state.avOffsetSaving || !Boolean(delayState.has_local_adjustment);
+    elements.avOffsetResetButton.disabled = unavailable || state.avOffsetSaving || !Boolean(delayState.has_local_adjustment);
   }
   if (elements.avDelayLockButton) {
     const locked = Boolean(delayState.locked);
@@ -16367,7 +16396,7 @@ function renderAvSyncControls(playbackMode, playerSettings) {
     elements.avDelayLockButton.querySelectorAll("[data-av-lock-icon]").forEach((icon) => {
       icon.classList.toggle("hidden", icon.dataset.avLockIcon !== (locked ? "locked" : "unlocked"));
     });
-    elements.avDelayLockButton.disabled = state.avOffsetSaving || !Boolean(delayState.lock_button_enabled);
+    elements.avDelayLockButton.disabled = unavailable || state.avOffsetSaving || !Boolean(delayState.lock_button_enabled);
     elements.avDelayLockButton.dataset.locked = String(locked);
     elements.avDelayLockButton.dataset.hasLocal = String(hasLocal);
     elements.avDelayLockButton.setAttribute("aria-pressed", String(locked));
@@ -16941,14 +16970,18 @@ function networkOutputOwnsPlayback() {
 }
 
 function syncMediaOutputComponents() {
-  window.BilikaraMediaOutput?.sync(state.data, {host:true,t,request:apiPost,
+  window.BilikaraMediaOutput?.sync(state.data, {host:true,t,
+    request:(...args)=>window.BilikaraPureK?.requestOutput?.(...args) || apiPost(...args),
     openManagement:()=>document.getElementById("purek-output-manage")?.click(),
     bindHelp:bindHostContextualInfo,
     onError:message=>setAppMessage(message,true),
     onBusy:()=>renderPresentationHostSurface(),
-    accept:snapshot=>{if(acceptHostStateSnapshot(snapshot))render();},
+    accept:snapshot=>{
+      if(acceptHostStateSnapshot(snapshot))render();
+      window.BilikaraPureK?.settleOutput?.();
+    },
     beforeNetwork:()=>{
-      if(state.presentationSession?.phase !== "inactive") throw {outputKey:"mediaOutput.closeDisplay"};
+      if(state.presentationSession?.mode !== "networkRenderer" && state.presentationSession?.phase !== "inactive") throw {outputKey:"mediaOutput.closeDisplay"};
     },
   });
 }

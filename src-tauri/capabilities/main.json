@@ -41,6 +41,7 @@
     "allow-show-presentation-display-identifiers",
     "allow-dismiss-presentation-display-identifiers",
     "allow-activate-local-presentation",
+    "allow-set-network-presentation",
     "allow-mark-presentation-host-ready",
     "allow-acknowledge-presentation-command",
     "allow-publish-presentation-playback-state",
