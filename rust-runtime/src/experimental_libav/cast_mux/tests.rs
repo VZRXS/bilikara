@@ -1,5 +1,5 @@
 use super::*;
-use crate::experimental_libav::{open_input, wire};
+use crate::experimental_libav::{NegotiationFailure, open_input, wire};
 use std::{
     ffi::c_void,
     mem::{size_of, transmute},
@@ -923,8 +923,13 @@ fn incompatible_project_abi_is_rejected_before_cast_negotiation() {
         Ok(_) => panic!("ABI=0 companion was accepted"),
         Err(error) => error,
     };
+    // This ABI=0 fixture exports no metadata/cast negotiation symbols. Require
+    // P7's typed ABI rejection, not a later missing-symbol or capability error.
     assert!(
-        matches!(error, ProbeError::Unavailable(ref message) if message == "incompatible companion ABI"),
+        matches!(
+            error,
+            ProbeError::NegotiationFailed(NegotiationFailure::Abi)
+        ),
         "{error:?}"
     );
 }
