@@ -5,6 +5,7 @@
 
 pub mod cast_http;
 pub mod control;
+pub mod diagnostics;
 pub mod discovery;
 pub mod purek;
 #[cfg(test)]

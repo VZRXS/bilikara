@@ -15,6 +15,10 @@ use std::net::{SocketAddr, UdpSocket as StdUdpSocket};
 use tokio::net::UdpSocket;
 use tokio::task::{AbortHandle, JoinSet};
 
+#[cfg(test)]
+#[path = "diagnostics/loopback_discovery.rs"]
+pub(crate) mod diagnostic_fixture;
+
 const MULTICAST: Ipv4Addr = Ipv4Addr::new(239, 255, 255, 250);
 const SSDP_PORT: u16 = 1900;
 pub const SEARCH_WINDOW: Duration = Duration::from_secs(40);

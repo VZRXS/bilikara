@@ -6,6 +6,9 @@
 //! media-libav/CAST_MUX.md schema 2. Live joins / jumps follow Kirakara-Show,
 //! avoiding next's source-IP gate, single-consumer gate and short write timeout.
 mod continuity;
+#[cfg(test)]
+#[path = "../diagnostics/loopback_http.rs"]
+pub(crate) mod diagnostic_fixture;
 mod diagnostics;
 mod live;
 mod protocol;

@@ -1,10 +1,65 @@
 //! Discovery resource hooks extracted from bilikara R2 A3 (b49e1ae).
 //! Platform implementations and output resources are integrated separately.
 //! IDs fence late callbacks; RAII releases resources when an async scan drops.
+use serde::{Deserialize, Serialize};
 use std::sync::{
     Arc, OnceLock,
     atomic::{AtomicU64, Ordering},
 };
+
+// R2 A3 closed diagnostic DTOs from b49e1ae; P7 adds platform collection.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DefaultNetwork {
+    #[default]
+    Unknown,
+    None,
+    Wifi,
+    Cellular,
+    Ethernet,
+    Vpn,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WifiLockMode {
+    HighPerf,
+    LowLatency,
+}
+
+/// Closed categories only: no addresses, SSIDs, network handles or error text.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkFacts {
+    pub platform_unavailable_reason: Option<InitializationFailure>,
+    pub default_network: DefaultNetwork,
+    pub wifi_connected: Option<bool>,
+    pub wifi_validated: Option<bool>,
+    pub vpn_active: Option<bool>,
+    pub battery_optimization_ignored: Option<bool>,
+    pub multicast_acquired: Option<bool>,
+    pub wifi_lock_mode: Option<WifiLockMode>,
+}
+
+/// Closed startup categories; never retain JNI exceptions or platform paths.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InitializationFailure {
+    InitializationFailed,
+    InitializationTimedOut,
+    NotInitialized,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkHint {
+    CellularDefault,
+    WifiUnvalidated,
+    VpnActive,
+    MulticastUnavailable,
+    BatteryRestricted,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlatformError {

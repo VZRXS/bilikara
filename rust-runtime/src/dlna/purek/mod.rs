@@ -13,6 +13,9 @@
 //! replacement and self-test cancellation before dropping the lease. Drop does
 //! not perform network cleanup; cancelling `maintain` must also be awaited.
 
+#[cfg(test)]
+#[path = "../diagnostics/loopback_purek.rs"]
+pub(crate) mod diagnostic_fixture;
 mod health;
 mod protocol;
 pub mod qr;
