@@ -507,7 +507,7 @@ pub(super) fn route(
 /// Fixed native callback. Never trust a stale service/notification to stop a
 /// newer output. Both paths retain the existing awaited Pure K cleanup.
 pub fn platform_stopped(lease_id: u64, reason: i32) {
-    if !matches!(reason, 1..=3) {
+    if !matches!(reason, 1..=4) {
         return;
     }
     let _ = with_app(|app| {
@@ -516,7 +516,11 @@ pub fn platform_stopped(lease_id: u64, reason: i32) {
             return Ok(());
         }
         cast.platform_output_id = None;
-        cast.platform_stop_error = (reason == 3).then_some("cast_platform_unavailable");
+        cast.platform_stop_error = match reason {
+            3 => Some("cast_platform_unavailable"),
+            4 => Some("purek_output_thermal"),
+            _ => None,
+        };
         cast.replace(Request::Disconnect, Phase::Recovering);
         app.native().revision += 1;
         Ok(())

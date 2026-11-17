@@ -43,6 +43,14 @@ internal class HostPlatform(private val activity: AppCompatActivity,
         }
         return@addWebMessageListener
       }
+      if (input.optString("action") == "share-cast-report") {
+        HostExports.shareCastReport(activity, origin) { data, error ->
+          if (error == null) result.put("ok", true).put("data", data)
+          else result.put("ok", false).put("error", error)
+          try { reply.postMessage(result.toString()) } catch (_: Exception) { }
+        }
+        return@addWebMessageListener
+      }
       try {
         val data = when (input.optString("action")) {
           "open-room-authorization" -> {

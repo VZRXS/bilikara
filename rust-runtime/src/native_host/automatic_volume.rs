@@ -84,7 +84,7 @@ fn failure_stage(error: &ProbeError) -> &'static str {
     match error {
         ProbeError::Cancelled => "cancelled",
         ProbeError::UnsupportedFormat(_) => "unsupported_container",
-        ProbeError::Unavailable(_) => "scanner_unavailable",
+        ProbeError::Unavailable(_) | ProbeError::NegotiationFailed(_) => "scanner_unavailable",
         ProbeError::BackendFailure(code) => match code.as_str() {
             "missing_artifact" => "missing_artifact",
             "unsupported_container" => "unsupported_container",
@@ -198,6 +198,21 @@ pub(super) fn command(
     }
 }
 
+#[cfg(test)]
+pub(super) static TEST_SCANNER_WAKES: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+
+fn report_unavailable(path: Option<&Path>) -> bool {
+    use crate::experimental_libav::load_cache::FailureNotices;
+    static NOTICES: std::sync::OnceLock<std::sync::Mutex<FailureNotices>> =
+        std::sync::OnceLock::new();
+    NOTICES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .changed(path)
+}
+
 pub(super) fn start(context: Arc<HostContext>) -> Result<(), ApiError> {
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -217,7 +232,16 @@ pub(super) fn start(context: Arc<HostContext>) -> Result<(), ApiError> {
             if !enabled { continue; }
             if probe.is_none() {
                 probe = Scanner::load();
-                let _ = with_app(|app| { app.set_scanner_available(probe.is_some()); Ok(()) });
+                let report = probe.is_none() && report_unavailable(crate::media_routing::loudness_companion());
+                let _ = with_app(|app| {
+                    app.set_scanner_available(probe.is_some());
+                    if report {
+                        app.native_diagnostic(&json!({"event":"automatic-volume-unavailable","reason":"companion_unavailable"}), now());
+                    }
+                    Ok(())
+                });
+                #[cfg(test)]
+                TEST_SCANNER_WAKES.fetch_add(1, Ordering::Release);
             }
             let Some(probe) = &probe else { continue; };
             loop {
@@ -246,10 +270,22 @@ pub(super) fn start(context: Arc<HostContext>) -> Result<(), ApiError> {
 
 pub(super) fn configure_capability() {
     // Do not load a library at startup. These are trusted backend provisioning
-    // facts; symbol/build negotiation still runs on the first explicit enable.
+    // facts; Android has already negotiated its optional APK companion. Other
+    // platforms still negotiate symbols/build on the first explicit enable.
     let available = !cfg!(feature = "portable-loudness")
         && crate::media_routing::loudness_companion().is_some();
+    #[cfg(any(target_os = "android", test))]
+    let available = super::android_media::capability().map_or(available, |c| c.loudness);
     let _ = with_app(|app| {
+        #[cfg(any(target_os = "android", test))]
+        if let Some(c) = super::android_media::capability() {
+            app.native_diagnostic(&json!({"event":"android-media-capability","reason":c.reason,
+                "companion_metadata":c.metadata,"companion_packet_scan":c.packet_scan,
+                "companion_remux":c.remux,"companion_loudness":c.loudness,"companion_cast":c.cast,"companion_l1":c.l1}), now());
+            if !c.loudness && report_unavailable(crate::media_routing::loudness_companion()) {
+                app.native_diagnostic(&json!({"event":"automatic-volume-unavailable","reason":c.reason.unwrap_or("companion_pcm_unavailable")}), now());
+            }
+        }
         app.set_scanner_available(available);
         app.set_scanner_probe_available(cfg!(feature = "portable-loudness"));
         Ok(())

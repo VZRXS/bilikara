@@ -9,7 +9,7 @@ import androidx.annotation.Keep
 class MainActivity : TauriActivity() {
   companion object {
     @JvmStatic @Keep
-    fun updateNetworkPlayback(context: android.content.Context, mode: Int): Int = HostMediaPlayback.update(context, mode)
+    fun updateNetworkPlayback(context: android.content.Context, mode: Int, lease: Long): Int = HostMediaPlayback.update(context, mode, lease)
     @JvmStatic @Keep
     fun renderRemoteExport(spec: String, destination: String): Int = PlaylistExport.renderRemote(spec, destination)
   }

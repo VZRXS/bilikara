@@ -109,7 +109,7 @@ pub(super) fn probe() -> Result<LibavMetadataProbe, ApiError> {
             )
         });
     }
-    let path = crate::media_routing::loudness_companion().ok_or_else(|| {
+    let path = crate::media_routing::output_companion().ok_or_else(|| {
         ApiError::new(
             501,
             "cast_backend_unavailable",
@@ -261,3 +261,6 @@ pub(super) async fn live(
     }
     Ok(live)
 }
+
+#[cfg(test)]
+mod android_tests;

@@ -1330,6 +1330,12 @@ impl AppState {
             "elapsed_seconds",
             "processing_ratio",
             "reused",
+            "companion_metadata",
+            "companion_packet_scan",
+            "companion_remux",
+            "companion_loudness",
+            "companion_cast",
+            "companion_l1",
         ];
         let mut safe = json!({"at":now});
         for key in fields {

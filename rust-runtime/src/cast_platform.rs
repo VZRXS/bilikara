@@ -101,6 +101,10 @@ pub trait CastPlatform: Send + Sync {
     fn discovery_begin(&self, lease_id: u64) -> bool;
     fn discovery_end(&self, lease_id: u64);
     fn output_active(&self, lease_id: u64, active: bool) -> Result<(), PlatformError>;
+    /// Same Android operation codes: stopped=0, paused=1, playing=2.
+    fn output_mode(&self, lease_id: u64, mode: i32) -> Result<(), PlatformError> {
+        self.output_active(lease_id, mode != 0)
+    }
     fn network_facts(&self) -> NetworkFacts;
 }
 
@@ -211,6 +215,12 @@ impl OutputLease {
             return Err(error);
         }
         Ok(Self { platform, id })
+    }
+    pub fn set_paused(&self, paused: bool) -> Result<(), PlatformError> {
+        if let Some(platform) = &self.platform {
+            platform.output_mode(self.id, if paused { 1 } else { 2 })?;
+        }
+        Ok(())
     }
     pub fn id(&self) -> u64 {
         self.id

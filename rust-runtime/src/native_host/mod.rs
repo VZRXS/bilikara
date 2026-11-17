@@ -1,5 +1,9 @@
 //! Opt-in native Host transport. Desktop's Python adapter does not start this
 //! listener. HTTP is a projection/command adapter to the process-wide AppState.
+#[cfg(any(target_os = "android", test))]
+pub(crate) mod android_media;
+#[cfg(any(target_os = "android", test))]
+pub use android_media::{android_media_unavailable, configure_android_media};
 mod announcements;
 mod api;
 mod automatic_volume;
@@ -72,13 +76,6 @@ pub type AssetSource = Arc<dyn Fn(&str) -> Option<Asset> + Send + Sync>;
 /// and a server-generated private temporary path, never a client-supplied path.
 pub type RemoteExportRenderer = Arc<dyn Fn(&str, &Path) -> Result<(), String> + Send + Sync>;
 
-/// Android shell startup only: the path comes from ApplicationInfo's native
-/// library directory, never HTTP, environment search, PATH or the current cwd.
-#[cfg(target_os = "android")]
-pub fn configure_android_media(companion: &Path) -> Result<(), String> {
-    configure_media_companion(companion)
-}
-
 /// Explicit, debug-only admission for isolated profiling/acceptance harnesses.
 /// Products retain their normal platform startup and resource configuration.
 #[cfg(debug_assertions)]
@@ -86,7 +83,7 @@ pub fn configure_development_media(companion: &Path) -> Result<(), String> {
     configure_media_companion(companion)
 }
 
-#[cfg(any(target_os = "android", debug_assertions))]
+#[cfg(debug_assertions)]
 fn configure_media_companion(companion: &Path) -> Result<(), String> {
     if !companion.is_absolute() || !companion.is_file() {
         return Err("Android media libraries are missing; reinstall the complete APK".into());
@@ -95,8 +92,8 @@ fn configure_media_companion(companion: &Path) -> Result<(), String> {
     // prepared library. No HTTP input, PATH search or automatic discovery.
     let probe = unsafe { crate::experimental_libav::LibavMetadataProbe::load(companion) }
         .map_err(|_| "Android media libraries are incompatible; reinstall the complete APK")?;
-    if !probe.live_ts_available() || !probe.live_l1_available() {
-        return Err("Android media companion lacks required L0/L1 capabilities".into());
+    if !probe.cast_mux_available() || !probe.live_l1_available() {
+        return Err("Android media companion lacks required cast_mux/L1 capabilities".into());
     }
     crate::media_routing::configure(crate::media_routing::Configuration {
         mode: crate::media_routing::Mode::Default,

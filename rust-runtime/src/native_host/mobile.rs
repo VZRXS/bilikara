@@ -27,6 +27,8 @@ pub(super) fn platform() -> &'static str {
 }
 
 /// Called once by application setup, never by page load, wake or an IPC request.
+/// Android's optional media/platform negotiation completes before this boundary;
+/// failure is a capability diagnostic, never a reason to discard Host startup.
 /// A failed startup stays failed until process restart; it must not overwrite a
 /// damaged checkpoint or create a second listener around the same AppState.
 pub fn start(directory: &Path, assets: AssetSource) -> Result<NativeHost, String> {

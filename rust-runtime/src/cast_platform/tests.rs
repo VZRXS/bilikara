@@ -5,6 +5,7 @@ use std::{collections::BTreeSet, sync::Mutex};
 struct Fake {
     discoveries: Mutex<BTreeSet<u64>>,
     outputs: Mutex<Vec<(u64, bool)>>,
+    modes: Mutex<Vec<(u64, i32)>>,
     reject: bool,
 }
 impl CastPlatform for Fake {
@@ -22,6 +23,10 @@ impl CastPlatform for Fake {
         } else {
             Ok(())
         }
+    }
+    fn output_mode(&self, id: u64, mode: i32) -> Result<(), PlatformError> {
+        self.modes.lock().unwrap().push((id, mode));
+        self.output_active(id, mode != 0)
     }
     fn network_facts(&self) -> NetworkFacts {
         NetworkFacts::default()
@@ -148,4 +153,20 @@ fn network_hints_prioritize_cellular_route_and_wire_rejects_private_fields() {
     let mut injected = json;
     injected["default_network"] = "192.168.1.1".into();
     assert!(serde_json::from_value::<NetworkFacts>(injected).is_err());
+}
+
+#[test]
+fn local_l1_pause_resume_keeps_the_same_lease_and_never_acquires_multicast() {
+    let fake = Arc::new(Fake::default());
+    let lease = OutputLease::with_platform(Some(fake.clone())).unwrap();
+    let id = lease.id();
+    lease.set_paused(true).unwrap();
+    lease.set_paused(false).unwrap();
+    assert_eq!(*fake.modes.lock().unwrap(), vec![(id, 1), (id, 2)]);
+    assert!(fake.discoveries.lock().unwrap().is_empty());
+    drop(lease);
+    assert_eq!(
+        *fake.outputs.lock().unwrap(),
+        vec![(id, true), (id, true), (id, true), (id, false)]
+    );
 }

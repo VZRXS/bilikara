@@ -5,6 +5,36 @@ use crate::cast_platform::{
 };
 
 #[test]
+fn critical_thermal_stop_is_fenced_by_the_current_output_lease() {
+    let _serial = GLOBAL_APP_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let host = Host::new();
+    let cancelled = with_app(|app| {
+        let cast = &mut app.native().cast;
+        cast.operation = 1;
+        cast.platform_output_id = Some(40);
+        cast.owns_playback = true;
+        cast.phase = Phase::Active;
+        Ok(cast.cancel.clone())
+    })
+    .unwrap();
+    platform_stopped(39, 4);
+    assert!(!cancelled.is_cancelled());
+    assert_eq!(host.snapshot()["cast"]["phase"], "active");
+    platform_stopped(40, 4);
+    assert!(cancelled.is_cancelled());
+    with_app(|app| {
+        let cast = &mut app.native().cast;
+        assert!(matches!(cast.pending, Some(Request::Disconnect)));
+        assert_eq!(cast.platform_stop_error, Some("purek_output_thermal"));
+        cast.pending = None;
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
 fn platform_initialization_failure_keeps_host_running_and_reports_unavailable() {
     let _serial = GLOBAL_APP_TEST_LOCK
         .lock()
