@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {fixture,transfer} from './cast_receiver_support.mjs';
+import {fixture,loopbackAlias,transfer} from './cast_receiver_support.mjs';
 import {inspectTs} from './purek_ts_observer.mjs';
 import {waitFor} from './native_host_support.mjs';
 
@@ -18,7 +18,8 @@ try{
   assert.equal((await transfer(f.uri,{headers:{Range:`bytes=${file.bytes.length}-`}})).status,416);
   assert.deepEqual((await transfer(f.uri,{headers:{Range:'bytes=-188'}})).bytes,file.bytes.subarray(-188));
   for(let i=0;i<5;i++)assert.equal((await transfer(f.uri,{headersOnly:true})).status,200,'new readers never get 409');
-  assert.equal((await transfer(f.uri,{localAddress:'127.0.0.2'})).status,200,'LAN peer mismatch does not reject possession of the URI');
+  if(await loopbackAlias('127.0.0.2','R1 output pull from another LAN peer'))
+    assert.equal((await transfer(f.uri,{localAddress:'127.0.0.2'})).status,200,'LAN peer mismatch does not reject possession of the URI');
   assert.equal((await f.client.request('/api/player/key-shift',{key_shift:1})).status,409,'R1 raw output explicitly rejects L1-only edits');
   const selected=(await f.state()).cast.selected;
   await f.client.api('/api/player/output',{target:'local'});let s=await f.status('authorized');

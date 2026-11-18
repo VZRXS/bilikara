@@ -666,6 +666,15 @@ fn android_sample_assets_lifecycle_and_b_only_failures() {
 #[ignore = "requires trusted BILIKARA_TEST_CAST_COMPANION; real T3 mux + loopback receiver"]
 fn self_test_pull_observations_preserve_peer_and_concurrency_facts() {
     for name in ["no_pull", "different_peer", "concurrent"] {
+        // different_peer pulls from 127.0.0.2 (absent on default macOS lo0).
+        if name == "different_peer"
+            && !crate::dlna::test_support::loopback_aliases(
+                "self_test_pull_observations_preserve_peer_and_concurrency_facts/different_peer",
+                &[std::net::Ipv4Addr::new(127, 0, 0, 2)],
+            )
+        {
+            continue;
+        }
         let report = scenario(name);
         let cells = report["cast_self_test"]["cells"].as_array().unwrap();
         if name == "no_pull" {

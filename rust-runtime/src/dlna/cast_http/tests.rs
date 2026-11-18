@@ -413,6 +413,12 @@ fn wrong_token_generation_path_and_method_are_rejected_after_headers() {
 
 #[test]
 fn lan_peer_alias_is_allowed_and_mismatch_is_structured() {
+    if !crate::dlna::test_support::loopback_aliases(
+        "lan_peer_alias_is_allowed_and_mismatch_is_structured",
+        &[Ipv4Addr::new(127, 0, 0, 2)],
+    ) {
+        return;
+    }
     run(async {
         let endpoint = endpoint().await;
         let stream = live(LiveOptions::default());
@@ -994,6 +1000,14 @@ fn cancellation_releases_listener_connections_and_session_budget_within_one_seco
 
 #[test]
 fn accepted_connections_and_diagnostics_are_bounded() {
+    if !crate::dlna::test_support::loopback_aliases(
+        "accepted_connections_and_diagnostics_are_bounded",
+        &(0..MAX_HEADERS)
+            .map(|i| Ipv4Addr::new(127, 0, 0, i as u8 + 2))
+            .collect::<Vec<_>>(),
+    ) {
+        return;
+    }
     run(async {
         let endpoint = CastEndpoint::bind_on(
             Ipv4Addr::LOCALHOST,

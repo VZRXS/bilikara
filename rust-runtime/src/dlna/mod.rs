@@ -9,7 +9,7 @@ pub mod diagnostics;
 pub mod discovery;
 pub mod purek;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
 pub use bilikara_rust::dlna_policy;
 pub use tokio_util::sync::CancellationToken;

@@ -446,6 +446,21 @@ test('Android Checks cross-clippy both Runtime feature groups and the shell with
   excludes(mobileWorkflow, ['CARGO_BUILD_JOBS: "8"']);
 });
 
+// CI run 44309261817: the ported R1 DLNA tests bind loopback aliases that macOS
+// lo0 lacks. The iOS (macOS) job adds them and makes a missing alias fail.
+test('macOS native-host tests add the loopback aliases and require them', () => {
+  const alias = step(mobileChecks, 'Add macOS loopback aliases for DLNA tests');
+  includes(alias, ["if: inputs.platform == 'iOS'", 'set -euo pipefail',
+    'for address in 127.0.0.{2..13} 127.1.0.1; do sudo ifconfig lo0 alias "$address" up; done']);
+  const validate = step(mobileChecks, 'Validate native Host and mobile UI');
+  includes(validate, ["if: inputs.platform == 'iOS'", "BILIKARA_REQUIRE_LOOPBACK_ALIAS: '1'",
+    'cargo test --manifest-path rust-runtime/Cargo.toml --features native-host --locked']);
+  assert.ok(mobileChecks.indexOf('- name: Add macOS loopback aliases for DLNA tests') < mobileChecks.indexOf('- name: Validate native Host and mobile UI'));
+  // 127.0.0.2..13 covers cast_http's per-connection aliases (MAX_HEADERS peers).
+  assert.match(read('rust-runtime/src/dlna/cast_http/mod.rs'), /const MAX_HEADERS: usize = 12;/);
+  includes(read('rust-runtime/src/dlna/test_support.rs'), ['pub const REQUIRE_LOOPBACK_ALIAS: &str = "BILIKARA_REQUIRE_LOOPBACK_ALIAS";']);
+});
+
 test('Linux desktop Checks run every R1 cast session/self-test real-companion case', () => {
   const linux = step(desktopChecks, 'Verify real libav prerequisite contracts');
   includes(linux, ["if: runner.os == 'Linux'", 'npm run test:purek-output', 'test -f "$BILIKARA_TEST_CAST_COMPANION"',

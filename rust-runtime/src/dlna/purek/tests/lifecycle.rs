@@ -4,6 +4,12 @@ use super::*;
 
 #[test]
 fn confirmation_retries_route_loss_before_recovery_or_five_failure_cleanup() {
+    if !crate::dlna::test_support::loopback_aliases(
+        "confirmation_retries_route_loss_before_recovery_or_five_failure_cleanup",
+        &[Ipv4Addr::new(127, 1, 0, 1)],
+    ) {
+        return;
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
     static ROUTES: AtomicUsize = AtomicUsize::new(0);
     static FAILURES: AtomicUsize = AtomicUsize::new(0);
@@ -475,6 +481,12 @@ fn registration_endpoint_and_service_changes_are_diagnostic_and_revoke_uses_orig
 
 #[test]
 fn route_change_reregisters_once_and_cleans_each_exact_registered_ip() {
+    if !crate::dlna::test_support::loopback_aliases(
+        "route_change_reregisters_once_and_cleans_each_exact_registered_ip",
+        &[Ipv4Addr::new(127, 0, 0, 2)],
+    ) {
+        return;
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
     static ROUTES: AtomicUsize = AtomicUsize::new(0);
     ROUTES.store(0, Ordering::SeqCst);
@@ -859,6 +871,12 @@ fn all_phase_records_and_debug_are_redacted_and_hashes_are_salted_per_attempt() 
 
 #[test]
 fn cancellation_during_route_renewal_never_starts_a_new_registration() {
+    if !crate::dlna::test_support::loopback_aliases(
+        "cancellation_during_route_renewal_never_starts_a_new_registration",
+        &[Ipv4Addr::new(127, 0, 0, 2)],
+    ) {
+        return;
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
     static ROUTES: AtomicUsize = AtomicUsize::new(0);
     ROUTES.store(0, Ordering::SeqCst);

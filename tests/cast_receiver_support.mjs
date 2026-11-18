@@ -2,11 +2,24 @@
 // or state machine is imported; every action and media byte crosses HTTP.
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import net from 'node:net';
 import {HttpClient,waitFor} from './native_host_support.mjs';
 
 export const soap=(action,fields='',service='AVTransport')=>`<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:${action}Response xmlns:u="urn:schemas-upnp-org:service:${service}:1">${fields}</u:${action}Response></s:Body></s:Envelope>`;
 export const fault='<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><s:Fault><faultcode>s:Client</faultcode><detail><UPnPError xmlns="urn:schemas-upnp-org:control-1-0"><errorCode>401</errorCode></UPnPError></detail></s:Fault></s:Body></s:Envelope>';
 const decode=s=>s.replaceAll('&lt;','<').replaceAll('&gt;','>').replaceAll('&quot;','"').replaceAll('&apos;',"'").replaceAll('&amp;','&');
+// Loopback aliases beyond 127.0.0.1: Linux/Windows accept all of 127/8, macOS
+// lo0 needs `sudo ifconfig lo0 alias <address> up`. Without one the caller
+// skips that peer-specific check with this reason; CI sets
+// BILIKARA_REQUIRE_LOOPBACK_ALIAS=1 so a missing alias fails instead.
+export async function loopbackAlias(address,purpose){
+  const available=await new Promise(resolve=>{const server=net.createServer();server.once('error',()=>resolve(false));server.listen(0,address,()=>server.close(()=>resolve(true)));});
+  if(available)return true;
+  const reason=`${purpose}: loopback alias ${address} is unavailable; on macOS run "sudo ifconfig lo0 alias ${address} up"`;
+  if(process.env.BILIKARA_REQUIRE_LOOPBACK_ALIAS==='1')throw new Error(`${reason} (BILIKARA_REQUIRE_LOOPBACK_ALIAS=1)`);
+  console.log(`skipped ${reason}`);return false;
+}
+
 export async function transfer(uri,{method='GET',headers={},localAddress,headersOnly=false}={}){
   return new Promise((resolve,reject)=>{
     const q=http.request(uri,{method,headers,localAddress,timeout:8000},r=>{

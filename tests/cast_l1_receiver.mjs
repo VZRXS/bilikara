@@ -2,7 +2,7 @@
 // No product parser or DSP is imported by this receiver.
 import assert from 'node:assert/strict';
 import {setTimeout as delay} from 'node:timers/promises';
-import {fixture,transfer} from './cast_receiver_support.mjs';
+import {fixture,loopbackAlias,transfer} from './cast_receiver_support.mjs';
 import {waitFor} from './native_host_support.mjs';
 import {inspectTs} from './purek_ts_observer.mjs';
 import {writeFileSync} from 'node:fs';
@@ -57,7 +57,10 @@ try{
   assert.deepEqual(f.actions.filter(a=>['Stop','SetAVTransportURI','Play'].includes(a)),beforeActions,'edits must not restart the receiver');
   // Join after a later GOP exists, while the original reader is still active.
   await delay(1000);
-  const late=await transfer(uri,{headers:{Range:'bytes=188-375'},localAddress:'127.0.0.2'});
+  // A second LAN peer (127.0.0.2) joins; without that alias only the peer
+  // difference is skipped and the join assertions below still run.
+  const peer=await loopbackAlias('127.0.0.2','L1 late join from another peer')?'127.0.0.2':undefined;
+  const late=await transfer(uri,{headers:{Range:'bytes=188-375'},localAddress:peer});
   assert.equal(late.status,200);assert.equal(late.headers['content-length'],undefined);
   const full=await waitFor(()=>f.media.find(m=>m.uri===uri),'complete primary T4 capture');
   inspectTs(full.bytes,{videoFrames:144,channels:2,sampleRate:48000});

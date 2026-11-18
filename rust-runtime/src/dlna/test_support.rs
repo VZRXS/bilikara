@@ -9,6 +9,59 @@ use std::sync::{
 };
 use std::thread::{self, JoinHandle};
 
+/// Environment switch for CI: a missing loopback alias fails instead of skipping.
+pub const REQUIRE_LOOPBACK_ALIAS: &str = "BILIKARA_REQUIRE_LOOPBACK_ALIAS";
+
+/// Tests that bind or route through loopback addresses other than 127.0.0.1.
+/// Linux and Windows accept all of 127/8; macOS lo0 has only 127.0.0.1 unless
+/// aliases are added (`sudo ifconfig lo0 alias <address> up`). Returns false,
+/// with the reason on stderr, when one address is not bindable so the caller
+/// skips; with BILIKARA_REQUIRE_LOOPBACK_ALIAS=1 (CI) that is a failure.
+pub fn loopback_aliases(test: &str, addresses: &[Ipv4Addr]) -> bool {
+    loopback_aliases_with(
+        test,
+        addresses,
+        std::env::var(REQUIRE_LOOPBACK_ALIAS).as_deref() == Ok("1"),
+    )
+}
+
+fn loopback_aliases_with(test: &str, addresses: &[Ipv4Addr], require: bool) -> bool {
+    for address in addresses {
+        if let Err(error) = std::net::UdpSocket::bind((*address, 0)) {
+            let reason = format!(
+                "{test}: loopback alias {address} is unavailable ({error}); \
+                 on macOS run `sudo ifconfig lo0 alias {address} up`"
+            );
+            assert!(!require, "{reason} ({REQUIRE_LOOPBACK_ALIAS}=1)");
+            eprintln!("skipped {reason}");
+            return false;
+        }
+    }
+    true
+}
+
+#[test]
+fn loopback_alias_probe_skips_or_fails_on_an_unbindable_address() {
+    // TEST-NET-1 is never assigned locally, so binding it fails on every OS.
+    let unbindable = Ipv4Addr::new(192, 0, 2, 1);
+    assert!(loopback_aliases_with("probe", &[Ipv4Addr::LOCALHOST], true));
+    assert!(!loopback_aliases_with(
+        "probe",
+        &[Ipv4Addr::LOCALHOST, unbindable],
+        false
+    ));
+    let required = std::panic::catch_unwind(|| loopback_aliases_with("probe", &[unbindable], true));
+    let message = required
+        .unwrap_err()
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        message.contains("192.0.2.1") && message.contains(REQUIRE_LOOPBACK_ALIAS),
+        "{message}"
+    );
+}
+
 pub fn run<T>(future: impl std::future::Future<Output = T>) -> T {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()

@@ -78,6 +78,12 @@ fn options(destination: SocketAddr, window: Duration) -> Options {
 
 #[test]
 fn msearch_visits_each_interface_and_all_targets_without_vendor_filtering() {
+    if !crate::dlna::test_support::loopback_aliases(
+        "msearch_visits_each_interface_and_all_targets_without_vendor_filtering",
+        &[Ipv4Addr::new(127, 0, 0, 2)],
+    ) {
+        return;
+    }
     let fixture = Fixture::start(vec![Reply::raw(
         None,
         200,
@@ -166,6 +172,12 @@ fn msearch_visits_each_interface_and_all_targets_without_vendor_filtering() {
 
 #[test]
 fn unsolicited_notify_loads_a_description_and_withdraws_before_search_ends() {
+    if !crate::dlna::test_support::loopback_aliases(
+        "unsolicited_notify_loads_a_description_and_withdraws_before_search_ends",
+        &[Ipv4Addr::new(127, 0, 0, 2)],
+    ) {
+        return;
+    }
     let fixture = Fixture::start(vec![Reply::raw(None, 200, description("Notify Only", ""))]);
     let location = format!("http://{}/device.xml", fixture.address);
     run(async {

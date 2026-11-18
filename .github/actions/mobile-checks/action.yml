@@ -119,9 +119,21 @@ runs:
           --readelf "$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
           --source-kit "$RUNNER_TEMP/android-media-output/sources/bilikara-android-libav-9.0.1-arm64-v8a-source-kit.zip"
 
+    - name: Add macOS loopback aliases for DLNA tests
+      # macOS lo0 has only 127.0.0.1. The ported R1 DLNA tests bind 127.0.0.2-13
+      # and route through 127.1.0.1 (Linux/Windows accept all of 127/8).
+      if: inputs.platform == 'iOS'
+      shell: bash
+      run: |
+        set -euo pipefail
+        for address in 127.0.0.{2..13} 127.1.0.1; do sudo ifconfig lo0 alias "$address" up; done
+
     - name: Validate native Host and mobile UI
       # Linux native-host tests belong to Desktop/Linux; Apple SDK checks remain here.
       if: inputs.platform == 'iOS'
+      env:
+        # A missing alias fails these tests instead of skipping them.
+        BILIKARA_REQUIRE_LOOPBACK_ALIAS: '1'
       shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
       run: |
         cargo fmt --manifest-path rust-runtime/Cargo.toml --check

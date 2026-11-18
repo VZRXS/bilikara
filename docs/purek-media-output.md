@@ -520,7 +520,8 @@ BILIKARA_TEST_LIBAV_COMPANION=/absolute/owned-companion/libbilikara_media_libav.
 复制到 companion 旁）。缺少实际 companion 必须失败，不得跳过。`test:purek-output` 在未设置
 `BILIKARA_TEST_CAST_COMPANION` 时使用产品库同目录的测试库；两者都不存在时明确失败。cast_session 的 ignored
 测试依赖测试 companion 的进程级故障注入计数，须串行运行。Linux CI 的 desktop-checks 构建测试 companion 并导出
-这两个变量。
+这两个变量。部分 DLNA 用例使用 `127.0.0.1` 以外的回环别名；macOS 本机须先按 [macOS 测试](macos_testing.md) 添加别名，
+否则这些用例写明原因后跳过（`BILIKARA_REQUIRE_LOOPBACK_ALIAS=1` 时失败）。
 
 Node 测试启动实际 Rust Host、独立 AppState 和真实 companion；Node 模拟接收端提供设备描述、ConnectionManager
 和 AVTransport，并实际拉取、解析输出 TS（DTS/PCR、PAT/PMT、连续计数、ADTS 帧和音画时长）。
