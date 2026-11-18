@@ -22,6 +22,8 @@
     scene: null,
     sceneKey: "",
     remoteAccessKey: "",
+    localQrSource: null,
+    hostRemoteMenuVisible: false,
     internetRemoteKey: "",
     requestNoticeKey: "",
     actionFeedbackKey: "",
@@ -180,7 +182,7 @@
       elements.remoteUrlHint.textContent = candidate?.unavailable_message || t("remote.accessWaiting");
       elements.remoteQrImage.onload = null;
       elements.remoteQrImage.onerror = null;
-      delete elements.remoteQrImage.dataset.qrUrl;
+      state.localQrSource = null;
       elements.remoteQrImage.removeAttribute("src");
       elements.remoteQrImage.classList.add("hidden");
       elements.remoteQrPlaceholder.textContent = elements.remoteUrlHint.textContent;
@@ -191,12 +193,23 @@
     if (elements.remoteUrlLink.href !== url) elements.remoteUrlLink.href = url;
     elements.remoteUrlLink.textContent = (new URL(url).origin + new URL(url).pathname);
     elements.remoteUrlHint.textContent = t("internetRemote.localSameNetwork");
-    const nativeQr = String(candidate?.qr_image || "");
-    const qrUrl = nativeQr.startsWith("data:image/svg+xml;base64,")
-      ? nativeQr : androidDisplay ? ""
-      : `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=0&data=${encodeURIComponent(url)}`;
-    if (elements.remoteQrImage.dataset.qrUrl === qrUrl) return;
-    elements.remoteQrImage.dataset.qrUrl = qrUrl;
+    const candidateQr = String(candidate?.qr_image || "");
+    const hostQr = candidateQr.startsWith("data:image/svg+xml;base64,") ? candidateQr : "";
+    if (state.localQrSource?.url === url && state.localQrSource.hostQr === hostQr) return;
+    const source = { url, hostQr };
+    state.localQrSource = source;
+    let qrUrl = hostQr;
+    if (!qrUrl) {
+      try {
+        const code = window.qrcode(0, "M");
+        // URL.href already encodes Unicode. The card owns the white frame.
+        code.addData(url, "Byte");
+        code.make();
+        qrUrl = "data:image/svg+xml," + encodeURIComponent(code.createSvgTag(1, 0));
+      } catch {
+        // Keep the clickable address available if it cannot fit in a QR code.
+      }
+    }
     elements.remoteQrImage.classList.add("hidden");
     elements.remoteQrPlaceholder.textContent = t("remote.qrLoading");
     elements.remoteQrPlaceholder.classList.remove("hidden");
@@ -206,12 +219,12 @@
       return;
     }
     elements.remoteQrImage.onload = () => {
-      if (elements.remoteQrImage.dataset.qrUrl !== qrUrl) return;
+      if (state.localQrSource !== source) return;
       elements.remoteQrImage.classList.remove("hidden");
       elements.remoteQrPlaceholder.classList.add("hidden");
     };
     elements.remoteQrImage.onerror = () => {
-      if (elements.remoteQrImage.dataset.qrUrl !== qrUrl) return;
+      if (state.localQrSource !== source) return;
       elements.remoteQrImage.classList.add("hidden");
       elements.remoteQrPlaceholder.textContent = t("remote.qrImageFailed");
       elements.remoteQrPlaceholder.classList.remove("hidden");
@@ -712,8 +725,12 @@
       state.internetRemoteKey = internetRemoteKey;
       renderInternetRemote(candidate.payload?.internetRemote);
     }
-    if (androidDisplay && state.remoteQrPinned !== (candidate.payload?.remoteMenuVisible === true)) {
-      setRemoteQrPinned(candidate.payload?.remoteMenuVisible === true);
+    const hostRemoteMenuVisible = candidate.payload?.remoteMenuVisible === true;
+    if (androidDisplay && state.hostRemoteMenuVisible !== hostRemoteMenuVisible) {
+      // Follow explicit Host toggles. A replay or an address refresh must not
+      // reopen a panel that was dismissed on this Audience.
+      state.hostRemoteMenuVisible = hostRemoteMenuVisible;
+      setRemoteQrPinned(hostRemoteMenuVisible);
     }
     const shouldMount = !state.scene
       || nextScene.currentItemIdentity !== state.scene.currentItemIdentity
