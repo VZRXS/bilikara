@@ -77,16 +77,27 @@ test('actual lightweight Linux prerequisite stops on each failure before exporti
   assert.ok(bash); const directory = ownedDirectory('Linux workflow prerequisite');
   try {
     const prefix = path.join(directory, 'prefix'), envFile = path.join(directory, 'environment'), log = path.join(directory, 'calls.log');
+    // The companion build writes the product and test libraries. missing-*
+    // models a build that exits 0 without one of them: the step's test -f
+    // checks must still stop before anything is exported.
     const stub = `bash() { printf 'bash:%s\\n' "$*" >> calls.log; test "$FAIL_AT" != libraries; }
-cargo() { printf 'cargo:%s\\n' "$*" >> calls.log; test "$FAIL_AT" != companion; }\n`;
+cargo() { printf 'cargo:%s\\n' "$*" >> calls.log; test "$FAIL_AT" != companion || return 1
+  mkdir -p "$BILIKARA_LIBAV_PREFIX/bin"
+  test "$FAIL_AT" = missing-product || : > "$BILIKARA_LIBAV_PREFIX/bin/libbilikara_media_libav.so"
+  test "$FAIL_AT" = missing-test || : > "$BILIKARA_LIBAV_PREFIX/bin/libbilikara_media_libav_test.so"; }\n`;
     const expected = ['bash:media-libav/build-posix-libraries.sh', `cargo:run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-companion --prefix ${prefix} --out ${prefix}/bin --test`];
-    for (const failure of ['', 'libraries', 'companion']) {
-      rmSync(log, {force: true}); rmSync(envFile, {force: true});
+    for (const failure of ['', 'libraries', 'companion', 'missing-product', 'missing-test']) {
+      rmSync(log, {force: true}); rmSync(envFile, {force: true}); rmSync(prefix, {recursive: true, force: true});
       const result = await runBash(stub + script(bundle, 'Build libav prerequisite for packaged media tests'), directory,
         {...process.env, BILIKARA_LIBAV_PREFIX: prefix, GITHUB_ENV: envFile, FAIL_AT: failure});
-      assert.deepEqual(readFileSync(log, 'utf8').trimEnd().split('\n'), failure === 'libraries' ? expected.slice(0, 1) : expected);
-      if (failure) { assert.notEqual(result.status, 0); assert.equal(existsSync(envFile), false); }
-      else { assert.equal(result.status, 0, result.stderr); assert.equal(readFileSync(envFile, 'utf8').trim(), `BILIKARA_TEST_LIBAV_COMPANION=${prefix}/bin/libbilikara_media_libav.so`); }
+      assert.deepEqual(readFileSync(log, 'utf8').trimEnd().split('\n'), failure === 'libraries' ? expected.slice(0, 1) : expected, failure);
+      if (failure) { assert.notEqual(result.status, 0, failure); assert.equal(existsSync(envFile), false, failure); }
+      else {
+        assert.equal(result.status, 0, result.stderr);
+        assert.deepEqual(readFileSync(envFile, 'utf8').trim().split('\n'), [
+          `BILIKARA_TEST_LIBAV_COMPANION=${prefix}/bin/libbilikara_media_libav.so`,
+          `BILIKARA_TEST_CAST_COMPANION=${prefix}/bin/libbilikara_media_libav_test.so`]);
+      }
     }
   } finally { rmSync(directory, {recursive: true, force: true}); }
 });
