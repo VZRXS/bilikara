@@ -8,7 +8,7 @@ import {spawn,spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {virtualOutputs} from '../research/media-gstreamer/environment.mjs';
 import {timingFixture,startPcmMonitor,installFrameTimecodeObserver,correlatePulses,quantile} from '../research/av-timing.mjs';
-import {pcmPulseEvents} from '../research/pcm-observer.mjs';
+import {codedPcmPulseEvents,pcmPulseEvents} from '../research/pcm-observer.mjs';
 import {startAudioFirst} from '../tests/media_round_a_support.mjs';
 import {startProductionPlayback} from '../tests/media_round_a_production_support.mjs';
 import {calibrateMonotonic} from '../tests/monotonic_clock_support.mjs';
@@ -19,6 +19,7 @@ const directory=path.resolve(value('--output'));assert.ok(!directory.startsWith(
 const seconds=Number(value('--seconds','18')),repeats=Number(value('--repeats','1'));assert.ok(seconds>=10&&seconds<=7200&&repeats>=1&&repeats<=3);
 const initialDelayMs=Number(value('--delay-ms','200'));assert.ok(Number.isInteger(initialDelayMs)&&Math.abs(initialDelayMs)<=1000);
 const keyShift=Number(value('--key-shift','0'));assert.ok(Number.isInteger(keyShift)&&Math.abs(keyShift)<=6);
+const diagnosticClock=value('--clock','sink');assert.ok(['sink','system'].includes(diagnosticClock),'use --clock sink or system');
 const sourcePulses=pcm=>pcm.pulses.map(p=>({...p,outputToneHz:p.toneHz,toneHz:p.toneHz/2**(keyShift/12)}));
 const fixture=await timingFixture(path.join(directory,'fixture'),Math.ceil(seconds+45));
 const lab=await virtualOutputs(value('--sdk'),path.join(directory,'outputs'));
@@ -27,7 +28,7 @@ const status=[],source=spawnSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).s
 const sourceFiles=['scripts/validate-media-timing.mjs','research/av-timing.mjs','research/pcm-observer.mjs','research/webview-audio-first/audio-first.js','tests/media_round_a_support.mjs','tests/media_round_a_production_support.mjs','tests/monotonic_clock_support.mjs','research/decoder-observer.mjs','static/audio-clock.js','static/presentation-sync.js','research/media-gstreamer/src/main.rs','research/media-gstreamer/src/playbin_probe.rs','research/media-gstreamer/src/surface.rs','media-libav/stretch.cpp'];
 const hashes={};
 for(const file of sourceFiles){const bytes=readFileSync(path.join(root,file));hashes[file]=createHash('sha256').update(bytes).digest('hex');const copy=path.join(directory,'source-snapshot',file);mkdirSync(path.dirname(copy),{recursive:true});writeFileSync(copy,bytes);}
-writeFileSync(path.join(directory,'metadata.json'),JSON.stringify({source,dirty,hashes,binarySha256:args.includes('--binary')?createHash('sha256').update(readFileSync(value('--binary'))).digest('hex'):null,command:process.argv.slice(1),fixture,seconds,repeats,keyShift,scope:'Linux virtual-output software timing; NOT physical lip-sync'},null,2));
+writeFileSync(path.join(directory,'metadata.json'),JSON.stringify({source,dirty,hashes,binarySha256:args.includes('--binary')?createHash('sha256').update(readFileSync(value('--binary'))).digest('hex'):null,command:process.argv.slice(1),fixture,seconds,repeats,keyShift,diagnosticClock,scope:'Linux virtual-output software timing; NOT physical lip-sync'},null,2));
 try {
  for(let repetition=1;repetition<=repeats;repetition++)for(const [name,engine]of [['chromium',chromium],['webkit',webkit],['a0-chromium',chromium],['a0-webkit',webkit]]) {
   if(!value('--engines','chromium,webkit').split(',').includes(name))continue;
@@ -83,7 +84,7 @@ try {
   await recording.ready;
   const program={playback_generation:1,item_id:'timecode',item_incarnation_id:'timecode-i1',artifact_set_id:'timecode-a1',selected_audio_variant_id:'aac'};
   const manifest=path.join(directory,'native-manifest.json');
-  writeFileSync(manifest,JSON.stringify({program,video:fixture.video,audio:[fixture.audio],initial_delay_ms:initialDelayMs,initial_key_shift:keyShift,diagnostic_max_seconds:Math.ceil(seconds+40),pulse_server:lab.environment.PULSE_SERVER,pulse_device:'rounda'}));
+  writeFileSync(manifest,JSON.stringify({program,video:fixture.video,audio:[fixture.audio],initial_delay_ms:initialDelayMs,initial_key_shift:keyShift,diagnostic_max_seconds:Math.ceil(seconds+40),diagnostic_clock:diagnosticClock,pulse_server:lab.environment.PULSE_SERVER,pulse_device:'rounda'}));
   const child=spawn(path.resolve(value('--binary')),[manifest],{env:lab.environment});
   const events=[],frames=[],requests=new Map();let text='',stderr='',seq=0;
   child.stdout.on('data',buffer=>{text+=buffer;while(text.includes('\n')){const end=text.indexOf('\n'),event=JSON.parse(text.slice(0,end));text=text.slice(end+1);event.receivedMs=performance.now();events.push(event);if(event.type==='surface-observation'&&requests.has(event.seq)){const before=requests.get(event.seq);frames.push({frame:event.timecode_frame,atMs:(before+event.receivedMs)/2,uncertaintyMs:(event.receivedMs-before)/2});requests.delete(event.seq);}}});
@@ -98,18 +99,22 @@ try {
    await Promise.race([delay(seconds*1000),exited.then(exit=>{throw Error('renderer exited before timing window: '+JSON.stringify(exit));})]);const finished=performance.now();clearInterval(poll);
    child.stdin.write(JSON.stringify({action:'stop',seq:++seq,expected_program:program})+'\n');
    const exit=await exited;assert.equal(exit.code,0,stderr);
-   const delivery=await recording.stop(),pcm=pcmPulseEvents(readFileSync(file),delivery.chunks);
+   const delivery=await recording.stop(),pcm=codedPcmPulseEvents(readFileSync(file),delivery.chunks,{keyShift});
    // Warm steady state starts after actual sink PCM, not process launch or
    // read-ahead appsink progress. Preserve startup observations separately.
-   const firstAudioMs=pcm.pulses[0]?.atMs??finished,steadyStart=Math.max(started+2000,firstAudioMs+2000);
-   const timing=correlatePulses(sourcePulses(pcm),frames,{startMs:steadyStart,endMs:finished,offsetMs:initialDelayMs});
-   const startupTiming=correlatePulses(sourcePulses(pcm),frames,{startMs:started,endMs:steadyStart,offsetMs:initialDelayMs});
-   const failures=[];if(timing.pairs<Math.floor((finished-steadyStart)/1000)-1)failures.push('insufficient correlated PCM pulses');
+   const firstAudioMs=pcm.pulses.find(p=>p.toneHz!==null&&Number.isFinite(p.atMs))?.atMs??null;
+   const steadyStart=Math.max(started+2000,(firstAudioMs??finished)+2000);
+   const timing=correlatePulses(pcm.pulses,frames,{startMs:steadyStart,endMs:finished,offsetMs:initialDelayMs});
+   const startupTiming=correlatePulses(pcm.pulses,frames,{startMs:started,endMs:steadyStart,offsetMs:initialDelayMs});
+   const selectedClock=events.find(e=>e.type==='clock')?.name??null,failures=[];
+   if(!selectedClock||(diagnosticClock==='system'&&selectedClock!=='GstSystemClock'))failures.push('requested clock was not observed');
+   if(firstAudioMs===null)failures.push('no recognized coded PCM at the output');
+   if(timing.pairs<Math.max(2,Math.floor((finished-steadyStart)/1000)-1))failures.push('insufficient correlated PCM pulses');
    if(timing.p95AbsoluteErrorMs===null||timing.p95AbsoluteErrorMs>80)failures.push('software correlated offset exceeds 80ms');
-   const driftOverRunMs=timing.driftSlopeMsPerSecond*((finished-steadyStart)/1000);
-   if(seconds>=180&&Math.abs(driftOverRunMs)>1000/30)failures.push('fitted drift exceeds one frame over run');
+   const driftOverRunMs=timing.driftSlopeMsPerSecond===null?null:timing.driftSlopeMsPerSecond*((finished-steadyStart)/1000);
+   if(seconds>=180&&(driftOverRunMs===null||Math.abs(driftOverRunMs)>1000/30))failures.push('no qualifying drift estimate within one frame over run');
    if(events.some(e=>e.type==='error'))failures.push('renderer error');
-   const result={engine:'native',repetition,status:failures.length?'FAIL':'PASS',seconds,failures,timing,startupTiming,startupFirstPcmMs:firstAudioMs-started,steadyStartMs:steadyStart,driftOverRunMs,probeRttUncertaintyP95Ms:quantile(frames.map(f=>f.uncertaintyMs)),pcmDeliveryExcessP95Ms:quantile(pcm.deliveryExcessMs.map(Math.abs)),physical:'DEVICE-UNVERIFIED',longDuration:seconds>=3600?'SOFTWARE-ONLY':'NOT RUN: 60–120 minute drift'};
+   const result={engine:'native',repetition,status:failures.length?'FAIL':'PASS',seconds,diagnosticClock,selectedClock,failures,timing,startupTiming,startupFirstPcmMs:firstAudioMs===null?null:firstAudioMs-started,steadyStartMs:steadyStart,driftOverRunMs,probeRttUncertaintyP95Ms:quantile(frames.map(f=>f.uncertaintyMs)),pcmDeliveryExcessP95Ms:quantile(pcm.deliveryExcessMs.map(Math.abs)),physical:'DEVICE-UNVERIFIED',longDuration:seconds>=3600?'SOFTWARE-ONLY':'NOT RUN: 60–120 minute drift'};
    writeFileSync(file+'.json',JSON.stringify({result,frames,pcm,events,stderr},null,2));status.push(result);console.log(JSON.stringify({engine:'native',status:result.status,pairs:timing.pairs}));
   }finally{clearInterval(poll);if(child.exitCode===null)child.kill('SIGTERM');await recording.stop();}
  }

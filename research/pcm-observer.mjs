@@ -41,3 +41,36 @@ export function pcmPulseEvents(bytes,chunks,rate=48000,channels=2) {
   const deliveryExcessMs=chunks.slice(1).map((c,i)=>c.atMs-chunks[i].atMs-(c.endFrame-chunks[i].endFrame)/rate*1000);
   return {pulses,deliveryExcessMs,rate,channels,basis:'sample index mapped through each actual pipe delivery chunk; unknown fixed server/pipe latency remains'};
 }
+
+export const CODED_TONE_HZ = Array.from({length:16}, (_, code) => 400 + code * 50);
+
+export function codedPcmPulseEvents(bytes, chunks, {keyShift=0}={}) {
+  const pcm = pcmPulseEvents(bytes, chunks);
+  const pitchRatio = 2 ** (keyShift / 12);
+  const coefficients = CODED_TONE_HZ.map(frequency => 2 * Math.cos(2 * Math.PI * frequency * pitchRatio / pcm.rate));
+  const pulses = pcm.pulses.map(pulse => {
+    const samples = new Float64Array(pulse.endFrame - pulse.frame);
+    let energy = 0;
+    for (let n = 0; n < samples.length; n++) {
+      const weight = 0.5 - 0.5 * Math.cos(2 * Math.PI * n / (samples.length - 1));
+      const value = bytes.readFloatLE((pulse.frame + n) * pcm.channels * 4) * weight;
+      samples[n] = value;
+      energy += value * value;
+    }
+    const bins = coefficients.map((coefficient, code) => {
+      let prior = 0, previous = 0;
+      for (const sample of samples) {
+        const current = sample + coefficient * previous - prior;
+        prior = previous;
+        previous = current;
+      }
+      return {code, power: previous ** 2 + prior ** 2 - coefficient * previous * prior};
+    }).sort((left, right) => right.power - left.power);
+    // Accept a dominant single tone from the synthetic codebook. Retain the
+    // raw crossing estimate so rejected or distorted pulses remain visible.
+    const [strongest, next] = bins;
+    const recognized = strongest.power > 0.15 * samples.length * energy && strongest.power > 2 * next.power;
+    return {...pulse, zeroCrossingHz:pulse.toneHz, toneHz:recognized ? CODED_TONE_HZ[strongest.code] : null};
+  });
+  return {...pcm,pulses};
+}

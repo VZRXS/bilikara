@@ -98,7 +98,10 @@ through process-wide counters, with process/thread counts and ownership scopes.
 Use `scripts/validate-media-timing.mjs --sdk /SDK --output /HDD/evidence \
 --seconds 180 --repeats 3 --engines chromium,webkit,native --binary /PoC` for
 separate short/medium observations. `--delay-ms` sets the initial signed offset;
-`--seconds 3600 --engines native` enables a bounded software soak. Do not relabel
+`--seconds 3600 --engines native` enables a bounded software soak. Choose
+`--clock sink` or `--clock system` and check the reported selected clock. Native
+timing identifies the source pulse against the expected pitch-shifted output
+tones and reports a missing drift estimate explicitly. Do not relabel
 an unrun 60–120-minute or physical-device test as passed.
 
 The generated fixture contains an actual decoded frame barcode and correlated

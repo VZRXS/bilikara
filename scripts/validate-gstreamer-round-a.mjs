@@ -9,9 +9,11 @@ import {runNative,root} from '../tests/desktop_construction_support.mjs';
 import {pcmWindows,pcmPulseEvents} from '../research/pcm-observer.mjs';
 import {startPcmMonitor,timingFixture} from '../research/av-timing.mjs';
 import {validateGstNativeNext} from '../tests/media_gstreamer_bridge.mjs';
-import {validateNativeTimeline} from '../tests/media_gstreamer_timing.mjs';
+import {validateNativeTail,validateNativeTimeline} from '../tests/media_gstreamer_timing.mjs';
 const args=process.argv.slice(2),value=key=>args[args.indexOf(key)+1];
 for(const key of ['--sdk','--binary','--video','--audio','--output'])assert.ok(args.includes(key),key);
+const diagnosticClock = args.includes('--clock') ? value('--clock') : 'sink';
+assert.ok(['sink', 'system'].includes(diagnosticClock), 'use --clock sink or system');
 const directory=path.resolve(value('--output'));assert.ok(!directory.startsWith(root+path.sep));mkdirSync(directory,{recursive:true});
 const lab=await virtualOutputs(value('--sdk'),path.join(directory,'virtual-outputs'));
 const flac=path.join(directory,'track-880.flac');
@@ -19,7 +21,7 @@ let child,recording;const events=[];
 try {
   const generated=await runNative('ffmpeg',['-hide_banner','-loglevel','error','-y','-f','lavfi','-i','sine=frequency=880:sample_rate=44100:duration=90','-c:a','flac',flac],process.env,30000);assert.equal(generated.status,0,generated.stderr);
   let program={playback_generation:1,item_id:'fixture',item_incarnation_id:'fixture-i1',artifact_set_id:'fixture-a1',selected_audio_variant_id:'aac'};
-  const manifest={program,video:path.resolve(value('--video')),audio:[path.resolve(value('--audio')),flac],pulse_server:lab.environment.PULSE_SERVER,pulse_device:'rounda'};
+  const manifest={program,video:path.resolve(value('--video')),audio:[path.resolve(value('--audio')),flac],pulse_server:lab.environment.PULSE_SERVER,pulse_device:'rounda',diagnostic_clock:diagnosticClock,diagnostic_replay_eos:true};
   const collectionFixture=path.join(directory,'two-audio-tracks.mkv');
   const muxed=await runNative('ffmpeg',['-hide_banner','-loglevel','error','-y','-i',manifest.video,'-i',manifest.audio[0],'-i',flac,'-map','0:v:0','-map','1:a:0','-map','2:a:0','-c','copy',collectionFixture],process.env,30000);
   assert.equal(muxed.status,0,muxed.stderr);manifest.collection_fixture=collectionFixture;
@@ -31,9 +33,21 @@ try {
     const pcmFile=path.join(directory,'playbin3-sink.f32le'),monitor=startPcmMonitor(path.resolve(value('--sdk')),lab.environment,pcmFile),timeline=[];
     await monitor.ready;
     const c=spawn(path.resolve(value('--binary')),[file,'--playbin3-probe'],{env:lab.environment});let out='',err='';c.stdout.on('data',b=>out+=b);c.stderr.on('data',b=>err+=b);
-    let pending='';c.stdout.on('data',b=>{pending+=b;while(pending.includes('\n')){const i=pending.indexOf('\n');timeline.push({...JSON.parse(pending.slice(0,i)),receivedMs:performance.now()});pending=pending.slice(i+1);}});
-    const code=await new Promise(resolve=>c.on('exit',resolve));await monitor.stop();
-    writeFileSync(path.join(directory,'playbin3.jsonl'),out);writeFileSync(path.join(directory,'playbin3.stderr'),err);assert.equal(code,0);
+    let pending='',malformedLines=0;
+    c.stdout.on('data',b=>{
+      pending+=b;
+      while(pending.includes('\n')){
+        const end=pending.indexOf('\n'),line=pending.slice(0,end);
+        pending=pending.slice(end+1);
+        try { timeline.push({...JSON.parse(line),receivedMs:performance.now()}); }
+        catch { malformedLines++; }
+      }
+    });
+    const exit=await new Promise((resolve,reject)=>{c.once('close',(code,signal)=>resolve({code,signal}));c.once('error',reject);});
+    await monitor.stop();
+    writeFileSync(path.join(directory,'playbin3.jsonl'),out);writeFileSync(path.join(directory,'playbin3.stderr'),err);
+    assert.deepEqual(exit,{code:0,signal:null},'playbin3 probe process failed; see its captured output');
+    assert.equal(malformedLines+Number(Boolean(pending.trim())),0,'playbin3 probe must emit complete JSON observations');
     const windows=pcmWindows(readFileSync(pcmFile),48000,2,.25),chunks=monitor.chunks;
     for(const w of windows){const frame=w.atSeconds*48000;const chunk=chunks.find(c=>c.endFrame>=frame);w.monotonicMs=chunk?chunk.atMs-(chunk.endFrame-frame)/48000*1000:null;}
     const checks=[];
@@ -57,6 +71,9 @@ try {
     const independentSeek={status:expectedSource.length>=2?'PASS':'FAIL',targetSeconds:12,afterSeek,expectedSourceSeconds:'12..15 (1000..1150Hz)',mapping:timeline.find(e=>e.type==='playbin3-case-result'&&e.case==='independent-coded-restored'),qualification:'SDK-specific auxiliary seek; a FAIL is a candidate blocker, not proof all GStreamer/SDKs lack the capability'};
     writeFileSync(path.join(directory,'playbin3-output-evidence.json'),JSON.stringify({timeline,windows,checks,independentSeek,physical:'DEVICE-UNVERIFIED',continuousTrackSwitch:'NOT QUALIFIED'},null,2));console.log(JSON.stringify({playbin3Investigation:'PASS',independentAuxiliarySeek:independentSeek.status}));return out;
   }
+  await validateNativeTail(path.resolve(value('--binary')),path.resolve(value('--sdk')),lab.environment,
+    path.join(directory,'custom-tail'),diagnosticClock);
+  console.log(JSON.stringify({customTailPcm:'PASS',diagnosticClock}));
   await playbinProbe();
   const pcmFile=path.join(directory,'actual-sink-monitor.f32le');
   recording=spawn(path.join(path.resolve(value('--sdk')),'usr/bin/parec'),['--device=rounda.monitor','--raw','--format=float32le','--rate=48000','--channels=2'],{env:lab.environment,stdio:['ignore',openSync(pcmFile,'wx'),openSync(path.join(directory,'parec.stderr'),'wx')]});
@@ -93,13 +110,51 @@ try {
   assert.equal((await command('track',{index:1,program},old)).accepted,true);await delay(2000);
   assert.equal((await command('pause',{},old)).reason,'stale-program');
   assert.equal((await command('surface',{surfaceToken:'unknown-window'})).accepted,false);
-  assert.equal((await command('seek',{seconds:88})).accepted,true);await wait(()=>events.some(e=>e.type==='eos'),'drained EOS',12000);
+  assert.equal((await command('seek',{seconds:88})).accepted,true);
+  const firstEos = await wait(() => events.find(e => e.type === 'eos'), 'drained EOS', 12000);
+  assert.deepEqual(firstEos.program, program);
+  assert.equal(firstEos.message_seqnum, firstEos.seek_seqnum);
+  assert.equal((await command('diagnosticReplayEos')).accepted, true);
+  await wait(() => events.some(e => e.type === 'eos-ignored' && e.reason === 'duplicate'), 'duplicate EOS ignored');
   assert.equal((await command('seek',{seconds:5})).accepted,true);assert.equal((await command('play')).accepted,true);
-  await wait(()=>events.some(e=>e.type==='sample'&&e.receivedMs>actions.at(-1).atMs&&e.position_ns>5e9&&!e.eos),'same-program recovery');
+  const resumedAt = actions.at(-1).atMs;
+  const resumedSeek = events.findLast(e => e.type === 'seek-inputs' && e.accepted);
+  // The pipeline position can come from the decoded audio branch before the
+  // visible sink prerolls. Track selection requires the recovered video clock.
+  await wait(() => events.some(e => e.type === 'sink-segment' && e.sink === 'video' && e.seqnum === resumedSeek.seqnum)
+    && events.some(e => e.type === 'sample' && e.receivedMs > resumedAt && e.seek_seqnum === resumedSeek.seqnum
+      && e.video_position_ns > 5e9 && e.video_position_ns < 10e9 && e.video_rendered > 0 && !e.eos),
+  'same-program video sink recovery');
+  const beforeReplay = events.filter(e => e.type === 'eos-ignored').length;
+  assert.equal((await command('diagnosticReplayEos')).accepted, true);
+  const ignoreAfterSeek = await wait(() => events.filter(e => e.type === 'eos-ignored').slice(beforeReplay)[0], 'old EOS ignored after same-program Seek');
+  assert.equal(ignoreAfterSeek.reason, 'stale-segment');
+  assert.equal(ignoreAfterSeek.message_seqnum, firstEos.message_seqnum);
+
+  const nextTrack = {...program,playback_generation:3,selected_audio_variant_id:'aac'};
+  assert.equal((await command('track',{index:0,program:nextTrack})).accepted,true);
+  program = nextTrack;
+  assert.equal((await command('diagnosticReplayEos')).accepted, true);
+  const ignoreAfterTrack = await wait(() => events.filter(e => e.type === 'eos-ignored').slice(beforeReplay + 1)[0], 'old EOS ignored after track generation changed');
+  assert.equal(ignoreAfterTrack.reason, 'stale-segment');
+  assert.equal(ignoreAfterTrack.message_seqnum, firstEos.message_seqnum);
+  assert.notEqual(ignoreAfterTrack.seek_seqnum, ignoreAfterSeek.seek_seqnum);
+  assert.equal(events.filter(e => e.type === 'eos').length, 1);
+
+  assert.equal((await command('seek',{seconds:88})).accepted,true);
+  const secondEos = await wait(() => events.filter(e => e.type === 'eos')[1], 'new generation drains after stale EOS', 12000);
+  assert.deepEqual(secondEos.program, program);
+  assert.equal(secondEos.message_seqnum, secondEos.seek_seqnum);
+  assert.notEqual(secondEos.message_seqnum, firstEos.message_seqnum);
   await command('stop');const result=await finished;assert.equal(result.code,0);assert.ok(events.some(e=>e.type==='disposed'));
   recording.kill('SIGTERM');await new Promise(resolve=>recording.once('exit',resolve));recording=null;
   writeFileSync(path.join(directory,'events.json'),JSON.stringify({evidenceClass:'LINUX-VIRTUAL-OUTPUT',events,actions,result},null,2));
   assert.deepEqual(events.filter(e=>e.type==='error'),[]);
+  for (const seek of events.filter(e => e.type === 'seek-inputs' && e.accepted)) {
+    const inputs = events.filter(e => e.type === 'source-seek' && e.seqnum === seek.seqnum).map(e => e.input);
+    assert.deepEqual(inputs.sort(), ['audio-input-0', 'audio-input-1', 'video-input'],
+      `each decoder receives exactly one Seek for ${seek.seqnum}`);
+  }
   assert.ok(events.some(e=>e.type==='sample'&&e.pcm_frames>10000&&e.pcm_peak>.01),'processed PCM reached sink branch');
   // Audio-server monitor independently checks the real sink path, not appsink.
   const pcm=readFileSync(pcmFile);let nonzero=0,max=0;for(let i=0;i+4<=pcm.length;i+=4){const v=pcm.readFloatLE(i);assert.ok(Number.isFinite(v),'finite real sink PCM');if(Math.abs(v)>.001)nonzero++;max=Math.max(max,Math.abs(v));}
@@ -111,9 +166,9 @@ try {
     assert.ok(windows.some(w=>w.rms>.02&&Math.abs(w.toneHz-frequency)<8),`actual sink tone ${frequency}`);
   }
   assert.ok(windows.some(w=>w.rms<1e-6),'actual sink silence');
-  const bridge=await validateGstNativeNext(path.resolve(value('--binary')),lab.environment,path.resolve(value('--video')),path.resolve(value('--audio')),path.join(directory,'native-host-bridge'));
-  const timeline=await validateNativeTimeline(path.resolve(value('--binary')),path.resolve(value('--sdk')),lab.environment,coded.video,coded.audio,manifest.timing_audio,path.join(directory,'custom-timeline'));
-  writeFileSync(path.join(directory,'result.json'),JSON.stringify({status:timeline.status,customFunctional:'PASS',nonzeroSamples:nonzero,peak:max,monitorSeconds:pcm.length/8/48000,
+  const bridge=await validateGstNativeNext(path.resolve(value('--binary')),lab.environment,path.resolve(value('--video')),path.resolve(value('--audio')),path.join(directory,'native-host-bridge'),diagnosticClock);
+  const timeline=await validateNativeTimeline(path.resolve(value('--binary')),path.resolve(value('--sdk')),lab.environment,coded.video,coded.audio,manifest.timing_audio,path.join(directory,'custom-timeline'),diagnosticClock);
+  writeFileSync(path.join(directory,'result.json'),JSON.stringify({status:timeline.status,customFunctional:'PASS',diagnosticClock,staleEosReplay:'PASS',nonzeroSamples:nonzero,peak:max,monitorSeconds:pcm.length/8/48000,
     precisionSync:'NOT QUALIFIED physically; correlated virtual timeline recorded separately',virtualTimeline:timeline.status,surfaceReassignment:'X11-VIRTUAL-OUTPUT',nativeHostNext:bridge.status,
     eosToNextObservedMs:bridge.eosToNextObservedMs,continuity:bridge.continuity},null,2));
   console.log(JSON.stringify({status:timeline.status,customFunctional:'PASS',directory,commands:actions.length,monitorSeconds:pcm.length/8/48000}));

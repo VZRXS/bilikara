@@ -6,6 +6,7 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {runNative} from '../tests/desktop_construction_support.mjs';
+import {CODED_TONE_HZ} from './pcm-observer.mjs';
 
 export async function timingFixture(directory,seconds=90) {
   mkdirSync(directory,{recursive:true});
@@ -61,12 +62,13 @@ export function quantile(values,fraction=.95) {
 }
 
 export function correlatePulses(pulses,frames,{startMs=-Infinity,endMs=Infinity,offsetMs=0}={}) {
-  const selected=pulses.filter(p=>p.atMs>=startMs&&p.atMs<endMs),pairs=[];
+  const selected=pulses.filter(p=>Number.isFinite(p.atMs)&&p.atMs>=startMs&&p.atMs<endMs),pairs=[];
+  let unrecognizedTones=0;
   const groups=new Map();
   // Never mix frames from an adjacent control/offset phase into a steady
   // estimate. Use early observations of each coded second; an already-held
   // preroll image is recovery evidence, not a steady pulse presentation.
-  for(const frame of frames.filter(f=>f.atMs>=startMs&&f.atMs<endMs&&f.frame%30<=5)) {
+  for(const frame of frames.filter(f=>Number.isInteger(f.frame)&&f.atMs>=startMs&&f.atMs<endMs&&f.frame%30<=5)) {
     const second=Math.floor(frame.frame/30);
     if(!groups.has(second))groups.set(second,[]);
     groups.get(second).push(frame.atMs-(frame.frame%30)*1000/30);
@@ -75,8 +77,14 @@ export function correlatePulses(pulses,frames,{startMs=-Infinity,endMs=Infinity,
   for(const pulse of selected) {
     // Estimate the presentation of the integer-second frame using its barcode,
     // not a metadata clock. Native X11 polls may first see frame second*30+1.
-    const ordinal=((Math.round((pulse.toneHz-400)/50)%16)+16)%16;
-    const candidates=presentations.filter(f=>f.second%16===ordinal);
+    const ordinal = Number.isFinite(pulse.toneHz)
+      ? CODED_TONE_HZ.findIndex(frequency => Math.abs(frequency-pulse.toneHz) < 25)
+      : -1;
+    if (ordinal < 0) {
+      unrecognizedTones++;
+      continue;
+    }
+    const candidates=presentations.filter(f=>f.second%CODED_TONE_HZ.length===ordinal);
     if(!candidates.length)continue;
     const closest=candidates.reduce((a,b)=>Math.abs(pulse.atMs-a.atMs-offsetMs)<Math.abs(pulse.atMs-b.atMs-offsetMs)?a:b);
     const visibleAtMs=closest.atMs;
@@ -86,6 +94,6 @@ export function correlatePulses(pulses,frames,{startMs=-Infinity,endMs=Infinity,
   const x=pairs.map(p=>(p.audioAtMs-(pairs[0]?.audioAtMs||0))/1000),xm=x.length?x.reduce((a,b)=>a+b,0)/x.length:0;
   const denominator=x.reduce((a,v)=>a+(v-xm)**2,0);
   const slope=denominator?pairs.reduce((a,p,i)=>a+(x[i]-xm)*(p.errorMs-mean),0)/denominator:null;
-  return {pairs: pairs.length,meanErrorMs:mean,p95AbsoluteErrorMs:quantile(errors.map(Math.abs)),driftSlopeMsPerSecond:slope,observations:pairs,
+  return {pairs: pairs.length,unrecognizedTones,meanErrorMs:mean,p95AbsoluteErrorMs:quantile(errors.map(Math.abs)),driftSlopeMsPerSecond:slope,observations:pairs,
     measurement:'PulseAudio monitor sample stream versus decoded barcode/compositor callback or composited X11 pixels; delivery/calibration uncertainty applies',physical:'DEVICE-UNVERIFIED'};
 }

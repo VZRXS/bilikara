@@ -116,6 +116,51 @@ fn start_element(element: &gst::Element, bus: &gst::Bus) -> bool {
     let _ = element.set_state(gst::State::Null);
     false
 }
+// A flush gives an explicit timeline a new GStreamer sequence number. A
+// terminal message can already be on the bus when the next command is read.
+fn flush_to(
+    video: &gst::Element,
+    audio: &gst::Element,
+    position: gst::ClockTime,
+) -> Option<gst::Seqnum> {
+    let event = gst::event::Seek::new(
+        1.,
+        gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
+        gst::SeekType::Set,
+        position,
+        gst::SeekType::None,
+        gst::ClockTime::NONE,
+    );
+    let seqnum = event.seqnum();
+    // Sending to the whole pipeline also seeks from the PCM monitor. Its
+    // tee branch reaches the same audio sources and flushes them twice.
+    let audio_accepted = audio.send_event(event.clone());
+    let video_accepted = video.send_event(event);
+    let accepted = audio_accepted && video_accepted;
+    emit(
+        json!({"type":"seek-inputs","seqnum":format!("{seqnum:?}"),"position_ns":position.nseconds(),"accepted":accepted}),
+    );
+    accepted.then_some(seqnum)
+}
+
+fn extend_audio_segment(event: &gst::EventRef, latency: gst::ClockTime) -> Option<gst::Event> {
+    let gst::EventView::Segment(segment) = event.view() else {
+        return None;
+    };
+    let mut segment = segment.segment().downcast_ref::<gst::ClockTime>()?.clone();
+    // A finite input segment can end before the DSP's last output samples.
+    // Allow the drain at the sink without changing the start or running time.
+    segment.set_stop(segment.stop()?.checked_add(latency)?);
+    let mut extended = gst::event::Segment::builder(&segment)
+        .seqnum(event.seqnum())
+        .build();
+    extended
+        .get_mut()
+        .unwrap()
+        .set_running_time_offset(event.running_time_offset());
+    Some(extended)
+}
+
 fn element(factory: &str, name: &str) -> gst::Element {
     gst::ElementFactory::make(factory)
         .name(name)
@@ -154,7 +199,7 @@ fn source(p: &gst::Pipeline, path: &str, kind: &'static str, target: &gst::Eleme
     decode.set_property("uri", uri(path));
     p.add(&decode).unwrap();
     let target = target.clone();
-    decode.connect_pad_added(move |_, pad| {
+    decode.connect_pad_added(move |decode, pad| {
         let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
         if caps
             .structure(0)
@@ -162,6 +207,16 @@ fn source(p: &gst::Pipeline, path: &str, kind: &'static str, target: &gst::Eleme
         {
             let sink = target.static_pad("sink").unwrap();
             if !sink.is_linked() {
+                let input = decode.name();
+                pad.add_probe(gst::PadProbeType::EVENT_UPSTREAM, move |_, info| {
+                    if let Some(event) = info.event() {
+                        if matches!(event.view(), gst::EventView::Seek(_)) {
+                            emit(json!({"type":"source-seek","input":input.as_str(),
+                                "seqnum":format!("{:?}",event.seqnum())}));
+                        }
+                    }
+                    gst::PadProbeReturn::Ok
+                });
                 pad.link(&sink).unwrap();
             }
         }
@@ -195,6 +250,14 @@ fn main() -> std::process::ExitCode {
         assert_eq!(args[2], "--playbin3-probe");
         return playbin_probe::run(&manifest, &vs, &audio);
     }
+    // The virtual PulseAudio sink clock can stall after an accurate flush.
+    // Keep the default and offer a controlled clock-only A/B experiment.
+    match manifest["diagnostic_clock"].as_str() {
+        None | Some("sink") => {}
+        Some("system") => p.use_clock(Some(&gst::SystemClock::obtain())),
+        _ => panic!("unsupported diagnostic clock"),
+    }
+    let replay_eos = manifest["diagnostic_replay_eos"].as_bool() == Some(true);
     let vq = element("queue", "video-queue");
     let vc = element("videoconvert", "video-convert");
     let scale = element("videoscale", "audience-scale");
@@ -215,18 +278,12 @@ fn main() -> std::process::ExitCode {
     sel.set_property("sync-streams", true);
     sel.set_property_from_str("sync-mode", "clock");
     sel.set_property("cache-buffers", true);
-    let ac = element("audioconvert", "audio-convert");
-    let ar = element("audioresample", "audio-resample");
-    let caps = element("capsfilter", "dsp-format");
-    caps.set_property(
-        "caps",
-        gst::Caps::builder("audio/x-raw")
-            .field("format", "F32LE")
-            .field("layout", "interleaved")
-            .field("rate", 48000i32)
-            .field("channels", 2i32)
-            .build(),
-    );
+    let pcm_caps = gst::Caps::builder("audio/x-raw")
+        .field("format", "F32LE")
+        .field("layout", "interleaved")
+        .field("rate", 48000i32)
+        .field("channels", 2i32)
+        .build();
     let filter = element("identity", "signalsmith");
     let volume = element("volume", "gain");
     let tee = element("tee", "observer-tee");
@@ -248,9 +305,6 @@ fn main() -> std::process::ExitCode {
         &video_caps,
         &vs,
         &sel,
-        &ac,
-        &ar,
-        &caps,
         &filter,
         &volume,
         &tee,
@@ -261,7 +315,7 @@ fn main() -> std::process::ExitCode {
     ])
     .unwrap();
     gst::Element::link_many([&vq, &scale, &video_caps, &vc, &vs]).unwrap();
-    gst::Element::link_many([&sel, &ac, &ar, &caps, &filter, &volume, &tee]).unwrap();
+    gst::Element::link_many([&sel, &filter, &volume, &tee]).unwrap();
     gst::Element::link_many([&tee, &aq, &audio]).unwrap();
     gst::Element::link_many([&tee, &mq, monitor.upcast_ref()]).unwrap();
     source(
@@ -274,9 +328,25 @@ fn main() -> std::process::ExitCode {
     let mut tracks = Vec::new();
     for (i, path) in manifest["audio"].as_array().unwrap().iter().enumerate() {
         let q = element("queue", &format!("track-{i}"));
-        p.add(&q).unwrap();
+        // Decoders can expose different sample rates and formats. Normalize
+        // before switching pads so the active DSP/sink chain keeps one format.
+        let convert = element("audioconvert", &format!("track-convert-{i}"));
+        let resample = element("audioresample", &format!("track-resample-{i}"));
+        let caps = element("capsfilter", &format!("track-format-{i}"));
+        caps.set_property("caps", &pcm_caps);
+        p.add_many([&q, &convert, &resample, &caps]).unwrap();
+        gst::Element::link_many([&q, &convert, &resample, &caps]).unwrap();
         let pad = sel.request_pad_simple("sink_%u").unwrap();
-        q.static_pad("src").unwrap().link(&pad).unwrap();
+        caps.static_pad("src").unwrap().link(&pad).unwrap();
+        pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_, info| {
+            if let Some(event) = info.event() {
+                if matches!(event.view(), gst::EventView::Eos(_)) {
+                    emit(json!({"type":"track-eos-event","index":i,
+                        "seqnum":format!("{:?}",event.seqnum())}));
+                }
+            }
+            gst::PadProbeReturn::Ok
+        });
         tracks.push(pad);
         source(
             &p,
@@ -296,6 +366,16 @@ fn main() -> std::process::ExitCode {
     let probe = dsp.clone();
     let output = filter.static_pad("src").unwrap();
     let latency_ns = u64::from(dsp.lock().unwrap().latency) * 1_000_000_000 / 48000;
+    output.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_, info| {
+        if let Some(event) = info.event_mut() {
+            if let Some(extended) =
+                extend_audio_segment(event, gst::ClockTime::from_nseconds(latency_ns))
+            {
+                *event = extended;
+            }
+        }
+        gst::PadProbeReturn::Ok
+    });
     // Always-on DSP has fixed, explicitly measured latency. Sink offsets use
     // that latency plus signed user delay on ONE pipeline clock.
     vs.set_property("ts-offset", latency_ns as i64);
@@ -392,6 +472,7 @@ fn main() -> std::process::ExitCode {
     let mut failed = false;
     let mut intended_playing = true;
     let mut seek_segment = None;
+    let mut last_drained_eos: Option<gst::Message> = None;
     let mut pcm_frames = 0u64;
     let mut peak = 0f32;
     if !start_element(p.upcast_ref(), &bus) {
@@ -432,21 +513,16 @@ fn main() -> std::process::ExitCode {
                     p.set_state(gst::State::Paused).unwrap();
                 }
                 "seek" => {
-                    if let Some(s) = c["seconds"].as_f64().filter(|s| s.is_finite() && *s >= 0.) {
-                        let event = gst::event::Seek::new(
-                            1.,
-                            gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
-                            gst::SeekType::Set,
-                            gst::ClockTime::from_nseconds((s * 1e9) as u64),
-                            gst::SeekType::None,
-                            gst::ClockTime::NONE,
-                        );
-                        ok = p.send_event(event.clone());
-                        seek_segment = Some(event.seqnum());
-                        emit(
-                            json!({"type":"seek-inputs","seqnum":format!("{:?}",event.seqnum()),"accepted":ok}),
-                        );
-                        eos = false;
+                    if let Some(seconds) =
+                        c["seconds"].as_f64().filter(|s| s.is_finite() && *s >= 0.)
+                    {
+                        let position = gst::ClockTime::from_nseconds((seconds * 1e9) as u64);
+                        if let Some(seqnum) = flush_to(&vs, &audio, position) {
+                            seek_segment = Some(seqnum);
+                            eos = false;
+                        } else {
+                            ok = false;
+                        }
                     } else {
                         ok = false;
                     }
@@ -494,8 +570,29 @@ fn main() -> std::process::ExitCode {
                             .iter()
                             .all(|k| next[*k] == program[*k])
                     {
-                        sel.set_property("active-pad", &tracks[index]);
-                        program = next.clone();
+                        // The pipeline query can pick the non-synchronized
+                        // monitor's decode-ahead position. Preserve the visible
+                        // sink's media time when selecting the new program.
+                        if let Some(position) = vs.query_position::<gst::ClockTime>() {
+                            // Selection alone gives the replacement program no
+                            // new segment identity. Flush at its current media
+                            // position so queued EOS and DSP tails stay retired.
+                            sel.set_property("active-pad", &tracks[index]);
+                            if let Some(seqnum) = flush_to(&vs, &audio, position) {
+                                seek_segment = Some(seqnum);
+                                program = next.clone();
+                                eos = false;
+                            } else {
+                                // A partial rebind cannot keep owning playback
+                                // as the previous program.
+                                emit(json!({"type":"error","code":"track-flush-failed"}));
+                                ok = false;
+                                failed = true;
+                                exit = true;
+                            }
+                        } else {
+                            ok = false;
+                        }
                     } else {
                         ok = false;
                     }
@@ -524,6 +621,11 @@ fn main() -> std::process::ExitCode {
                         bus.post(gst::message::ClockLost::builder(&clock).src(&p).build())
                             .is_ok()
                     });
+                }
+                "diagnosticReplayEos" if replay_eos => {
+                    ok = last_drained_eos
+                        .as_ref()
+                        .is_some_and(|message| bus.post(message.clone()).is_ok());
                 }
                 "stop" => exit = true,
                 _ => ok = false,
@@ -566,11 +668,28 @@ fn main() -> std::process::ExitCode {
                     }
                 }
                 gst::MessageView::Eos(_) => {
-                    eos = true;
-                    intended_playing = false;
-                    emit(
-                        json!({"type":"eos","program":program,"drained":true,"message_seqnum":format!("{:?}",m.seqnum()),"seek_seqnum":seek_segment.map(|s|format!("{s:?}"))}),
-                    );
+                    let message_seqnum = m.seqnum();
+                    let reason = if seek_segment.is_some_and(|active| active != message_seqnum) {
+                        Some("stale-segment")
+                    } else if eos {
+                        Some("duplicate")
+                    } else {
+                        None
+                    };
+                    if let Some(reason) = reason {
+                        emit(json!({"type":"eos-ignored","reason":reason,
+                            "message_seqnum":format!("{message_seqnum:?}"),
+                            "seek_seqnum":seek_segment.map(|s|format!("{s:?}"))}));
+                    } else {
+                        eos = true;
+                        intended_playing = false;
+                        if replay_eos {
+                            last_drained_eos = Some(m.clone());
+                        }
+                        emit(json!({"type":"eos","program":program,"drained":true,
+                            "message_seqnum":format!("{message_seqnum:?}"),
+                            "seek_seqnum":seek_segment.map(|s|format!("{s:?}"))}));
+                    }
                 }
                 gst::MessageView::AsyncDone(_) => {
                     emit(json!({"type":"async-done","at_ms":start.elapsed().as_millis()}))
@@ -596,8 +715,17 @@ fn main() -> std::process::ExitCode {
                 );
             }
             let position = p.query_position::<gst::ClockTime>().map(|t| t.nseconds());
+            let video_position = vs.query_position::<gst::ClockTime>().map(|t| t.nseconds());
+            let video_stats = vs.property::<gst::Structure>("stats");
             emit(
-                json!({"type":"sample","at_ms":start.elapsed().as_millis(),"position_ns":position,"state":format!("{:?}",p.current_state()),"eos":eos,"video_stats":format!("{:?}",vs.property::<gst::Structure>("stats")),"audio_stats":format!("{:?}",audio.property::<gst::Structure>("stats")),"audio_offset_ns":audio.property::<i64>("ts-offset"),"video_offset_ns":vs.property::<i64>("ts-offset"),"pcm_frames":pcm_frames,"pcm_peak":peak,"clock_time_ns":p.clock().and_then(|c|c.time()).map(|t|t.nseconds()),"base_time_ns":p.base_time().map(|t|t.nseconds())}),
+                json!({"type":"sample","at_ms":start.elapsed().as_millis(),"position_ns":position,
+                    "video_position_ns":video_position,"video_rendered":video_stats.get::<u64>("rendered").ok(),
+                    "seek_seqnum":seek_segment.map(|s|format!("{s:?}")),
+                    "state":format!("{:?}",p.current_state()),"eos":eos,"video_stats":format!("{video_stats:?}"),
+                    "audio_stats":format!("{:?}",audio.property::<gst::Structure>("stats")),
+                    "audio_offset_ns":audio.property::<i64>("ts-offset"),"video_offset_ns":vs.property::<i64>("ts-offset"),
+                    "pcm_frames":pcm_frames,"pcm_peak":peak,"clock_time_ns":p.clock().and_then(|c|c.time()).map(|t|t.nseconds()),
+                    "base_time_ns":p.base_time().map(|t|t.nseconds())}),
             );
             if !decoders && position.is_some_and(|v| v > 500_000_000) {
                 let factories: Vec<_> = p

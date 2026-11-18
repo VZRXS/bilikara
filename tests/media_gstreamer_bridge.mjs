@@ -8,7 +8,7 @@ import {buildNativeAlpha} from './native_runtime_artifacts.mjs';
 import {RunningHost,isolatedEnvironment} from './native_host_support.mjs';
 import {root} from './desktop_construction_support.mjs';
 
-export async function validateGstNativeNext(binary,environment,video,audio,directory) {
+export async function validateGstNativeNext(binary,environment,video,audio,directory,clock) {
   mkdirSync(directory,{recursive:true});const home=path.join(directory,'host');mkdirSync(home);
   const host=await RunningHost.start(await buildNativeAlpha(),home,[home,path.join(root,'static'),video,audio,'3'],isolatedEnvironment(home),true);
   const headers={'X-Bilikara-Client':'round-a-native-renderer'},records=[];let renderer;
@@ -20,7 +20,7 @@ export async function validateGstNativeNext(binary,environment,video,audio,direc
     const item=snapshot.current_item,variant=item.audio_variants.find(v=>v.id===program.selected_audio_variant_id);
     const local=locator=>{const pathname=new URL(locator,'http://fixture.invalid').pathname;assert.ok(pathname.startsWith('/media/artifacts/'));assert.ok(!pathname.includes('..'));return path.join(home,pathname.slice(1));};
     const file=path.join(directory,`program-${index}.json`);
-    writeFileSync(file,JSON.stringify({program,video:local(item.video_media_url),audio:[local(variant.audio_url)],pulse_server:environment.PULSE_SERVER,pulse_device:'rounda'}));
+    writeFileSync(file,JSON.stringify({program,video:local(item.video_media_url),audio:[local(variant.audio_url)],pulse_server:environment.PULSE_SERVER,pulse_device:'rounda',diagnostic_clock:clock}));
     const child=spawn(binary,[file],{env:environment,stdio:['pipe','pipe',openSync(path.join(directory,`program-${index}.stderr`),'wx')]});
     const events=[];let pending='';const started=performance.now();
     child.stdout.on('data',bytes=>{pending+=bytes;while(pending.includes('\n')){const split=pending.indexOf('\n');events.push({...JSON.parse(pending.slice(0,split)),receivedMs:performance.now()-started});pending=pending.slice(split+1);}});
@@ -33,6 +33,7 @@ export async function validateGstNativeNext(binary,environment,video,audio,direc
     const stop=async()=>{command('stop');const result=await finished;assert.equal(result.code,0);await post('/api/player/retire-program',ownership);};
     const instance={child,events,wait,report,command,stop,program};renderer=instance;
     await wait(()=>events.some(e=>e.type==='sample'&&e.position_ns>5e8),'native renderer actual output');
+    if(clock==='system')assert.equal(events.find(e=>e.type==='clock')?.name,'GstSystemClock');
     await report('ready-paused');await report('playing');
     records.push({program,events});return instance;
   }
@@ -48,7 +49,7 @@ export async function validateGstNativeNext(binary,environment,video,audio,direc
     assert.ok([200,409].includes(duplicate.status));
     const after=await host.api('/api/state');assert.equal(after.current_item.id,next.current_item.id);assert.equal(after.playback_generation,next.playback_generation);assert.equal(after.history.length,1);
     await second.stop();renderer=null;
-    const result={status:'PASS',evidenceClass:'NATIVE-HOST-TEST-BRIDGE',records,eosToNextObservedMs,
+    const result={status:'PASS',evidenceClass:'NATIVE-HOST-TEST-BRIDGE',diagnosticClock:clock,records,eosToNextObservedMs,
       continuity:'NOT QUALIFIED: pipeline recreation has a gap; not uninterrupted automatic playback',duplicateEosStatus:duplicate.status};
     writeFileSync(path.join(directory,'result.json'),JSON.stringify(result,null,2));return result;
   }finally{renderer?.child.kill('SIGTERM');await host.close();rmSync(home,{recursive:true,force:true});}

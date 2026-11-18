@@ -79,7 +79,7 @@
     "test:native-relay": "node tests/run_native_relay.mjs --output .tmp/internet-remote-relay",
     "prepare:webview83": "node scripts/build_webview83.mjs",
     "test:ktv-assistance": "node --test tests/ktv_scanner.test.mjs tests/ktv_assistance.test.mjs tests/ktv_assistance_browser.test.mjs",
-    "test:media-core": "node --test tests/media_backend.test.mjs tests/legacy_media_backend_browser.test.mjs tests/media_round_a_browser.test.mjs"
+    "test:media-core": "node --test tests/media_backend.test.mjs tests/legacy_media_backend_browser.test.mjs tests/media_round_a_browser.test.mjs tests/media_timing_observer.test.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.12.3",
