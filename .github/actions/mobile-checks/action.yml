@@ -82,10 +82,29 @@ runs:
         path: ${{ runner.temp }}/bilikara-android-libav-cache
         key: ${{ steps.media-key.outputs.key }}
 
+    - name: Build actual Android media output
+      if: inputs.platform == 'Android'
+      shell: bash
+      run: |
+        set -euo pipefail
+        cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- android-libav --ndk "$BILIKARA_TEST_ANDROID_NDK" --abi arm64-v8a --out "$RUNNER_TEMP/android-media-output" --cache "$BILIKARA_TEST_ANDROID_LIBAV_CACHE"
+
     - name: Verify actual Android media libraries and cache
       if: inputs.platform == 'Android'
-      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
-      run: npm run test:android-libav
+      env:
+        # Qualifies the real-ELF mutation and binary-privacy cases, which skip
+        # without real NDK-built libraries.
+        BILIKARA_TEST_ANDROID_LIBAV_DIR: ${{ runner.temp }}/android-media-output/jniLibs/arm64-v8a
+      shell: bash
+      run: |
+        set -euo pipefail
+        export NDK_HOME="$BILIKARA_TEST_ANDROID_NDK"
+        # Includes android_cast_samples (sample B pins) and the A7 checker tests.
+        npm run test:android-libav
+        # Six libraries (five media + pinned NDK libc++_shared exception), licenses and bound source kit.
+        node scripts/android_media_check.mjs --media-output "$RUNNER_TEMP/android-media-output" \
+          --readelf "$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
+          --source-kit "$RUNNER_TEMP/android-media-output/sources/bilikara-android-libav-9.0.1-arm64-v8a-source-kit.zip"
 
     - name: Validate native Host and mobile UI
       # Linux native-host tests belong to Desktop/Linux; Apple SDK checks remain here.

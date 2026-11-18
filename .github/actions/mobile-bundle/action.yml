@@ -158,6 +158,19 @@ runs:
         add-job-summary: never
         cache-read-only: ${{ github.event_name == 'pull_request' }}
 
+    - name: Build and verify Android media before signing
+      if: inputs.platform == 'Android'
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Gradle's prepareBilikaraMedia owns this same output and may rebuild it
+        # from the restored C cache; the APK gate below checks what was packaged.
+        media="$GITHUB_WORKSPACE/src-tauri/gen/android/app/build/generated/bilikara-media/arm64-v8a"
+        cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- android-libav --ndk "$NDK_HOME" --abi arm64-v8a --out "$media" --cache "$BILIKARA_ANDROID_LIBAV_CACHE"
+        node scripts/android_media_check.mjs --media-output "$media" \
+          --readelf "$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
+          --source-kit "$media/sources/bilikara-android-libav-9.0.1-arm64-v8a-source-kit.zip"
+
     - name: Resolve APK and prepare signing
       if: inputs.platform == 'Android'
       id: android
@@ -210,12 +223,24 @@ runs:
         if [ "$RELEASE_APK" = "true" ]; then variant=release; fi
         mapfile -t apks < <(find src-tauri/gen/android/app/build/outputs/apk -type f -name "*${variant}.apk")
         test "${#apks[@]}" = 1
+        apk="$(realpath "${apks[0]}")"
+        kit="$GITHUB_WORKSPACE/src-tauri/gen/android/app/build/generated/bilikara-media/arm64-v8a/sources/bilikara-android-libav-9.0.1-arm64-v8a-source-kit.zip"
+        # Package gates run before signature inspection. Sample B is required
+        # (default bilikara.includeCastSamples=true); the kit is bound by SHA-256.
+        node scripts/android_media_check.mjs --apk "$apk" \
+          --readelf "$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
+          --source-kit "$kit"
+        cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- verify-android-apk --ndk "$ANDROID_HOME/ndk/27.0.12077973" --abi "arm64-v8a" --apk "$apk" --source-kit "$kit"
+        BILIKARA_TEST_ANDROID_NDK="$ANDROID_HOME/ndk/27.0.12077973" BILIKARA_TEST_ANDROID_APK="$apk" BILIKARA_TEST_ANDROID_SOURCE_KIT="$kit" \
+          npm run test:android-apk
         "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "${apks[0]}" > "$RUNNER_TEMP/android-apk-signature.txt"
         cat "$RUNNER_TEMP/android-apk-signature.txt"
         node scripts/android_release.mjs --verify-signature "$RUNNER_TEMP/android-apk-signature.txt" "$APK_SIGNING_MODE"
         "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 -v 4 "${apks[0]}"
-        cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- verify-android-apk --ndk "$ANDROID_HOME/ndk/27.0.12077973" --abi "arm64-v8a" --apk "$(realpath "${apks[0]}")"
         cp "${apks[0]}" "$APK_NAME"
+        printf '%s\n' 'Android media: six libraries (five media plus the pinned NDK libc++_shared RELRO exception) verified before signature inspection.' \
+          'Corresponding source: bilikara-android-libav-9.0.1-arm64-v8a-source-kit.zip (artifact android-libav-source-kit-arm64-v8a-<sha>), bound by build-info source_kit_sha256; distribute it alongside the APK.' \
+          'Sample B is required: CI never passes the Gradle sample opt-out.'
 
     - name: Upload APK test artifact
       if: inputs.platform == 'Android'
@@ -223,6 +248,17 @@ runs:
       with:
         path: ${{ steps.android.outputs.apk }}
         archive: false
+        if-no-files-found: error
+        retention-days: 7
+
+    - name: Upload corresponding Android libav source kit
+      if: inputs.platform == 'Android'
+      uses: actions/upload-artifact@v7
+      with:
+        # Zipped and not named bilikara-*: release collection accepts exactly
+        # six package artifacts. The kit keeps its exact filename inside.
+        name: android-libav-source-kit-arm64-v8a-${{ github.sha }}
+        path: src-tauri/gen/android/app/build/generated/bilikara-media/arm64-v8a/sources/bilikara-android-libav-9.0.1-arm64-v8a-source-kit.zip
         if-no-files-found: error
         retention-days: 7
 

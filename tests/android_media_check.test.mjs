@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { castSamplesIncluded, checkMedia, mediaLibraries, ndkRuntimeSha256, verifyElf, verifyLicenses, verifyPrivacy, verifySample, zipReader } from '../scripts/android_media_check.mjs';
+import { castSamplesIncluded, checkMedia, mediaLibraries, ndkRuntimeSha256, sampleHash, verifyElf, verifyLicenses, verifyPrivacy, verifySample, zipReader } from '../scripts/android_media_check.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const scratch = path.join(root, '.tmp');
@@ -141,9 +141,13 @@ test('APK sample B is required by default; the exact A4 Gradle property permits 
   }
   assert.throws(() => verifySample(absent), /Required sample B asset is missing/);
   assert.match(verifySample(absent, castSamplesIncluded('bilikara.includeCastSamples=false')), /absent/);
+  const sample = readFileSync(path.join(root, 'resources/cast-samples/sample-b.ts'));
+  assert.match(verifySample(zipReader(zip({ 'assets/cast-samples/sample-b.ts': sample }))), new RegExp(sampleHash));
   assert.throws(() => verifySample(zipReader(zip({ 'assets/cast/sample-b.ts': 'corrupt' }))), /SHA-256 mismatch/);
   assert.throws(() => verifySample(zipReader(zip({ 'assets/cast/sample-b.ts': 'corrupt' })), false), /SHA-256 mismatch/);
   assert.throws(() => verifySample(zipReader(zip({ 'assets/a/sample-b.ts': 'a', 'assets/b/sample-b.ts': 'b' }))), /Duplicate/);
+  const runtime = readFileSync(path.join(root, 'rust-runtime/src/native_host/cast_session/self_test/samples.rs'), 'utf8');
+  assert.match(runtime, /8624fbee0c7f4653e6f1c7c2f7a6de9aca5d2b3a3a729a218d7f740b9417aef3/);
 });
 
 test('licenses, pinned source notices and rebuild materials reject missing or corrupt corresponding source', t => {
