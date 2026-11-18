@@ -287,9 +287,7 @@ pub(super) fn route(
             cast.position = snapshot["player_status"]["current_time"]
                 .as_f64()
                 .unwrap_or(0.0);
-            cast.paused = snapshot["player_status"]["is_paused"]
-                .as_bool()
-                .unwrap_or(false);
+            cast.paused = super::local_paused(cast, &snapshot);
             cast.playback_generation = snapshot["playback_generation"].as_u64().unwrap_or(0);
             cast.operation += 1;
             cast.cancel = cancel.clone();

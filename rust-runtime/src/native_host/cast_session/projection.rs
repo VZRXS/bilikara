@@ -419,6 +419,7 @@ pub(crate) fn resume_local(app: &mut crate::app_state::AppState) -> Result<(), A
         })?;
     }
     app.native().cast.published_resume = Some(resume);
+    app.native().cast.resume_status_pending = true;
     Ok(())
 }
 

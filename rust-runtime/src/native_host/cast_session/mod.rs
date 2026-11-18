@@ -78,6 +78,9 @@ pub(crate) struct State {
     pub offset_mode: bilikara_rust::output_audio::OffsetMode,
     pub observation_sequence: u64,
     pub published_resume: Option<Value>,
+    /// The published handback is still the local intent: the Host has not yet
+    /// reported a status consistent with it after its commands drained.
+    pub resume_status_pending: bool,
     pub network_facts: crate::cast_platform::NetworkFacts,
     pub platform_output_id: Option<u64>,
     pub platform_stop_error: Option<&'static str>,
@@ -193,6 +196,26 @@ fn preference_key(renderer: &Renderer) -> Option<String> {
 }
 fn renderer_key(renderer: &Renderer) -> String {
     preference_key(renderer).unwrap_or_else(|| renderer.context.device_key.clone())
+}
+
+/// Local paused state captured before the session takes playback. Until the
+/// Host reports a status consistent with this session's own handback, a report
+/// can still describe the session's hold or an unapplied handback seek
+/// (stabilization item 2); the published handback is the intent then.
+pub(crate) fn local_paused(state: &State, snapshot: &Value) -> bool {
+    let observed = snapshot["player_status"]["is_paused"]
+        .as_bool()
+        .unwrap_or(false);
+    match state.published_resume.as_ref() {
+        Some(resume)
+            if state.resume_status_pending
+                && resume["playback_generation"] == snapshot["playback_generation"]
+                && resume["item_id"] == snapshot["current_item"]["id"] =>
+        {
+            resume["is_paused"].as_bool().unwrap_or(observed)
+        }
+        _ => observed,
+    }
 }
 
 pub(super) fn route(
@@ -473,9 +496,7 @@ pub(super) fn route(
                     app.native().cast.position = snapshot["player_status"]["current_time"]
                         .as_f64()
                         .unwrap_or(0.0);
-                    app.native().cast.paused = snapshot["player_status"]["is_paused"]
-                        .as_bool()
-                        .unwrap_or(false);
+                    app.native().cast.paused = local_paused(&app.native().cast, &snapshot);
                 }
                 app.native().cast.playback_generation =
                     snapshot["playback_generation"].as_u64().unwrap_or(0);
@@ -703,9 +724,7 @@ pub(crate) fn admit_prepared(
     state.position = snapshot["player_status"]["current_time"]
         .as_f64()
         .unwrap_or(0.0);
-    state.paused = snapshot["player_status"]["is_paused"]
-        .as_bool()
-        .unwrap_or(false);
+    state.paused = local_paused(state, &snapshot);
     state.playback_generation = snapshot["playback_generation"].as_u64().unwrap_or(0);
     let qr = room.authorization_url().map(str::to_owned);
     let location = qr.is_none().then(|| room.description.to_string());

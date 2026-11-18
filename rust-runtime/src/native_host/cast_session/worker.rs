@@ -799,7 +799,7 @@ async fn play_session(
                     let snap = app.native_snapshot(true)?;
                     let s = &mut app.native().cast;
                     s.owns_playback = true; s.resume = None;
-                    s.paused = snap["player_status"]["is_paused"].as_bool().unwrap_or(false);
+                    s.paused = super::local_paused(s, &snap);
                     s.position = snap["player_status"]["current_time"].as_f64().unwrap_or(0.0);
                     app.native().revision += 1;
                     Ok((app.native().cast.position, app.native().cast.mode, app.native().cast.paused))

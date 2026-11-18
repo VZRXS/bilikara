@@ -1202,6 +1202,19 @@ impl AppState {
             now,
         })?;
         self.native_session.observation = Some(observation);
+        // A report taken after the handback commands drained and agreeing with
+        // that handback ends its authority over captured local state.
+        let drained = self.player_control_head().is_none();
+        let cast = &mut self.native_session.cast;
+        if cast.resume_status_pending
+            && drained
+            && cast
+                .published_resume
+                .as_ref()
+                .is_none_or(|resume| resume["is_paused"].as_bool() == Some(paused))
+        {
+            cast.resume_status_pending = false;
+        }
         self.native_session.revision += 1;
         Ok(json!({"accepted":true,"duplicate":false}))
     }

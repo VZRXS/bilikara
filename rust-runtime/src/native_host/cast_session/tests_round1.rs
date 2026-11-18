@@ -1060,3 +1060,80 @@ fn real_cast_and_mode_write_leave_checkpoint_readable_by_legacy_seed() {
             .is_some()
     );
 }
+
+// Stabilization item 2 (WebKit ios_output_ui "intent false"): after a failed
+// output hands playback back (seek + play), the Host may still report the
+// held/seeking local player as paused before it applies that play. A second
+// output attempt must not capture that stale pause and hand back seek + pause.
+#[test]
+fn second_output_attempt_keeps_the_published_resume_intent_over_a_stale_pause() {
+    if std::env::var_os("BILIKARA_TEST_CAST_ABSENCE_CHILD").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "native_host::cast_session::tests::round1::second_output_attempt_keeps_the_published_resume_intent_over_a_stale_pause",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("BILIKARA_TEST_CAST_ABSENCE_CHILD", "1")
+            .env_remove("BILIKARA_TEST_CAST_COMPANION")
+            .env_remove("BILIKARA_TEST_LIBAV_COMPANION")
+            .env_remove("BILIKARA_LIBAV_COMPANION")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let _serial = GLOBAL_APP_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let host = Host::new();
+    start_local_playback(&host);
+    let receiver = Receiver::new();
+    discover(&host, &receiver);
+    host.post(
+        "/api/purek/prepare",
+        json!({"url":format!("http://{}/description", receiver.address)}),
+    )
+    .unwrap();
+    host.post("/api/cast/connect", json!({})).unwrap();
+    let first = host.wait(|s| {
+        s["cast"]["error_code"] == "cast_backend_unavailable" && s["cast"]["busy"] == false
+    });
+    assert_eq!(first["cast"]["resume"]["is_paused"], false);
+    let head = first["player_control_command"].clone();
+    assert_eq!(head["action"], "seek-absolute");
+    // The page applies the handback seek and reports the momentarily paused
+    // player before the queued play has been applied and acknowledged.
+    let snapshot = host.snapshot();
+    host.post(
+        "/api/player/status",
+        json!({
+            "playback_generation":snapshot["playback_generation"],"item_id":snapshot["current_item"]["id"],
+            "status_sequence":2,"observed_phase":"paused","is_paused":true,
+            "current_time":3.0,"duration":120.0
+        }),
+    )
+    .unwrap();
+    assert_eq!(host.snapshot()["player_status"]["is_paused"], true);
+    // The user switches the output to DLNA again; the pipeline still fails.
+    host.post("/api/cast/output", json!({"enabled":true}))
+        .unwrap();
+    let second = host.wait(|s| {
+        s["cast"]["error_code"] == "cast_backend_unavailable"
+            && s["cast"]["busy"] == false
+            && s["player_control_command"]["seq"].as_u64() > head["seq"].as_u64()
+    });
+    assert_eq!(
+        second["cast"]["resume"]["is_paused"], false,
+        "the second handback must restore the published play intent, not the stale pause"
+    );
+    assert_eq!(second["player_control_command"]["action"], "seek-absolute");
+    host.post("/api/cast/disconnect", json!({})).unwrap();
+    host.wait(|s| s["cast"]["phase"] == "idle" && s["cast"]["busy"] == false);
+}
