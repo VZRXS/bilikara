@@ -1182,3 +1182,126 @@ fn self_test_unmatched_room_is_reported_and_handoff_owns_only_the_tested_device(
     host.wait(|s| s["cast"]["phase"] == "idle" && s["cast"]["owns_playback"] == false);
     assert_eq!(registrations(&receiver), 0);
 }
+
+// P10 review R2: "no device row (automatic discovery) + prepared Pure K room".
+// The room credential is used without a target; the session supplies the
+// renderer after registration. Loopback rooms select the test fixture.
+#[test]
+#[ignore = "requires trusted BILIKARA_TEST_CAST_COMPANION; production self-test runner"]
+fn self_test_automatic_discovery_registers_the_prepared_purek_room() {
+    let _serial = GLOBAL_APP_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    assert!(std::env::var_os("BILIKARA_TEST_CAST_COMPANION").is_some());
+    let host = Host::new();
+    host.use_long_media();
+    let receiver = Receiver::new();
+    host.post("/api/purek/prepare", json!({"qr_url":receiver.qr()}))
+        .unwrap();
+    with_app(|app| {
+        app.native().cast.renderers.clear();
+        Ok(())
+    })
+    .unwrap();
+    host.post("/api/cast/self-test/start", json!({"generation":0}))
+        .unwrap();
+    assert_eq!(
+        host.snapshot()["cast"]["self_test"]["purek_room_unmatched"],
+        false
+    );
+    wait_long(&host, "automatic-discovery Pure K registration", |s| {
+        s["cast"]["self_test"]["registration_attempted"] == true
+    });
+    assert_eq!(host.snapshot()["cast"]["self_test"]["registered"], true);
+    assert_eq!(registrations(&receiver), 1);
+    host.post("/api/cast/self-test/cancel", json!({"generation":1}))
+        .unwrap();
+    wait_long(&host, "self-test cancellation", |s| {
+        s["cast"]["self_test"]["running"] == false && s["cast"]["owns_playback"] == false
+    });
+    assert_eq!(receiver.state.lock().unwrap().releases, 1);
+    let report = api::dispatch(
+        &host.context,
+        &host.identity,
+        true,
+        &Method::GET,
+        "/api/cast/self-test/report",
+        "",
+        json!({}),
+    )
+    .unwrap();
+    let test = &report["diagnostics"]["cast_self_test"];
+    assert_eq!(test["metadata"]["target_kind"], "purek");
+    assert_eq!(test["environment"]["purek_room_unmatched"], false);
+    privacy(&report.to_string());
+}
+
+// P10 review R2: pipeline::start (R1 link check inside next's pipeline test)
+// runs once while the local pipeline test owns playback, publishes a URL-free
+// result, cancels when that output stops, and never overlaps the self-test.
+#[test]
+#[ignore = "requires trusted BILIKARA_TEST_CAST_COMPANION; real T3 mux + T4 loopback"]
+fn pipeline_check_runs_once_reports_sample_b_and_cancels_with_local_output() {
+    let _serial = GLOBAL_APP_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    assert!(std::env::var_os("BILIKARA_TEST_CAST_COMPANION").is_some());
+    let host = Host::new();
+    host.use_long_media();
+    let owns_local = |value: bool| {
+        with_app(|app| {
+            app.native().local_output.controller.owns_playback = value;
+            Ok(())
+        })
+        .unwrap()
+    };
+    owns_local(true);
+    // A Host that never cast has no cast projection until the check runs.
+    assert_eq!(host.snapshot()["cast"], Value::Null);
+    super::super::pipeline::start(&host.context).unwrap();
+    let running = host.snapshot();
+    assert_eq!(running["cast"]["pipeline_running"], true);
+    assert_eq!(running["cast"]["busy"], true);
+    assert_eq!(running["cast"]["pipeline_result"], Value::Null);
+    // A second request while running does not start another check.
+    super::super::pipeline::start(&host.context).unwrap();
+    let done = wait_long(&host, "pipeline check", |s| {
+        s["cast"]["pipeline_running"] == false
+    });
+    assert_eq!(
+        done["cast"]["pipeline_result"],
+        json!({"ok":true,"first_byte":true,"sample_b":"verified"})
+    );
+    assert_eq!(
+        done["cast"]["operation_id"], 0,
+        "the check is not a cast operation"
+    );
+    assert!(!done["cast"]["pipeline_result"].to_string().contains("http"));
+    // Stopping the local pipeline test cancels the check.
+    super::super::pipeline::start(&host.context).unwrap();
+    assert_eq!(host.snapshot()["cast"]["pipeline_result"], Value::Null);
+    owns_local(false);
+    let cancelled = wait_long(&host, "pipeline cancellation", |s| {
+        s["cast"]["pipeline_running"] == false
+    });
+    assert_eq!(cancelled["cast"]["pipeline_result"]["ok"], false);
+    assert_eq!(
+        cancelled["cast"]["pipeline_result"]["code"],
+        "cast_cancelled"
+    );
+    // It never overlaps a running compatibility test.
+    owns_local(true);
+    with_app(|app| {
+        app.native().cast.self_test.running = true;
+        Ok(())
+    })
+    .unwrap();
+    super::super::pipeline::start(&host.context).unwrap();
+    assert_eq!(host.snapshot()["cast"]["pipeline_running"], false);
+    with_app(|app| {
+        app.native().cast.self_test.running = false;
+        app.native().local_output.controller.owns_playback = false;
+        Ok(())
+    })
+    .unwrap();
+}

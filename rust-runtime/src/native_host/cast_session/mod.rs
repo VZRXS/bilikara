@@ -116,7 +116,12 @@ pub(crate) struct State {
 }
 impl State {
     pub fn visible(&self) -> bool {
-        self.operation != 0 || !self.session_devices.is_empty()
+        // The R1 link check also runs from next's pipeline test on a Host that
+        // has never cast; its progress/result must still reach the Host UI.
+        self.operation != 0
+            || !self.session_devices.is_empty()
+            || self.pipeline_running
+            || self.pipeline_result.is_some()
     }
     pub fn snapshot(&self, preferences: &crate::app_state::cast::Preferences) -> Value {
         let preference = self

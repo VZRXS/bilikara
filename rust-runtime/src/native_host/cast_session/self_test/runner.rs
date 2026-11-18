@@ -212,7 +212,7 @@ pub(super) async fn run(
     } else {
         purek::AddressApproval::LanLiteralOnly
     };
-    let purek_client = purek_client(target.as_ref());
+    let purek_client = purek_client(target.as_ref(), request.qr.as_deref());
     let parsed = request
         .qr
         .as_ref()
@@ -587,16 +587,33 @@ fn make_control(renderer: Renderer) -> Result<ControlClient, dlna::DlnaError> {
     ControlClient::new(renderer)
 }
 
-fn purek_client(_target: Option<&Renderer>) -> purek::PureKClient {
+/// Test-only loopback selection. With a chosen device the device decides; with
+/// automatic discovery (P10 review R2) a loopback fixture room decides, so the
+/// "no device + Pure K room" path is reachable without relaxing production parsing.
+#[cfg(test)]
+fn loopback_fixture(target: Option<&Renderer>, qr: Option<&str>) -> bool {
+    match target {
+        Some(renderer) => renderer.local_address.is_loopback(),
+        None => qr
+            .and_then(|qr| purek::diagnostic_fixture::parse(qr).ok())
+            .is_some_and(|room| {
+                room.description_url()
+                    .host_str()
+                    .and_then(|host| host.parse::<std::net::Ipv4Addr>().ok())
+                    .is_some_and(|address| address.is_loopback())
+            }),
+    }
+}
+fn purek_client(_target: Option<&Renderer>, _qr: Option<&str>) -> purek::PureKClient {
     #[cfg(test)]
-    if _target.is_some_and(|r| r.local_address.is_loopback()) {
+    if loopback_fixture(_target, _qr) {
         return purek::diagnostic_fixture::client();
     }
     purek::PureKClient::new()
 }
 fn parse_room(qr: &str, _target: Option<&Renderer>) -> Result<purek::Room, purek::PureKError> {
     #[cfg(test)]
-    if _target.is_some_and(|r| r.local_address.is_loopback()) {
+    if loopback_fixture(_target, Some(qr)) {
         return purek::diagnostic_fixture::parse(qr);
     }
     purek::Room::parse(qr)
