@@ -81,6 +81,8 @@ pub(crate) struct State {
     /// The published handback is still the local intent: the Host has not yet
     /// reported a status consistent with it after its commands drained.
     pub resume_status_pending: bool,
+    /// Latest Host-reported logical play intent: (playback generation, item, playing).
+    pub local_play_intent: Option<(u64, String, bool)>,
     pub network_facts: crate::cast_platform::NetworkFacts,
     pub platform_output_id: Option<u64>,
     pub platform_stop_error: Option<&'static str>,
@@ -214,7 +216,17 @@ pub(crate) fn local_paused(state: &State, snapshot: &Value) -> bool {
         {
             resume["is_paused"].as_bool().unwrap_or(observed)
         }
-        _ => observed,
+        // The observed phase is "paused" during transient split-player holds
+        // (for example WebKit waiting for its audio clock); intent is not.
+        _ => match &state.local_play_intent {
+            Some((generation, item, playing))
+                if snapshot["playback_generation"].as_u64() == Some(*generation)
+                    && snapshot["current_item"]["id"].as_str() == Some(item.as_str()) =>
+            {
+                !playing
+            }
+            _ => observed,
+        },
     }
 }
 

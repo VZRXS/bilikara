@@ -1137,3 +1137,96 @@ fn second_output_attempt_keeps_the_published_resume_intent_over_a_stale_pause() 
     host.post("/api/cast/disconnect", json!({})).unwrap();
     host.wait(|s| s["cast"]["phase"] == "idle" && s["cast"]["busy"] == false);
 }
+
+// Stabilization item 2, second pattern: after the handback has been applied,
+// WebKit's split player can briefly observe "paused" while playback is still
+// intended. Capture follows the reported logical intent, not that hold; a real
+// pause (intent false) is still handed back as a pause.
+#[test]
+fn output_attempt_captures_logical_play_intent_over_a_transient_hold() {
+    if std::env::var_os("BILIKARA_TEST_CAST_ABSENCE_CHILD").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "native_host::cast_session::tests::round1::output_attempt_captures_logical_play_intent_over_a_transient_hold",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("BILIKARA_TEST_CAST_ABSENCE_CHILD", "1")
+            .env_remove("BILIKARA_TEST_CAST_COMPANION")
+            .env_remove("BILIKARA_TEST_LIBAV_COMPANION")
+            .env_remove("BILIKARA_LIBAV_COMPANION")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let _serial = GLOBAL_APP_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let host = Host::new();
+    start_local_playback(&host);
+    let receiver = Receiver::new();
+    discover(&host, &receiver);
+    host.post(
+        "/api/purek/prepare",
+        json!({"url":format!("http://{}/description", receiver.address)}),
+    )
+    .unwrap();
+    host.post("/api/cast/connect", json!({})).unwrap();
+    host.wait(|s| {
+        s["cast"]["error_code"] == "cast_backend_unavailable" && s["cast"]["busy"] == false
+    });
+    let mut sequence = 1;
+    let mut report = |paused: bool, intent: bool, time: f64| {
+        sequence += 1;
+        let s = host.snapshot();
+        host.post(
+            "/api/player/status",
+            json!({
+                "playback_generation":s["playback_generation"],"item_id":s["current_item"]["id"],
+                "status_sequence":sequence,"observed_phase":if paused {"paused"} else {"playing"},
+                "is_paused":paused,"play_intent":intent,"current_time":time,"duration":120.0
+            }),
+        )
+        .unwrap();
+    };
+    // The page applies and acknowledges the handback, then reports playing.
+    while let Some(seq) = host.snapshot()["player_control_command"]["seq"].as_u64() {
+        host.post("/api/player/control-ack", json!({"seq":seq}))
+            .unwrap();
+    }
+    report(false, true, 3.5);
+    // A transient hold: observed paused while playback is intended.
+    report(true, true, 4.0);
+    for (expected_paused, last) in [(false, false), (true, true)] {
+        let before = host.snapshot()["player_control_command"]["seq"].as_u64();
+        host.post("/api/cast/output", json!({"enabled":true}))
+            .unwrap();
+        let after = host.wait(|s| {
+            s["cast"]["error_code"] == "cast_backend_unavailable"
+                && s["cast"]["busy"] == false
+                && s["player_control_command"]["seq"].as_u64() > before
+        });
+        assert_eq!(
+            after["cast"]["resume"]["is_paused"], expected_paused,
+            "handback must follow the reported intent"
+        );
+        if !last {
+            while let Some(seq) = host.snapshot()["player_control_command"]["seq"].as_u64() {
+                host.post("/api/player/control-ack", json!({"seq":seq}))
+                    .unwrap();
+            }
+            report(false, true, 4.2);
+            // A real user pause: both observation and intent say paused.
+            report(true, false, 4.5);
+        }
+    }
+    host.post("/api/cast/disconnect", json!({})).unwrap();
+    host.wait(|s| s["cast"]["phase"] == "idle" && s["cast"]["busy"] == false);
+}

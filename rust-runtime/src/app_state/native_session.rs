@@ -1141,6 +1141,7 @@ impl AppState {
         }
         let sequence = positive(body, "status_sequence")?;
         let item_id = text(body, "item_id")?;
+        let reported_item = item_id.clone();
         let current_time = number(body, "current_time")?;
         let duration = if body.get("duration").is_none_or(Value::is_null) {
             0.0
@@ -1166,6 +1167,12 @@ impl AppState {
         let paused = body["is_paused"]
             .as_bool()
             .ok_or_else(|| ApiError::invalid("缺少暂停状态"))?;
+        // Optional logical intent; is_paused stays the media observation.
+        let play_intent = match body.get("play_intent") {
+            None | Some(Value::Null) => None,
+            Some(Value::Bool(intent)) => Some(*intent),
+            Some(_) => return Err(ApiError::invalid("无效的播放意图")),
+        };
         if paused == (phase == "playing") {
             return Err(ApiError::invalid("播放状态不一致"));
         }
@@ -1205,13 +1212,15 @@ impl AppState {
         // A report taken after the handback commands drained and agreeing with
         // that handback ends its authority over captured local state.
         let drained = self.player_control_head().is_none();
+        let intended_paused = play_intent.map_or(paused, |playing| !playing);
         let cast = &mut self.native_session.cast;
+        cast.local_play_intent = play_intent.map(|playing| (generation, reported_item, playing));
         if cast.resume_status_pending
             && drained
             && cast
                 .published_resume
                 .as_ref()
-                .is_none_or(|resume| resume["is_paused"].as_bool() == Some(paused))
+                .is_none_or(|resume| resume["is_paused"].as_bool() == Some(intended_paused))
         {
             cast.resume_status_pending = false;
         }

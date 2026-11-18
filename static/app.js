@@ -17649,6 +17649,9 @@ function observedHostPlayerStatus(itemId, session, video, audio = session?.audio
   return {
     observed_phase: observedPhase,
     is_paused: observedPhase !== "playing",
+    // Logical intent: a transient split-player hold observes "paused" while
+    // playback is still intended (Rust cast handback captures this, not the hold).
+    play_intent: session.logicalPlayIntent === true,
     current_time: rawCurrentTime,
     duration: Number.isFinite(rawDuration) ? rawDuration : 0,
   };
