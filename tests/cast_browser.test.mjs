@@ -268,13 +268,19 @@ test('Manage self-test disconnects with the prepared room retained before start'
 // next's pipeline test result in the settings output group.
 for(const language of ['zh','en','ja'])test(`pipeline test result reports the R1 link check ${language}`,async t=>{
   const page=await openManage(t,{language});
+  // A usable decoder makes next's pipeline test action available in settings.
+  await page.evaluate(()=>{window.BilikaraNativeOutput={decoderKind:()=>'mse'};render();});
+  const button=page.locator('[data-media-output="settings"] .media-output-pipeline-test');
   const line=page.locator('[data-media-output="settings"] .media-output-pipeline-check');
+  assert.equal(await button.isVisible(),true);
   assert.equal(await line.isVisible(),false);
   const text=dictionary[language];
   await page.evaluate(()=>fixture.update({cast:{pipeline_running:true,pipeline_result:null}}));
   assert.equal(await line.textContent(),text['mediaOutput.pipelineCheck.running']);
+  assert.equal(await line.isVisible(),true);
   await page.evaluate(()=>fixture.update({cast:{pipeline_running:false,pipeline_result:{ok:true,first_byte:true,sample_b:'verified'}}}));
   assert.equal(await line.textContent(),text['mediaOutput.pipelineCheck.passed']);
+  assert.equal(await line.isVisible(),true);
   assert.equal(await line.getAttribute('role'),'status');
   await page.evaluate(()=>fixture.update({cast:{pipeline_result:{ok:true,first_byte:true,sample_b:'unavailable'}}}));
   assert.equal(await line.textContent(),text['mediaOutput.pipelineCheck.passedNoSample']);
@@ -284,4 +290,21 @@ for(const language of ['zh','en','ja'])test(`pipeline test result reports the R1
   assert.equal(await line.textContent(),text['mediaOutput.pipelineCheck.failed'].replace('{reason}',text['cast.error.unknown']));
   const style=await line.evaluate(n=>({size:getComputedStyle(n).fontSize,margin:getComputedStyle(n).marginTop}));
   assert.deepEqual(style,{size:'13px',margin:'0px'});
+  // P10 review R1: the result follows its action. While the pipeline test is
+  // playing (or otherwise unavailable) the button and its result are hidden.
+  await page.evaluate(()=>fixture.update({cast:{pipeline_result:{ok:true,first_byte:true,sample_b:'verified'}}}));
+  assert.equal(await line.isVisible(),true);
+  for(const media_output of [{target:'native'},{target:'local',authorized:true}]){
+    await page.evaluate(value=>fixture.update({media_output:value}),media_output);
+    assert.equal(await button.isVisible(),false,JSON.stringify(media_output));
+    assert.equal(await line.isVisible(),false,JSON.stringify(media_output));
+    await page.evaluate(()=>fixture.update({media_output:{target:'local',authorized:false}}));
+    assert.equal(await line.isVisible(),true);
+  }
+  // Stopping the pipeline test early cancels the check; it is not shown as a failure.
+  await page.evaluate(()=>fixture.update({cast:{pipeline_result:{ok:false,code:'cast_cancelled',sample_b:'verified'}}}));
+  assert.equal(await button.isVisible(),true);
+  assert.equal(await line.isVisible(),false);
+  assert.equal(await line.textContent(),'');
+  assert.equal((await page.locator('[data-media-output="settings"]').innerText()).includes(text['cast.error.cast_cancelled']),false);
 });

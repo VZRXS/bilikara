@@ -179,7 +179,8 @@
     let value="";
     if(running)value=t("mediaOutput.pipelineCheck.running");
     else if(result?.ok===true)value=t(result.sample_b==="verified"?"mediaOutput.pipelineCheck.passed":"mediaOutput.pipelineCheck.passedNoSample");
-    else if(result&&result.ok===false)value=t("mediaOutput.pipelineCheck.failed",{reason:castError(result.code)});
+    // Stopping the pipeline test early cancels the check; that is not a failure.
+    else if(result&&result.ok===false&&result.code!=="cast_cancelled")value=t("mediaOutput.pipelineCheck.failed",{reason:castError(result.code)});
     line.hidden=!value;text(line,value);
   }
   function paint(){
