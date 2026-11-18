@@ -1201,23 +1201,59 @@ fn real_backpressure_pauses_three_and_ten_seconds_then_resumes() {
 fn real_backpressure_disconnects_only_after_fifteen_seconds_without_progress() {
     run(async {
         let (_temp, endpoint, _response) = backpressured_file().await;
-        let since = Instant::now();
-        timeout(Duration::from_secs(20), async {
+        // Measure the 15 s from the last observed write progress, not from the
+        // first byte: how long the sender keeps making progress into an unread
+        // socket is platform-specific (macOS sizes loopback send buffers
+        // dynamically), while the deadline is relative to the last progress.
+        //
+        // Bounds: the product does not poll for stalls; each write awaits
+        // tokio::time::timeout_at(last successful write + WRITE_STALL), so it
+        // fires at the deadline within timer granularity (about 1 ms). The only
+        // other imprecision is this test's POLL sampling, which can see the last
+        // progress up to one POLL late (shortening the measured quiet time) and
+        // the disconnect up to one POLL late (lengthening it). Hence
+        // [WRITE_STALL - 2 * POLL, WRITE_STALL + POLL + CI_MARGIN], with 3 s for
+        // a loaded CI scheduler.
+        const POLL: Duration = Duration::from_millis(50);
+        const CI_MARGIN: Duration = Duration::from_secs(3);
+        let started = Instant::now();
+        let mut bytes = endpoint.diagnostics().bytes_written;
+        let mut progress = vec![(0u128, bytes)];
+        let mut last_progress = started;
+        let stalled = timeout(Duration::from_secs(60), async {
             loop {
-                if endpoint
-                    .diagnostics()
+                let diagnostics = endpoint.diagnostics();
+                if diagnostics
                     .stages
                     .iter()
                     .any(|e| e.disconnect_reason == Some(Reason::WriteStall))
                 {
-                    break;
+                    break Instant::now();
                 }
-                sleep(Duration::from_millis(50)).await;
+                if diagnostics.bytes_written != bytes {
+                    bytes = diagnostics.bytes_written;
+                    last_progress = Instant::now();
+                    if progress.len() < 64 {
+                        progress.push((started.elapsed().as_millis(), bytes));
+                    }
+                }
+                sleep(POLL).await;
             }
         })
         .await
-        .unwrap();
-        assert!(since.elapsed() >= Duration::from_millis(14_900));
+        .unwrap_or_else(|_| {
+            panic!("no write stall within 60 s; progress (ms, bytes): {progress:?}")
+        });
+        let quiet = stalled - last_progress;
+        eprintln!(
+            "write stall after {quiet:?} without progress (bounds {:?}..={:?})",
+            WRITE_STALL - 2 * POLL,
+            WRITE_STALL + POLL + CI_MARGIN
+        );
+        assert!(
+            quiet >= WRITE_STALL - 2 * POLL && quiet <= WRITE_STALL + POLL + CI_MARGIN,
+            "stall after {quiet:?} without progress; progress (ms, bytes): {progress:?}"
+        );
         let diag = endpoint.shutdown().await;
         let terminal = diag
             .stages
