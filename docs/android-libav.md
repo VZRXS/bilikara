@@ -219,8 +219,9 @@ releases both, and resuming reacquires them. API 34+ uses
 **API 29–33 now use `WIFI_MODE_FULL_HIGH_PERF`**, which remains effective in
 the background, where next previously used LOW_LATENCY (screen-on and
 foreground only) from API 29. This also applies to next's standalone local L1
-output. Notification stops, task removal, service failure and thermal
-CRITICAL use stop reasons 1–4; leases make stale notifications and callbacks
+output. Notification stops, task removal or Activity destruction (not
+configuration recreation), service failure and thermal CRITICAL use stop
+reasons 1–4; leases make stale notifications and callbacks
 ignore newer output. See `docs/android-host-beta.md` for the service
 lifecycle, thermal sampling and device acceptance.
 

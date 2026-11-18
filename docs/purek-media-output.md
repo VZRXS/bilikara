@@ -460,7 +460,7 @@ Android APK 使用 NDK 构建同一 libav/companion（R1 投屏合流、next 的
 音轨、定位、暂停和切歌继续由同一权威控制器处理；回到 `local` 恢复保留的 Web
 媒体节点。接收端输出 `purek` 由投屏会话负责，见上文。
 
-`target: "native"` 同时运行一次无接收端的 R1 链路检查（决定 2，`cast_session/pipeline.rs`）：把当前缓存歌曲
+`target: "native"` 同时运行一次无接收端的 R1 链路检查（R1 的链路检查并入 next 的管线测试，`cast_session/pipeline.rs`）：把当前缓存歌曲
 经 T3 合流成文件 TS，由 T4 发布到回环端点，读取首个 TS 包（同步字节 0x47），并校验随包样片 B。结果在
 `cast.pipeline_result`，由设置输出组的管线测试下方一行状态显示（检查中／通过／通过但样片 B 未校验／
 未通过：原因）。它代替 R2 的“家里预检”，不需要接收端或房间授权；接收端兼容性由设备行上的门店自检负责。
@@ -593,7 +593,7 @@ HTTP 端点、会话、自检和诊断以 R1 为准；界面合同、Remote 协�
 | next 门禁 | 移植后断言 |
 | --- | --- |
 | `test:purek`（`purek_room`、`ktv_scanner`、`ktv_assistance`、`ktv_assistance_browser`） | `purek_room` 改调 `/api/cast/*` 并断言 R1 的放宽规则（大小写、端口、片段、100.64/10）、公网 IPv4 拒绝和只比 UDN，错误为对应的 `cast_purek_*` 分类；`ktv_assistance` 只把 state/probe/disconnect 的传输改为 `/api/state` 与 `/api/cast/*`，身份、邀请、授权、隐私断言不变；`ktv_scanner` 原样 |
-| `test:purek-output`（`purek_output`、`purek_monitor`） | 不按 IP 拒绝、不 409（第五个 GET 关闭最旧的）、停读 3／10 秒可继续、15 秒无进展才断开；文件模式 HEAD 长度、Range 206/416；直播忽略 Range、从关键帧加入；监测改为 R1 规则（UPnP 错误不断开，真实断线 8 秒静默 + 4 秒恢复）；完整运行 T4 的真实 companion 用例 |
+| `test:purek-output`（`purek_output`、`purek_monitor`） | 不因来源与描述地址不同而拒绝（公网来源仍 403）、不 409（第五个 GET 关闭最旧的）、停读 3／10 秒可继续、15 秒无进展才断开；文件模式 HEAD 长度、Range 206/416；直播忽略 Range、从关键帧加入；监测改为 R1 规则（UPnP 错误不断开，真实断线 8 秒静默 + 4 秒恢复）；完整运行 T4 的真实 companion 用例 |
 | `test:purek-controller`（`purek_controller`、`purek_compatibility`） | R1 的起播、文件模式 Pause／Play／Seek 保持 URI、下一首、自然结束、断开恢复；14 种能力声明逐项实际试播，查询结果不阻止试播，`qualified`／`supports_*` 仍为 false；SetURI 被拒时清理会话并恢复本地 |
 | `test:purek-l1`（`purek_l1`、`native_output_browser`） | 独立 L1 原样保留；另经 T4 直播供流（`cast_l1_receiver.mjs`），断言调整不换 URI、换轨推进播放代次、频率和增益实际变化、迟加入读者从关键帧开始 |
 | `test:media-output`、`ios_output_ui_browser` | 原样通过；投影层保证字段合同 |

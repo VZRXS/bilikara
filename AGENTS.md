@@ -484,7 +484,8 @@ npm run test:media-output
 # Pure K Host-only API and rendered authorization/capability/retry controls.
 # Physical receiver gates remain separate; simulated receivers cannot qualify DLNA.
 npm run test:purek
-# Actual companion is required; runs the R1 T4 transport (no IP/409 rejection,
+# Actual companion is required; runs the R1 T4 transport (no rejection when the
+# source differs from the description address, public sources still 403, no 409,
 # 15 s backpressure, file Range / live keyframe join) and receiver monitoring.
 # The test library beside it, or BILIKARA_TEST_CAST_COMPANION, must exist.
 BILIKARA_TEST_LIBAV_COMPANION=/absolute/prefix/bin/libbilikara_media_libav.so npm run test:purek-output

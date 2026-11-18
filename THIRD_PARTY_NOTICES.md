@@ -450,7 +450,9 @@ binary is used.
   with historical behavior from `dd88c12`, `3c8a129`, and `0870f2b`.
   Copyright (c) 2026 bilikara contributors; permission notice retained in `LICENSE`.
 - Sources: [ChunK-Helper](https://github.com/FMPeach/ChunK-Helper) (MIT),
-  local reference commit `3b00533af18c4938285ded40ca12829c0e89ed9e`,
+  local reference commit `3b00533af18c4938285ded40ca12829c0e89ed9e` (the R1
+  adaptation below; the ChunK-Helper section further down records revision
+  `e223fac` for next's earlier room parsing, which remains a separate reference),
   `src/PureKBridge.Core/Qr/PureKQrParser.cs`,
   `src/PureKBridge.Core/PureK/{DeviceAuthorizationClient,ConnectionServices}.cs`,
   and `src/PureKBridge.Core/Network/{RendererClient,SsdpAdvertisement,RendererHealthMonitor}.cs`.
