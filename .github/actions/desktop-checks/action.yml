@@ -211,12 +211,20 @@ runs:
         npm run test:purek-controller
         # R1 T5/T8 cast session and self-test cases against the exported test
         # companion. Same flags as buildPurekTests, so its binary is reused.
-        # The exact count fails closed if the selection silently shrinks.
+        # The Linux selection must equal the checked-in name list (platform-
+        # gated ignored cases are simply absent from it), and every selected
+        # case must pass, so a silently shrinking selection fails closed.
         cast_log="$RUNNER_TEMP/bilikara-cast-session-ignored.log"
+        cast_cases="$RUNNER_TEMP/bilikara-cast-session-ignored.txt"
         test -f "$BILIKARA_TEST_CAST_COMPANION"
         cargo test --manifest-path rust-runtime/Cargo.toml --locked --target host-tuple --lib --features native-host -- \
+          native_host::cast_session:: --ignored --list | sed -n 's/: test$//p' | LC_ALL=C sort > "$cast_cases"
+        diff -u .github/actions/desktop-checks/cast-session-companion-tests.txt "$cast_cases"
+        cast_count=$(wc -l < "$cast_cases")
+        test "$cast_count" -gt 0
+        cargo test --manifest-path rust-runtime/Cargo.toml --locked --target host-tuple --lib --features native-host -- \
           native_host::cast_session:: --ignored --test-threads=1 2>&1 | tee "$cast_log"
-        grep -Eq '^test result: ok\. 35 passed; 0 failed; 0 ignored;' "$cast_log"
+        grep -Eq "^test result: ok\. ${cast_count} passed; 0 failed; 0 ignored;" "$cast_log"
 
     - name: Save verified Linux media test libraries
       if: runner.os == 'Linux' && steps.test-libav-cache.outputs.cache-hit != 'true'

@@ -440,22 +440,51 @@ test('Linux desktop Checks run every R1 cast session/self-test real-companion ca
   includes(linux, ["if: runner.os == 'Linux'", 'npm run test:purek-output', 'test -f "$BILIKARA_TEST_CAST_COMPANION"',
     'cargo test --manifest-path rust-runtime/Cargo.toml --locked --target host-tuple --lib --features native-host --',
     'native_host::cast_session:: --ignored --test-threads=1 2>&1 | tee "$cast_log"',
-    String.raw`grep -Eq '^test result: ok\. 35 passed; 0 failed; 0 ignored;' "$cast_log"`]);
+    String.raw`native_host::cast_session:: --ignored --list | sed -n 's/: test$//p' | LC_ALL=C sort > "$cast_cases"`,
+    'diff -u .github/actions/desktop-checks/cast-session-companion-tests.txt "$cast_cases"',
+    'cast_count=$(wc -l < "$cast_cases")', 'test "$cast_count" -gt 0',
+    'grep -Eq "^test result: ok\\. ${cast_count} passed; 0 failed; 0 ignored;" "$cast_log"']);
+  excludes(linux, ['35 passed']);
   const companion = step(desktopChecks, 'Build libav prerequisite for packaged media tests');
   includes(companion, ['libav-companion --prefix "$BILIKARA_LIBAV_PREFIX" --out "$BILIKARA_LIBAV_PREFIX/bin" --test',
     'BILIKARA_TEST_CAST_COMPANION=$BILIKARA_LIBAV_PREFIX/bin/libbilikara_media_libav_test.so" >> "$GITHUB_ENV"']);
   assert.ok(desktopChecks.indexOf('- name: Build libav prerequisite') < desktopChecks.indexOf('- name: Verify real libav prerequisite contracts'));
-  // The exact CI count equals the ignored cases in the selected module tree.
-  let count = 0;
+  // P12 review W4: CI compares the Linux selection with a checked-in name list
+  // instead of a source-wide #[ignore] count. Every listed case is an ignored
+  // cast_session test, and an ignored case may be absent only behind a cfg gate
+  // on its own attributes (module-level gates must be moved onto the cases).
+  const listed = read('.github/actions/desktop-checks/cast-session-companion-tests.txt').split(/\r?\n/).filter(Boolean);
+  assert.deepEqual(listed, [...new Set(listed)].sort(), 'unique and LC_ALL=C sorted like CI');
+  assert.ok(listed.length > 0);
+  for (const name of listed) assert.match(name, /^native_host::cast_session::[a-z0-9_:]+$/, name);
+  const ignored = new Map();
   const walk = directory => {
     for (const entry of readdirSync(path.join(root, directory), {withFileTypes: true})) {
       const file = `${directory}/${entry.name}`;
-      if (entry.isDirectory()) walk(file);
-      else if (file.endsWith('.rs')) count += (read(file).match(/^\s*#\[ignore\b/gm) ?? []).length;
+      if (entry.isDirectory()) { walk(file); continue; }
+      if (!file.endsWith('.rs')) continue;
+      const lines = read(file).split(/\r?\n/);
+      lines.forEach((line, index) => {
+        if (!/^\s*#\[ignore\b/.test(line)) return;
+        let first = index;
+        while (first > 0 && /^\s*(#\[|\/\/)/.test(lines[first - 1])) first--;
+        const following = lines.slice(index + 1, index + 6);
+        const at = following.findIndex(value => /\bfn\s+[a-z0-9_]+/.test(value));
+        assert.ok(at >= 0, `${file}:${index + 1} ignored item has no test function`);
+        const name = following[at].match(/\bfn\s+([a-z0-9_]+)/)[1];
+        const attributes = lines.slice(first, index + 1).concat(following.slice(0, at));
+        assert.equal(ignored.has(name), false, `duplicate ignored cast_session test name ${name}`);
+        ignored.set(name, {file, gated: attributes.some(value => value.includes('cfg('))});
+      });
     }
   };
   walk('rust-runtime/src/native_host/cast_session');
-  assert.equal(count, 35, 'update the CI exact count together with the ignored cast_session cases');
+  const short = new Set(listed.map(name => name.split('::').at(-1)));
+  assert.equal(short.size, listed.length, 'listed case names are unique');
+  for (const name of short) assert.ok(ignored.has(name), `listed case is not an ignored cast_session test: ${name}`);
+  for (const [name, {file, gated}] of ignored) {
+    assert.ok(short.has(name) || gated, `${file}: ${name} must be in the CI list or carry a cfg gate`);
+  }
 });
 
 test('lightweight performance summaries preserve artifact downloads and avoid a separate summary job', () => {
