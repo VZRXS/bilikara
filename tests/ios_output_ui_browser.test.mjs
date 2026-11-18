@@ -41,6 +41,16 @@ async function open(t,engine,platform){
   const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto(host.base);await page.waitForFunction(()=>state.hostPlaybackSession?.phase==='playing'&&window.BilikaraPureK);
   await page.evaluate(()=>{window.pair={video:state.hostPlaybackSession.video,audio:state.hostPlaybackSession.audio};});
+  // Diagnostics only (stabilization item 2): record who changes the play intent
+  // of the session under test, so an intermittent final-state failure names its path.
+  await page.evaluate(()=>{
+    const session=state.hostPlaybackSession;let value=session.logicalPlayIntent;window.intentLog=[];
+    Object.defineProperty(session,'logicalPlayIntent',{configurable:true,enumerable:true,get:()=>value,set(next){
+      if(next!==value&&window.intentLog.length<20)window.intentLog.push({to:next,ms:Math.round(performance.now()),phase:session.phase,
+        paused:[session.video?.paused,session.audio?.paused],stack:String(new Error().stack).split(/\r?\n/).slice(1,6).map(l=>l.trim()).join(' <- ')});
+      value=next;
+    }});
+  });
   t.after(()=>assert.deepEqual(errors,[]));return{page,host};
 }
 const settle=page=>page.evaluate(async()=>{
@@ -105,7 +115,8 @@ for(const [engineName,engine]of Object.entries({chromium,webkit})) {
     assert.deepEqual(await page.evaluate(()=>({same:state.hostPlaybackSession.video===pair.video&&state.hostPlaybackSession.audio===pair.audio,
       phase:state.hostPlaybackSession.phase,intent:state.hostPlaybackSession.logicalPlayIntent,local:state.localShouldBePlaying,
       networkHold:Boolean(state.networkOutputHoldingLocal),target:state.data.media_output.target})),
-      {same:true,phase:'playing',intent:true,local:true,networkHold:false,target:'local'});
+      {same:true,phase:'playing',intent:true,local:true,networkHold:false,target:'local'},
+      'intent transitions: '+JSON.stringify(await page.evaluate(()=>window.intentLog)));
   });
 
   // B5b (R8 §14.3): the output group's add-device entry is separate from DLNA availability. Native Alpha has no
