@@ -23,6 +23,7 @@ function firstVideo(bytes){
 
 const f=await fixture({vendor:true});
 try{
+  const peer=await loopbackAlias('127.0.0.2','L1 late join from another peer')?'127.0.0.2':undefined;
   await f.connect();let s=await f.status('streaming');
   const original=s.current_item,connection=s.purek.output.target_room_id;
   assert.equal(s.media_output.pipeline_level,'L0');
@@ -42,33 +43,36 @@ try{
   const beforeActions=f.actions.filter(a=>['Stop','SetAVTransportURI','Play'].includes(a));
   const offset=value=>f.remote.api('/api/player/av-delay-action',{type:'set_effective',effective_delay_ms:value});
   const change=async action=>{await action();await delay(120);};
-  await change(()=>offset(150));await change(()=>offset(0));await change(()=>offset(-150));
-  await change(()=>f.remote.api('/api/player/output',{offset_mode:'gradual'}));
-  await change(()=>offset(150));await change(()=>offset(0));
-  await change(()=>f.remote.api('/api/player/audio-variant',{item_id:original.id,expected_item_incarnation_id:original.item_incarnation_id,variant_id:'instrumental'}));
-  await change(()=>f.remote.api('/api/player/key-shift',{key_shift:2}));
-  await change(()=>f.remote.api('/api/player/volume',{volume_percent:35,is_muted:true}));
-  await change(()=>f.remote.api('/api/player/volume',{is_muted:false}));
-  await change(()=>f.remote.api('/api/player/output',{offset_mode:'splice'}));
-  s=await f.state();assert.equal(s.media_output.stream_generation,generation);assert.equal(f.uri,uri);
-  assert.equal(s.media_output.offset_mode,'splice');assert.equal(s.current_item.selected_audio_variant_id,'instrumental');
-  assert.equal(s.playback_generation,playback+1);assert.equal(s.player_settings.key_shift,2);
-  assert.equal(s.player_settings.volume_percent,35);assert.equal(s.player_settings.is_muted,false);
-  assert.deepEqual(f.actions.filter(a=>['Stop','SetAVTransportURI','Play'].includes(a)),beforeActions,'edits must not restart the receiver');
-  // Join after a later GOP exists, while the original reader is still active.
-  await delay(1000);
-  // A second LAN peer (127.0.0.2) joins; without that alias only the peer
-  // difference is skipped and the join assertions below still run.
-  const peer=await loopbackAlias('127.0.0.2','L1 late join from another peer')?'127.0.0.2':undefined;
-  const late=await transfer(uri,{headers:{Range:'bytes=188-375'},localAddress:peer});
+  async function editDuringStream(){
+    await change(()=>offset(150));await change(()=>offset(0));await change(()=>offset(-150));
+    await change(()=>f.remote.api('/api/player/output',{offset_mode:'gradual'}));
+    await change(()=>offset(150));await change(()=>offset(0));
+    await change(()=>f.remote.api('/api/player/audio-variant',{item_id:original.id,expected_item_incarnation_id:original.item_incarnation_id,variant_id:'instrumental'}));
+    await change(()=>f.remote.api('/api/player/key-shift',{key_shift:2}));
+    await change(()=>f.remote.api('/api/player/volume',{volume_percent:35,is_muted:true}));
+    await change(()=>f.remote.api('/api/player/volume',{is_muted:false}));
+    await change(()=>f.remote.api('/api/player/output',{offset_mode:'splice'}));
+    s=await f.state();assert.equal(s.media_output.stream_generation,generation);assert.equal(f.uri,uri);
+    assert.equal(s.media_output.offset_mode,'splice');assert.equal(s.current_item.selected_audio_variant_id,'instrumental');
+    assert.equal(s.playback_generation,playback+1);assert.equal(s.player_settings.key_shift,2);
+    assert.equal(s.player_settings.volume_percent,35);assert.equal(s.player_settings.is_muted,false);
+    assert.deepEqual(f.actions.filter(a=>['Stop','SetAVTransportURI','Play'].includes(a)),beforeActions,'edits must not restart the receiver');
+  }
+  // Time the second reader from confirmed L1 streaming. Waiting for the
+  // control round trips first can put the GET inside the final GOP.
+  const [late]=await Promise.all([
+    delay(1500).then(()=>transfer(uri,{headers:{Range:'bytes=188-375'},localAddress:peer})),
+    editDuringStream(),
+  ]);
   assert.equal(late.status,200);assert.equal(late.headers['content-length'],undefined);
   const full=await waitFor(()=>f.media.find(m=>m.uri===uri),'complete primary T4 capture');
-  inspectTs(full.bytes,{videoFrames:144,channels:2,sampleRate:48000});
+  inspectTs(full.bytes,{videoFrames:240,channels:2,sampleRate:48000});
   const first=firstVideo(full.bytes),joined=firstVideo(late.bytes);
   const skipped=(joined.pts-first.pts)/(90000*1001/24000);
-  assert.ok(Number.isInteger(skipped)&&skipped>=24&&skipped<=96,'join a later one-second keyframe, before EOF');
+  assert.ok(Number.isInteger(skipped)&&skipped>=24&&skipped<=96,
+    `join a later one-second keyframe, before EOF (first PTS ${first.pts}, joined PTS ${joined.pts}, skipped ${skipped})`);
   assert.equal(skipped%24,0);assert.ok(late.bytes.includes(Buffer.from([0,0,1,0x65])),'joined IDR');
-  inspectTs(late.bytes,{videoFrames:144-skipped,channels:2,sampleRate:48000});
+  inspectTs(late.bytes,{videoFrames:240-skipped,channels:2,sampleRate:48000});
   writeFileSync(path.join(process.env.BILIKARA_TEST_PUREK_HOME,'captured.ts'),full.bytes);
   const counters=new Map();for(let i=0;i<late.bytes.length;i+=188){const p=late.bytes.subarray(i,i+188),pid=((p[1]&31)<<8)|p[2];if(pid!==8191&&(p[3]&16)&&!counters.has(pid)){assert.equal(p[3]&15,0,'fresh reader starts each PID at zero');counters.set(pid,0);}}
   // T5 program replacement retains the receiver connection and registration.

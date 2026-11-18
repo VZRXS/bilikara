@@ -119,27 +119,79 @@ const soap=(action,fields='',service='AVTransport')=>`<s:Envelope xmlns:s="http:
 const xml=s=>s.replaceAll('&amp;','&').replaceAll('&lt;','<').replaceAll('&gt;','>').replaceAll('&quot;','"');
 async function renderer(){
   const ip=Object.values(networkInterfaces()).flat().find(n=>n?.family==='IPv4'&&!n.internal&&/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(n.address))?.address;assert.ok(ip);
-  let uri='',pull=null,transport='STOPPED',bytes=0,requests=0,pullTask=null,streamError=null;
+  let uri='',pull=null,transport='STOPPED',startedAt=0,transfer=null,streamError=null;
+  const pulls=new Set();
+  const timestamp=seconds=>[Math.floor(seconds/3600),Math.floor(seconds/60)%60,Math.floor(seconds)%60]
+    .map(value=>String(value).padStart(2,'0')).join(':');
   const server=http.createServer(async(req,res)=>{
     try{
       const body=[];for await(const part of req)body.push(part);const text=Buffer.concat(body).toString('utf8');res.setHeader('Content-Type','text/xml');
-      if(req.method==='GET')return res.end('<root xmlns="urn:schemas-upnp-org:device-1-0"><device><deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType><UDN>uuid:software-profile-receiver</UDN><friendlyName>Software profile receiver</friendlyName><serviceList>'+['ConnectionManager','AVTransport'].map(s=>`<service><serviceType>urn:schemas-upnp-org:service:${s}:1</serviceType><controlURL>/${s}</controlURL></service>`).join('')+'</serviceList></device></root>');
+      if(req.method==='GET'&&req.url==='/description.xml')return res.end('<root xmlns="urn:schemas-upnp-org:device-1-0"><device><deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType><UDN>uuid:software-profile-receiver</UDN><friendlyName>Software profile receiver</friendlyName><serviceList>'+['ConnectionManager','AVTransport'].map(s=>`<service><serviceType>urn:schemas-upnp-org:service:${s}:1</serviceType><controlURL>/${s}</controlURL></service>`).join('')+'</serviceList></device></root>');
       const action=String(req.headers.soapaction||'').match(/#([^"\s]+)/)?.[1];
       if(action==='GetProtocolInfo')return res.end(soap(action,'<Source/><Sink>http-get:*:video/MP2T:*</Sink>','ConnectionManager'));
       if(action==='SetAVTransportURI'){uri=xml(text.match(/<CurrentURI>([\s\S]*?)<\/CurrentURI>/)?.[1]||'');return res.end(soap(action));}
       if(action==='Stop'){transport='STOPPED';pull?.abort();return res.end(soap(action));}
       if(action==='GetTransportInfo')return res.end(soap(action,`<CurrentTransportState>${transport}</CurrentTransportState>`));
+      if(action==='GetPositionInfo'){
+        const position=transport==='PLAYING'?Math.min(durationSeconds,(performance.now()-startedAt)/1000):0;
+        return res.end(soap(action,`<TrackDuration>${timestamp(durationSeconds)}</TrackDuration><RelTime>${timestamp(position)}</RelTime>`));
+      }
+      // File-mode handoff can issue a receiver Seek after Play. GET measures
+      // transfer only; the fixture's reported position models the receiver.
+      if(action==='Seek'){
+        const target=text.match(/<Target>(\d+):(\d+):(\d+)<\/Target>/);
+        assert.ok(target);
+        startedAt=performance.now()-(Number(target[1])*3600+Number(target[2])*60+Number(target[3]))*1000;
+        return res.end(soap(action));
+      }
       if(action==='Play'){
-        transport='PLAYING';requests++;pull=new AbortController();
-        pullTask=(async()=>{const response=await fetch(uri,{signal:pull.signal});assert.equal(response.status,200);for await(const part of response.body)bytes+=part.length;})().catch(error=>{if(error.name!=='AbortError')streamError=error.message;});
+        transport='PLAYING';startedAt=performance.now();
+        pull?.abort();
+        const signal=(pull=new AbortController()).signal;
+        const activity={bytes:0,delivery:null};
+        transfer=activity;
+        const task=(async()=>{
+          const response=await fetch(uri,{signal});
+          assert.equal(response.status,200);
+          assert.match(response.headers.get('content-type')||'',/^video\/mp2t/i);
+          activity.delivery=response.headers.has('content-length')?'file':'live';
+          for await(const part of response.body)activity.bytes+=part.length;
+        })().catch(error=>{if(!signal.aborted)streamError=error.name;});
+        pulls.add(task);
+        task.then(()=>pulls.delete(task));
         return res.end(soap(action));
       }
       res.statusCode=500;res.end('Unsupported fixture action');
     }catch{res.statusCode=500;res.end('Fixture receiver error');}
   });
-  await new Promise(resolve=>server.listen(0,'0.0.0.0',resolve));
-  return {description:`http://${ip}:${server.address().port}/description.xml`,ip,sample:()=>({bytes,requests,streamError}),
-    async close(){pull?.abort();await pullTask;server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}};
+  await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,ip,resolve);});
+  return {description:`http://${ip}:${server.address().port}/description.xml`,ip,
+    sample:()=>({bytes:transfer?.bytes??0,delivery:transfer?.delivery??null,streamError}),
+    async close(){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));pull?.abort();await Promise.all(pulls);}};
+}
+
+async function startDlnaProfile(host,receiver,mode){
+  const pipelineLevel=mode==='dlna-l0'?'L0':'L1';
+  const delivery=pipelineLevel==='L0'?'file':'live';
+  assert.equal((await host.api('/api/state')).media_output.available,true,'An actual full companion is required');
+  await host.api('/api/purek/prepare',{url:receiver.description});
+  await host.api('/api/cast/connect',{});
+  const connected=await waitFor(async()=>{
+    const snapshot=await host.api('/api/state');
+    return snapshot.cast?.connected&&!snapshot.cast.busy&&!snapshot.media_output.busy&&snapshot;
+  },'Cast connection and initial receiver admission',15000);
+  if(connected.cast.mode!==delivery){
+    await host.api('/api/cast/command',{command:'cast.set_device_mode',device_key:connected.cast.selected,
+      revision:connected.revision,mode:delivery});
+  }
+  await waitFor(async()=>{
+    const snapshot=await host.api('/api/state'),sample=receiver.sample();
+    assert.equal(sample.streamError,null,'Synthetic receiver GET failed');
+    return snapshot.cast?.effective_mode===delivery&&snapshot.cast.owns_playback
+      &&snapshot.media_output.status==='streaming'&&snapshot.media_output.pipeline_level===pipelineLevel
+      &&sample.delivery===delivery&&sample.bytes>0;
+  },`Actual Cast ${pipelineLevel} ${delivery} TS delivery`,20000);
+  return {pipelineLevel,delivery};
 }
 async function connectAudience(browser,host,main){
   const context=await browser.newContext({viewport:audienceViewport});
@@ -223,7 +275,26 @@ async function suspendHostVideo(page,kind){
 }
 async function recoveryActions(main,audience,host,diagnostic){
   const results=[];
-  const record=async(name,fn)=>{const start=performance.now();try{await fn();results.push({name,status:'PASS',latencyMs:performance.now()-start});}catch(e){results.push({name,status:'FAIL',category:e.name,latencyMs:performance.now()-start});}};
+  const record=async(name,fn)=>{
+    const start=performance.now();
+    try{await fn();results.push({name,status:'PASS',latencyMs:performance.now()-start});}
+    catch(error){
+      const failed={name,status:'FAIL',category:error.name,latencyMs:performance.now()-start};
+      const output=(await host.api('/api/state').catch(()=>null))?.media_output;
+      if(output?.target==='native'){
+        // In particular, separate producer EOF from either decoder having
+        // appended and played the tail of the current HLS period.
+        const [hostSink,audienceSink]=await Promise.all([
+          main.evaluate(()=>state.nativeOutputPreview?.diagnostics()??null).catch(()=>null),
+          audience?.evaluate(()=>document.querySelector('video')?.bilikaraNativeOutputRelease?.observation()??null).catch(()=>null),
+        ]);
+        failed.nativeOutput={status:output.status,position:output.position,duration:output.duration,
+          streamGeneration:output.stream_generation,producerEof:output.producer_eof,
+          tailSequence:output.preview_tail_sequence,lastError:output.last_error,hostSink,audienceSink};
+      }
+      results.push(failed);
+    }
+  };
   const control=async(action,extra={})=>{const s=await host.api('/api/state');return host.api('/api/player/control',{action,item_id:s.current_item.id,playback_generation:s.playback_generation,expected_queue_version:s.queue_version,...extra});};
   const playing=async(checkAudience=true)=>{
     await main.waitForFunction(diagnostic=>{
@@ -296,7 +367,7 @@ async function mediaSample(page){
 try{
   for(let repetition=1;repetition<=repeats;repetition++)for(const mode of modes){
     const directory=path.join(home,`${mode}-${repetition}`),data=path.join(directory,'data');mkdirSync(directory);let host,browser,server,receiver,audienceServer,audienceBrowser;
-    const errors=[];let startupMs=null,hlsStartupMs=null;
+    const errors=[];let startupMs=null,hlsStartupMs=null,castStartupMs=null;
     try{
       if(mode.startsWith('dlna'))receiver=await renderer();
       const environment=isolatedEnvironment(directory);
@@ -346,26 +417,9 @@ try{
       if(audience)decoderFacts.audience=await observeDecoders(audience);
       const diagnostic=dual&&['pause','retire'].includes(experiment)?await suspendHostVideo(main,experiment):null;
       if(audience){audience.on('pageerror',e=>errors.push(e.name));await audience.waitForFunction(()=>__bilikaraProfile.snapshot().functions.applyClock?.count>0);}
-      if(receiver){
-        await host.api('/api/purek/prepare',{url:receiver.description});await host.api('/api/purek/connect',{});
-        // Registration returns before the bounded capability probe completes.
-        // Wait for its actual committed readiness, never retry a failed start.
-        await waitFor(async()=>{const s=await host.api('/api/purek/state');return s.connected&&!s.busy;},'receiver registration and capability probe',15000);
-        assert.equal((await host.api('/api/state')).media_output.available,true,'An actual full companion is required');
-        await waitFor(async()=>!(await host.api('/api/state')).media_output.busy,'automatic receiver admission settled',15000);
-        if(mode==='dlna-l0'){
-          // A confirmed receiver defaults to managed L1. The diagnostic L0
-          // endpoint cannot take its ownership: explicitly return to local first.
-          await host.api('/api/player/output',{target:'local'});
-          await waitFor(async()=>{const s=await host.api('/api/state');return s.media_output.target==='local'&&!s.media_output.busy;},'managed output released before diagnostic L0',15000);
-          await host.api('/api/purek/output/start',{experimental:true,pipeline:'L0'});
-        }else{
-          // The automatic default preserves the observed paused state. This
-          // explicit benchmark start must request playback, even if selected.
-          await host.api('/api/player/output',{target:'purek',experimental:true});
-        }
-        await waitFor(async()=>(await host.api('/api/purek/state')).output.status==='streaming','Actual TS delivery',15000);
-      }
+      const castStarted=receiver?performance.now():null;
+      const cast=receiver?await startDlnaProfile(host,receiver,mode):null;
+      if(cast)castStartupMs=performance.now()-castStarted;
       if(frameObserver==='on')for(const page of [main,audience].filter(Boolean))await page.evaluate(()=>{
         for(const video of document.querySelectorAll('video'))if(video.requestVideoFrameCallback){
           let frames=0;const frame=()=>{video.bilikaraProfileFrames=++frames;video.requestVideoFrameCallback(frame);};video.requestVideoFrameCallback(frame);
@@ -416,16 +470,20 @@ try{
       const o=(await host.api('/api/state')).media_output;
       const decoder=await main.evaluate(()=>state.nativeOutputPreview?.diagnostics()?.decoder??null);
       const actualOutput={decoder,target:o.target,status:o.status,pipelineLevel:o.pipeline_level,generation:o.stream_generation};
-      const result={actualOutput,mode,repetition,status:'MEASURED',startupMs,hlsStartupMs,elapsed,steadyWindowNs:{start:steadyStartNs,end:steadyEndNs},audioContextFacts:await main.evaluate(()=>({sampleRate:state.audioContext?.sampleRate??null,baseLatency:state.audioContext?.baseLatency??null,outputLatency:state.audioContext?.outputLatency??null})),summary,initial,final,samples,observations,synchronization,browserPerformance,recovery,actionFailures,diagnosticValidity,errors,decoderFacts,output:receiver?(await host.api('/api/purek/state')).output:undefined};
-      // Output snapshots include lease/transport URLs; retain ONLY fixed metrics.
-      if(result.output){const o=result.output;result.output={status:o.status,pipelineLevel:o.pipeline_level,bytesSent:o.bytes_sent,lastError:o.last_error};}
-      if(errors.length||final.receiver?.streamError)result.status='ERROR';
+      // Output snapshots can include transport URLs. Retain only fixed facts.
+      const castOutput=cast?{status:o.status,pipelineLevel:o.pipeline_level,bytesReceived:final.receiver.bytes,
+        bytesReceivedDuringSample:final.receiver.bytes-initial.receiver.bytes,delivery:final.receiver.delivery,lastError:o.last_error}:undefined;
+      const castSteady=!cast||(o.target==='purek'&&o.status==='streaming'&&castOutput.pipelineLevel===cast.pipelineLevel
+        &&castOutput.delivery===cast.delivery&&castOutput.bytesReceived>0&&(cast.delivery==='file'||castOutput.bytesReceivedDuringSample>0));
+      const result={actualOutput,mode,repetition,status:'MEASURED',startupMs,hlsStartupMs,castStartupMs,elapsed,steadyWindowNs:{start:steadyStartNs,end:steadyEndNs},audioContextFacts:await main.evaluate(()=>({sampleRate:state.audioContext?.sampleRate??null,baseLatency:state.audioContext?.baseLatency??null,outputLatency:state.audioContext?.outputLatency??null})),summary,initial,final,samples,observations,synchronization,browserPerformance,recovery,actionFailures,diagnosticValidity,errors,decoderFacts,output:castOutput};
+      if(errors.length||final.receiver?.streamError||!castSteady)result.status='ERROR';
       if(diagnosticValidity&&(diagnosticValidity.audioPaused||diagnosticValidity.audioProgressSeconds<elapsed*.8))result.status='DIAGNOSTIC_INVALID';
       metadata.modes.push(result);writeFileSync(path.join(output,'profile.json'),JSON.stringify(metadata,null,2),'utf8');
       console.log(JSON.stringify({mode,status:result.status,elapsed,summary,actionFailures,evidenceClass:metadata.evidenceClass}));
-      assert.deepEqual(errors,[]);if(receiver)assert.equal(final.receiver.streamError,null);
+      assert.deepEqual(errors,[]);
+      if(cast){assert.equal(final.receiver.streamError,null);assert.ok(castSteady,'Cast did not sustain the requested pipeline');}
     }finally{
-      if(host&&receiver)await host.api('/api/purek/output/stop',{}).catch(()=>{});
+      if(host&&receiver)await host.api('/api/cast/disconnect',{}).catch(()=>{});
       if(audienceBrowser)await audienceBrowser.close();if(audienceServer)await audienceServer.close();
       if(browser)await browser.close();if(server)await server.close();if(receiver)await receiver.close();if(host)await host.close();
     }

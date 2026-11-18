@@ -52,8 +52,13 @@ requires a separate native product launch, not a renamed dev result.
 The `native-single`/`native-dual` modes select the actual Rust L1 local output,
 fetch its authenticated HLS and decode it in the shipped sink. They require the
 real full companion. An unavailable decoder is recorded `UNSUPPORTED` without
-selecting a fake pipeline. DLNA uses an independent consuming SOAP/TS fixture;
-it is neither Native HLS nor a qualified physical receiver.
+selecting a fake pipeline. The DLNA modes select the Rust Cast session through
+an ordinary synthetic receiver. `dlna-l0` measures L0 file delivery and
+`dlna-l1` measures L1 live delivery. The profiler verifies the actual pipeline
+level and that the receiver gets TS bytes using the requested delivery mode.
+An L0 file can finish transferring before steady sampling starts. The fixture
+reports transfer bytes and synthetic receiver position. Receiver decoding,
+presentation and physical-device qualification require separate measurements.
 
 Measurement-only switches (never shipping player settings):
 
