@@ -12,7 +12,8 @@ test('cast and compatibility translations retain Unicode and intentional questio
       assert.doesNotMatch(value, /\?\?|\uFFFD|\?(?!$)/, key);
       if (language !== 'en') assert.match(value, /[\u3040-\u9fff]/, key);
       if (key.startsWith('cast.test.cell.')) assert.match(value, /×/, key);
-      if (key === 'cast.test.busy') assert.match(value, /…$/, key);
+      // Busy/close reuse purek.working and common.close; no unused cast.test copies.
+      assert.ok(!['cast.test.busy', 'cast.test.close'].includes(key), key);
     }
   }
 });
