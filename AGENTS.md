@@ -143,6 +143,25 @@ synchronization and EOS. See `docs/media-backend.md`. Experimental renderers in
 `research/` must stay outside production entry points and package graphs. Never
 interpret a backend EOS observation as authority to select Next or write history.
 
+### Network cast authority (DLNA / Pure K)
+
+The ported R1 cast session (`rust-runtime/src/native_host/cast_session/`, state in
+`native_session.cast`) is the only authority for receiver discovery, connection,
+Pure K registration, delivery, control, diagnostics and the store self-test.
+`media_output`, `player_control_command`, `purek`, `ktv_assistance` and
+`diagnostics.purek` are read-only projections of it with next's field names and
+vocabulary; never store or recompute them elsewhere. Host management uses
+`/api/cast/*`; `/api/purek/prepare`, `/api/purek/decode` and `/api/ktv/*` remain,
+and other `/api/purek/*` routes return `410 purek_retired`. A missing or
+incompatible companion only makes casting and libav media capabilities
+unavailable; Host startup continues. Per-device cast preferences live in the
+separate `cast-devices.json` beside `host-state.json`, never in the checkpoint;
+they are not written before native startup is Ready, and the desktop import tool
+neither converts nor validates them (a native directory copy carries the file
+unchanged). Self-test sample B ships in the desktop resource directory
+(`cast-samples/`, outside the frontend dist) and as Android APK assets unless
+`bilikara.includeCastSamples=false`. See `docs/purek-media-output.md`.
+
 ### Queue ordering authority (R7)
 
 Top and manual moves are local selected-ID moves; Next consumes the committed
@@ -243,6 +262,9 @@ Choose a component by role, then reuse its shared definition. This table describ
 - Radio/checkbox controls use explicit native appearance, consistent sizing and visible focus. Never inherit text-field height or padding.
 - Refresh/regenerate icon actions are circular. Setting help icons sit beside their headings on both clients.
 - The DLNA switch only changes playback output and never opens Scan/Manage. An explicit standalone pipeline test starts through the output group's separate test action and does not require Pure K authorization or a receiver: use the real Rust L1 pipeline and local/Audience sink when its companion and local decoder are available; otherwise report unavailable and retain local Web playback. A selected, confirmed standard DLNA endpoint defaults to its admitted transport once per connection; unknown/incompatible advertisements and AirPlay screens do not imply DLNA-only. A subsequent manual off remains off. Keep Scan/Manage as separate explicit actions. Mobile connected devices open management; Desktop retains its disconnect shortcut. QR dialogs use the shared 20px content axis and 12px header/content gap; manual DLNA address entry is an advanced disclosure with a visible chevron.
+- The Settings output group (DLNA switch, add-device action, pipeline test) is the only cast entry on every platform; the dual-screen menu has no cast panel and Android has no separate My cast card. Scan/Manage (`#purek-modal`) also lists discovered receivers as stable device rows with temporary/saved preference labels, an auto/file/live delivery selector and cancelable discovery. Device-row actions follow §5.2 busy guards and wait for the authoritative terminal snapshot; a preference revision conflict retries once only after confirming the device and action are still valid. Suspending output keeps the connection, platform lease and Pure K registration and restores local playback; only explicit Disconnect releases them. Clear transient output errors when the group or modal closes or the device/connection changes.
+- The compatibility test (store self-test) opens from a device row only while the snapshot has `cast.self_test`, as a large dialog above Manage (desktop undimmed, mobile shared dim backdrop); closing returns focus to the row, or to Manage when the row is gone. It has no second Pure K input: credentials come only from the prepared room on its matching row, and a mismatch is shown, not silently retried. Its start sequence is the only caller of `/api/cast/disconnect` with `retain_room: true`. The receiver-free pipeline test also shows one 13px `role="status"` R1 link-check line below its action (checking / passed / passed without sample B / failed with reason).
+- While a receiver owns playback without the live L1 pipeline (`media_output.pipeline_level !== "L1"`), Host key-shift and delay controls are disabled, with the reason reachable from their info bubbles through separate `host-*-network-dsp` description nodes; they re-enable for L1, local and standalone native output. Never infer L1 from receiver metadata. L1 changes during casting reach the receiver after the roughly 1.9 s delivery lead; do not present them as immediate.
 
 ### 5.4 Interaction, focus and motion
 
@@ -462,12 +484,18 @@ npm run test:media-output
 # Pure K Host-only API and rendered authorization/capability/retry controls.
 # Physical receiver gates remain separate; simulated receivers cannot qualify DLNA.
 npm run test:purek
-# Actual P1 companion is required; explicitly runs real L0 and native Host tests.
+# Actual companion is required; runs the R1 T4 transport (no IP/409 rejection,
+# 15 s backpressure, file Range / live keyframe join) and receiver monitoring.
+# The test library beside it, or BILIKARA_TEST_CAST_COMPANION, must exist.
 BILIKARA_TEST_LIBAV_COMPANION=/absolute/prefix/bin/libbilikara_media_libav.so npm run test:purek-output
-# L1 requires the current C/C++ companion; executes native DSP, TS and Host edits.
+# L1 requires the current C/C++ companion; standalone native DSP plus L1 through T4 live casting.
 BILIKARA_TEST_LIBAV_COMPANION=/absolute/prefix/bin/libbilikara_media_libav.so npm run test:purek-l1
-# P3 controller exercises shared commands, URI replacement, receiver EOF and failure hold.
+# R1 session control for Pure K and ordinary DLNA: Pause/Seek, next, receiver EOF, local recovery.
 BILIKARA_TEST_LIBAV_COMPANION=/absolute/prefix/bin/libbilikara_media_libav.so npm run test:purek-controller
+# Cast Manage rows, self-test dialog and DSP limits (also part of test:host-experience).
+npm run test:cast-ui
+# Real-companion cast session, self-test and Android loading cases; keep serial.
+BILIKARA_TEST_CAST_COMPANION=/absolute/prefix/bin/libbilikara_media_libav_test.so cargo test --manifest-path rust-runtime/Cargo.toml --features native-host --lib --locked native_host::cast_session -- --ignored --test-threads=1
 # Android shared media construction: actual pinned NDK and private C cache.
 BILIKARA_TEST_ANDROID_NDK=/absolute/sdk/ndk/27.0.12077973 BILIKARA_TEST_ANDROID_LIBAV_CACHE=/absolute/cache npm run test:android-libav
 npm run test:remote-sync
@@ -554,6 +582,7 @@ active.
 | `src/cache_planning.rs` | Pure cache-window desired, pending, retention, and preemption planning policy. |
 | `src/playlist_planning.rs` | Pure playlist ordering and duplicate-identity planning policy. |
 | `src/av_delay.rs` | Pure global/local AV-delay transition, clamping, and lock-button state policy. |
+| `src/dlna_policy.rs` | Pure DLNA/UPnP policy: LAN URL and description rules, SOAP/DIDL wire format, and the single bounded network-XML entry (`bounded_xml`). |
 | `src/tool_prepare_policy.rs` | Rust-authoritative deterministic tool prepare routing from immutable host-gathered facts. |
 | `src/release_selection.rs` | Semantic version sorting and release filtering rules. |
 | `src/asset_selection.rs` | Update package scoring by platform and architecture. |
@@ -574,6 +603,10 @@ active.
 | `src/diagnostics.rs` | Diagnostic sanitization and artifact assembly. |
 | `src/playlist_export.rs` and `src/playlist_export/` | Complete CSV/image export service, local-time formatting, reusable fonts, text layout/rasterization, PNG/ZIP and coarse wire adaptation; no AppState lock during rendering. |
 | `src/networking.rs` and `src/networking/` | Native LAN interface and routing facts per platform, plus the pure address classification and ranking policy. |
+| `src/dlna/` | DLNA discovery/control (`discovery.rs`, `control.rs`), cast HTTP transport (`cast_http/`), Pure K authorization (`purek/`) and redacted session diagnostics (`diagnostics/`). |
+| `src/native_host/cast_session/` | Authoritative cast session: worker, projections, file/live media, L1 producer (`l1.rs`), receiver-free pipeline check and store self-test (`self_test/`). |
+| `src/app_state/cast.rs` and `src/app_state/cast/` | Cast device preferences and their separate `cast-devices.json` storage. |
+| `src/cast_platform.rs` | Platform output/discovery leases and network facts shared by desktop and Android. |
 | `src/ffi.rs` | Temporary C ABI, including the additive schema-v1 AppState request entry used by the Python Host adapter. |
 
 ### Tauri Shell Layer (`src-tauri/`)
@@ -589,3 +622,6 @@ active.
 | `remote.html` / `remote.js` | Mobile controller UI, search, queueing, remote commands. |
 | `export-guard.js` | Asynchronous action concurrency guard helper. |
 | `styles.css` / `remote.css` | CSS stylesheets for Host and Remote views. |
+| `media-output.js/.css` | Shared output group (DLNA switch, add device, pipeline test); also synchronized to the public Remote. |
+| `purek-room.js/.css` | Host Scan/Manage modal: Pure K scan and authorization, cast device rows, delivery modes and the R1 link-check line. |
+| `cast-self-test.js` | Store self-test dialog opened from a Manage device row. |

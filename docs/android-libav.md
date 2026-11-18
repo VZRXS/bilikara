@@ -80,7 +80,8 @@ rounded up to 16 KB. Wrong identity, changed bytes or unsafe layout fails.
 | arm64-v8a | `46b51d661454b9cfaf42c1dc90893b5ad601b7a7ffc2e09d44bb3cc9d20e7ae2` |
 | x86_64 | `936e1150309bdae86216f14e493f478d39e588095f1577105856da6d0f24f149` |
 
-This follows [Android's RELRO Example 4](https://developer.android.com/guide/practices/page-sizes#check-relro):
+This follows [Android's 16 KB page-size guidance](https://developer.android.com/guide/practices/page-sizes#check-relro),
+step 2, condition 3 and Example 4:
 RELRO may fill an unaligned LOAD tail when later writable data occupies a
 different 16 KB page. The linker can protect that page without covering writable
 data. For example, the pinned arm64 runtime's RELRO and containing LOAD both
@@ -144,6 +145,85 @@ licenses, corrupt FFmpeg sources and altered DSP source inventory:
 cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- verify-android-apk --ndk <absolute-ndk> --abi arm64-v8a --apk <absolute-apk> --source-kit <absolute-source-kit>
 ```
 
+### Cast self-test samples
+
+`src-tauri/gen/android/app/cast-samples.gradle.kts` packages
+`resources/cast-samples/sample-b.ts` and its `SOURCE.md` as uncompressed APK
+assets under `cast-samples/`. They are included by default; build with
+`-Pbilikara.includeCastSamples=false` (or the equivalent
+`ORG_GRADLE_PROJECT_bilikara.includeCastSamples`) to omit them, which also
+removes a previously generated copy. `HostCastSamples`/`CastSampleFiles` copy
+the asset into the app's private cache only while a self-test or pipeline
+check holds the sample lease and delete it afterwards. A build without samples
+reports the sample as unavailable in S0/S5 and the pipeline check instead of
+substituting other media. `scripts/android_media_check.mjs` checks the asset
+against the same Gradle property and its pinned size and SHA-256 (the values
+recorded in `SOURCE.md`). A copy left by process death is removed when the shell initializes,
+without extracting the sample at startup.
+
+## Android runtime capability
+
+Before starting the Host, the shell reads `ApplicationInfo.nativeLibraryDir`
+through JNI and selects `libbilikara_media_libav.so` in that directory.
+`useLegacyPackaging=true` makes this an installed regular file. No JavaScript,
+HTTP request, application-data directory or PATH lookup selects executable code.
+The startup negotiation checks the same ABI/build contract used on desktop.
+Casting and the receiver-free pipeline test require both the R1 cast mux and
+next's L1 exports.
+
+Android cache normalization, media inspection, automatic volume and casting
+share this companion configuration. Missing libraries, loader errors, ABI or
+layout/build negotiation failures and JNI path failures do not block Host
+startup; they only make casting and libav media capabilities unavailable.
+Normalization/inspection retain their existing Rust compatibility route and
+record the fallback reason. Automatic volume has no separate Rust decoder: when
+the companion PCM capability is unavailable, the scanner remains unavailable,
+with an `automatic-volume-unavailable` event. `android-media-capability`
+records startup capabilities and a bounded reason code (for example
+`companion_missing` or `companion_negotiation_failed`) without loader paths.
+Self-test S0 independently checks the shared cast probe; unavailable casting
+returns `cast_backend_unavailable`.
+
+The process caches failed companion loads until the installed file's size,
+modification/creation time or availability changes. Repeated normalization,
+inspection and casting attempts reuse that failure; automatic volume reports
+unavailability once per file identity, including its startup report. A changed
+file permits another load and another failure report. Media errors are not
+cached, and successful handles keep their normal lifetime.
+
+### Media start offsets after switching to libav
+
+Existing cache keys, filenames, reuse checks and immutable media serving do not
+change. Switching to libav does not by itself re-download or re-normalize cache.
+Existing caches are deliberately retained without re-normalization. New libav
+outputs preserve source presentation offsets and AAC priming edits that the
+former Rust normalization omitted. Android local audio/video alignment can
+therefore shift by approximately **45–67 ms for B-frame content**, or about
+**146 ms for the fragmented sample**. These are fixture-specific differences,
+not a universal correction. Old and newly cached songs can differ by tens of
+milliseconds; testers who previously calibrated audio/video delay may need to
+adjust it when comparing these songs. The comparison tests pin the source,
+Rust and libav presentation starts for B-frame, fragmented and AAC-priming
+samples so that a change to this behavior is deliberate.
+
+### Platform resources for network output
+
+Network output uses next's non-exported `HostMediaPlayback` foreground service
+(type `mediaPlayback`), for both receiver casting and the standalone L1
+pipeline. It exists so playback continues while the Host is backgrounded and
+the user can stop output from its notification. A multicast lock is held only
+by a discovery lease while SSDP discovery runs, not for the whole playback.
+During playback the service holds a partial wake lock and a Wi-Fi lock; pausing
+releases both, and resuming reacquires them. API 34+ uses
+`WIFI_MODE_FULL_LOW_LATENCY` (the platform maps `HIGH_PERF` to it there);
+**API 29–33 now use `WIFI_MODE_FULL_HIGH_PERF`**, which remains effective in
+the background, where next previously used LOW_LATENCY (screen-on and
+foreground only) from API 29. This also applies to next's standalone local L1
+output. Notification stops, task removal, service failure and thermal
+CRITICAL use stop reasons 1–4; leases make stale notifications and callbacks
+ignore newer output. See `docs/android-host-beta.md` for the service
+lifecycle, thermal sampling and device acceptance.
+
 ## Verification
 
 ```text
@@ -180,3 +260,35 @@ with the selected NDK's `llvm-readelf -W -h -l -d`, and verify the APK's license
 and absence of a source-kit ZIP in assets. The Rust application `.so` is an
 additional APK library outside the six-library media output. Fixture tests
 do not qualify an APK, Android loading, or physical DLNA operation.
+
+### Runtime regression checks
+
+Build a same-source native **test** companion with
+`xtask libav-companion --test` (see `docs/purek-media-output.md`), keeping shared
+library prefixes read-only, and set `BILIKARA_TEST_CAST_COMPANION` to it. On
+Windows copy the prefix's FFmpeg DLLs beside the test DLL. The startup matrix
+compiles `tests/fixtures/libav_incompatible.c` (ABI version 0, including the
+Windows file-descriptor bridge) into an owned temporary directory with the
+native `cl.exe` or `cc`, so it tests actual ABI rejection rather than a missing
+symbol. Then run:
+
+```text
+cargo test --manifest-path rust-runtime/Cargo.toml --lib --features native-host --locked media_routing::android_tests:: -- --include-ignored --nocapture
+cargo test --manifest-path rust-runtime/Cargo.toml --lib --features native-host --locked android_media_startup_cache_and_failure_matrix -- --ignored --nocapture
+cargo test --manifest-path rust-runtime/Cargo.toml --lib --features native-host --locked experimental_libav::cast_mux:: -- --include-ignored --test-threads=1
+cargo test --manifest-path rust-runtime/Cargo.toml --lib --features native-host --locked native_host::cast_session:: -- --include-ignored --test-threads=1
+```
+
+Keep the native cast tests serial: the test companion's I/O fault injection
+uses process-global counters. Compile-check the Android shell with the selected
+NDK compiler and a process-local `LIBCLANG_PATH` for bindgen:
+
+```text
+cargo clippy --manifest-path src-tauri/Cargo.toml --lib --target aarch64-linux-android --locked -- -D warnings
+```
+
+The Kotlin JVM tests (`:app:testArmDebugUnitTest`) cover sample copying and
+cast resource leases; `HostMediaPlaybackTest` is an instrumentation test that
+needs a device. Actual bionic loading, JNI directory lookup on a device,
+foreground-service behavior and S0/casting still require the packaged Android
+acceptance run.
