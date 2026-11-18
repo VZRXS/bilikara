@@ -37,7 +37,20 @@ runs:
       run: |
         sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
         sudo apt-get update
-        sudo apt-get install -y make gnupg gpgv
+        sudo apt-get install -y make gnupg gpgv libclang-dev
+        # Target compiler for the Android cross-clippy below (R2 A7).
+        ndk="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64"
+        echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+        echo "CC_aarch64_linux_android=$ndk/bin/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+        echo "CXX_aarch64_linux_android=$ndk/bin/aarch64-linux-android24-clang++" >> "$GITHUB_ENV"
+        echo "AR_aarch64_linux_android=$ndk/bin/llvm-ar" >> "$GITHUB_ENV"
+        echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$ndk/bin/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+        echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--target=aarch64-linux-android24 --sysroot=$ndk/sysroot -resource-dir=$ndk/lib/clang/18" >> "$GITHUB_ENV"
+
+    - name: Use runner CPU count for Cargo
+      if: inputs.platform == 'Android'
+      shell: bash
+      run: echo "CARGO_BUILD_JOBS=$(nproc)" >> "$GITHUB_ENV"
 
     - name: Prepare Android runner SDK space
       if: inputs.platform == 'Android'
@@ -119,6 +132,20 @@ runs:
       if: inputs.platform == 'Android'
       shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
       run: BILIKARA_REQUIRE_ANDROID_SIGNING_TESTS=1 node --test tests/android_release.test.mjs
+
+    - name: Install Android Rust target
+      if: inputs.platform == 'Android'
+      shell: bash
+      run: rustup target add aarch64-linux-android
+
+    - name: Compile Android Runtime feature groups and shell with clippy
+      if: inputs.platform == 'Android'
+      shell: bash
+      run: |
+        set -euo pipefail
+        cargo clippy --manifest-path rust-runtime/Cargo.toml --target aarch64-linux-android --lib --locked -- -D warnings
+        cargo clippy --manifest-path rust-runtime/Cargo.toml --target aarch64-linux-android --lib --features native-host --locked -- -D warnings
+        cargo clippy --manifest-path src-tauri/Cargo.toml --target aarch64-linux-android --lib --locked -- -D warnings
 
     - name: Compile iOS application target
       if: inputs.platform == 'iOS'

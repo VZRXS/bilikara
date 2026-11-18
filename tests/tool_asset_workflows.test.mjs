@@ -332,7 +332,8 @@ test('iOS mobile lane builds the device IPA without entering Android signing or 
   includes(build, ["if: inputs.platform == 'iOS'", '--no-sign --ci', 'node scripts/ios.mjs build']);
   excludes(build, ['secrets.', 'APPLE_CERTIFICATE', 'APPLE_DEVELOPMENT_TEAM', 'ANDROID_']);
   for (const name of ['Setup Java', 'Setup Android SDK', 'Resolve Android libav C cache',
-    'Restore Android libav C cache', 'Build actual Android media output', 'Verify actual Android media libraries and cache', 'Validate Android signing contract']) {
+    'Restore Android libav C cache', 'Build actual Android media output', 'Verify actual Android media libraries and cache', 'Validate Android signing contract',
+    'Use runner CPU count for Cargo', 'Install Android Rust target', 'Compile Android Runtime feature groups and shell with clippy']) {
     includes(step(checks, name), ["if: inputs.platform == 'Android'"]);
   }
   for (const name of ['Setup Java', 'Setup Android SDK', 'Prepare native YouTube binding generator',
@@ -410,6 +411,28 @@ test('Android media checker, APK gates and separate source kit run before signat
   includes(stage, ['Sample B is required: CI never passes the Gradle sample opt-out', 'source_kit_sha256; distribute it alongside the APK']);
   // Release collection counts bilikara-* artifacts; the kit must stay outside that set.
   includes(read('scripts/ci_release.mjs'), ["row.name?.startsWith('bilikara-')", 'All six and only six package artifacts are required']);
+});
+
+// Ported from R2 A7 (bilikara 98329496, fa199fc2): PR-level CI compiles Android cfg code.
+test('Android Checks cross-clippy both Runtime feature groups and the shell with the pinned NDK', () => {
+  const checks = mobileChecks;
+  const install = step(checks, 'Install pinned Android signing and media tools');
+  includes(install, ['sudo apt-get install -y make gnupg gpgv libclang-dev', 'NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973',
+    'CC_aarch64_linux_android=$ndk/bin/aarch64-linux-android24-clang', 'CXX_aarch64_linux_android=', 'AR_aarch64_linux_android=$ndk/bin/llvm-ar',
+    'CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$ndk/bin/aarch64-linux-android24-clang',
+    'BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--target=aarch64-linux-android24 --sysroot=$ndk/sysroot -resource-dir=$ndk/lib/clang/18']);
+  includes(step(checks, 'Install Android Rust target'), ['rustup target add aarch64-linux-android']);
+  const clippy = step(checks, 'Compile Android Runtime feature groups and shell with clippy');
+  includes(clippy, ["if: inputs.platform == 'Android'", 'set -euo pipefail',
+    'cargo clippy --manifest-path rust-runtime/Cargo.toml --target aarch64-linux-android --lib --locked -- -D warnings',
+    'cargo clippy --manifest-path rust-runtime/Cargo.toml --target aarch64-linux-android --lib --features native-host --locked -- -D warnings',
+    'cargo clippy --manifest-path src-tauri/Cargo.toml --target aarch64-linux-android --lib --locked -- -D warnings']);
+  for (const name of ['Install pinned Android signing and media tools', 'Setup repository Rust toolchain', 'Install Android Rust target']) {
+    assert.ok(checks.indexOf(`- name: ${name}`) < checks.indexOf('- name: Compile Android Runtime feature groups and shell with clippy'), name);
+  }
+  includes(step(checks, 'Use runner CPU count for Cargo'), ["if: inputs.platform == 'Android'", 'CARGO_BUILD_JOBS=$(nproc)', '>> "$GITHUB_ENV"']);
+  assert.ok(checks.indexOf('- name: Use runner CPU count for Cargo') < checks.indexOf('- name: Setup repository Rust toolchain'));
+  excludes(mobileWorkflow, ['CARGO_BUILD_JOBS: "8"']);
 });
 
 test('Linux desktop Checks run every R1 cast session/self-test real-companion case', () => {
