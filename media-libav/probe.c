@@ -378,3 +378,5 @@ void bm_scan_release_v1(BmScanResult *result) { free(result); }
 #include "pcm.c"
 #include "live_ts.c"
 #include "live_audio.c"
+
+#include "cast_mux.c"

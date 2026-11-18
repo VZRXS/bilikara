@@ -5,10 +5,16 @@ mod artifact_service;
 mod bilibili_service;
 mod cache_application;
 mod cache_runtime;
+#[cfg(feature = "native-host")]
+pub mod cast_platform;
+#[cfg(feature = "native-host")]
+pub mod cast_samples;
 pub mod catalog_maintenance;
 mod cloudflare_service;
 mod desktop_login;
 mod diagnostics;
+#[cfg(feature = "native-host")]
+pub mod dlna;
 pub mod experimental_libav;
 mod ffi;
 mod file_publication;

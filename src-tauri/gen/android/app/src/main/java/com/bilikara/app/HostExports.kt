@@ -18,6 +18,60 @@ import java.net.URL
 
 /** Origin-scoped save-only bridge. No arbitrary URL, path, bytes or native IPC. */
 internal class HostExports(private val activity: AppCompatActivity) {
+  companion object {
+    private var sharing = false
+    /** Fixed Host-only download, bounded bytes and a private FileProvider grant. */
+    fun shareCastReport(activity: AppCompatActivity, origin: String, complete: (JSONObject?, String?) -> Unit) {
+      if (sharing) { complete(null, "cast_busy"); return }
+      sharing = true
+      val cookie = CookieManager.getInstance().getCookie(origin).orEmpty()
+      Thread({
+        var failure: String? = null
+        var file: java.io.File? = null
+        try {
+          val connection = URL("$origin/api/cast/self-test/download").openConnection() as HttpURLConnection
+          val bytes = try {
+            connection.instanceFollowRedirects = false
+            connection.connectTimeout = 5000; connection.readTimeout = 30000
+            connection.setRequestProperty("Cookie", cookie); connection.setRequestProperty("Origin", origin)
+            require(connection.responseCode == 200)
+            connection.inputStream.use { stream ->
+              val output = ByteArrayOutputStream(); val buffer = ByteArray(8192)
+              while (true) {
+                val count = stream.read(buffer); if (count < 0) break
+                require(output.size() + count <= 4 * 1024 * 1024)
+                output.write(buffer, 0, count)
+              }
+              output.toByteArray()
+            }
+          } finally { connection.disconnect() }
+          val directory = java.io.File(activity.cacheDir, "cast-reports").apply { mkdirs() }
+          // Never overwrite a URI previously granted to another application.
+          // Retain the current report until the next explicit share.
+          directory.listFiles()?.filter { it.name.startsWith("bilikara-cast-self-test-") && it.extension == "json" }?.forEach { previous ->
+            val uri = androidx.core.content.FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", previous)
+            activity.revokeUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            previous.delete()
+          }
+          file = java.io.File.createTempFile("bilikara-cast-self-test-", ".json", directory).apply { writeBytes(bytes) }
+        } catch (_: Exception) { failure = "cast_report_unavailable" }
+        activity.runOnUiThread {
+          try {
+            if (failure != null) complete(null, failure)
+            else {
+              val uri = androidx.core.content.FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", requireNotNull(file))
+              val intent = Intent(Intent.ACTION_SEND).setType("application/json")
+                .putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                .apply { clipData = android.content.ClipData.newRawUri("bilikara report", uri) }
+              activity.startActivity(Intent.createChooser(intent, null))
+              complete(JSONObject().put("shared", true), null)
+            }
+          } catch (_: Exception) { complete(null, "cast_share_unavailable") }
+          finally { sharing = false }
+        }
+      }, "bilikara-cast-report").start()
+    }
+  }
   private data class Pending(val request: ExportRequest, val reply: JavaScriptReplyProxy,
     var document: PlaylistExport? = null)
   private var pending: Pending? = null

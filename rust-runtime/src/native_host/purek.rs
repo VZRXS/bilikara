@@ -1,528 +1,65 @@
-//! Experimental room authorization / discovery, owned by the Rust AppState.
-//! P1 media output is explicitly experimental; hardware qualification is separate.
+//! P5 QR and next KTV assistance adapter. T5 is the sole receiver authority.
 use super::*;
+use crate::dlna::purek as t9;
 use base64::{Engine, engine::general_purpose::STANDARD};
-use std::{
-    io::Read,
-    net::{Ipv4Addr, UdpSocket},
-    time::Instant,
-};
+use std::{net::Ipv4Addr, time::Instant};
 use url::Url;
 pub(crate) mod assistance;
-mod capabilities;
-pub(crate) mod controller;
-mod health;
-mod output;
-pub(crate) mod preview;
-mod protocol;
-mod renderer;
-mod stream;
-mod trace;
-use protocol::{Renderer, Room};
-#[cfg(test)]
-mod tests;
-
-#[derive(Clone)]
-struct Connection {
-    room: Room,
-    renderer: Renderer,
-    local: Ipv4Addr,
-    target_room_id: String,
-}
-#[derive(Default)]
-pub(crate) struct RoomState {
-    pub(crate) program_epoch: u64,
-    pub(crate) controller: controller::Controller,
-    pub auto_discovery: bool,
-    default_output_applied: bool,
-    local_preview: Option<Arc<preview::Preview>>,
-    generation: u64,
-    busy: bool,
-    health: health::Checks,
-    room: Option<Room>,
-    connected: Option<Connection>,
-    discovered: Vec<String>,
-    error: Option<String>,
-    output: renderer::OutputSession,
-    pub(crate) diagnostics: trace::Log,
-}
-impl RoomState {
-    #[cfg(target_os = "android")]
-    pub(crate) fn interrupt_output(&mut self, code: &str) {
-        if self.controller.owns_playback {
-            self.controller.platform_failure(code);
-        }
-        if let Some(r) = &self.output.running {
-            r.cancel();
-        }
-    }
-    /// Host-only sanitized trace for the diagnostic report and ZIP package.
-    pub(crate) fn diagnostics(&self) -> Value {
-        self.diagnostics.snapshot()
-    }
-    pub fn snapshot(&self) -> Value {
-        json!({"auto_discovery":self.auto_discovery,"busy":self.busy,
-            "connected":self.connected.is_some(),"room_name":self.room.as_ref().map(|r| &r.name),
-            "connection_type":self.room.as_ref().map(Room::connection_type),
-            "discovered":self.discovered,"error_code":self.error,
-            "error_stage":self.error.as_ref().and(self.diagnostics.last_connection_stage()),
-            "capabilities":{"dlna_sender":false,"airplay":"system"},
-            "output":self.output.snapshot()})
-    }
-}
-pub(crate) fn snapshot(session: &crate::app_state::native_session::NativeSession) -> Value {
-    let mut value = session.purek.snapshot();
-    value["revision"] = json!(session.revision);
-    value["state_epoch"] = json!(session.state_epoch);
-    value
-}
+mod room;
+use super::cast_session::State as RoomState;
+pub(crate) use room::Room;
 fn failure(status: u16, code: &str, message: &str) -> ApiError {
     ApiError::new(status, &format!("purek_{code}"), message)
 }
 fn busy() -> ApiError {
     failure(409, "busy", "房间操作正在进行，请稍后重试")
 }
-fn network_error() -> ApiError {
-    failure(502, "network", "无法连接房台，请检查房间 Wi-Fi 和官方授权")
-}
-fn client(local: Option<Ipv4Addr>) -> Result<reqwest::blocking::Client, ApiError> {
-    let mut builder = reqwest::blocking::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(2))
-        .timeout(Duration::from_secs(4));
-    if let Some(ip) = local {
-        builder = builder.local_address(std::net::IpAddr::V4(ip));
-    }
-    builder.build().map_err(|_| network_error())
-}
-fn response(response: reqwest::blocking::Response) -> Result<String, ApiError> {
-    if response.status() != 200 {
-        return Err(trace::http_error(response.status()));
-    }
-    body(response)
-}
-fn body(response: reqwest::blocking::Response) -> Result<String, ApiError> {
-    // Reject an advertised oversized reply before waiting for its body. Keep
-    // the streaming limit below for chunked/missing/dishonest length headers.
-    if response
-        .content_length()
-        .is_some_and(|size| size > 1024 * 1024)
-    {
-        return Err(failure(502, "protocol", "房台响应过大"));
-    }
-    let mut bytes = Vec::new();
-    response
-        .take(1024 * 1024 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| network_error())?;
-    if bytes.len() > 1024 * 1024 {
-        return Err(failure(502, "protocol", "房台响应过大"));
-    }
-    String::from_utf8(bytes).map_err(|_| failure(502, "protocol", "房台响应格式无效"))
-}
-fn probe(room: &Room, local: Ipv4Addr) -> Result<Renderer, ApiError> {
-    protocol::local_address(&room.description)?;
-    let text = response(
-        client(Some(local))?
-            .get(room.description.clone())
-            .send()
-            .map_err(|e| trace::request_error(&e))?,
-    )?;
-    Renderer::parse(&text, &room.description)
-}
-fn route_address(room: &Room) -> Result<Ipv4Addr, ApiError> {
-    let destination = protocol::local_address(&room.description)?;
-    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).map_err(|_| network_error())?;
-    // UDP connect selects a route without sending a packet. DNS and proxies are
-    // excluded: the QR must name a literal private IPv4 destination.
-    socket
-        .connect((
-            destination,
-            room.description.port_or_known_default().unwrap_or(80),
-        ))
-        .map_err(|_| network_error())?;
-    match socket.local_addr().map_err(|_| network_error())?.ip() {
-        std::net::IpAddr::V4(ip) if !ip.is_unspecified() => Ok(ip),
-        _ => Err(network_error()),
-    }
-}
-fn register(connection: &Connection, enable: bool) -> Result<(), ApiError> {
-    let Some(authorization) = &connection.room.authorization else {
-        return Ok(());
+pub(super) fn authorization_error(error: &t9::PureKError) -> ApiError {
+    use crate::dlna::ErrorCode as Cause;
+    use t9::PureKErrorCode as Code;
+    let (status, code) = match error.code {
+        Code::InvalidQr | Code::AddressNotAllowed => (400, "qr_invalid"),
+        Code::AddressConfirmationRequired => (409, "address_confirmation_required"),
+        Code::IdentityChanged | Code::RouteChanged => (409, "identity_changed"),
+        Code::MissingRegistrationService => (502, "renderer"),
+        Code::AuthorizationRejected => (502, "authorization"),
+        Code::Cancelled => (409, "cancelled"),
+        Code::Unavailable => (503, "unavailable"),
+        _ => match error.cause.code {
+            Cause::HttpStatus => (502, "http"),
+            Cause::Policy(_) | Cause::InvalidUtf8 => (502, "protocol"),
+            _ => (502, "network"),
+        },
     };
-    let result = client(Some(connection.local))?
-        .post(connection.renderer.control.clone())
-        .header("Content-Type", "text/xml; charset=utf-8")
-        .header(
-            "SOAPAction",
-            format!("\"{}#SetDeviceAuthorization\"", connection.renderer.service),
-        )
-        .body(protocol::authorization(
-            authorization,
-            &connection.renderer,
-            connection.local,
-            enable,
-        ))
-        .send()
-        .map_err(|e| trace::request_error(&e))?;
-    if result.status() == 500 {
-        // UPnP reports a rejected action as HTTP 500 with a SOAP Fault. Keep it
-        // a registration failure; never treat an arbitrary 500 as success.
-        return Err(body(result).map_or_else(
-            |_| trace::http_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
-            |text| protocol::authorization_fault(&text, &connection.renderer.service),
-        ));
+    let mut facts = json!({});
+    if let Some(status) = error.cause.http_status {
+        facts["http_status"] = json!(status);
     }
-    protocol::authorization_result(&response(result)?, &connection.renderer.service)
-}
-fn announce(connection: &Connection, alive: bool) -> Result<(), ApiError> {
-    // A standard control point does not impersonate the receiver's SSDP identity.
-    if connection.room.authorization.is_none() {
-        return Ok(());
+    if matches!(
+        error.cause.code,
+        Cause::Policy(bilikara_rust::dlna_policy::PolicyError::SoapFault(_))
+    ) {
+        facts["soap_fault"] = json!(true);
+        facts["upnp_error"] = json!(error.cause.upnp_code);
     }
-    let socket = UdpSocket::bind((connection.local, 0)).map_err(|_| network_error())?;
-    socket
-        .set_multicast_ttl_v4(2)
-        .map_err(|_| network_error())?;
-    socket2::SockRef::from(&socket)
-        .set_multicast_if_v4(&connection.local)
-        .map_err(|_| network_error())?;
-    socket
-        .set_write_timeout(Some(Duration::from_millis(100)))
-        .map_err(|_| network_error())?;
-    let deadline = Instant::now() + Duration::from_secs(1);
-    for identity in &connection.renderer.identities {
-        if Instant::now() >= deadline {
-            return Err(network_error());
-        }
-        socket
-            .send_to(
-                &protocol::advertisement(&connection.room, &connection.renderer, identity, alive),
-                (Ipv4Addr::new(239, 255, 255, 250), 1900),
-            )
-            .map_err(|_| network_error())?;
+    if error.cause.is_network() {
+        facts["transport"] = json!(error.cause.code.as_str());
     }
-    Ok(())
-}
-fn release(connection: &Connection) -> Result<(), ApiError> {
-    let _ = announce(connection, false);
-    // Bound to the originally registered IP even after a Wi-Fi/route change.
-    register(connection, false)
-}
-fn connect(room: Room, trace: &mut trace::ConnectTrace) -> Result<Connection, ApiError> {
-    connect_traced(room, announce, trace)
-}
-#[cfg(test)]
-fn connect_with(
-    room: Room,
-    publish: impl Fn(&Connection, bool) -> Result<(), ApiError>,
-) -> Result<Connection, ApiError> {
-    let mut trace = trace::ConnectTrace::new(&room);
-    connect_traced(room, publish, &mut trace)
-}
-/// Each receiver operation is recorded as a stage so a failure is not reduced
-/// to one ambiguous code. The trace holds no address, URL, identity or token.
-fn connect_traced(
-    mut room: Room,
-    publish: impl Fn(&Connection, bool) -> Result<(), ApiError>,
-    trace: &mut trace::ConnectTrace,
-) -> Result<Connection, ApiError> {
-    let since = Instant::now();
-    let local = route_address(&room);
-    trace.step("route", since, &local);
-    let local = local?;
-    if let Ok(receiver) = protocol::local_address(&room.description) {
-        trace.route(trace::route_facts(local, receiver));
-    }
-    let since = Instant::now();
-    let renderer = probe(&room, local);
-    trace.step("description", since, &renderer);
-    let renderer = renderer?;
-    if room.authorization.is_some() && renderer.services.connection_manager.is_none() {
-        let missing: Result<(), ApiError> =
-            Err(failure(502, "renderer", "房台未提供可用的设备登记接口"));
-        trace.step("connection_manager", Instant::now(), &missing);
-        return missing.map(|_| unreachable!());
-    }
-    if room.authorization.is_none()
-        && !renderer.name.is_empty()
-        && !renderer.name.chars().any(char::is_control)
-    {
-        room.name.clone_from(&renderer.name);
-    }
-    let mut id = [0u8; 16];
-    getrandom::fill(&mut id).map_err(|_| failure(503, "random", "无法初始化房台会话，请重试"))?;
-    let connection = Connection {
-        room,
-        renderer,
-        local,
-        target_room_id: id.iter().map(|b| format!("{b:02x}")).collect(),
-    };
-    if connection.room.authorization.is_some() {
-        let since = Instant::now();
-        let registered = register(&connection, true);
-        trace.step("authorization", since, &registered);
-        if let Err(error) = registered {
-            // A timed-out response may still have registered us remotely.
-            let _ = register(&connection, false);
-            return Err(error);
-        }
-    }
-    let since = Instant::now();
-    let verified = probe(&connection.room, local);
-    let route = route_address(&connection.room);
-    let cause = match (&verified, &route) {
-        (Err(_), _) => Some("description_failed"),
-        (Ok(r), _) if !same_renderer(r, &connection.renderer) => Some("identity_mismatch"),
-        (_, Ok(address)) if *address == local => None,
-        _ => Some("route_changed"),
-    };
-    let revalidated = cause.map_or(Ok(()), |cause| {
-        let mut facts = json!({ "cause": cause });
-        if let Err(error) = &verified {
-            facts["description_code"] = json!(error.code);
-            for (key, value) in error
-                .diagnostic()
-                .and_then(Value::as_object)
-                .into_iter()
-                .flatten()
-            {
-                facts[key] = value.clone();
-            }
-        }
-        Err(failure(
-            409,
-            "identity_changed",
-            "房台或网络发生变化，请重新识别房间",
-        )
-        .with_diagnostic(facts))
-    });
-    trace.step("revalidation", since, &revalidated);
-    if let Err(error) = revalidated {
-        if connection.room.authorization.is_some() {
-            let _ = publish(&connection, false);
-        }
-        let _ = register(&connection, false);
-        return Err(error);
-    }
-    // The advertisement only helps third-party control points. bilikara drives
-    // the receiver directly from the QR address, so multicast failure is not fatal.
-    if connection.room.authorization.is_some() {
-        let since = Instant::now();
-        let published = publish(&connection, true);
-        trace.step("ssdp", since, &published);
-    }
-    Ok(connection)
+    failure(
+        status,
+        code,
+        match code {
+            "qr_invalid" => "请使用完整的纯 K 房间投屏二维码",
+            "address_confirmation_required" => "设备主机名需要单独确认，请使用局域网 IPv4 地址",
+            "authorization" => "房台未确认设备登记，请完成官方授权后重试",
+            "identity_changed" => "房台或网络发生变化，请重新识别房间",
+            "renderer" => "房台未提供可用的设备登记接口",
+            _ => "无法完成房台操作，请检查房间 Wi-Fi 和官方授权",
+        },
+    )
+    .with_diagnostic(facts)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Health {
-    Healthy,
-    // A timeout or unreachable receiver; busy receivers recover between checks.
-    Transient,
-    // A different route or receiver identity invalidates the registered IP.
-    Changed,
-}
-const HEALTH_RETRY_LIMIT: u32 = 5;
-fn check_health(connection: &Connection) -> Health {
-    match route_address(&connection.room) {
-        Ok(local) if local != connection.local => return Health::Changed,
-        Err(_) => return Health::Transient,
-        Ok(_) => {}
-    }
-    match probe(&connection.room, connection.local) {
-        Ok(renderer) if same_renderer(&renderer, &connection.renderer) => {
-            let _ = announce(connection, true);
-            Health::Healthy
-        }
-        Ok(_) => Health::Changed,
-        Err(_) => Health::Transient,
-    }
-}
-fn same_renderer(a: &Renderer, b: &Renderer) -> bool {
-    a.udn == b.udn && a.control == b.control && a.service == b.service && a.services == b.services
-}
-
-fn assisted_connect(
-    context: &Arc<HostContext>,
-    remote: &str,
-    binding: (&str, &str),
-) -> Result<Value, ApiError> {
-    let (generation, room) = with_app(|app| {
-        assistance::refresh(app);
-        if context.stop.load(Ordering::Acquire) {
-            return Err(failure(409, "stopped", "Host stopped"));
-        }
-        assistance::validate_check(app, remote, binding)?;
-        let state = app.native();
-        if state.purek.busy
-            || state.purek.connected.is_some()
-            || state.purek.output.running.is_some()
-            || state.purek.controller.owns_playback
-        {
-            return Err(busy());
-        }
-        assistance::begin_check(app, remote, binding)?;
-        let state = app.native();
-        state.purek.generation += 1;
-        state.purek.busy = true;
-        state.ktv.connecting = Some((state.purek.generation, binding.1.into()));
-        state.revision += 1;
-        Ok((state.purek.generation, state.purek.room.clone().unwrap()))
-    })?;
-    let worker_context = Arc::clone(context);
-    let worker_remote = remote.to_owned();
-    let worker_binding = (binding.0.to_owned(), binding.1.to_owned());
-    // Acknowledge the serialized admission before receiver I/O. Otherwise the
-    // WebRTC control lane would block a later cancel behind this SOAP request.
-    let started = thread::Builder::new()
-        .name("ktv-connection-check".into())
-        .spawn(move || {
-            let _ = finish_assisted_connect(
-                &worker_context,
-                &worker_remote,
-                (&worker_binding.0, &worker_binding.1),
-                generation,
-                room,
-            );
-        });
-    if started.is_err() {
-        return with_app(|app| {
-            if assistance::check_current(app, remote, binding).is_ok() {
-                assistance::checked(app, remote, false, Some("ktv_io_unavailable".into()));
-            }
-            assistance::release_io(app, generation, binding.1);
-            Err(failure(
-                503,
-                "unavailable",
-                "Connection check could not start",
-            ))
-        });
-    }
-    with_app(|app| Ok(assistance::connection_frame(app, remote)))
-}
-
-fn finish_assisted_connect(
-    context: &Arc<HostContext>,
-    remote: &str,
-    binding: (&str, &str),
-    generation: u64,
-    room: Room,
-) -> Result<Value, ApiError> {
-    let current = with_app(|app| {
-        assistance::check_current(app, remote, binding)?;
-        if app.native().purek.generation != generation || context.stop.load(Ordering::Acquire) {
-            return Err(busy());
-        }
-        Ok(())
-    });
-    if let Err(error) = current {
-        with_app(|app| {
-            assistance::release_io(app, generation, binding.1);
-            Ok(())
-        })?;
-        return Err(error);
-    }
-    // Reuse the actual registration/identity/route checks and capability query.
-    // Neither network I/O nor release runs while holding the AppState lock.
-    let mut steps = trace::ConnectTrace::new(&room);
-    let result = connect(room, &mut steps);
-    let capability = result.as_ref().ok().map(|connection| {
-        let since = Instant::now();
-        let probed = renderer::probe(connection);
-        steps.step("capability_probe", since, &probed);
-        probed
-    });
-    let entry = steps.finish(result.as_ref().err());
-    let committed = with_app(|app| {
-        app.native().purek.diagnostics.connection(entry);
-        assistance::check_current(app, remote, binding)?;
-        let state = app.native();
-        if state.purek.generation != generation || context.stop.load(Ordering::Acquire) {
-            return Err(busy());
-        }
-        state.purek.busy = false;
-        state.ktv.connecting = None;
-        state.purek.error = result.as_ref().err().map(|e| e.code.clone());
-        if let Ok(connection) = &result {
-            state.purek.default_output_applied = false;
-            state.purek.connected = Some(connection.clone());
-            state.purek.room = Some(connection.room.clone());
-            state
-                .purek
-                .output
-                .authorize(generation, connection.target_room_id.clone());
-            state
-                .purek
-                .output
-                .probing(generation, connection.renderer.services.clone());
-            state.purek.output.finish(generation, capability.unwrap());
-        }
-        state.revision += 1;
-        if result.is_ok() {
-            controller::default_for_receiver(app)?;
-        }
-        Ok(assistance::checked(
-            app,
-            remote,
-            result.is_ok(),
-            result.as_ref().err().map(|e| e.code.clone()),
-        ))
-    });
-    if committed.is_err()
-        && let Ok(connection) = result
-    {
-        let _ = release(&connection);
-    }
-    if committed.is_err() {
-        with_app(|app| {
-            assistance::release_io(app, generation, binding.1);
-            Ok(())
-        })?;
-    }
-    committed
-}
-
-fn probe_output() -> Result<Value, ApiError> {
-    let (generation, connection) = with_app(|app| {
-        let session = app.native();
-        let state = &mut session.purek;
-        if state.busy {
-            return Err(busy());
-        }
-        if state.output.running.is_some() {
-            return Err(busy());
-        }
-        let connection = state
-            .connected
-            .clone()
-            .ok_or_else(|| failure(409, "not_authorized", "请先授权房台"))?;
-        state.busy = true;
-        state.generation += 1;
-        state
-            .output
-            .probing(state.generation, connection.renderer.services.clone());
-        session.revision += 1;
-        Ok((state.generation, connection))
-    })?;
-    finish_output_probe(generation, &connection)
-}
-fn finish_output_probe(generation: u64, connection: &Connection) -> Result<Value, ApiError> {
-    let result = renderer::probe(connection);
-    with_app(|app| {
-        let session = app.native();
-        if session.purek.generation != generation
-            || !session.purek.output.finish(generation, result)
-        {
-            return Err(busy());
-        }
-        session.purek.busy = false;
-        session.revision += 1;
-        controller::default_for_receiver(app)?;
-        Ok(snapshot(app.native()))
-    })
-}
 fn decode(body: &Value) -> Result<String, ApiError> {
     let width = body["width"]
         .as_u64()
@@ -570,376 +107,115 @@ fn decode(body: &Value) -> Result<String, ApiError> {
     }
     Ok(values.into_iter().next().unwrap())
 }
+
+pub(crate) fn snapshot(session: &crate::app_state::native_session::NativeSession) -> Value {
+    let mut value = session.cast.room_snapshot();
+    value["revision"] = json!(session.revision);
+    value["state_epoch"] = json!(session.state_epoch);
+    value
+}
 pub(super) fn route(
-    context: &Arc<HostContext>,
+    _context: &Arc<HostContext>,
     method: &Method,
     path: &str,
     body: &Value,
 ) -> Result<Value, ApiError> {
-    if method == Method::GET && path == "/api/purek/state" {
-        return with_app(|app| Ok(snapshot(app.native())));
+    if !matches!(path, "/api/purek/prepare" | "/api/purek/decode") {
+        return Err(failure(410, "retired", "此接口已退役，请使用 /api/cast/*"));
     }
     if method != Method::POST || !body.is_object() {
         return Err(ApiError::invalid("此接口需要 JSON POST"));
     }
-    if path == "/api/purek/output/start" {
-        return output::start(context, body);
-    }
-    if matches!(path, "/api/purek/output/stop" | "/api/purek/output/pause") {
-        if !body.as_object().is_some_and(|v| v.is_empty()) {
-            return Err(ApiError::invalid("empty object required"));
-        }
-        return output::stop(path.ends_with("/pause"), None);
-    }
-    if path == "/api/purek/output/set_offset_mode" {
+    let room = if path.ends_with("/decode") {
+        Room::parse(&decode(body)?)?
+    } else if let Some(raw) = body.get("url") {
         if body.as_object().is_none_or(|v| v.len() != 1) {
-            return Err(ApiError::invalid("mode required"));
+            return Err(ApiError::invalid("url must be the only field"));
         }
-        let mode = match body["mode"].as_str() {
-            Some("splice") => bilikara_rust::output_audio::OffsetMode::Splice,
-            Some("gradual") => bilikara_rust::output_audio::OffsetMode::Gradual,
-            _ => return Err(ApiError::invalid("mode must be splice or gradual")),
-        };
-        return with_app(|app| {
-            let session = app.native();
-            if session.purek.busy {
-                return Err(busy());
-            }
-            if mode == bilikara_rust::output_audio::OffsetMode::Gradual
-                && session
-                    .purek
-                    .output
-                    .running
-                    .as_ref()
-                    .is_some_and(|r| r.level == "L0")
-            {
-                return Err(failure(
-                    409,
-                    "output_l1_required",
-                    "L0 不支持动态 offset 或渐进模式",
-                ));
-            }
-            session.purek.output.mode = mode;
-            session.revision += 1;
-            Ok(snapshot(session))
-        });
-    }
-    if path == "/api/purek/output/probe" {
-        if !body.as_object().is_some_and(|m| m.is_empty()) {
-            return Err(ApiError::invalid("empty object required"));
-        }
-        return probe_output();
-    }
-    if path == "/api/purek/preferences" {
-        let automatic = body["auto_discovery"]
-            .as_bool()
-            .filter(|_| body.as_object().is_some_and(|m| m.len() == 1))
-            .ok_or_else(|| ApiError::invalid("auto_discovery must be boolean"))?;
-        return with_app(|app| {
-            let session = app.native();
-            preferences::save(
-                &context.directory,
-                &session.cache_policy,
-                session.ui_language,
-                automatic,
-            )?;
-            session.purek.auto_discovery = automatic;
-            if !automatic {
-                session.purek.discovered.clear();
-            }
-            session.revision += 1;
-            Ok(snapshot(session))
-        });
-    }
-    if matches!(path, "/api/purek/prepare" | "/api/purek/decode") {
-        let room = if path.ends_with("/decode") {
-            Room::parse(&decode(body)?)?
-        } else if let Some(raw) = body.get("url") {
-            if body.as_object().is_none_or(|v| v.len() != 1) {
-                return Err(ApiError::invalid("url must be the only field"));
-            }
-            Room::from_input(
-                raw.as_str()
-                    .ok_or_else(|| ApiError::invalid("url required"))?,
-            )?
-        } else {
-            Room::parse(
-                body["qr_url"]
-                    .as_str()
-                    .ok_or_else(|| ApiError::invalid("qr_url required"))?,
-            )?
-        };
-        return with_app(|app| {
-            let session = app.native();
-            if session.purek.busy || session.purek.connected.is_some() {
-                return Err(busy());
-            }
-            session.purek.generation += 1;
-            session.purek.output.stop(session.purek.generation);
-            session.purek.error = None;
-            let value = json!({"room_name":room.name,"connection_type":room.connection_type(),
-                "authorization_url":room.authorization.as_ref().map(|a| &a.url)});
-            session.purek.room = Some(room);
-            session.revision += 1;
-            Ok(value)
-        });
-    }
-    if !matches!(path, "/api/purek/connect" | "/api/purek/disconnect") {
-        return Err(failure(404, "route", "房间接口不存在"));
-    }
-    let disconnect = path.ends_with("/disconnect");
-    let (generation, room, previous, active) = with_app(|app| {
-        let session = app.native();
-        let state = &mut session.purek;
-        if state.busy {
-            return Err(busy());
-        }
-        if !disconnect && state.connected.is_some() {
-            return Err(busy());
-        }
-        if !disconnect && state.room.is_none() {
-            return Err(failure(409, "qr_required", "请先识别房间二维码"));
-        }
-        state.busy = true;
-        state.generation += 1;
-        if disconnect && let Some(running) = &state.output.running {
-            running.cancel();
-        }
-        session.revision += 1;
-        Ok((
-            state.generation,
-            state.room.clone(),
-            state.connected.clone(),
-            state.output.running.is_some(),
-        ))
-    })?;
-    let mut connection_entry = None;
-    let result = if disconnect {
-        let stopped = previous
-            .as_ref()
-            .filter(|_| active)
-            .map(|c| renderer::transport(c, "Stop", ""))
-            .transpose();
-        let released = previous.as_ref().map(release).transpose();
-        stopped.and(released).map(|_| None)
+        Room::from_input(
+            raw.as_str()
+                .ok_or_else(|| ApiError::invalid("url required"))?,
+        )?
     } else {
-        let room = room.unwrap();
-        let mut steps = trace::ConnectTrace::new(&room);
-        let result = connect(room, &mut steps);
-        connection_entry = Some(steps.finish(result.as_ref().err()));
-        result.map(Some)
+        Room::parse(
+            body["qr_url"]
+                .as_str()
+                .ok_or_else(|| ApiError::invalid("qr_url required"))?,
+        )?
     };
-    let probe_connection = result.as_ref().ok().and_then(|c| c.clone());
-    let result_snapshot = with_app(|app| {
+    with_app(|app| {
         let session = app.native();
-        if let Some(entry) = connection_entry {
-            session.purek.diagnostics.connection(entry);
-        }
-        if session.purek.generation != generation {
+        if session.cast.self_test.running
+            || session.cast.room_busy
+            || session.cast.connected
+            || session.cast.pending.is_some()
+            || session.local_output.controller.owns_playback
+        {
             return Err(busy());
         }
-        session.purek.busy = probe_connection.is_some();
-        session.purek.error = result.as_ref().err().map(|e| e.code.clone());
-        match &result {
-            Ok(connection) => {
-                session.purek.connected = connection.clone();
-                if let Some(connection) = connection {
-                    session.purek.default_output_applied = false;
-                    session.purek.room = Some(connection.room.clone());
-                    // An opaque, process-local label; never expose the receiver UDN.
-                    session
-                        .purek
-                        .output
-                        .authorize(generation, connection.target_room_id.clone());
-                    session
-                        .purek
-                        .output
-                        .probing(generation, connection.renderer.services.clone());
-                }
-            }
-            Err(_) if disconnect => {
-                session.purek.connected = None;
-            }
-            _ => {}
-        }
-        if disconnect {
-            session.purek.default_output_applied = false;
-            session.purek.room = None;
-            session.purek.output.stop(generation);
-        }
+        session.cast.room_generation += 1;
+        session.cast.room_error = None;
+        session.cast.error_code = None;
+        session.cast.room_failure = None;
+        let value = json!({"room_name":room.name,"connection_type":room.connection_type(),
+                "authorization_url":room.authorization_url()});
+        session.cast.room = Some(room);
         session.revision += 1;
-        result.map(|_| snapshot(session))
-    })?;
-    if let Some(connection) = probe_connection {
-        finish_output_probe(generation, &connection)
-    } else {
-        Ok(result_snapshot)
+        Ok(value)
+    })
+}
+pub(super) fn assisted_connect(
+    context: &Arc<HostContext>,
+    remote: &str,
+    binding: (&str, &str),
+) -> Result<Value, ApiError> {
+    with_app(|app| {
+        assistance::refresh(app);
+        assistance::validate_check(app, remote, binding)?;
+        if app.native().cast.connected
+            || app.native().cast.room_busy
+            || app.native().cast.owns_playback
+            || app.native().local_output.controller.owns_playback
+        {
+            return Err(busy());
+        }
+        let room = app.native().cast.room.clone().ok_or_else(busy)?;
+        let output = crate::cast_platform::OutputLease::acquire()
+            .map_err(|e| ApiError::new(409, e.code(), e.code()))?;
+        assistance::begin_check(app, remote, binding)?;
+        let generation = app.native().cast.room_generation + 1;
+        app.native().cast.room_generation = generation;
+        app.native().ktv.connecting = Some((generation, binding.1.to_owned()));
+        let grant = super::cast_session::Assisted {
+            remote: remote.to_owned(),
+            request: binding.0.to_owned(),
+            epoch: binding.1.to_owned(),
+            generation,
+        };
+        if let Err(error) =
+            super::cast_session::admit_prepared(app, context, room, output, false, Some(grant))
+        {
+            assistance::checked(app, remote, false, Some(error.code.clone()));
+            assistance::release_io(app, generation, binding.1);
+            return Err(error);
+        }
+        Ok(assistance::connection_frame(app, remote))
+    })
+}
+pub(super) fn maintain(context: Arc<HostContext>) {
+    let mut discovery = std::time::Instant::now() - Duration::from_secs(60);
+    while !context.stop.load(Ordering::Acquire) {
+        if discovery.elapsed() >= Duration::from_secs(60) {
+            let _ = super::cast_session::auto_discover(&context);
+            discovery = std::time::Instant::now();
+        }
+        let _ = with_app(|app| {
+            assistance::refresh(app);
+            Ok(())
+        });
+        thread::sleep(Duration::from_millis(250));
     }
 }
 
-// Discovery only suggests clearly identified room receivers. It never guesses
-// authorization credentials from an SSID or automatically registers a device.
-fn discover() -> Result<Vec<String>, ApiError> {
-    discover_at(std::net::SocketAddrV4::new(
-        Ipv4Addr::new(239, 255, 255, 250),
-        1900,
-    ))
-}
-fn discover_at(destination: std::net::SocketAddrV4) -> Result<Vec<String>, ApiError> {
-    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).map_err(|_| network_error())?;
-    socket
-        .set_multicast_ttl_v4(2)
-        .map_err(|_| network_error())?;
-    socket
-        .set_read_timeout(Some(Duration::from_millis(150)))
-        .map_err(|_| network_error())?;
-    socket.send_to(b"M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 1\r\nST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n", destination).map_err(|_| network_error())?;
-    let start = Instant::now();
-    let mut buffer = [0; 8192];
-    let mut locations = Vec::new();
-    while start.elapsed() < Duration::from_millis(1200) && locations.len() < 4 {
-        let Ok((size, source)) = socket.recv_from(&mut buffer) else {
-            continue;
-        };
-        let text = String::from_utf8_lossy(&buffer[..size]);
-        for line in text.lines().skip(1) {
-            if let Some((key, value)) = line.split_once(':')
-                && key.eq_ignore_ascii_case("location")
-                && let Ok(url) = Url::parse(value.trim())
-                && protocol::local_address(&url).ok().map(std::net::IpAddr::V4) == Some(source.ip())
-                && !locations.contains(&url)
-            {
-                locations.push(url);
-            }
-        }
-    }
-    let mut names = Vec::new();
-    for location in locations {
-        let Ok(text) = client(None).and_then(|c| {
-            response(
-                c.get(location.clone())
-                    .send()
-                    .map_err(|_| network_error())?,
-            )
-        }) else {
-            continue;
-        };
-        // A generic television is not sufficient evidence for a Pure K prompt.
-        if !["dolphinstar", "chunk.cn", "purek", "纯k"]
-            .iter()
-            .any(|s| text.to_lowercase().contains(s))
-        {
-            continue;
-        }
-        if let Ok(renderer) = Renderer::parse(&text, &location) {
-            names.push(renderer.name);
-        }
-    }
-    names.sort();
-    names.dedup();
-    Ok(names)
-}
-pub(super) fn maintain(context: Arc<HostContext>) {
-    let mut last_health = Instant::now();
-    let mut last_discovery = Instant::now() - Duration::from_secs(60);
-    let mut was_automatic = false;
-    while !context.stop.load(Ordering::Acquire) {
-        thread::sleep(Duration::from_secs(1));
-        let Ok((automatic, busy, generation, connected, health_interval)) = with_app(|app| {
-            assistance::refresh(app);
-            let s = &mut app.native().purek;
-            let advancing = s.output.running.as_ref().is_some_and(|r| r.advancing());
-            let interval = if let Some(connection) = &s.connected {
-                s.health
-                    .interval(s.generation, &connection.target_room_id, advancing)
-            } else {
-                s.health = health::Checks::default();
-                Duration::from_secs(20)
-            };
-            Ok((
-                s.auto_discovery,
-                s.busy,
-                s.generation,
-                s.connected.clone(),
-                interval,
-            ))
-        }) else {
-            break;
-        };
-        if busy {
-            continue;
-        }
-        if let Some(connection) = connected.filter(|_| last_health.elapsed() >= health_interval) {
-            last_health = Instant::now();
-            // Claim the same operation lease as interactive connection changes.
-            let admitted = with_app(|app| {
-                let s = &mut app.native().purek;
-                if s.generation != generation || s.busy {
-                    return Ok(false);
-                }
-                s.busy = true;
-                app.native().revision += 1;
-                Ok(true)
-            })
-            .unwrap_or(false);
-            if !admitted {
-                continue;
-            }
-            let health = check_health(&connection);
-            let released = with_app(|app| {
-                let session = app.native();
-                let Some(released) = session.purek.finish_health_check(
-                    generation,
-                    &connection.target_room_id,
-                    health,
-                    Instant::now(),
-                ) else {
-                    return Ok(false);
-                };
-                // Keep the operation lease through release I/O. Commit the
-                // invalidation first so an old probe cannot revoke a new room.
-                session.revision += 1;
-                Ok(released)
-            })
-            .unwrap_or(false);
-            if released {
-                let _ = release(&connection);
-                let _ = with_app(|app| {
-                    let session = app.native();
-                    if session.purek.generation == generation.wrapping_add(1)
-                        && session.purek.connected.is_none()
-                    {
-                        session.purek.busy = false;
-                        session.revision += 1;
-                    }
-                    Ok(())
-                });
-            }
-        }
-        if automatic && (!was_automatic || last_discovery.elapsed() >= Duration::from_secs(60)) {
-            last_discovery = Instant::now();
-            if let Ok(names) = discover() {
-                let _ = with_app(|app| {
-                    let session = app.native();
-                    if session.purek.auto_discovery && session.purek.discovered != names {
-                        session.purek.discovered = names;
-                        session.revision += 1;
-                    }
-                    Ok(())
-                });
-            }
-        }
-        was_automatic = automatic;
-    }
-    if let Ok(Some(connection)) = with_app(|app| {
-        let session = app.native();
-        let connection = session.purek.connected.take();
-        session.purek.generation += 1;
-        session.purek.output.stop(session.purek.generation);
-        session.purek.busy = false;
-        session.revision += 1;
-        Ok(connection)
-    }) {
-        let _ = release(&connection);
-    }
-}
+#[cfg(test)]
+mod tests;

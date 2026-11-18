@@ -89,6 +89,55 @@ impl AppStateData {
 }
 
 impl AppState {
+    #[cfg(feature = "native-host")]
+    pub(crate) fn initialize_native_startup(
+        &mut self,
+        directory: &Path,
+        initial: AppStateSeed,
+    ) -> AppStateResponse {
+        if self.data.is_some() {
+            return self.initialize_native(directory, initial);
+        }
+        self.native_startup_pending = true;
+        let response = self.initialize_native(directory, initial);
+        if response.error().is_some() {
+            self.native_startup_pending = false;
+        }
+        response
+    }
+
+    #[cfg(feature = "native-host")]
+    pub(crate) fn commit_native_startup(&mut self) -> AppStateResponse {
+        if self.native_startup_pending {
+            let Some(data) = self.data.as_ref() else {
+                return uninitialized_response();
+            };
+            let Some(storage) = self.native_storage.as_mut() else {
+                return invalid_request_response(
+                    "native_storage_conflict",
+                    "Native startup has no persistence owner",
+                );
+            };
+            if let Err(error) = storage.save(data.native_checkpoint()) {
+                return storage_error_response(error);
+            }
+            self.native_startup_pending = false;
+            if self.cast_startup_dirty {
+                if let Some(storage) = &self.cast_storage
+                    && storage.save(&data.cast).is_err()
+                {
+                    eprintln!(
+                        "[cast-storage] startup preferences unavailable; preserving original file"
+                    );
+                }
+                self.cast_startup_dirty = false;
+            }
+        }
+        self.execute(AppStateRequest::Snapshot {
+            schema_version: SCHEMA_VERSION,
+        })
+    }
+
     pub(super) fn initialize_native(
         &mut self,
         directory: &Path,
@@ -139,11 +188,19 @@ impl AppState {
             // prompt. Reloading a WebView/re-entering initialization is not a
             // new launch; reopening the checkpoint in a new process is.
             data.native_session_choice_pending = needs_session_choice;
+            let (storage, preferences) = cast::storage::Storage::load(directory);
+            data.cast = preferences;
+            self.cast_storage = Some(storage);
         }
         response
     }
 
     pub(super) fn persist_native(&mut self, next: &AppStateData) -> Result<(), NativeStorageError> {
+        if self.native_startup_pending {
+            // Startup workers can update AppState before Ready. The final
+            // startup commit saves their latest authoritative checkpoint once.
+            return Ok(());
+        }
         if let Some(storage) = self.native_storage.as_mut() {
             storage.save(next.native_checkpoint())?;
         }
@@ -206,6 +263,122 @@ mod tests {
 
     fn played() -> SessionPlayedEntry {
         serde_json::from_value(json!({"key":"song:1", "item_id":"song", "display_title":"Song", "title":"Song", "part_title":"P1", "original_url":"https://example.test/video", "resolved_url":"https://example.test/video?p=1", "bvid":"BV1z84y1p7oS", "aid":1, "cid":2, "page":1, "played_at":10})).unwrap()
+    }
+
+    #[cfg(feature = "native-host")]
+    #[test]
+    fn failed_native_startup_keeps_the_checkpoint_and_generation_until_commit() {
+        let directory = TestDirectory::new();
+        let mut first = AppState::default();
+        let mut initial = seed();
+        initial.last_playback_generation = 13;
+        assert_eq!(
+            snapshot(first.initialize_native(&directory.0, initial)).playback_generation,
+            14
+        );
+        drop(first);
+        let before = directory.bytes();
+
+        let mut app = AppState::default();
+        let pending = snapshot(app.initialize_native_startup(&directory.0, seed()));
+        assert_eq!(pending.playback_generation, 15);
+        assert_eq!(directory.bytes(), before);
+        assert_eq!(
+            snapshot(app.initialize_native_startup(&directory.0, seed())),
+            pending
+        );
+        snapshot(app.execute(AppStateRequest::SetVolume {
+            schema_version: 1,
+            volume_percent: 35,
+            expected_item_incarnation_id: None,
+            now: 20.0,
+        }));
+        assert_eq!(directory.bytes(), before);
+        app.execute(AppStateRequest::Shutdown { schema_version: 1 });
+        assert!(app.native_storage.is_none());
+        assert!(!app.native_startup_pending);
+        assert_eq!(directory.bytes(), before);
+
+        let restored = snapshot(app.initialize_native_startup(&directory.0, seed()));
+        assert_eq!(restored.playback_generation, 15);
+        assert_eq!(restored.player_settings.volume_percent, 100);
+        assert_eq!(directory.bytes(), before);
+        snapshot(app.commit_native_startup());
+        assert_eq!(saved(&directory).last_playback_generation, 15);
+        assert!(!app.native_startup_pending);
+        snapshot(app.execute(AppStateRequest::SetVolume {
+            schema_version: 1,
+            volume_percent: 45,
+            expected_item_incarnation_id: None,
+            now: 21.0,
+        }));
+        assert_eq!(saved(&directory).player_settings.volume_percent, 45);
+    }
+
+    #[cfg(feature = "native-host")]
+    #[test]
+    fn fresh_native_startup_writes_its_first_checkpoint_only_on_commit() {
+        let directory = TestDirectory::new();
+        let mut app = AppState::default();
+        let pending = snapshot(app.initialize_native_startup(&directory.0, seed()));
+        assert_eq!(pending.playback_generation, 1);
+        assert!(!directory.0.join("host-state.json").exists());
+        assert_eq!(snapshot(app.commit_native_startup()), pending);
+        let committed = directory.bytes();
+        assert_eq!(saved(&directory).last_playback_generation, 1);
+        assert_eq!(snapshot(app.commit_native_startup()), pending);
+        assert_eq!(directory.bytes(), committed);
+    }
+
+    #[cfg(feature = "native-host")]
+    #[test]
+    fn cast_preferences_wait_for_ready_and_failed_startup_discards_pending_changes() {
+        use super::cast::{Device, Mode};
+        let directory = TestDirectory::new();
+        let path = directory.0.join("cast-devices.json");
+        let key = "0123456789abcdef0123456789abcdef";
+        let mut app = AppState::default();
+        let revision = snapshot(app.initialize_native_startup(&directory.0, seed())).revision;
+        app.cast_set_device(
+            key,
+            revision,
+            Device {
+                mode: Mode::Live,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!path.exists());
+        assert!(!directory.0.join("cast-devices.pending").exists());
+        app.execute(AppStateRequest::Shutdown { schema_version: 1 });
+        let revision = snapshot(app.initialize_native_startup(&directory.0, seed())).revision;
+        assert!(app.cast_preferences().unwrap().devices.is_empty());
+        app.cast_set_device(
+            key,
+            revision,
+            Device {
+                mode: Mode::File,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!path.exists());
+        snapshot(app.commit_native_startup());
+        let stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored["devices"][key]["mode"], "file");
+        assert!(!String::from_utf8_lossy(&directory.bytes()).contains("\"cast\""));
+        app.execute(AppStateRequest::Shutdown { schema_version: 1 });
+        std::fs::write(&path, b"{broken").unwrap();
+        let revision = snapshot(app.initialize_native_startup(&directory.0, seed())).revision;
+        assert_eq!(
+            app.cast_set_device(key, revision, Device::default())
+                .unwrap_err()
+                .code,
+            "persistence_error"
+        );
+        snapshot(app.commit_native_startup());
+        assert_eq!(std::fs::read(&path).unwrap(), b"{broken");
     }
 
     #[cfg(feature = "native-host")]

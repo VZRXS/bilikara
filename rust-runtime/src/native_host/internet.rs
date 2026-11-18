@@ -228,7 +228,11 @@ fn effect(
         }
         "sync_cache" => return Ok(reply), // Native pump observes committed AppState.
         "output_mode" => {
-            purek::controller::command(identity, &json!({"offset_mode":effect["offset_mode"]}))?;
+            cast_session::output_command(
+                context,
+                identity,
+                &json!({"offset_mode":effect["offset_mode"]}),
+            )?;
             return Ok(reply);
         }
         "player_control" => {

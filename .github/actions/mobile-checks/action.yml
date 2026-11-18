@@ -37,7 +37,20 @@ runs:
       run: |
         sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
         sudo apt-get update
-        sudo apt-get install -y make gnupg gpgv
+        sudo apt-get install -y make gnupg gpgv libclang-dev
+        # Target compiler for the Android cross-clippy below (R2 A7).
+        ndk="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64"
+        echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+        echo "CC_aarch64_linux_android=$ndk/bin/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+        echo "CXX_aarch64_linux_android=$ndk/bin/aarch64-linux-android24-clang++" >> "$GITHUB_ENV"
+        echo "AR_aarch64_linux_android=$ndk/bin/llvm-ar" >> "$GITHUB_ENV"
+        echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$ndk/bin/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+        echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--target=aarch64-linux-android24 --sysroot=$ndk/sysroot -resource-dir=$ndk/lib/clang/18" >> "$GITHUB_ENV"
+
+    - name: Use runner CPU count for Cargo
+      if: inputs.platform == 'Android'
+      shell: bash
+      run: echo "CARGO_BUILD_JOBS=$(nproc)" >> "$GITHUB_ENV"
 
     - name: Prepare Android runner SDK space
       if: inputs.platform == 'Android'
@@ -82,14 +95,45 @@ runs:
         path: ${{ runner.temp }}/bilikara-android-libav-cache
         key: ${{ steps.media-key.outputs.key }}
 
+    - name: Build actual Android media output
+      if: inputs.platform == 'Android'
+      shell: bash
+      run: |
+        set -euo pipefail
+        cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- android-libav --ndk "$BILIKARA_TEST_ANDROID_NDK" --abi arm64-v8a --out "$RUNNER_TEMP/android-media-output" --cache "$BILIKARA_TEST_ANDROID_LIBAV_CACHE"
+
     - name: Verify actual Android media libraries and cache
       if: inputs.platform == 'Android'
-      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
-      run: npm run test:android-libav
+      env:
+        # Qualifies the real-ELF mutation and binary-privacy cases, which skip
+        # without real NDK-built libraries.
+        BILIKARA_TEST_ANDROID_LIBAV_DIR: ${{ runner.temp }}/android-media-output/jniLibs/arm64-v8a
+      shell: bash
+      run: |
+        set -euo pipefail
+        export NDK_HOME="$BILIKARA_TEST_ANDROID_NDK"
+        # Includes android_cast_samples (sample B pins) and the A7 checker tests.
+        npm run test:android-libav
+        # Six libraries (five media + pinned NDK libc++_shared exception), licenses and bound source kit.
+        node scripts/android_media_check.mjs --media-output "$RUNNER_TEMP/android-media-output" \
+          --readelf "$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
+          --source-kit "$RUNNER_TEMP/android-media-output/sources/bilikara-android-libav-9.0.1-arm64-v8a-source-kit.zip"
+
+    - name: Add macOS loopback aliases for DLNA tests
+      # macOS lo0 has only 127.0.0.1. The ported R1 DLNA tests bind 127.0.0.2-13
+      # and route through 127.1.0.1 (Linux/Windows accept all of 127/8).
+      if: inputs.platform == 'iOS'
+      shell: bash
+      run: |
+        set -euo pipefail
+        for address in 127.0.0.{2..13} 127.1.0.1; do sudo ifconfig lo0 alias "$address" up; done
 
     - name: Validate native Host and mobile UI
       # Linux native-host tests belong to Desktop/Linux; Apple SDK checks remain here.
       if: inputs.platform == 'iOS'
+      env:
+        # A missing alias fails these tests instead of skipping them.
+        BILIKARA_REQUIRE_LOOPBACK_ALIAS: '1'
       shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
       run: |
         cargo fmt --manifest-path rust-runtime/Cargo.toml --check
@@ -100,6 +144,20 @@ runs:
       if: inputs.platform == 'Android'
       shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
       run: BILIKARA_REQUIRE_ANDROID_SIGNING_TESTS=1 node --test tests/android_release.test.mjs
+
+    - name: Install Android Rust target
+      if: inputs.platform == 'Android'
+      shell: bash
+      run: rustup target add aarch64-linux-android
+
+    - name: Compile Android Runtime feature groups and shell with clippy
+      if: inputs.platform == 'Android'
+      shell: bash
+      run: |
+        set -euo pipefail
+        cargo clippy --manifest-path rust-runtime/Cargo.toml --target aarch64-linux-android --lib --locked -- -D warnings
+        cargo clippy --manifest-path rust-runtime/Cargo.toml --target aarch64-linux-android --lib --features native-host --locked -- -D warnings
+        cargo clippy --manifest-path src-tauri/Cargo.toml --target aarch64-linux-android --lib --locked -- -D warnings
 
     - name: Compile iOS application target
       if: inputs.platform == 'iOS'

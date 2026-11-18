@@ -6,7 +6,8 @@ use super::{
     startup::{Failure, Progress, Stage},
 };
 use crate::{
-    AppStateRequest, AppStateSeed, PlayerSettingsSeed, execute_app_state, initialize_native_host,
+    AppStateRequest, AppStateSeed, PlayerSettingsSeed,
+    app_state::initialize_native_host_for_startup, execute_app_state,
 };
 use std::{
     path::Path,
@@ -26,6 +27,8 @@ pub(super) fn platform() -> &'static str {
 }
 
 /// Called once by application setup, never by page load, wake or an IPC request.
+/// Android's optional media/platform negotiation completes before this boundary;
+/// failure is a capability diagnostic, never a reason to discard Host startup.
 /// A failed startup stays failed until process restart; it must not overwrite a
 /// damaged checkpoint or create a second listener around the same AppState.
 pub fn start(directory: &Path, assets: AssetSource) -> Result<NativeHost, String> {
@@ -51,7 +54,7 @@ pub fn start_diagnosed(directory: &Path, assets: AssetSource) -> Result<NativeHo
         .duration_since(UNIX_EPOCH)
         .map_err(|_| Failure::new(Stage::Clock, None, "host_startup_failed"))?
         .as_secs_f64();
-    let response = initialize_native_host(
+    let response = initialize_native_host_for_startup(
         directory,
         AppStateSeed {
             last_playback_generation: 0,
@@ -109,7 +112,7 @@ pub fn start_diagnosed(directory: &Path, assets: AssetSource) -> Result<NativeHo
         stage: Stage::StateInitialize,
         last_completed: Some(Stage::CheckpointRestore),
     };
-    super::start_observed(directory, assets, false, None, &mut progress).map_err(|error| {
+    super::start_observed(directory, assets, false, None, None, &mut progress).map_err(|error| {
         // NativeHost's owned handle drains any workers/listeners before this
         // boundary. Release the storage authority on failure as well, without
         // retrying startup or writing a fresh seed over the saved checkpoint.

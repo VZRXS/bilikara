@@ -9,8 +9,6 @@ import androidx.annotation.Keep
 class MainActivity : TauriActivity() {
   companion object {
     @JvmStatic @Keep
-    fun updateNetworkPlayback(context: android.content.Context, mode: Int): Int = HostMediaPlayback.update(context, mode)
-    @JvmStatic @Keep
     fun renderRemoteExport(spec: String, destination: String): Int = PlaylistExport.renderRemote(spec, destination)
   }
   private val webViewDiagnostics = HostWebViewDiagnostics(this)

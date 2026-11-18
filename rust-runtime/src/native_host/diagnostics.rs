@@ -240,13 +240,23 @@ fn system_account_names(names: &mut Vec<String>) {
 #[cfg(not(any(unix, windows)))]
 fn system_account_names(_names: &mut Vec<String>) {}
 
+pub(crate) fn assemble(
+    request: &DiagnosticRequest,
+    cast: Option<&crate::dlna::diagnostics::Report>,
+) -> Result<DiagnosticResult, crate::diagnostics::DiagnosticError> {
+    match cast {
+        Some(report) => crate::diagnostics::build_diagnostic_artifact_with_cast(request, report),
+        None => build_diagnostic_artifact(request),
+    }
+}
+
 fn artifact(
     context: &HostContext,
     identity: &Identity,
     body: &Value,
 ) -> Result<DiagnosticResult, ApiError> {
     let aria2_available = context.desktop && context.aria2().is_some();
-    let (snapshot, events, cache_policy) = with_app(|app| {
+    let (snapshot, events, cache_policy, cast_trace) = with_app(|app| {
         app.native_authorize(identity, true)?;
         Ok((
             app.native_core_snapshot()?,
@@ -254,6 +264,7 @@ fn artifact(
             app.native()
                 .cache_policy
                 .snapshot_with(context.desktop && context.bbdown.is_some(), aria2_available),
+            app.native().cast.trace.clone(),
         ))
     })?;
     // Never include the login checkpoint, access URLs, tokens, or raw HTTP headers.
@@ -344,7 +355,8 @@ fn artifact(
     };
     let started = std::time::Instant::now();
     eprintln!("[diagnostics] stage=package status=start");
-    let result = build_diagnostic_artifact(&request);
+    let cast_report = cast_trace.map(|trace| trace.report());
+    let result = assemble(&request, cast_report.as_ref());
     eprintln!(
         "[diagnostics] stage=package status={} elapsed_ms={}",
         if result.is_ok() { "complete" } else { "failed" },

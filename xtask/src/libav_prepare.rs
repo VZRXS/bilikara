@@ -437,7 +437,7 @@ pub fn companion_commands(
             arg("/I", &prefix.join("include")),
             "/I.".into(),
             source.join("probe.c").into(),
-            out.join("stretch.obj").into(),
+            "stretch.obj".into(),
             "/Fo.\\".into(),
             "/link".into(),
             if platform.arm {

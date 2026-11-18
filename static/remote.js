@@ -542,11 +542,11 @@ const elements = {
   sourcesFavlistPullForm: document.getElementById("sources-favlist-pull-form"),
   sourcesFavlistUidInput: document.getElementById("sources-favlist-uid-input"),
   sourcesPullFavlistButton: document.getElementById("sources-pull-favlist-button"),
-  larkSearchForm: document.getElementById("lark-search-form"),
-  larkSearchQuery: document.getElementById("lark-search-query"),
-  larkSearchButton: document.getElementById("lark-search-button"),
-  larkSearchMessage: document.getElementById("lark-search-message"),
-  larkSearchResults: document.getElementById("lark-search-results"),
+  sharedSearchForm: document.getElementById("shared-search-form"),
+  sharedSearchQuery: document.getElementById("shared-search-query"),
+  sharedSearchButton: document.getElementById("shared-search-button"),
+  sharedSearchMessage: document.getElementById("shared-search-message"),
+  sharedSearchResults: document.getElementById("shared-search-results"),
   addNextButton: document.getElementById("add-next-button"),
   resortPlaylistButton: document.getElementById("resort-playlist-button"),
   refreshButton: document.getElementById("refresh-button"),
@@ -1003,7 +1003,7 @@ function syncRemoteRequestPanelSizeTier() {
 
 function syncRemoteSearchModeSelection() {
   window.BilikaraBrowseSearch?.primary(elements.searchForm, {translate:t});
-  window.BilikaraBrowseSearch?.primary(elements.larkSearchForm, {translate:t});
+  window.BilikaraBrowseSearch?.primary(elements.sharedSearchForm, {translate:t});
   const activeMode = normalizeRemoteSearchMode(state.remoteSearchMode);
   state.remoteSearchMode = activeMode;
   elements.remoteSearchModeButtons?.forEach((button) => {
@@ -1675,8 +1675,8 @@ function setSearchMessage(message, isError = false) {
   if (isError && message) setAppMessage(message, true);
 }
 
-function setLarkSearchMessage(message, isError = false) {
-  if (elements.larkSearchMessage) elements.larkSearchMessage.textContent = "";
+function setSharedSearchMessage(message, isError = false) {
+  if (elements.sharedSearchMessage) elements.sharedSearchMessage.textContent = "";
   if (isError && message) setAppMessage(message, true);
 }
 
@@ -1685,8 +1685,8 @@ function setMessageForSource(source, message, isError = false) {
     setSearchMessage(message, isError);
     return;
   }
-  if (source === "lark" || source === "shared") {
-    setLarkSearchMessage(message, isError);
+  if (source === "shared") {
+    setSharedSearchMessage(message, isError);
     return;
   }
   if (source === "favorites") {
@@ -3623,7 +3623,7 @@ async function searchCatalog(query, {offset = 0, limit = 80} = {}) {
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
+    throw new Error(localizedApiMessage(payload.error) || t("error.sharedSearchFailed"));
   }
   return {...payload.data, items: Array.isArray(payload.data?.items) ? payload.data.items : []};
 }
@@ -3656,7 +3656,7 @@ async function fetchD1Browse({ kind = "name", letter = "", query = "", tag = "",
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
+    throw new Error(localizedApiMessage(payload.error) || t("error.sharedSearchFailed"));
   }
   return payload.data || { kind, letter: normalizedLetter, query: normalizedQuery, tag: normalizedTag, tags: [], items: [] };
 }
@@ -3691,7 +3691,7 @@ async function fetchD1CategoryBrowse({ tags = [], query = "", offset = 0, limit 
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
+    throw new Error(localizedApiMessage(payload.error) || t("error.sharedSearchFailed"));
   }
   return payload.data || {
     tags: normalizedTags,
@@ -3907,13 +3907,13 @@ function hideSearchResults() {
   hideRemoteResultPager(elements.searchResults);
 }
 
-function hideLarkSearchResults() {
-  if (!elements.larkSearchResults) {
+function hideSharedSearchResults() {
+  if (!elements.sharedSearchResults) {
     return;
   }
-  elements.larkSearchResults.innerHTML = "";
-  elements.larkSearchResults.classList.add("hidden");
-  hideRemoteResultPager(elements.larkSearchResults);
+  elements.sharedSearchResults.innerHTML = "";
+  elements.sharedSearchResults.classList.add("hidden");
+  hideRemoteResultPager(elements.sharedSearchResults);
 }
 
 function searchResultOwnerName(item) {
@@ -4056,8 +4056,8 @@ function renderSearchResults(items) {
   renderSearchResultItems(elements.searchResults, items, t("search.empty"));
 }
 
-function renderLarkSearchResults(items) {
-  renderSearchResultItems(elements.larkSearchResults, items, t("search.larkNoResults"));
+function renderSharedSearchResults(items) {
+  renderSearchResultItems(elements.sharedSearchResults, items, t("search.sharedNoResults"));
 }
 
 function setSourcesFollowBrowseMessage(message, isError = false) {
@@ -4278,7 +4278,7 @@ function renderRemoteGridPages(container, items, key, renderPage, {loading = fal
     });
     remoteResultPagers.set(container, pager);
   }
-  pager.update({key, items:source.items, total:items.length, pageSize:12, limited:true, hasMore:false,
+  pager.update({key, items:source.items, total:items.length, pageSize:window.BilikaraResultPager.documentPageSize.compact, limited:true, hasMore:false,
     loading, emptyText, language:state.language});
 }
 
@@ -4390,21 +4390,21 @@ function syncBilikaraSearchView() {
   const hasSearched = canonicalBilikaraSearch.hasSearched;
   const loading = canonicalBilikaraSearch.loading;
 
-  if (elements.larkSearchQuery && elements.larkSearchQuery.value !== query) {
-    elements.larkSearchQuery.value = query;
+  if (elements.sharedSearchQuery && elements.sharedSearchQuery.value !== query) {
+    elements.sharedSearchQuery.value = query;
   }
   window.BilikaraBrowseSearch?.primary(elements.searchForm, {translate:t});
-  window.BilikaraBrowseSearch?.primary(elements.larkSearchForm, {translate:t});
+  window.BilikaraBrowseSearch?.primary(elements.sharedSearchForm, {translate:t});
 
-  setLarkSearchMessage(message, isError);
+  setSharedSearchMessage(message, isError);
 
-  if (elements.larkSearchResults) {
+  if (elements.sharedSearchResults) {
     if ((loading && !items.length) || (!hasSearched && !items.length && !message)) {
-      elements.larkSearchResults.innerHTML = "";
-      elements.larkSearchResults.classList.add("hidden");
-      hideRemoteResultPager(elements.larkSearchResults);
+      elements.sharedSearchResults.innerHTML = "";
+      elements.sharedSearchResults.classList.add("hidden");
+      hideRemoteResultPager(elements.sharedSearchResults);
     } else {
-      renderLarkSearchResults(items);
+      renderSharedSearchResults(items);
     }
   }
   syncRemoteRequestPanelSizeTier();
@@ -4429,14 +4429,14 @@ async function executeCanonicalBilikaraSearch(queryStr) {
   canonicalBilikaraSearch.query = query;
   canonicalBilikaraSearch.submitted = query;
   canonicalBilikaraSearch.loading = true;
-  canonicalBilikaraSearch.message = t("search.larkSearching");
+  canonicalBilikaraSearch.message = t("search.sharedSearching");
   canonicalBilikaraSearch.isError = false;
   canonicalBilikaraSearch.hasSearched = true;
   syncBilikaraSearchView();
 
-  if (elements.larkSearchButton) {
-    elements.larkSearchButton.disabled = true;
-    elements.larkSearchButton.setAttribute("aria-busy", "true");
+  if (elements.sharedSearchButton) {
+    elements.sharedSearchButton.disabled = true;
+    elements.sharedSearchButton.setAttribute("aria-busy", "true");
   }
 
   try {
@@ -4457,7 +4457,7 @@ async function executeCanonicalBilikaraSearch(queryStr) {
 
     canonicalBilikaraSearch.data = data;
     canonicalBilikaraSearch.items = freshItems;
-    canonicalBilikaraSearch.message = freshItems.length ? "" : t("search.larkNoResults");
+    canonicalBilikaraSearch.message = freshItems.length ? "" : t("search.sharedNoResults");
     canonicalBilikaraSearch.isError = false;
   } catch (error) {
     if (canonicalBilikaraSearch.seq !== searchSeq) {
@@ -4466,13 +4466,13 @@ async function executeCanonicalBilikaraSearch(queryStr) {
     canonicalBilikaraSearch.items = [];
     canonicalBilikaraSearch.message = "";
     canonicalBilikaraSearch.isError = false;
-    setAppMessage(error.message || t("error.larkSearchFailed"), true);
+    setAppMessage(error.message || t("error.sharedSearchFailed"), true);
   } finally {
     if (canonicalBilikaraSearch.seq === searchSeq) {
       canonicalBilikaraSearch.loading = false;
-      if (elements.larkSearchButton) {
-        elements.larkSearchButton.disabled = false;
-        elements.larkSearchButton.removeAttribute("aria-busy");
+      if (elements.sharedSearchButton) {
+        elements.sharedSearchButton.disabled = false;
+        elements.sharedSearchButton.removeAttribute("aria-busy");
       }
       syncBilikaraSearchView();
     }
@@ -4722,7 +4722,7 @@ function renderD1BrowseView(kind = state.remoteDiscoverMode) {
   if (results) {
     if (mode.tag) {
       const scrollTop = results.scrollTop;
-      renderSearchResultItems(results, items, t(mode.loading ? "search.browseItemsLoading" : "search.larkNoResults"));
+      renderSearchResultItems(results, items, t(mode.loading ? "search.browseItemsLoading" : "search.sharedNoResults"));
       results.scrollTop = scrollTop;
     } else {
       results.innerHTML = "";
@@ -4902,7 +4902,7 @@ function renderCategoryBrowseView() {
   }
   if (results) {
     renderSearchResultItems(results, state.categoryBrowseItems,
-      t(state.categoryBrowseLoading ? "search.browseItemsLoading" : "search.larkNoResults"));
+      t(state.categoryBrowseLoading ? "search.browseItemsLoading" : "search.sharedNoResults"));
   }
   if (message) message.textContent = "";
   window.BilikaraBrowseSearch?.sync(view.querySelector("[data-category-browse-search]"), tabs, {
@@ -5137,7 +5137,7 @@ function requestDetailOwnerForContainer(container) {
   if (!container) {
     return "";
   }
-  if (container === elements.larkSearchResults || container.closest?.("#remote-search-shared-panel")) {
+  if (container === elements.sharedSearchResults || container.closest?.("#remote-search-shared-panel")) {
     return "shared";
   }
   if (container === elements.searchResults || container.closest?.("#remote-search-local-panel")) {
@@ -5163,7 +5163,7 @@ function requestDetailOwnerForContainer(container) {
 
 function requestDetailContainerForOwner(owner) {
   const containers = {
-    shared: elements.larkSearchResults,
+    shared: elements.sharedSearchResults,
     local: elements.searchResults,
     categories: elements.remoteDiscoverCategoriesPanel?.querySelector?.("[data-category-browse-results]"),
     name: elements.remoteDiscoverNamePanel?.querySelector?.("[data-d1-browse-results]"),
@@ -5393,7 +5393,7 @@ function renderSourcesFollowBrowse() {
     elements.sourcesAddFollowUidButton.textContent = sourceBusy
       ? t("gatcha.pulling")
       : state.gatchaUidSaving
-        ? t("gatcha.adding")
+        ? t("search.adding")
         : t("gatcha.add");
   }
   if (elements.sourcesFollowSearchQuery) {
@@ -7678,7 +7678,7 @@ async function confirmBindingSheet() {
     }
     applyStateSnapshot(result.data, { forceRender: true });
     closeBindingSheet();
-    if (["search", "lark", "shared", "local", "categories", "name", "artist", "uids", "favorites"].includes(source)) {
+    if (["search", "shared", "local", "categories", "name", "artist", "uids", "favorites"].includes(source)) {
       searchDetailController?.close({ immediate: true });
     }
     if (intent.clearInput) {
@@ -9383,17 +9383,17 @@ elements.remoteRequestDiscoverPanel?.addEventListener("click", async (event) => 
   }
 });
 
-elements.larkSearchQuery?.addEventListener("input", () => {
-  canonicalBilikaraSearch.query = String(elements.larkSearchQuery?.value || "");
+elements.sharedSearchQuery?.addEventListener("input", () => {
+  canonicalBilikaraSearch.query = String(elements.sharedSearchQuery?.value || "");
 });
 
-elements.larkSearchForm?.addEventListener("submit", async (event) => {
+elements.sharedSearchForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
-  await executeCanonicalBilikaraSearch(elements.larkSearchQuery?.value);
+  await executeCanonicalBilikaraSearch(elements.sharedSearchQuery?.value);
 });
 
-elements.larkSearchResults?.addEventListener("click", async (event) => {
-  if (openSearchResultDetail(event, elements.larkSearchResults, "shared")) {
+elements.sharedSearchResults?.addEventListener("click", async (event) => {
+  if (openSearchResultDetail(event, elements.sharedSearchResults, "shared")) {
     return;
   }
   const button = event.target.closest("button[data-url]");
@@ -9406,7 +9406,7 @@ elements.larkSearchResults?.addEventListener("click", async (event) => {
   button.setAttribute("aria-busy", "true");
   button.textContent = t("search.adding") || "添加中...";
   try {
-    await addByUrl(String(button.dataset.url || ""), "tail", "lark");
+    await addByUrl(String(button.dataset.url || ""), "tail", "shared");
   } finally {
     button.disabled = wasDisabled;
     button.removeAttribute("aria-busy");
@@ -10896,7 +10896,9 @@ if (window.BilikaraSubTabSwipe) {
   };
   const panel = () => [...elements.remoteRequestViewPanels].find(node => !node.hidden);
   window.BilikaraSubTabSwipe.bind(document.querySelector('.request-panel'),{scope:()=>'request',tree,current,panel,
-    fixedZones:()=>[...document.querySelectorAll('.remote-request-head,.remote-request-tabs-viewport,.browse-search-bar')],
+    // Match Host ownership: fixed navigation and entire query/tool rows
+    // exclude their blank space as well as their interactive controls.
+    fixedZones:()=>[...document.querySelectorAll('.remote-request-head,.remote-request-tabs-viewport,.remote-request-secondary-home,.browse-search-bar,.request-panel form')],
     commit:([,view,child])=>{
       if(view==='search') state.remoteSearchMode=child;
       if(view==='discover') state.remoteDiscoverMode=child;

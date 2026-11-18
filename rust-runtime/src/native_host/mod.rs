@@ -1,9 +1,15 @@
 //! Opt-in native Host transport. Desktop's Python adapter does not start this
 //! listener. HTTP is a projection/command adapter to the process-wide AppState.
+#[cfg(any(target_os = "android", test))]
+pub(crate) mod android_media;
+#[cfg(any(target_os = "android", test))]
+pub use android_media::{android_media_unavailable, configure_android_media};
 mod announcements;
 mod api;
 mod automatic_volume;
 mod cache;
+pub(crate) mod cast_session;
+pub use cast_session::platform_stopped as cast_platform_stopped;
 mod catalog;
 mod catalog_append;
 mod client;
@@ -27,6 +33,7 @@ mod admin;
 mod maintenance;
 pub mod mobile;
 mod monthly;
+pub(crate) mod native_output;
 mod network;
 pub mod output_platform;
 mod owner_enrichment;
@@ -69,13 +76,6 @@ pub type AssetSource = Arc<dyn Fn(&str) -> Option<Asset> + Send + Sync>;
 /// and a server-generated private temporary path, never a client-supplied path.
 pub type RemoteExportRenderer = Arc<dyn Fn(&str, &Path) -> Result<(), String> + Send + Sync>;
 
-/// Android shell startup only: the path comes from ApplicationInfo's native
-/// library directory, never HTTP, environment search, PATH or the current cwd.
-#[cfg(target_os = "android")]
-pub fn configure_android_media(companion: &Path) -> Result<(), String> {
-    configure_media_companion(companion)
-}
-
 /// Explicit, debug-only admission for isolated profiling/acceptance harnesses.
 /// Products retain their normal platform startup and resource configuration.
 #[cfg(debug_assertions)]
@@ -83,7 +83,7 @@ pub fn configure_development_media(companion: &Path) -> Result<(), String> {
     configure_media_companion(companion)
 }
 
-#[cfg(any(target_os = "android", debug_assertions))]
+#[cfg(debug_assertions)]
 fn configure_media_companion(companion: &Path) -> Result<(), String> {
     if !companion.is_absolute() || !companion.is_file() {
         return Err("Android media libraries are missing; reinstall the complete APK".into());
@@ -92,8 +92,8 @@ fn configure_media_companion(companion: &Path) -> Result<(), String> {
     // prepared library. No HTTP input, PATH search or automatic discovery.
     let probe = unsafe { crate::experimental_libav::LibavMetadataProbe::load(companion) }
         .map_err(|_| "Android media libraries are incompatible; reinstall the complete APK")?;
-    if !probe.live_ts_available() || !probe.live_l1_available() {
-        return Err("Android media companion lacks required L0/L1 capabilities".into());
+    if !probe.cast_mux_available() || !probe.live_l1_available() {
+        return Err("Android media companion lacks required cast_mux/L1 capabilities".into());
     }
     crate::media_routing::configure(crate::media_routing::Configuration {
         mode: crate::media_routing::Mode::Default,
@@ -128,9 +128,7 @@ impl ApiError {
         self.diagnostic = Some(Box::new(diagnostic));
         self
     }
-    pub(crate) fn diagnostic(&self) -> Option<&Value> {
-        self.diagnostic.as_deref()
-    }
+
     pub(crate) fn invalid(message: impl Into<String>) -> Self {
         Self::new(400, "invalid_request", message)
     }
@@ -163,6 +161,7 @@ pub(crate) struct HostContext {
     directory: PathBuf,
     cache_root: PathBuf,
     assets: AssetSource,
+    sample_root: Option<PathBuf>,
     stop: Arc<AtomicBool>,
     api_slots: Arc<Semaphore>,
     export_slots: Arc<Semaphore>,
@@ -357,7 +356,14 @@ fn start(
         stage: startup::Stage::StateInitialize,
         last_completed: None,
     };
-    start_observed(directory, assets, desktop, shutdown_token, &mut progress)
+    start_observed(
+        directory,
+        assets,
+        desktop,
+        shutdown_token,
+        None,
+        &mut progress,
+    )
 }
 
 fn start_observed(
@@ -365,6 +371,7 @@ fn start_observed(
     assets: AssetSource,
     desktop: bool,
     shutdown_token: Option<String>,
+    sample_root: Option<PathBuf>,
     progress: &mut startup::Progress,
 ) -> Result<NativeHost, ApiError> {
     use startup::Stage;
@@ -496,7 +503,7 @@ fn start_observed(
         }
         session.cache_policy = saved_preferences.cache;
         session.ui_language = saved_preferences.language;
-        session.purek.auto_discovery = saved_preferences.purek_auto_discovery;
+        session.cast.auto_discovery = saved_preferences.purek_auto_discovery;
         session.remote_access = remote_access;
         Ok(())
     })?;
@@ -505,6 +512,7 @@ fn start_observed(
     let context = Arc::new(HostContext {
         directory,
         cache_root,
+        sample_root: sample_root.or_else(crate::cast_samples::root),
         assets,
         stop: Arc::new(AtomicBool::new(false)),
         api_slots: Arc::new(Semaphore::new(32)),
@@ -622,9 +630,27 @@ fn start_observed(
     let output_context = context.clone();
     context
         .spawn("purek-output-controller", move || {
-            purek::controller::maintain(output_context)
+            native_output::controller::maintain(output_context)
         })
         .map_err(|_| ApiError::new(503, "runtime", "无法创建播放输出线程"))?;
+    with_app(|app| {
+        let response = app.commit_native_startup();
+        if let Some(error) = response.error() {
+            let mut failure = ApiError::new(503, &error.kind, &error.message);
+            if let Some(details) = error.details.as_ref() {
+                failure.io_facts = details["io_kind"].as_str().map(|kind| {
+                    Box::new((
+                        kind.to_owned(),
+                        details["os_error"]
+                            .as_i64()
+                            .and_then(|n| i32::try_from(n).ok()),
+                    ))
+                });
+            }
+            return Err(failure);
+        }
+        Ok(())
+    })?;
     progress.enter(Stage::Ready);
     Ok(host)
 }
@@ -894,6 +920,9 @@ async fn handle_inner(
     if path == "/api/events" && method == Method::GET {
         return event_stream(context, identity, host).await;
     }
+    if path == "/api/cast/self-test/download" && method == Method::GET {
+        return cast_session::self_test::download(&identity);
+    }
     if matches!(
         path.as_str(),
         "/api/playlist/export" | "/api/history/export"
@@ -907,7 +936,7 @@ async fn handle_inner(
         }
         if path.starts_with("/media/native-output/") {
             return tokio::task::spawn_blocking(move || {
-                purek::preview::media(&path, method == Method::HEAD)
+                native_output::preview::media(&path, method == Method::HEAD)
             })
             .await
             .map_err(|_| ApiError::new(500, "output_task", "本机输出读取失败"))?;

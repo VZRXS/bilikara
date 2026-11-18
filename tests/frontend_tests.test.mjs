@@ -60,6 +60,7 @@ import './remote_search_hardening_contract.test.mjs';
 import './remote_sse_frontend_contract.test.mjs';
 import './result_pagination_frontend_contract.test.mjs';
 import './subtab_swipe.test.mjs';
+import './runtime_select.test.mjs';
 import './search_result_frontend_contract.test.mjs';
 import './song_transition_frontend_contract.test.mjs';
 import './source_status_frontend_contract.test.mjs';
@@ -69,3 +70,5 @@ import './tauri_export_source_contract.test.mjs';
 import './volume_boost_frontend_contract.test.mjs';
 
 import './source_management_contract.test.mjs';
+import './shared_catalog_ui_contract.test.mjs';
+import './catalog_cleanup_contract.test.mjs';

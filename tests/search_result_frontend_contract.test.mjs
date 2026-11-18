@@ -355,7 +355,7 @@ assert.ok(contains("elements.close.addEventListener(\"click\", () => close());",
 async test_nonexpanded_search_add_success_preserves_host_and_remote_results() {
 let host, host_handler, host_result, remote, remote_add, remote_result;
 host = readFileSync(path.join(path.join(ROOT, "static"), "app.js"), "utf8");
-host_handler = host.slice(sourceIndex(host, "elements.searchResults.addEventListener(\"click\""), sourceIndex(host, "async function handleLarkSearchSubmit", sourceIndex(host, "elements.searchResults.addEventListener(\"click\"")));
+host_handler = host.slice(sourceIndex(host, "elements.searchResults.addEventListener(\"click\""), sourceIndex(host, "async function handleSharedSearchSubmit", sourceIndex(host, "elements.searchResults.addEventListener(\"click\"")));
 host_result = (await this.run_node((`
 const listeners = {};
 const elements = {
@@ -388,8 +388,8 @@ const state = { submitting: false, gatchaCandidate: null };
 const elements = {
   searchQuery: { value: "anime" },
   searchResults: { innerHTML: "existing results" },
-  larkSearchQuery: { value: "database" },
-  larkSearchResults: { innerHTML: "existing database results" },
+  sharedSearchQuery: { value: "database" },
+  sharedSearchResults: { innerHTML: "existing database results" },
 };
 function selectedRequesterName() { return "tester"; }
 function setMessageForSource() {}

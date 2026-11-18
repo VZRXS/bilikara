@@ -1,4 +1,4 @@
-// Protocol compatibility uses a real native Host and companion. Receiver XML
+﻿// Protocol compatibility uses a real native Host and companion. Receiver XML
 // and TS expectations are independent of the product's parser and selector.
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -14,8 +14,8 @@ test('legacy Pure K and ordinary DLNA capability queries cannot block an explici
   assert.ok(companion&&path.isAbsolute(companion)&&existsSync(companion),'actual L1 companion is required');
   const home=mkdtempSync(path.join(tmpdir(),'bilikara-dlna-compat-'));t.after(()=>rmSync(home,{recursive:true,force:true}));
   const binary=await buildPurekTests(),env=isolatedEnvironment(home);
-  Object.assign(env,{BILIKARA_TEST_LIBAV_COMPANION:companion,BILIKARA_LIBAV_COMPANION:companion,
-    BILIKARA_TEST_PUREK_L1:'1',BILIKARA_TEST_PUREK_COMPATIBILITY:'1',BILIKARA_TEST_PUREK_HOME:path.join(home,'data'),
+  Object.assign(env,{BILIKARA_TEST_CAST_COMPANION:companion,BILIKARA_TEST_LIBAV_COMPANION:companion,BILIKARA_LIBAV_COMPANION:companion,
+    BILIKARA_TEST_PUREK_COMPATIBILITY:'1',BILIKARA_TEST_PUREK_HOME:path.join(home,'data'),
     BILIKARA_TEST_NODE:process.execPath,BILIKARA_TEST_PUREK_REPORT:path.join(home,'report.json'),
     BILIKARA_CF_API_URL:'',BILIKARA_CATALOG_SHEETS_URL:''});
   mkdirSync(env.BILIKARA_TEST_PUREK_HOME);
@@ -28,5 +28,5 @@ test('legacy Pure K and ordinary DLNA capability queries cannot block an explici
   assert.deepEqual(report.advisory,['audio-only','rtsp-only','mp4-only','ac3-only','ps-only','tts-192']);
   assert.equal(report.query_failure_preserved,true);
   assert.equal(report.no_premature_streaming,true);
-  assert.equal(report.rejected_uri_held,true);
+  assert.equal(report.rejected_uri_recovered,true);
 });

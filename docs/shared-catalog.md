@@ -51,6 +51,26 @@ The UI labels it as returned results; it cannot infer a complete match count or
 fetch later pages from a provider that ignores `offset`. Those deployments need
 the paged `/search` response above to enable shared searches beyond the prefix.
 
+## Frontend search contract
+
+Host, local Remote and Internet Remote use the same provider-neutral search UI:
+`sharedSearch*` JavaScript names, `shared-search-*` DOM IDs and
+`search.shared*` / `error.sharedSearchFailed` translation keys. The canonical
+HTTP route is `/api/catalog/search`. Search drafts, request generations, cached
+pages, selection and detail-return focus belong to the existing client state.
+The internal `shared` detail/action source selects UI feedback and return
+context only; it is not sent as a song field or persisted in queue/history.
+Provider response metadata such as `source: sheets` has a separate meaning.
+Host's `search.sharedPlaceholder` and Remote's
+`search.sharedCatalogPlaceholder` retain their respective localized copy.
+Translation catalogs must have unique keys in each object; frontend checks scan
+the JSON source before parsing so duplicate keys cannot silently replace text.
+Loading text makes no fixed network-duration promise. Valid empty results use
+the empty-state message; request errors follow the existing error path. There is
+no client-invented multi-table partial-failure state or partial-failure message.
+Chinese and Japanese loading copy follows the existing database terminology in
+their search placeholders and empty states (`共享数据库` / `共有データベース`).
+
 ## Configuration and cache
 
 The default D1 installation (`https://api.kevinx96.icu`) enables the verified
@@ -99,6 +119,23 @@ In-repo callers use `/api/catalog/search`; `/api/lark/search` is a thin alias.
 Any `table` selector returns `410 catalog_table_retired`. Direct Feishu token,
 table probing and search code are retired. Existing protocol fields such as
 `feishu_queued` retain their upstream meanings.
+
+The retained Python source helper `refresh_gatcha_cache_in_background` accepts
+the keyword `upload_default_uids_to_shared_catalog`. Source integrations using
+`upload_default_uids_to_lark` remain supported through a compatibility alias.
+Supplying both spellings raises a clear `TypeError` before starting a task,
+even if their values agree. Neither keyword controls the refresh request;
+passing either boolean, or omitting both, preserves the historical behavior:
+Rust selects eligible new rows for catalog indexing. This alias is confined to
+the Python calling surface, not an HTTP/Worker schema change.
+It does not enable provider uploads or writes to the read-only Sheets snapshot.
+
+The developer smoke surface checks cover both clients' `shared-search-*`
+controls, shared panels, submit/input/result event hooks and canonical search
+route. The non-browser guard `node --test tests/catalog_cleanup_contract.test.mjs`
+checks those smoke expectations against the actual product assets, including
+negative fixtures for missing controls or disconnected request hooks. It does
+not replace the full source-Host smoke flow or browser interaction acceptance.
 
 Rust also owns module-level review/admin/rating/maintenance validation and
 response interpretation. The separate monthly maintenance runner, local rating

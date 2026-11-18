@@ -25,6 +25,8 @@ const MEDIUM_802_3: i32 = 14;
 
 /// One adapter as reported by GetAdaptersAddresses and GetIfEntry2.
 struct Adapter {
+    #[cfg(all(windows, feature = "native-host"))]
+    id: Option<windows_sys::core::GUID>,
     name: String,
     description: String,
     if_type: u32,
@@ -169,6 +171,8 @@ fn read(
     // SAFETY: `row` is zero-initialised apart from the adapter LUID it names.
     let found = unsafe { GetIfEntry2(&mut row) } == NO_ERROR;
     Adapter {
+        #[cfg(all(windows, feature = "native-host"))]
+        id: found.then_some(row.InterfaceGuid),
         // SAFETY: IP Helper strings are NUL-terminated UTF-16 in the live list.
         name: unsafe { wide(adapter.FriendlyName) },
         description: unsafe { wide(adapter.Description) },
@@ -181,6 +185,14 @@ fn read(
         physical_medium: found.then_some(row.PhysicalMediumType),
         addresses,
     }
+}
+
+#[cfg(all(windows, feature = "native-host"))]
+pub(crate) fn adapter_id(address: Ipv4Addr) -> Option<windows_sys::core::GUID> {
+    adapters()
+        .into_iter()
+        .find(|adapter| adapter.oper_up && adapter.addresses.contains(&address))
+        .and_then(|adapter| adapter.id)
 }
 
 /// # Safety
@@ -227,6 +239,8 @@ mod tests {
         hardware: bool,
     ) -> Adapter {
         Adapter {
+            #[cfg(all(windows, feature = "native-host"))]
+            id: None,
             name: name.to_owned(),
             description: description.to_owned(),
             if_type,

@@ -2593,34 +2593,14 @@ select:disabled {
   min-height: 0;
 }
 
-.queue-panel .list {
-  max-height: clamp(300px, 56vh, 680px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding-right: 0;
-}
-.queue-panel .list.has-scroll-inset { padding-right: 4px; }
-
-.queue-panel .list::-webkit-scrollbar {
-  width: 8px;
-}
-
-.queue-panel .list::-webkit-scrollbar-track {
-  background: var(--scrollbar-track-bg);
-  border-radius: 999px;
-}
-
-.queue-panel .list::-webkit-scrollbar-thumb {
-  background: var(--scrollbar-thumb-bg);
-  border-radius: 999px;
-}
+/* Queue/History follow document flow, including its existing dock clearance. */
 
 .search-results {
   display: grid;
-  gap: 10px;
+  gap: var(--request-song-grid-gap);
   align-content: start;
   grid-auto-rows: max-content;
-  margin-top: 2px;
+  margin-top: 0;
   min-height: 0;
   max-height: none;
   overflow: visible;
@@ -2783,7 +2763,7 @@ select:disabled {
 .follow-up-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
-  gap: 8px;
+  gap: var(--request-compact-grid-gap);
   max-height: none;
   overflow-x: hidden;
   overflow-y: auto;
@@ -2934,7 +2914,7 @@ select:disabled {
 .remote-search-browser-view .search-results {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: var(--request-song-grid-gap);
   align-items: start;
   align-content: start;
   grid-auto-rows: max-content;
@@ -3152,7 +3132,7 @@ select:disabled {
 .tag-browser-tags {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
-  gap: 8px;
+  gap: var(--request-compact-grid-gap);
   align-content: start;
   grid-auto-rows: max-content;
   min-height: 0;
@@ -3239,7 +3219,7 @@ select:disabled {
 .category-browser-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: var(--request-song-grid-gap);
   overflow: visible;
   padding-right: 4px;
 }
@@ -3552,10 +3532,6 @@ select:disabled {
 
   .queue-state {
     justify-self: start;
-  }
-
-  .queue-panel .list {
-    max-height: clamp(280px, 52vh, 560px);
   }
 
   .remote-setting-panel {

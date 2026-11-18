@@ -1,22 +1,22 @@
-//! Shell resource adapter; playback intent stays in AppState.
+//! Local L1 resource adapter sharing cast's lease namespace and Android service.
+//! Playback intent stays in AppState; a late notification cannot stop a new lease.
 use super::*;
+use crate::cast_platform::OutputLease;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputActivity {
     Stopped,
     Paused,
     Playing,
 }
-pub type OutputActivityHook = Arc<dyn Fn(OutputActivity) -> Result<(), String> + Send + Sync>;
-#[cfg(target_os = "android")]
-static HOOK: std::sync::OnceLock<OutputActivityHook> = std::sync::OnceLock::new();
-
-#[cfg(target_os = "android")]
-pub fn install(hook: OutputActivityHook) -> Result<(), String> {
-    HOOK.set(hook)
-        .map_err(|_| "Android output resources are already installed".into())
+#[derive(Default)]
+struct Applied {
+    phase: Option<OutputActivity>,
+    lease: Option<OutputLease>,
 }
-
-static APPLIED: std::sync::Mutex<Option<OutputActivity>> = std::sync::Mutex::new(None);
+static APPLIED: std::sync::Mutex<Applied> = std::sync::Mutex::new(Applied {
+    phase: None,
+    lease: None,
+});
 pub(super) fn apply(phase: OutputActivity) -> Result<(), ApiError> {
     let mut applied = APPLIED.lock().map_err(|_| {
         ApiError::new(
@@ -25,51 +25,88 @@ pub(super) fn apply(phase: OutputActivity) -> Result<(), ApiError> {
             "Output resource lock unavailable",
         )
     })?;
-    if *applied == Some(phase) {
+    if applied.phase == Some(phase) {
         return Ok(());
     }
-    let result = apply_resource(phase);
-    if result.is_ok() {
-        *applied = Some(phase);
+    if phase == OutputActivity::Stopped {
+        applied.lease = None;
+    } else {
+        let error = |e: crate::cast_platform::PlatformError| {
+            ApiError::new(
+                503,
+                match e {
+                    crate::cast_platform::PlatformError::ForegroundRequired => {
+                        "purek_output_foreground_required"
+                    }
+                    crate::cast_platform::PlatformError::Unavailable
+                    | crate::cast_platform::PlatformError::AlreadyInstalled => {
+                        "purek_output_platform"
+                    }
+                },
+                "Output resources unavailable; retry in foreground",
+            )
+        };
+        if applied.lease.is_none() {
+            applied.lease = Some(OutputLease::acquire().map_err(error)?);
+        }
+        applied
+            .lease
+            .as_ref()
+            .unwrap()
+            .set_paused(phase == OutputActivity::Paused)
+            .map_err(error)?;
     }
-    result
+    applied.phase = Some(phase);
+    Ok(())
 }
-fn apply_resource(phase: OutputActivity) -> Result<(), ApiError> {
-    #[cfg(target_os = "android")]
-    {
-        HOOK.get().ok_or_else(|| {
+#[cfg(target_os = "android")]
+pub fn interrupted(lease: u64, reason: i32) {
+    use crate::cast_platform::stop_reason;
+    if !stop_reason::is_known(reason) {
+        return;
+    }
+    // AppState -> resource lock is the admission order. Check inside AppState
+    // too, so a new admission cannot slip between validation and interruption.
+    let _ = with_app(|app| {
+        let mut applied = APPLIED.lock().map_err(|_| {
             ApiError::new(
                 503,
                 "purek_output_platform",
-                "Android media service is unavailable",
+                "Output resource lock unavailable",
             )
-        })?(phase)
-        .map_err(|code| ApiError::new(503, &code, "请返回前台后重试电视输出"))
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        let _ = phase;
-        Ok(())
-    }
-}
-
-#[cfg(target_os = "android")]
-pub fn interrupted(reason: i32) {
-    let code = match reason {
-        1 => "purek_output_notification_stop",
-        3 => "purek_output_thermal",
-        _ => "purek_output_platform_stopped",
-    };
-    let _ = with_app(|app| {
-        app.native().purek.interrupt_output(code);
+        })?;
+        if applied.lease.as_ref().map(OutputLease::id) != Some(lease) {
+            return Ok(());
+        }
+        let code = match reason {
+            stop_reason::NOTIFICATION => "purek_output_notification_stop",
+            stop_reason::THERMAL_CRITICAL => "purek_output_thermal",
+            _ => "purek_output_platform_stopped",
+        };
+        applied.lease = None;
+        applied.phase = Some(OutputActivity::Stopped);
+        app.native().local_output.interrupt_output(code);
         app.native().revision += 1;
         Ok(())
     });
 }
 #[cfg(target_os = "android")]
-pub fn thermal(status: i32, headroom: f32) {
+pub fn thermal(lease: u64, status: i32, headroom: f32) {
     let _ = with_app(|app| {
-        app.native().purek.controller.thermal(status, headroom);
+        let applied = APPLIED.lock().map_err(|_| {
+            ApiError::new(
+                503,
+                "purek_output_platform",
+                "Output resource lock unavailable",
+            )
+        })?;
+        if applied.lease.as_ref().map(OutputLease::id) != Some(lease) {
+            return Ok(());
+        }
+        app.native()
+            .local_output
+            .controller
+            .thermal(status, headroom);
         app.native().revision += 1;
         Ok(())
     });

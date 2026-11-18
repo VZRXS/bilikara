@@ -4890,7 +4890,7 @@ button.queue-current-drag-handle:focus-visible { outline: 2px solid var(--accent
 .follow-up-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
-  gap: 10px;
+  gap: var(--request-compact-grid-gap);
   max-height: 240px;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -5263,7 +5263,7 @@ button.queue-current-drag-handle:focus-visible { outline: 2px solid var(--accent
 
 .search-results {
   display: grid;
-  gap: 10px;
+  gap: var(--request-song-grid-gap);
   align-content: start;
   grid-auto-rows: max-content;
   min-height: 0;
@@ -6066,6 +6066,13 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   display: none;
 }
 
+/* Only an admitted two-column Host workspace can use the narrower song
+   minimum. Percentages resolve against each grid, so wide tracks retain 200px
+   and a pair still requires room for two 178px cards plus its actual gap. */
+:root[data-host-columns="two"] #host-workspace-request {
+  --request-song-card-min-inline-size: min(200px, max(178px, calc((100% - var(--request-song-grid-gap)) / 2)));
+}
+
 /* Expanded search results */
 #host-workspace-request .search-results {
   display: grid;
@@ -6073,7 +6080,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
     auto-fill,
     minmax(min(100%, var(--request-song-card-min-inline-size)), 1fr)
   );
-  gap: 10px;
+  gap: var(--request-song-grid-gap);
   align-items: start;
   align-content: start;
   justify-items: stretch;
@@ -6426,7 +6433,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   overflow-y: auto;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
-  gap: 12px;
+  gap: var(--request-compact-grid-gap);
   align-content: start;
   padding-right: 6px;
 }
@@ -6576,7 +6583,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 .category-browser-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--request-song-card-min-inline-size)), 1fr));
-  gap: 16px;
+  gap: var(--request-song-grid-gap);
   align-content: start;
 }
 
@@ -6737,7 +6744,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 #host-workspace-request .follow-up-grid,
 .request-workspace .follow-up-grid {
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 112px), 1fr));
-  gap: 10px;
+  gap: var(--request-compact-grid-gap);
   align-content: start;
   grid-auto-rows: max-content;
   max-height: none;
@@ -6782,7 +6789,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
     auto-fill,
     minmax(min(100%, var(--request-song-card-min-inline-size)), 1fr)
   );
-  gap: 10px;
+  gap: var(--request-song-grid-gap);
   align-content: start;
   justify-items: stretch;
   grid-auto-rows: max-content;
@@ -6940,7 +6947,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
 
   .category-browser-grid {
     grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--request-song-card-min-inline-size)), 1fr));
-    gap: 12px;
+    gap: var(--request-song-grid-gap);
   }
 
 
@@ -8500,31 +8507,22 @@ body {
 }
 
 .request-search-view > .request-mode-panel {
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   gap: 10px;
   padding: 14px 16px 16px;
   overflow: hidden;
 }
 
-.request-search-view > .request-mode-panel.has-request-session-user-notice {
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+.request-search-view > .request-mode-panel > :is(.request-query-form, .request-session-user-notice, .search-message) {
+  flex: 0 0 auto;
 }
 
-.request-search-view > .request-mode-panel.has-request-session-user-notice > .request-query-form {
-  grid-row: 1;
-}
-
-.request-search-view > .request-mode-panel.has-request-session-user-notice > .request-session-user-notice {
-  grid-row: 2;
-}
-
-.request-search-view > .request-mode-panel.has-request-session-user-notice > .search-message {
-  grid-row: 3;
-}
-
-.request-search-view > .request-mode-panel.has-request-session-user-notice > .search-results {
-  grid-row: 4;
+/* Only visible status content takes space. The actual result owner fills the
+   remainder, whether it is the desktop grid or a native paginated frame. */
+.request-search-view > .request-mode-panel > :is(.search-results, .android-result-frame) {
+  flex: 1 1 0;
+  min-height: 0;
 }
 
 .request-query-form {
@@ -8749,7 +8747,7 @@ body {
 .request-sources-view .follow-up-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 112px), 1fr));
-  gap: 10px;
+  gap: var(--request-compact-grid-gap);
 }
 
 .source-followed-panel {
@@ -10481,7 +10479,7 @@ body.is-presentation-stage-only .left-column {
   width: 100%;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--source-card-min-inline-size)), 1fr));
   justify-content: stretch;
-  gap: 10px;
+  gap: var(--request-compact-grid-gap);
   padding-right: 0;
 }
 
@@ -10555,6 +10553,11 @@ body.is-presentation-stage-only .left-column {
    remain fixed and the outer Sources scrollbar is suppressed. */
 .request-sources-view .source-browse-scroll.is-detail-view {
   overflow-y: hidden;
+  /* Extend the clipping edge above the fixed header for its hover lift,
+     without moving the TopSlot or adding to its first-card gap. */
+  margin-top: calc(-1 * var(--request-content-paint-inset));
+  padding-top: var(--request-content-paint-inset);
+  box-sizing: border-box;
   padding-right: 0;
   scrollbar-gutter: auto;
 }
@@ -10562,15 +10565,16 @@ body.is-presentation-stage-only .left-column {
 .request-sources-view .source-browse-scroll.is-detail-view > :is(.follow-browser, .favlist-browser) {
   height: 100%;
   grid-template-rows: minmax(0, 1fr) auto;
-  overflow: hidden;
+  /* Let header hover paint reach the outer scrollport's reserved inset. */
+  overflow: visible;
 }
 
 .request-sources-view .source-browse-scroll.is-detail-view .follow-up-items-view {
   height: 100%;
-  padding-top: 2px;
+  padding-top: 0;
   box-sizing: border-box;
   grid-template-rows: auto minmax(0, 1fr);
-  overflow: hidden;
+  overflow: visible;
 }
 
 .request-sources-view .source-browse-scroll.is-detail-view :is(#follow-song-results, #favlist-song-results) {
@@ -12176,9 +12180,9 @@ html .volume-adjust-popover::backdrop {
   padding-bottom: 2px;
   padding-right: 0;
 }
-:root :is(.host-workspace-region .history-list, .source-browse-scroll) { padding-right: 0; }
+:root :is(.host-workspace-region .history-list, .source-browse-scroll, .result-page-viewport) { padding-right: 0; }
 :root #host-workspace-request .tag-browser-tags.has-scroll-inset,
-:root :is(.host-workspace-region .history-list, .source-browse-scroll).has-scroll-inset { padding-right: 4px; }
+:root :is(.host-workspace-region .history-list, .source-browse-scroll, .result-page-viewport).has-scroll-inset { padding-right: 4px; }
 
 /* Editing keeps the existing 36px tags and vertical scrolling. The footer is
    outside the scroll track; its 52px trash slot includes the 1.15 enlargement. */

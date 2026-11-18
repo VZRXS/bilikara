@@ -342,6 +342,22 @@ It does not apply to third-party tools, platform content, downloaded media, cach
 Legacy source-mode CLI helpers are retained for compatibility tests. Their
 presence in this repository does not make them native product dependencies.
 
+Android uses the same signed FFmpeg 9.0.1 source with a smaller LGPL-only
+library profile. `xtask android-libav` is adapted from bilikara-next's MIT
+build tooling with bilikara R2 (A1) safeguards. Its output contains four FFmpeg
+shared libraries, the C/C++ companion (including the native Signalsmith
+Stretch/Linear sources above) and the NDK's `libc++_shared.so`. The NDK runtime
+is covered by the NDK `NOTICE`, copied into the APK as
+`assets/bilikara-media/<abi>/licenses/Android-NDK-NOTICE.txt` beside the
+Signalsmith licenses. The APK's `assets/bilikara-media/<abi>/licenses/libav-source.txt`
+records the exact configuration, source hash, signing fingerprint and
+source-kit filename. Distribute
+`bilikara-android-libav-9.0.1-<abi>-source-kit.zip` alongside the
+corresponding APK at the same download location. The separate kit contains
+the unmodified signed upstream archive, license texts, companion source,
+configuration records and rebuild tooling; it is not embedded in the APK.
+See `docs/android-libav.md`.
+
 ## 4. aria2c
 
 - Project: aria2
@@ -393,6 +409,86 @@ legacy product, rather than making them dependencies of the native package.
 These services are independent third parties. bilikara is not affiliated with, endorsed by, sponsored by, or officially associated with them.
 
 Use of these services may be subject to their own terms, rate limits, access restrictions, privacy policies, and legal requirements. bilikara does not grant any license to platform content, media, accounts, APIs, paid access, or service names and trademarks.
+
+## DLNA protocol and discovery
+
+- Source: [VZRXS/bilikara PR #120](https://github.com/VZRXS/bilikara/pull/120)
+  by FMPeach (MIT), commit `297ae1de`; `rust-runtime/src/show_dlna.rs`
+  and `rust-runtime/src/show_dlna/discovery.rs`, including their fixtures.
+  Only the protocol policy, per-interface discovery and AVTransport control
+  ideas listed here were adopted; the PR's Kirakara Show process integration
+  and media path were not.
+- Adaptation: media-backend-independent pure protocol policy in
+  `rust/src/dlna_policy.rs` and native discovery/control in
+  `rust-runtime/src/dlna/` (`mod.rs`, `discovery.rs`, `control.rs` and their
+  tests), ported from bilikara R1 (T1/T2) at `b49e1ae`. The upstream MIT
+  notice is retained in the repository's `LICENSE`
+  (Copyright (c) 2026 bilikara contributors).
+- SOAP/DIDL formatting and MPEG-TS MIME preference follow Kirakara-App (MIT),
+  commit `e449070`, `lib/services/dlna/dlna_control_point.dart`.
+  Its copyright and permission notice are retained in
+  `third_party/Kirakara-App-LICENSE.txt`.
+- XML parsing uses `roxmltree` 0.20.0 (MIT OR Apache-2.0); URL parsing uses the
+  `url` crate (MIT OR Apache-2.0). No Kirakara Show binary is required.
+- Native discovery uses `socket2` 0.6.5 (MIT OR Apache-2.0). The Windows
+  self-test network profile uses `windows` 0.61.3 (MIT OR Apache-2.0).
+
+## DLNA cast HTTP transport
+
+The per-reader MPEG-TS continuity rewrite and keyframe join in
+`rust-runtime/src/dlna/cast_http/` follow Kirakara-Show (MIT, Copyright (c)
+2026 键盘Office), `apps/show_host/cast/mpeg_ts_muxer.cpp` and
+`cast_http_server.cpp`. The complete permission notice is in
+`rust-runtime/src/dlna/cast_http/NOTICE.md`. HTTP parsing, retention, file
+delivery and lifecycle are independent implementations; no Kirakara-Show
+binary is used.
+
+## Pure K / DolphinStar authorization adaptation
+
+- Sources: bilikara-next (MIT), commit `7750dca707286e74616a7e08ed5df506b9809b6f`,
+  `rust-runtime/src/native_host/purek.rs`, `purek/{protocol,health,trace,tests}.rs`,
+  with historical behavior from `dd88c12`, `3c8a129`, and `0870f2b`.
+  Copyright (c) 2026 bilikara contributors; permission notice retained in `LICENSE`.
+- Sources: [ChunK-Helper](https://github.com/FMPeach/ChunK-Helper) (MIT),
+  local reference commit `3b00533af18c4938285ded40ca12829c0e89ed9e` (the R1
+  adaptation below; the ChunK-Helper section further down records revision
+  `e223fac` for next's earlier room parsing, which remains a separate reference),
+  `src/PureKBridge.Core/Qr/PureKQrParser.cs`,
+  `src/PureKBridge.Core/PureK/{DeviceAuthorizationClient,ConnectionServices}.cs`,
+  and `src/PureKBridge.Core/Network/{RendererClient,SsdpAdvertisement,RendererHealthMonitor}.cs`.
+  Copyright (c) 2026 键盘Office; the complete permission notice is reproduced
+  in the ChunK-Helper section below.
+- Adaptation: Rust QR policy, authorization lifecycle, health monitoring and
+  loopback fixtures in `rust-runtime/src/dlna/purek/`, ported from bilikara R1
+  (T9) at `b49e1ae`. These share the DLNA XML/SOAP and control layer; no C#
+  runtime or vendor SDK is bundled.
+
+## General DLNA session diagnostics
+
+The diagnostics in `rust-runtime/src/dlna/diagnostics/` adapt stage priority
+and bounded retention from bilikara-next `7750dca`, `native_host/purek/trace.rs`,
+including `0870f2b` (MIT, Copyright (c) 2026 bilikara contributors).
+See that directory's `NOTICE.md` and the repository's `LICENSE`.
+
+## DLNA self-test sample B
+
+The bundled `cast-samples/sample-b.ts` is a synthetic test pattern and generated
+tones, with no third-party footage, music or artwork. It is encoded with the
+parameters of Kirakara-Show's cast profile (1080p30 H.264 CBR without B-frames,
+AAC 48 kHz stereo); only those numeric parameters were taken from
+`Kirakara-Show/apps/show_host/cast/`, not its code or media. Its adjacent
+`SOURCE.md` (`resources/cast-samples/SOURCE.md` in the repository) records the
+inputs, generation command, tool versions and pinned checksum. These files
+reside in `_internal/cast-samples/` on Windows/Linux, in the backend app's
+`Contents/Resources/cast-samples/` on macOS, and, unless a build sets
+`bilikara.includeCastSamples=false`, as uncompressed `cast-samples/` assets in
+the Android APK.
+
+FFmpeg 7.1.1 with libx264 (GPL-2.0-or-later) was used only for offline asset
+generation; those encoder binaries are not bundled or invoked by the product.
+Source Code Pro Bold (SIL OFL 1.1) supplied the rendered text; only glyph pixels,
+not the font software, are included in the clip. The shipped libav libraries
+retain their separately documented LGPL build and compliance materials below.
 
 ## ChunK-Helper / Pure K room protocol integration
 

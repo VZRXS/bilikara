@@ -712,10 +712,11 @@ Phone title bars retain their title/subtitle geometry and add a theme-aware
 12px gap before every active subview, including contextual tabs, independently
 of the removed card padding.
 Playback's single-line brand centers with its action row; other sections retain
-the shared title/subtitle axes. On iOS, default quality and downloader share
-the same accessible CSS picker
-and floating-panel material; their original selects retain value/event ownership.
-Other platforms retain native selects.
+the shared title/subtitle axes. On iOS, default quality and downloader use
+their original visible HTML selects and the WKWebView system Picker. Their
+closed fields retain the 34px pill appearance; the real select owns a 44px
+hit target, native focus, value/change events and disabled state. Other
+platforms retain their existing native select treatment.
 
 Playback keeps its media stage and track selector fixed and scrolls only the
 inline controls. Playback, Queue/History, My and Settings extend beneath the
@@ -945,25 +946,29 @@ Cancellation and document retirement remain independent; no POST is replayed.
 Background recovery requires separate physical iOS qualification.
 
 Phone Request sub-tab motion uses the complete measured page width with
-14px inner content gutters and temporary ancestor clip release. Fixed text
-inputs and ordinary buttons can start a horizontal sub-tab gesture; sliders,
-pagers, overflowing strips and active composition retain ownership. Primary
+14px inner content gutters and temporary ancestor clip release. Only
+noninteractive space inside the active content panel can start a sub-tab
+gesture. Fixed headings, navigation, query and tool rows exclude all their
+descendants and blank space, with no preview, animation or click suppression.
+Controls, pagers, overflowing strips and active composition retain ownership. Primary
 sections still require direct activation. Song grids fit at least three rows
 per page, scrolling those rows on shorter screens. Fit samples persist across
 page changes and update on real size/font changes. Local catalog pages prefetch
 two pages; API batch caching is retained. The pager's dock track comes from
 measured native/fallback geometry, without a second bottom gutter.
 Landscape iPads retain the shared Host shell and the same section-local touch
-routes, including fixed Random toolbar controls. Mouse drags preserve ordinary
+routes from content space; fixed Random toolbar controls remain excluded. Mouse drags preserve ordinary
 selection; Pointer-only engines admit touch/pen rather than mouse navigation.
 The approved light phone backdrop adds a viewport-wide white gradient, from
 0% at the top to 60% at the bottom, behind the content. Cards/text retain their
 colors and page frames stay transparent; dark/blue and landscape Host keep
 their existing backdrop. It adds no overlay node or backdrop-filter layer.
 
-Both iOS runtime selects use one accessible CSS picker with a shared
-floating material, keyboard operation and outside dismissal. Their original
-selects remain value/event owners. Android/Desktop treatment is unchanged.
+Both iOS runtime settings use their native HTML selects without an overlaid
+combobox, mirrored value or custom popover. The OS owns keyboard/assistive
+input and Picker opening, selection and cancellation. Closed-field CSS keeps
+the existing pill; platform picker materials may differ. System Picker,
+VoiceOver, 200% text and ZH/EN/JA theme acceptance remain device-unverified.
 Only the owned iOS 26+ scroll view's public `topEdgeEffect.hidden` is set to
 remove its status-area shade; no private selector or global appearance rule is
 used. UIKit appearance remains device-unverified. After initial activation,

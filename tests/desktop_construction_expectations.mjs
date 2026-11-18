@@ -92,6 +92,7 @@ export function expectedPackage(fixture, environment, { development, prefix, mac
   }
   directory(vendor); directoryIfMissing(`${resources}/vendor`);
   for (const name of ['bilikara-desktop-host', 'bilikara-updater']) copy(fixture, `${code}/${name}${suffix}`);
+  tree(path.join(root, 'resources/cast-samples'), `${resources}/cast-samples`);
   tree(path.join(root, 'static'), `${resources}/static`, name => name === 'vendor');
   tree(path.join(root, 'static/vendor'), `${resources}/vendor`, name => ['LICENSE.txt', 'README.md'].includes(name));
   for (const name of ['LICENSE.txt', 'README.md']) {
@@ -126,7 +127,7 @@ export function expectedPackage(fixture, environment, { development, prefix, mac
       if (process.platform !== 'win32' || path.extname(name).toLowerCase() === '.asc') copy(path.join(prefix, 'source', name), `${docs}/THIRD_PARTY_SOURCES/${name}`);
     }
     const recipes = process.platform === 'win32' ? ['build-windows.sh', 'build-windows-libraries.sh', 'prepare-windows.ps1'] : ['build-posix.sh', 'build-posix-libraries.sh'];
-    for (const name of ['probe.h', 'probe.c', 'pcm.c', 'remux.c', 'live_ts.c', 'live_audio.c', 'stretch.cpp', 'test_shim.c', 'windows_io.h', 'xtask.sh', 'REBUILD.md', 'fixtures/synthetic.h264', ...recipes]) {
+    for (const name of ['probe.h', 'probe.c', 'pcm.c', 'remux.c', 'live_ts.c', 'live_audio.c', 'cast_mux.c', 'cast_audio.c', 'CAST_MUX.md', 'stretch.cpp', 'test_shim.c', 'windows_io.h', 'xtask.sh', 'REBUILD.md', 'fixtures/synthetic.h264', ...recipes]) {
       copy(path.join(root, 'media-libav', name), `${docs}/THIRD_PARTY_SOURCES/media-libav/${name}`);
     }
     tree(path.join(root, 'media-libav/signalsmith'), `${docs}/THIRD_PARTY_SOURCES/media-libav/signalsmith`);

@@ -633,6 +633,12 @@ assert.ok(contains('background: transparent', drag)); assert.ok(contains('box-sh
 const slot = this.styles.match(/\.session-user-trash-slot\s*\{([^}]*)\}/)[1];
 assert.ok(contains('width: 52px', slot)); assert.ok(contains('height: 52px', slot));
 assert.ok(52 >= 44 * 1.15); assert.ok(contains('grid-template-rows: minmax(0, 1fr) 52px', this.styles));
+const sources = readFileSync(path.join(ROOT, 'static/source-removal.css'), 'utf8');
+const sourceSlot = sources.match(/\.source-trash-slot\s*\{([^}]*)\}/)[1];
+assert.ok(contains('width: 52px', sourceSlot)); assert.ok(contains('height: 52px', sourceSlot));
+assert.match(sources,/\.source-tools \.source-remove-selected\.drag-over\s*\{\s*transform: scale\(1\.15\)/);
+assert.match(sources,/\.source-frame-footer\s*\{[^}]*gap: 0;/);
+assert.doesNotMatch(sources,/\.source-frame-footer[^{}]*\{[^}]*gap: 4px/);
 assert.ok(contains('this.drag?.image?.remove()', editor));
 },
 async test_audio_variants_are_persistent_and_expand_as_one_popup() {
@@ -729,7 +735,7 @@ assert.ok(contains("closest(\"[data-tauri-drag-region]\")", chrome));
 assert.ok(contains("appWindow.toggleMaximize()", chrome));
 },
 async test_request_feedback_uses_persistent_prerequisite_and_action_toasts() {
-let discover_controls, lark_search, local_search, message_surfaces, notice, session_empty, source_messages, source_panel, values;
+let discover_controls, shared_search, local_search, message_surfaces, notice, session_empty, source_messages, source_panel, values;
 assert.ok(contains("id=\"request-session-user-notice\"", this.markup));
 assert.ok(contains("data-i18n=\"session.empty\"", this.markup));
 notice = this.styles.match(new RegExp("^\\.request-session-user-notice\\s*\\{([^}]*)\\}","m"))[1];
@@ -767,14 +773,16 @@ assert.ok(contains("display: flex", source_panel));
 assert.ok(contains("flex-direction: column", source_panel));
 source_messages = this.script.slice(sourceIndex(this.script, "function setMessageForSource"), sourceIndex(this.script, "function setAppMessage"));
 assert.ok(contains("setAppMessage(message, true)", source_messages));
-lark_search = this.script.slice(sourceIndex(this.script, "async function handleLarkSearchSubmit"), sourceIndex(this.script, "elements.larkSearchForm?.addEventListener"));
-assert.ok(contains("hideLarkSearchResults()", lark_search));
-assert.ok(!contains("t(\"search.larkNoResultsLong\")", lark_search));
+shared_search = this.script.slice(sourceIndex(this.script, "async function handleSharedSearchSubmit"), sourceIndex(this.script, "elements.sharedSearchForm?.addEventListener"));
+assert.ok(contains("hideSharedSearchResults()", shared_search));
+assert.ok(!contains("t(\"search.sharedNoResultsLong\")", shared_search));
 local_search = this.script.slice(sourceIndex(this.script, "elements.searchForm?.addEventListener(\"submit\""), sourceIndex(this.script, "elements.searchQuery?.addEventListener(\"input\""));
 assert.ok(contains("hideSearchResults()", local_search));
 for (const values of iterableValues(Object.values(this.translations["languages"]))) {
-assert.ok(hasContent(values["search.larkNoResults"]));
-assert.notDeepEqual(values["search.larkPartialNoResults"], values["search.larkNoResults"]);
+assert.ok(hasContent(values["search.sharedNoResults"]));
+assert.equal(Object.hasOwn(values, "search.sharedPartialNoResults"), false);
+assert.equal(Object.hasOwn(values, "search.larkPartialNoResults"), false);
+assert.ok(hasContent(values["search.sharedSearching"]));
 }
 discover_controls = this.styles.match(new RegExp("\\.request-discover-view \\.tag-browser-search input,\\s*\\.request-discover-view \\.tag-browser-search button\\s*\\{([^}]*)\\}",""))[1];
 assert.ok(contains("height: var(--host-control-height)", discover_controls));

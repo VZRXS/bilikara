@@ -28,7 +28,7 @@ pub enum Outcome {
 impl From<&ProbeError> for Outcome {
     fn from(error: &ProbeError) -> Self {
         match error {
-            ProbeError::Unavailable(_) => Self::Unavailable,
+            ProbeError::Unavailable(_) | ProbeError::NegotiationFailed(_) => Self::Unavailable,
             ProbeError::Cancelled => Self::Cancelled,
             ProbeError::UnsupportedFormat(_) => Self::UnsupportedFormat,
             ProbeError::BackendFailure(_) => Self::ExecutionError,

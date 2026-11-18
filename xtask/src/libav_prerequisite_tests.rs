@@ -309,7 +309,7 @@ fn all_native_companion_commands_preserve_flags_paths_and_private_outputs() {
                 ] {
                     assert!(cpp.contains(&OsString::from(flag)), "{cpp:?}");
                 }
-                assert!(commands[0].contains(&out.join("stretch.obj").into_os_string()));
+                assert!(commands[0].contains(&OsString::from("stretch.obj")));
                 assert!(commands[0].contains(&OsString::from("swresample.lib")));
                 assert!(commands[0].contains(&OsString::from("/I.")));
                 assert!(commands[0].contains(&OsString::from("/Fo.\\")));
@@ -356,6 +356,14 @@ fn all_native_companion_commands_preserve_flags_paths_and_private_outputs() {
                     );
                 } else {
                     assert!(commands[0].contains(&OsString::from("-Wl,-z,defs")));
+                    for command in [&commands[0], &commands[1], &commands[3]] {
+                        let source = command
+                            .iter()
+                            .position(|arg| arg.to_string_lossy().ends_with(".c"))
+                            .unwrap();
+                        let libm = command.iter().position(|arg| arg == "-lm").unwrap();
+                        assert!(source < libm, "libm must follow the C source");
+                    }
                 }
             }
         }
@@ -439,7 +447,13 @@ fn windows_msvc_companion_paths_compile_generated_header() {
         root.join("media-libav/test_shim.c"),
         "#include \"build_config.h\"\n#include <selected_prefix.h>\n\
          _Static_assert(GENERATED_VALUE + PREFIX_VALUE == 42, \"wrong selected headers\");\n\
-         int main(void) { return GENERATED_VALUE + PREFIX_VALUE != 42; }\n",
+         int stretch_fixture(void);\n\
+         int main(void) { return GENERATED_VALUE + PREFIX_VALUE != stretch_fixture(); }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("media-libav/stretch.cpp"),
+        "extern \"C\" int stretch_fixture(void) { return 42; }\n",
     )
     .unwrap();
     let platform = Platform::current().unwrap();
@@ -455,6 +469,7 @@ fn windows_msvc_companion_paths_compile_generated_header() {
     let out = out.canonicalize().unwrap();
     assert!(out.as_os_str().to_string_lossy().starts_with(r"\\?\"));
     let commands = prepare::companion_commands(&c, &prefix, &out, true, false).unwrap();
+    prepare::run_companion_commands(&out, &[prepare::stretch_command(&c, &out, false)]).unwrap();
     let mut compiler = commands[1].clone();
     // This is a compiler/path probe without FFmpeg prerequisites. The later
     // bundle recipe still builds and executes the actual libav C companion.
@@ -467,7 +482,6 @@ fn windows_msvc_companion_paths_compile_generated_header() {
         ]
         .iter()
         .any(|library| arg == library)
-            && !arg.to_string_lossy().ends_with("stretch.obj")
     });
     prepare::run_companion_commands(&out, &[compiler, commands[2].clone()]).unwrap();
     assert!(out.join("test_shim.exe").is_file());

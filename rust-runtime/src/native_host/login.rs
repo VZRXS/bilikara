@@ -601,6 +601,7 @@ mod tests {
             cache_root: directory.join("media"),
             directory: directory.clone(),
             assets: Arc::new(|_| None),
+            sample_root: None,
             stop: Arc::new(AtomicBool::new(false)),
             api_slots: Arc::new(Semaphore::new(1)),
             export_slots: Arc::new(Semaphore::new(1)),

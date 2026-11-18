@@ -31,7 +31,7 @@ const [exe, directory, video, audio, executablePath, selected = "all"] = process
     });
     await context.route("**/*", route => {
       const url = new URL(route.request().url());
-      if (/^\/api\/(d1|lark|gatcha)/.test(url.pathname)) return route.fulfill({json: {ok: true, data: {items: [], tags: [], has_more: false}}});
+      if (/^\/api\/(catalog|d1|lark|gatcha)/.test(url.pathname)) return route.fulfill({json: {ok: true, data: {items: [], tags: [], has_more: false}}});
       if (url.pathname.startsWith("/api/bbdown/login/")) return route.abort();
       return url.hostname === "127.0.0.1" ? route.continue() : route.abort();
     });

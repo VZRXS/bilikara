@@ -239,7 +239,7 @@ async function footerBounds(page, source='uid') {
   {
     assert.ok(value.footer.top>=value.scroll.bottom+4,'resident tools stay outside list scrolling');
     assert.equal(value.footer.height,52,'the shared trash slot owns the stable footer height');
-    if(value.pager)assert.equal(value.pager.top-value.footer.bottom,4,'the compact page track sits 4px below the reserved trash slot');
+    if(value.pager)assert.equal(value.pager.top-value.footer.bottom,0,'the padded page track follows the reserved trash slot without a second gap');
   }
   assert.ok(value.footer.bottom<=value.window+1,JSON.stringify(value));
   assert.ok(value.footer.bottom<=value.panel.bottom+1,JSON.stringify(value));
@@ -265,7 +265,7 @@ async function footerSpacing(page, session=false, label='') {
 }
 async function pagerGeometry(pager) {
   return pager.evaluate(node=>{
-    const input=node.querySelector('[data-page-input]'),button=node.querySelector('[data-page-action]'),s=getComputedStyle(node);
+    const input=node.querySelector('[data-page-input]'),button=node.querySelector('[data-page-action="previous"]'),s=getComputedStyle(node);
     const shape=n=>{const b=n.getBoundingClientRect(),style=getComputedStyle(n);return {width:b.width,height:b.height,radius:style.borderRadius,font:style.fontSize};};
     return {height:node.getBoundingClientRect().height,paddingTop:s.paddingTop,paddingBottom:s.paddingBottom,input:shape(input),button:shape(button)};
   });
@@ -287,7 +287,7 @@ async function assertNativeSourceFrame(page, {source='uid', fits=true}={}) {
   if(value.footer){
     assert.ok(value.body.bottom<=value.footer.top-4,'the frame leaves one pagination gap');
     assert.ok(Math.abs(value.panel.bottom-value.footer.bottom-value.panelInset)<=1,'pagination uses only its owner inset');
-    assert.equal(value.footer.height,44,'Android Source pagination uses the shared Remote track');
+    assert.equal(value.footer.height,52,'Android Source pagination uses the shared padded Host/Remote slot');
   }
   assert.equal(value.reachable,true,'floating tools cannot intercept page controls');
   for(const field of value.fields){assert.equal(field.height,44);assert.equal(field.fontSize,'16px');assert.equal(field.radius,'14px');assert.ok(Math.abs(field.top-value.fields[0].top)<=1,'source actions stay on one row');}
@@ -379,7 +379,7 @@ for(const android of [false,true])test(`${android?'phone':'desktop'} resident So
     await footerBounds(page);await assertNativeSourceFrame(page);if(android)await assertFullSourceCapacity(page);
     const spacing=await footerSpacing(page,false,`${width}x${height}`);
     assert.equal(spacing.listToTools,8,'Sources share Session Users list-to-footer spacing');
-    if(android){assert.equal(spacing.toolsToPager,4);assert.equal(spacing.buttonToPagerTargets,8,'the trash slot inset and frame gap supply the full control gap');assert.equal(spacing.pagerToPanelBottom,4);}
+    if(android){assert.equal(spacing.toolsToPager,0);assert.equal(spacing.buttonToPagerTargets,8,'the trash slot inset and pager padding supply the full control gap');assert.equal(spacing.pagerHeight,52);assert.equal(spacing.pagerToPanelBottom,4);}
     else {
       const columns=await page.evaluate(()=>document.documentElement.dataset.hostColumns);
       assert.ok(['compact','two'].includes(columns));
@@ -916,7 +916,9 @@ for(const android of [false,true])test(`${android?'mobile':'desktop'} native Sou
     assert.equal(await remote.page.locator('.host-result-pager').count(),0,'Remote does not acquire native panel chrome');
     await remote.page.setViewportSize({width:320,height:844});
     const remotePager=await pagerGeometry(remote.page.locator('#sources-follow-list-view .result-pager'));
-    assert.deepEqual(nativePager,remotePager,'Android Host uses the actual Remote pagination track, fields and arrow targets without extra padding');
+    assert.deepEqual(nativePager,remotePager,'Android Host and Remote share the same padded pagination slot, fields and arrow targets');
+    assert.equal(nativePager.height,52);assert.equal(nativePager.paddingTop,'4px');assert.equal(nativePager.paddingBottom,'4px');
+    assert.equal(nativePager.button.width,44);assert.equal(nativePager.button.height,44);
     assert.equal(await remote.page.locator('.request-panel').evaluate(node=>getComputedStyle(node).paddingBottom),'4px');
     for(const language of ['en','ja','zh']){
       await remote.page.evaluate(language=>setLanguage(language),language);
@@ -1385,6 +1387,12 @@ test('selection cards share pointer roles, group ordering, drag previews and an 
   assert.deepEqual(errors,[]);await assertMedia(page);completed.add(t);
 });
 
+// The local HTTPS service fixture (videoFixture) is trusted only through SSL_CERT_FILE,
+// which the Linux platform verifier honors. The desktop Rust Host uses the platform
+// certificate store, so on Windows/macOS every pull fails its TLS handshake.
+// Keep these pull-outcome checks on native Linux, as tests/native_host_sources.test.mjs does.
+const localTlsTrust=process.platform!=='linux'
+  ?'local TLS trust fixture requires native Linux; desktop Rust Host uses the platform certificate store':false;
 async function controlledSources(t, {freshUid=false} = {}) {
   let release;const gate=new Promise(resolve=>{release=resolve;});
   const provider=await videoFixture(async target=>{
@@ -1398,7 +1406,7 @@ async function controlledSources(t, {freshUid=false} = {}) {
   });cleanup(t,()=>provider.close());return {provider,release};
 }
 
-for(const kind of ['uid','favlist'])for(const detail of [false,true])test(`WebKit Remote ${kind} pull refreshes its open ${detail?'detail':'source list'} without a manual reload`,{timeout:45000},async t=>{
+for(const kind of ['uid','favlist'])for(const detail of [false,true])test(`WebKit Remote ${kind} pull refreshes its open ${detail?'detail':'source list'} without a manual reload`,{skip:localTlsTrust,timeout:45000},async t=>{
   const {provider,release}=await controlledSources(t,{freshUid:true});
   const {host}=await fixture(t,{size:3,environment:{...provider.environment,BILIKARA_CF_API_URL:provider.base},prepare:data=>writeFileSync(path.join(data,'BBDown.data'),'SESSDATA=fixture; bili_jct=fixture')});cleanup(t,release);
   const {page,errors}=await browser(t,host,{remote:true,engine:webkit});await sources(page,false,true);
@@ -1419,7 +1427,7 @@ for(const kind of ['uid','favlist'])for(const detail of [false,true])test(`WebKi
   assert.deepEqual(errors,[]);completed.add(t);
 });
 
-test('queued favorite folders remain browsable on Host and Remote during actual native pulls',{timeout:45000},async t=>{
+test('queued favorite folders remain browsable on Host and Remote during actual native pulls',{skip:localTlsTrust,timeout:45000},async t=>{
   const {provider,release}=await controlledSources(t),{host}=await fixture(t,{size:3,environment:{...provider.environment,BILIKARA_CF_API_URL:provider.base},prepare:data=>writeFileSync(path.join(data,'BBDown.data'),'SESSDATA=fixture; bili_jct=fixture')});cleanup(t,release);
   await host.api('/api/gatcha/favlist',{uid:'42',folder_ids:['12'],folder_titles:{12:'正在拉取的收藏夹'},queue:true});
   await waitFor(async()=>(await host.api('/api/state')).gatcha.source_queue.active?.folder_ids?.includes('12'),'active local favorite pull');
@@ -1439,7 +1447,7 @@ test('queued favorite folders remain browsable on Host and Remote during actual 
   }release();completed.add(t);
 });
 
-for(const source of ['uid','favlist'])test(`${source} completion waits for a real selected-card drag before reloading`,{timeout:45000},async t=>{
+for(const source of ['uid','favlist'])test(`${source} completion waits for a real selected-card drag before reloading`,{skip:localTlsTrust,timeout:45000},async t=>{
   const {provider,release}=await controlledSources(t),{host}=await fixture(t,{size:3,environment:{...provider.environment,BILIKARA_CF_API_URL:provider.base},prepare:data=>writeFileSync(path.join(data,'BBDown.data'),'SESSDATA=fixture; bili_jct=fixture')});cleanup(t,release);
   const {page,requests,errors}=await browser(t,host);await sources(page);
   if(source==='favlist')await page.locator('[data-sources-mode="favorites"]').click();

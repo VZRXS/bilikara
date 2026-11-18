@@ -4,7 +4,7 @@ import { readSourceText } from './frontend_contract_support.mjs';
 import assert from 'node:assert/strict';
 import {selectTargets} from '../scripts/ci_targets.mjs';
 import { test } from 'node:test';
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { root, runNative, executableOnPath } from './desktop_construction_support.mjs';
@@ -77,16 +77,27 @@ test('actual lightweight Linux prerequisite stops on each failure before exporti
   assert.ok(bash); const directory = ownedDirectory('Linux workflow prerequisite');
   try {
     const prefix = path.join(directory, 'prefix'), envFile = path.join(directory, 'environment'), log = path.join(directory, 'calls.log');
+    // The companion build writes the product and test libraries. missing-*
+    // models a build that exits 0 without one of them: the step's test -f
+    // checks must still stop before anything is exported.
     const stub = `bash() { printf 'bash:%s\\n' "$*" >> calls.log; test "$FAIL_AT" != libraries; }
-cargo() { printf 'cargo:%s\\n' "$*" >> calls.log; test "$FAIL_AT" != companion; }\n`;
+cargo() { printf 'cargo:%s\\n' "$*" >> calls.log; test "$FAIL_AT" != companion || return 1
+  mkdir -p "$BILIKARA_LIBAV_PREFIX/bin"
+  test "$FAIL_AT" = missing-product || : > "$BILIKARA_LIBAV_PREFIX/bin/libbilikara_media_libav.so"
+  test "$FAIL_AT" = missing-test || : > "$BILIKARA_LIBAV_PREFIX/bin/libbilikara_media_libav_test.so"; }\n`;
     const expected = ['bash:media-libav/build-posix-libraries.sh', `cargo:run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- libav-companion --prefix ${prefix} --out ${prefix}/bin --test`];
-    for (const failure of ['', 'libraries', 'companion']) {
-      rmSync(log, {force: true}); rmSync(envFile, {force: true});
+    for (const failure of ['', 'libraries', 'companion', 'missing-product', 'missing-test']) {
+      rmSync(log, {force: true}); rmSync(envFile, {force: true}); rmSync(prefix, {recursive: true, force: true});
       const result = await runBash(stub + script(bundle, 'Build libav prerequisite for packaged media tests'), directory,
         {...process.env, BILIKARA_LIBAV_PREFIX: prefix, GITHUB_ENV: envFile, FAIL_AT: failure});
-      assert.deepEqual(readFileSync(log, 'utf8').trimEnd().split('\n'), failure === 'libraries' ? expected.slice(0, 1) : expected);
-      if (failure) { assert.notEqual(result.status, 0); assert.equal(existsSync(envFile), false); }
-      else { assert.equal(result.status, 0, result.stderr); assert.equal(readFileSync(envFile, 'utf8').trim(), `BILIKARA_TEST_LIBAV_COMPANION=${prefix}/bin/libbilikara_media_libav.so`); }
+      assert.deepEqual(readFileSync(log, 'utf8').trimEnd().split('\n'), failure === 'libraries' ? expected.slice(0, 1) : expected, failure);
+      if (failure) { assert.notEqual(result.status, 0, failure); assert.equal(existsSync(envFile), false, failure); }
+      else {
+        assert.equal(result.status, 0, result.stderr);
+        assert.deepEqual(readFileSync(envFile, 'utf8').trim().split('\n'), [
+          `BILIKARA_TEST_LIBAV_COMPANION=${prefix}/bin/libbilikara_media_libav.so`,
+          `BILIKARA_TEST_CAST_COMPANION=${prefix}/bin/libbilikara_media_libav_test.so`]);
+      }
     }
   } finally { rmSync(directory, {recursive: true, force: true}); }
 });
@@ -332,13 +343,15 @@ test('iOS mobile lane builds the device IPA without entering Android signing or 
   includes(build, ["if: inputs.platform == 'iOS'", '--no-sign --ci', 'node scripts/ios.mjs build']);
   excludes(build, ['secrets.', 'APPLE_CERTIFICATE', 'APPLE_DEVELOPMENT_TEAM', 'ANDROID_']);
   for (const name of ['Setup Java', 'Setup Android SDK', 'Resolve Android libav C cache',
-    'Restore Android libav C cache', 'Verify actual Android media libraries and cache', 'Validate Android signing contract']) {
+    'Restore Android libav C cache', 'Build actual Android media output', 'Verify actual Android media libraries and cache', 'Validate Android signing contract',
+    'Use runner CPU count for Cargo', 'Install Android Rust target', 'Compile Android Runtime feature groups and shell with clippy']) {
     includes(step(checks, name), ["if: inputs.platform == 'Android'"]);
   }
   for (const name of ['Setup Java', 'Setup Android SDK', 'Prepare native YouTube binding generator',
     'Install pinned Android tools', 'Cache Rust builds', 'Resolve Android libav C cache', 'Restore Android libav C cache',
-    'Cache Gradle dependencies', 'Resolve APK and prepare signing', 'Build APK', 'Compile Android playback service tests',
-    'Stage and verify APK', 'Upload APK test artifact', 'Remove temporary signing file']) {
+    'Cache Gradle dependencies', 'Build and verify Android media before signing', 'Resolve APK and prepare signing', 'Build APK',
+    'Compile Android playback service tests', 'Stage and verify APK', 'Upload APK test artifact',
+    'Upload corresponding Android libav source kit', 'Remove temporary signing file']) {
     includes(step(packages, name), ["inputs.platform == 'Android'"]);
   }
   const stage = step(packages, 'Stage iOS test artifact');
@@ -357,6 +370,147 @@ test('iOS mobile lane builds the device IPA without entering Android signing or 
   excludes(apple, ['XCODE_XCCONFIG_FILE']);
   includes(read('scripts/ios-branding.mjs'), ['ASSETCATALOG_OTHER_FLAGS', '--standalone-icon-behavior all', "run('xcodegen'", "include: ['project.yml']"]);
   includes(read('scripts/ios-branding.mjs'), ['for (const scale of [2, 3])', 'regular(input)', "'ios_packaged_icon_mismatch'", "'Assets.car'"]);
+});
+
+// Ported from R2 A7 (bilikara 98329496, fa199fc2) onto next's composite actions.
+test('Android media checker, APK gates and separate source kit run before signature inspection', () => {
+  const kitName = 'sources/bilikara-android-libav-9.0.1-arm64-v8a-source-kit.zip';
+  const readelf = 'toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf';
+  const checks = mobileChecks, packages = mobilePackages;
+  // Checks: real media output feeds the real-library cases (skipped otherwise) and the six-library checker.
+  const build = step(checks, 'Build actual Android media output');
+  includes(build, ['android-libav --ndk "$BILIKARA_TEST_ANDROID_NDK" --abi arm64-v8a --out "$RUNNER_TEMP/android-media-output"',
+    '--cache "$BILIKARA_TEST_ANDROID_LIBAV_CACHE"', '--target host-tuple']);
+  excludes(build, ['--cache-key', 'cache-hit']); // Companion always rebuilt, including C cache hits.
+  const verify = step(checks, 'Verify actual Android media libraries and cache');
+  includes(verify, ['BILIKARA_TEST_ANDROID_LIBAV_DIR: ${{ runner.temp }}/android-media-output/jniLibs/arm64-v8a',
+    'export NDK_HOME="$BILIKARA_TEST_ANDROID_NDK"', 'npm run test:android-libav',
+    'node scripts/android_media_check.mjs --media-output "$RUNNER_TEMP/android-media-output"', readelf,
+    `--source-kit "$RUNNER_TEMP/android-media-output/${kitName}"`]);
+  assert.ok(verify.indexOf('npm run test:android-libav') < verify.indexOf('android_media_check.mjs'));
+  for (const name of ['Resolve Android libav C cache', 'Restore Android libav C cache', 'Build actual Android media output']) {
+    assert.ok(checks.indexOf(`- name: ${name}`) < checks.indexOf('- name: Verify actual Android media libraries and cache'), name);
+  }
+  // test:android-libav includes the A4 sample pins and the A7 checker cases.
+  const scripts = JSON.parse(read('package.json')).scripts;
+  includes(scripts['test:android-libav'], ['tests/android_libav.test.mjs', 'tests/android_cast_samples.test.mjs']);
+  includes(read('tests/android_libav.test.mjs'), ["import './android_media_check.test.mjs';", "import './android_libav_contract.test.mjs';"]);
+  // Bundle: media is checked before signing preparation; the packaged APK before apksigner.
+  const media = step(packages, 'Build and verify Android media before signing');
+  includes(media, ['media="$GITHUB_WORKSPACE/src-tauri/gen/android/app/build/generated/bilikara-media/arm64-v8a"',
+    '--out "$media" --cache "$BILIKARA_ANDROID_LIBAV_CACHE"', 'node scripts/android_media_check.mjs --media-output "$media"',
+    `--source-kit "$media/${kitName}"`, readelf]);
+  for (const name of ['Resolve Android libav C cache', 'Restore Android libav C cache', 'Build and verify Android media before signing']) {
+    assert.ok(packages.indexOf(`- name: ${name}`) < packages.indexOf('- name: Resolve APK and prepare signing'), name);
+  }
+  const stage = step(packages, 'Stage and verify APK');
+  includes(stage, [`kit="$GITHUB_WORKSPACE/src-tauri/gen/android/app/build/generated/bilikara-media/arm64-v8a/${kitName}"`,
+    'node scripts/android_media_check.mjs --apk "$apk"', '--source-kit "$kit"',
+    'verify-android-apk --ndk "$ANDROID_HOME/ndk/27.0.12077973" --abi "arm64-v8a" --apk "$apk" --source-kit "$kit"',
+    'BILIKARA_TEST_ANDROID_APK="$apk"', 'BILIKARA_TEST_ANDROID_SOURCE_KIT="$kit"', 'npm run test:android-apk']);
+  excludes(stage, ['bilikara.includeCastSamples=false', '--gradle-property']); // CI APKs require the default A4 sample.
+  for (const gate of ['android_media_check.mjs --apk', 'verify-android-apk', 'npm run test:android-apk']) {
+    assert.ok(stage.indexOf(gate) < stage.indexOf('apksigner'), gate);
+  }
+  assert.equal(packages.split('verify-android-apk').length - 1, 1, 'one APK verifier call, always with --source-kit');
+  // Uploaded after the APK-bound checks, beside the APK, without a bilikara-* artifact name.
+  const upload = step(packages, 'Upload corresponding Android libav source kit');
+  includes(upload, ['uses: actions/upload-artifact@v7', 'name: android-libav-source-kit-arm64-v8a-${{ github.sha }}',
+    `path: src-tauri/gen/android/app/build/generated/bilikara-media/arm64-v8a/${kitName}`, 'if-no-files-found: error']);
+  excludes(upload, ['archive: false', 'name: bilikara-']);
+  assert.ok(packages.indexOf('- name: Stage and verify APK') < packages.indexOf('- name: Upload corresponding Android libav source kit'));
+  includes(stage, ['Sample B is required: CI never passes the Gradle sample opt-out', 'source_kit_sha256; distribute it alongside the APK']);
+  // Release collection counts bilikara-* artifacts; the kit must stay outside that set.
+  includes(read('scripts/ci_release.mjs'), ["row.name?.startsWith('bilikara-')", 'All six and only six package artifacts are required']);
+});
+
+// Ported from R2 A7 (bilikara 98329496, fa199fc2): PR-level CI compiles Android cfg code.
+test('Android Checks cross-clippy both Runtime feature groups and the shell with the pinned NDK', () => {
+  const checks = mobileChecks;
+  const install = step(checks, 'Install pinned Android signing and media tools');
+  includes(install, ['sudo apt-get install -y make gnupg gpgv libclang-dev', 'NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973',
+    'CC_aarch64_linux_android=$ndk/bin/aarch64-linux-android24-clang', 'CXX_aarch64_linux_android=', 'AR_aarch64_linux_android=$ndk/bin/llvm-ar',
+    'CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$ndk/bin/aarch64-linux-android24-clang',
+    'BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--target=aarch64-linux-android24 --sysroot=$ndk/sysroot -resource-dir=$ndk/lib/clang/18']);
+  includes(step(checks, 'Install Android Rust target'), ['rustup target add aarch64-linux-android']);
+  const clippy = step(checks, 'Compile Android Runtime feature groups and shell with clippy');
+  includes(clippy, ["if: inputs.platform == 'Android'", 'set -euo pipefail',
+    'cargo clippy --manifest-path rust-runtime/Cargo.toml --target aarch64-linux-android --lib --locked -- -D warnings',
+    'cargo clippy --manifest-path rust-runtime/Cargo.toml --target aarch64-linux-android --lib --features native-host --locked -- -D warnings',
+    'cargo clippy --manifest-path src-tauri/Cargo.toml --target aarch64-linux-android --lib --locked -- -D warnings']);
+  for (const name of ['Install pinned Android signing and media tools', 'Setup repository Rust toolchain', 'Install Android Rust target']) {
+    assert.ok(checks.indexOf(`- name: ${name}`) < checks.indexOf('- name: Compile Android Runtime feature groups and shell with clippy'), name);
+  }
+  includes(step(checks, 'Use runner CPU count for Cargo'), ["if: inputs.platform == 'Android'", 'CARGO_BUILD_JOBS=$(nproc)', '>> "$GITHUB_ENV"']);
+  assert.ok(checks.indexOf('- name: Use runner CPU count for Cargo') < checks.indexOf('- name: Setup repository Rust toolchain'));
+  excludes(mobileWorkflow, ['CARGO_BUILD_JOBS: "8"']);
+});
+
+// CI run 44309261817: the ported R1 DLNA tests bind loopback aliases that macOS
+// lo0 lacks. The iOS (macOS) job adds them and makes a missing alias fail.
+test('macOS native-host tests add the loopback aliases and require them', () => {
+  const alias = step(mobileChecks, 'Add macOS loopback aliases for DLNA tests');
+  includes(alias, ["if: inputs.platform == 'iOS'", 'set -euo pipefail',
+    'for address in 127.0.0.{2..13} 127.1.0.1; do sudo ifconfig lo0 alias "$address" up; done']);
+  const validate = step(mobileChecks, 'Validate native Host and mobile UI');
+  includes(validate, ["if: inputs.platform == 'iOS'", "BILIKARA_REQUIRE_LOOPBACK_ALIAS: '1'",
+    'cargo test --manifest-path rust-runtime/Cargo.toml --features native-host --locked']);
+  assert.ok(mobileChecks.indexOf('- name: Add macOS loopback aliases for DLNA tests') < mobileChecks.indexOf('- name: Validate native Host and mobile UI'));
+  // 127.0.0.2..13 covers cast_http's per-connection aliases (MAX_HEADERS peers).
+  assert.match(read('rust-runtime/src/dlna/cast_http/mod.rs'), /const MAX_HEADERS: usize = 12;/);
+  includes(read('rust-runtime/src/dlna/test_support.rs'), ['pub const REQUIRE_LOOPBACK_ALIAS: &str = "BILIKARA_REQUIRE_LOOPBACK_ALIAS";']);
+});
+
+test('Linux desktop Checks run every R1 cast session/self-test real-companion case', () => {
+  const linux = step(desktopChecks, 'Verify real libav prerequisite contracts');
+  includes(linux, ["if: runner.os == 'Linux'", 'npm run test:purek-output', 'test -f "$BILIKARA_TEST_CAST_COMPANION"',
+    'cargo test --manifest-path rust-runtime/Cargo.toml --locked --target host-tuple --lib --features native-host --',
+    'native_host::cast_session:: --ignored --test-threads=1 2>&1 | tee "$cast_log"',
+    String.raw`native_host::cast_session:: --ignored --list | sed -n 's/: test$//p' | LC_ALL=C sort > "$cast_cases"`,
+    'diff -u .github/actions/desktop-checks/cast-session-companion-tests.txt "$cast_cases"',
+    'cast_count=$(wc -l < "$cast_cases")', 'test "$cast_count" -gt 0',
+    'grep -Eq "^test result: ok\\. ${cast_count} passed; 0 failed; 0 ignored;" "$cast_log"']);
+  excludes(linux, ['35 passed']);
+  const companion = step(desktopChecks, 'Build libav prerequisite for packaged media tests');
+  includes(companion, ['libav-companion --prefix "$BILIKARA_LIBAV_PREFIX" --out "$BILIKARA_LIBAV_PREFIX/bin" --test',
+    'BILIKARA_TEST_CAST_COMPANION=$BILIKARA_LIBAV_PREFIX/bin/libbilikara_media_libav_test.so" >> "$GITHUB_ENV"']);
+  assert.ok(desktopChecks.indexOf('- name: Build libav prerequisite') < desktopChecks.indexOf('- name: Verify real libav prerequisite contracts'));
+  // P12 review W4: CI compares the Linux selection with a checked-in name list
+  // instead of a source-wide #[ignore] count. Every listed case is an ignored
+  // cast_session test, and an ignored case may be absent only behind a cfg gate
+  // on its own attributes (module-level gates must be moved onto the cases).
+  const listed = read('.github/actions/desktop-checks/cast-session-companion-tests.txt').split(/\r?\n/).filter(Boolean);
+  assert.deepEqual(listed, [...new Set(listed)].sort(), 'unique and LC_ALL=C sorted like CI');
+  assert.ok(listed.length > 0);
+  for (const name of listed) assert.match(name, /^native_host::cast_session::[a-z0-9_:]+$/, name);
+  const ignored = new Map();
+  const walk = directory => {
+    for (const entry of readdirSync(path.join(root, directory), {withFileTypes: true})) {
+      const file = `${directory}/${entry.name}`;
+      if (entry.isDirectory()) { walk(file); continue; }
+      if (!file.endsWith('.rs')) continue;
+      const lines = read(file).split(/\r?\n/);
+      lines.forEach((line, index) => {
+        if (!/^\s*#\[ignore\b/.test(line)) return;
+        let first = index;
+        while (first > 0 && /^\s*(#\[|\/\/)/.test(lines[first - 1])) first--;
+        const following = lines.slice(index + 1, index + 6);
+        const at = following.findIndex(value => /\bfn\s+[a-z0-9_]+/.test(value));
+        assert.ok(at >= 0, `${file}:${index + 1} ignored item has no test function`);
+        const name = following[at].match(/\bfn\s+([a-z0-9_]+)/)[1];
+        const attributes = lines.slice(first, index + 1).concat(following.slice(0, at));
+        assert.equal(ignored.has(name), false, `duplicate ignored cast_session test name ${name}`);
+        ignored.set(name, {file, gated: attributes.some(value => value.includes('cfg('))});
+      });
+    }
+  };
+  walk('rust-runtime/src/native_host/cast_session');
+  const short = new Set(listed.map(name => name.split('::').at(-1)));
+  assert.equal(short.size, listed.length, 'listed case names are unique');
+  for (const name of short) assert.ok(ignored.has(name), `listed case is not an ignored cast_session test: ${name}`);
+  for (const [name, {file, gated}] of ignored) {
+    assert.ok(short.has(name) || gated, `${file}: ${name} must be in the CI list or carry a cfg gate`);
+  }
 });
 
 test('lightweight performance summaries preserve artifact downloads and avoid a separate summary job', () => {

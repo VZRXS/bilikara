@@ -464,35 +464,40 @@ const notes=path.resolve(output);
   }
   await check('sharedAndLocalSearch',async()=>{
    await remote.locator('#remote-request-search-tab').click();
-   await remote.locator('#lark-search-query').fill('Offline');await remote.locator('#lark-search-button').click();
+   await remote.locator('#shared-search-query').fill('Offline');await remote.locator('#shared-search-button').click();
    await remote.waitForFunction(()=>canonicalBilikaraSearch.items.length===80 && !canonicalBilikaraSearch.loading);
-   assert.match(await remote.locator('#lark-search-results').locator('..').locator('+ .result-pager').textContent(),/221/);
+   assert.match(await remote.locator('#shared-search-results').locator('..').locator('+ .result-pager').textContent(),/221/);
    const backwardBatch=remote.waitForResponse(r=>r.url().includes('/api/catalog/search?') && new URL(r.url()).searchParams.get('offset')==='156');
-   await jump('#lark-search-results',37);
+   await jump('#shared-search-results',37);
    await (await backwardBatch).finished();await settled(remote);
-   assert.equal(await remote.locator('#lark-search-results .search-result-item').count(),5);
-   assert.match(await remote.locator('#lark-search-results').textContent(),/Offline song 216/);
+   assert.equal(await remote.locator('#shared-search-results .search-result-item').count(),5);
+   assert.match(await remote.locator('#shared-search-results').textContent(),/Offline song 216/);
    const reverseReads=calls.length;
    for(const page of [36,35,34,33]) {
-    await jump('#lark-search-results',page);
-    assert.match(await remote.locator('#lark-search-results').textContent(),new RegExp(`Offline song ${(page-1)*6}`));
+    await jump('#shared-search-results',page);
+    assert.match(await remote.locator('#shared-search-results').textContent(),new RegExp(`Offline song ${(page-1)*6}`));
    }
    assert.equal(calls.length,reverseReads,'Reverse navigation consumes prefetched pages without additional provider reads');
-   await jump('#lark-search-results',37);
-   const readCount=calls.length;await jump('#lark-search-results',1);await jump('#lark-search-results',37);assert.equal(calls.length,readCount);
+   await jump('#shared-search-results',37);
+   const readCount=calls.length;await jump('#shared-search-results',1);await jump('#shared-search-results',37);assert.equal(calls.length,readCount);
    await remote.locator('[data-remote-search-mode="local"]').click();await assertPadding();
    await remote.locator('#search-query').fill('Offline');await remote.locator('#search-button').click();
    await remote.waitForFunction(()=>localLibrarySearch.data?.matched_count===221);
    await jump('#search-results',37);assert.equal(await remote.locator('#search-results .search-result-item').count(),5);
    await noMessages();await assertPadding();
    await remote.locator('[data-remote-search-mode="shared"]').click();await assertPadding();
-   assert.equal(await remote.locator('#lark-search-query').inputValue(),'Offline');
+   assert.equal(await remote.locator('#shared-search-query').inputValue(),'Offline');
+   const sharedBounds=await remote.locator('#shared-search-query').evaluate(input=>{
+    const form=input.closest('form'),button=form.querySelector('button[type="submit"]');
+    return [input,button].map(node=>{const r=node.getBoundingClientRect();return {width:r.width,height:r.height,left:r.left,right:r.right,viewport:innerWidth};});
+   });
+   assert.ok(sharedBounds.every(r=>r.width>0&&r.height>=44&&r.left>=0&&r.right<=r.viewport+1),JSON.stringify(sharedBounds));
    measurements.sharedAndLocalSearch={total:221,lastPage:37,localItems:5,repeatPageReads:0};
    await settled(remote);await remote.screenshot({path:path.join(notes,'search-mobile.png'),fullPage:true});
   });
   await check('fingerTracking',async()=>{
-   await primary();await remote.locator('#remote-request-search-tab').click();await jump('#lark-search-results',1);
-   const grid=remote.locator('#lark-search-results');await grid.scrollIntoViewIfNeeded();const box=await grid.boundingBox();
+   await primary();await remote.locator('#remote-request-search-tab').click();await jump('#shared-search-results',1);
+   const grid=remote.locator('#shared-search-results');await grid.scrollIntoViewIfNeeded();const box=await grid.boundingBox();
    const x=box.x+box.width*.75,y=Math.max(60,box.y+40);await remote.mouse.move(x,y);await remote.mouse.down();await remote.mouse.move(x-90,y+2,{steps:5});
    const transform=await grid.evaluate(e=>getComputedStyle(e).transform);assert.notEqual(transform,'none');assert.ok(Number(transform.split(',')[4])<-60,transform);
    const viewport=grid.locator('..');
@@ -505,7 +510,7 @@ const notes=path.resolve(output);
    measurements.fingerTracking={pageGap};
    assert.ok(previewBox.x < (await viewport.boundingBox()).x + (await viewport.boundingBox()).width);
    const pager=viewport.locator('+ .result-pager');
-   await remote.waitForFunction(()=>getComputedStyle(document.querySelector('#lark-search-results').parentElement.nextElementSibling.querySelector('.result-pager-dots')).opacity==='1');
+   await remote.waitForFunction(()=>getComputedStyle(document.querySelector('#shared-search-results').parentElement.nextElementSibling.querySelector('.result-pager-dots')).opacity==='1');
    assert.equal(await pager.locator('.result-pager-editor').evaluate(e=>getComputedStyle(e).opacity),'0');
    assert.equal(await viewport.evaluate(e=>{
     const box=e.getBoundingClientRect();
@@ -513,10 +518,10 @@ const notes=path.resolve(output);
    }),true,'Outgoing cards are clipped at the result viewport');
    await remote.screenshot({path:path.join(notes,'swipe-adjacent-page.png'),fullPage:true});
    const beforeTurnY=await remote.evaluate(()=>scrollY);
-   await remote.mouse.up();await remote.waitForFunction(()=>document.querySelector('#lark-search-results').parentElement.nextElementSibling.dataset.page==='2');
+   await remote.mouse.up();await remote.waitForFunction(()=>document.querySelector('#shared-search-results').parentElement.nextElementSibling.dataset.page==='2');
    assert.ok(Math.abs(await remote.evaluate(()=>scrollY)-beforeTurnY)<2,'Swipe preserves document scroll position');
    assert.equal(await remote.locator('.song-detail-view:not(.hidden)').count(),0);
-   await remote.waitForFunction(()=>getComputedStyle(document.querySelector('#lark-search-results').parentElement.nextElementSibling.querySelector('.result-pager-dots')).opacity==='0');
+   await remote.waitForFunction(()=>getComputedStyle(document.querySelector('#shared-search-results').parentElement.nextElementSibling.querySelector('.result-pager-dots')).opacity==='0');
    assert.equal(await pager.locator('.result-pager-editor').evaluate(e=>getComputedStyle(e).opacity),'1');
    await remote.screenshot({path:path.join(notes,'pager-at-rest.png'),fullPage:true});
    // A source change during the remaining swipe animation must cancel its
@@ -611,10 +616,10 @@ const notes=path.resolve(output);
 
    await primary();await remote.locator('#remote-request-search-tab').click();
    await remote.locator('[data-remote-search-mode="shared"]').click();
-   await remote.locator('#lark-search-query').fill('missing');await remote.locator('#lark-search-button').click();
+   await remote.locator('#shared-search-query').fill('missing');await remote.locator('#shared-search-button').click();
    await remote.waitForFunction(()=>!canonicalBilikaraSearch.loading && canonicalBilikaraSearch.data?.matched_count===0);
-   assert.equal(await remote.locator('#lark-search-results .search-empty:visible').count(),1);
-   assert.equal(await remote.locator('#lark-search-results').locator('..').locator('+ .result-pager:visible').count(),0);
+   assert.equal(await remote.locator('#shared-search-results .search-empty:visible').count(),1);
+   assert.equal(await remote.locator('#shared-search-results').locator('..').locator('+ .result-pager:visible').count(),0);
    await assertPadding();await noMessages();
    await remote.setViewportSize({width:1024,height:900});
    await primary();await remote.locator('#remote-request-discover-tab').click();
@@ -628,26 +633,26 @@ const notes=path.resolve(output);
   await check('pagerButtonsAndPosition',async()=>{
    await primary();await remote.locator('#remote-request-search-tab').click();
    await remote.locator('[data-remote-search-mode="shared"]').click();
-   await remote.locator('#lark-search-query').fill('Offline');await remote.locator('#lark-search-button').click();
+   await remote.locator('#shared-search-query').fill('Offline');await remote.locator('#shared-search-button').click();
    await remote.waitForFunction(()=>!canonicalBilikaraSearch.loading);
-   const pager=remote.locator('#lark-search-results').locator('..').locator('+ .result-pager');
+   const pager=remote.locator('#shared-search-results').locator('..').locator('+ .result-pager');
    assert.equal(await pager.locator('[data-page-action="first"]').isDisabled(),true);
    for(const [action,page] of [['next',2],['last',37],['previous',36],['first',1]]) {
     const button=pager.locator(`[data-page-action="${action}"]`);
     await button.scrollIntoViewIfNeeded();await settled(remote);
     const y=await remote.evaluate(()=>scrollY);
     await button.click();
-    await remote.waitForFunction(page=>document.querySelector('#lark-search-results').parentElement.nextElementSibling.dataset.page===String(page),page);
+    await remote.waitForFunction(page=>document.querySelector('#shared-search-results').parentElement.nextElementSibling.dataset.page===String(page),page);
     await settled(remote);
     assert.ok(Math.abs(await remote.evaluate(()=>scrollY)-y)<2,`${action} keeps scroll position`);
    }
    assert.equal(await pager.locator('.result-pager-items-total > [aria-hidden]').innerText(),'221 条');
-   await jump('#lark-search-results',37);
+   await jump('#shared-search-results',37);
    assert.equal(await pager.locator('.result-pager-count').innerText(),'217–221');
    for(const width of [360,392,768]) {
     await remote.setViewportSize({width,height:817});await settled(remote);
     await pager.evaluate(e=>e.scrollIntoView({block:'center'}));
-    await remote.waitForFunction(()=>getComputedStyle(document.querySelector('#lark-search-results').parentElement.nextElementSibling.querySelector('.result-pager-editor')).opacity==='1');
+    await remote.waitForFunction(()=>getComputedStyle(document.querySelector('#shared-search-results').parentElement.nextElementSibling.querySelector('.result-pager-editor')).opacity==='1');
     const geometry=await pager.evaluate(e=>{
      const r=e.getBoundingClientRect(),c=e.querySelector('.result-pager-controls').getBoundingClientRect();
      const t=e.querySelector('.result-pager-items-total').getBoundingClientRect();
@@ -663,7 +668,7 @@ const notes=path.resolve(output);
     assert.ok(geometry.arrowsCentered,`${width}: arrow icons vertically centered`);
     await pager.screenshot({path:path.join(notes,`pager-${width}.png`)});
    }
-   await jump('#lark-search-results',1);
+   await jump('#shared-search-results',1);
    await remote.setViewportSize({width:392,height:817});await settled(remote);
    await pager.screenshot({path:path.join(notes,'pager-buttons.png')});
   });
@@ -673,7 +678,7 @@ const notes=path.resolve(output);
      await host.locator('[data-host-workspace="request"]').click();await host.locator('[data-request-view="search"]').click();
      await host.locator('[data-search-mode="shared"]').click();
     }
-    const input=page.locator('#lark-search-query'),clear=page.locator('#lark-search-form .search-clear-button');
+    const input=page.locator('#shared-search-query'),clear=page.locator('#shared-search-form .search-clear-button');
     await input.fill('Offline');
     for(const busy of [false,true]) {
      await clear.evaluate((e,busy)=>e.disabled=busy,busy);
@@ -682,7 +687,7 @@ const notes=path.resolve(output);
      assert.ok(Math.abs(a.y+a.height/2-b.y-b.height/2)<1,`${name} clear remains centered (busy=${busy})`);
     }
     await clear.evaluate(e=>e.disabled=false);
-    await page.locator('#lark-search-form').screenshot({path:path.join(notes,`${name}-search-clear.png`)});
+    await page.locator('#shared-search-form').screenshot({path:path.join(notes,`${name}-search-clear.png`)});
    }
    const bottom=await remote.locator('#playback-dock').evaluate(e=>getComputedStyle(e).bottom);
    assert.equal(bottom,'12px'); // no safe-area in desktop Chromium emulation
@@ -698,7 +703,7 @@ const notes=path.resolve(output);
    await host.locator('[data-host-workspace="request"]').click();
    await host.locator('[data-request-view="search"]').click();
    for(const [mode,selector,input,button] of [
-    ['shared','#lark-search-results','#lark-search-query','#lark-search-button'],
+    ['shared','#shared-search-results','#shared-search-query','#shared-search-button'],
     ['local','#search-results','#search-query','#search-button']]) {
     await host.locator(`[data-search-mode="${mode}"]`).click();
     await host.locator(input).fill('Offline');await host.locator(button).click();
@@ -782,7 +787,7 @@ const notes=path.resolve(output);
     for(const mode of ['shared','local']) {
      const tab=page.locator(`[data-${name==='host'?'search':'remote-search'}-mode="${mode}"]`);
      await tab.click();
-     const form=page.locator(mode==='shared'?'#lark-search-form':'#search-form');
+     const form=page.locator(mode==='shared'?'#shared-search-form':'#search-form');
      const input=form.locator('input'),clear=form.locator('.search-clear-button'),submit=form.locator('button[type="submit"]');
      assert.equal(await clear.count(),1);
      assert.equal(await submit.innerText(),'');assert.equal(await submit.getAttribute('aria-label'),'搜索');
@@ -800,7 +805,7 @@ const notes=path.resolve(output);
      } finally {page.off('request',observe);}
     }
     await page.locator(`[data-${name==='host'?'search':'remote-search'}-mode="shared"]`).click();
-    const form=page.locator('#lark-search-form');
+    const form=page.locator('#shared-search-form');
     for(const language of ['en','ja','zh']) {
      await page.evaluate(language=>setLanguage(language),language);
      const labels=await page.evaluate(()=>({clear:t('search.clearInput'),submit:t('search.submit')}));
@@ -813,7 +818,7 @@ const notes=path.resolve(output);
     await page.route('**/api/catalog/search*',hold);
     try {
      await form.locator('input').fill('New fixture search');await form.locator('button[type="submit"]').click();
-     await page.waitForFunction(()=>document.querySelector('#lark-search-button').getAttribute('aria-busy')==='true');
+     await page.waitForFunction(()=>document.querySelector('#shared-search-button').getAttribute('aria-busy')==='true');
      assert.equal(await form.locator('.search-clear-button').isDisabled(),true);
      assert.equal(await form.locator('.browse-search-spinner').isVisible(),true);
      assert.equal(await form.locator('button[type="submit"]').evaluate(e=>getComputedStyle(e,'::before').content),'none','Only one loading indicator is painted');
@@ -821,7 +826,7 @@ const notes=path.resolve(output);
      await page.evaluate(()=>new Promise(r=>requestAnimationFrame(r)));
      assert.ok(reads<=1,'Repeated submit cannot duplicate the active read');
     } finally {release();}
-    await page.waitForFunction(()=>!document.querySelector('#lark-search-button').disabled);
+    await page.waitForFunction(()=>!document.querySelector('#shared-search-button').disabled);
     assert.equal(reads,1);await page.unroute('**/api/catalog/search*',hold);
     assert.equal(await form.locator('.search-clear-button').isDisabled(),false);
     assert.equal(await form.locator('.browse-search-spinner').isVisible(),false);
@@ -1083,8 +1088,8 @@ const notes=path.resolve(output);
    await remote.setViewportSize({width:412,height:850});
    await primary();await remote.locator('#remote-request-search-tab').click();
    await remote.locator('[data-remote-search-mode="shared"]').click();
-   await remote.locator('#lark-search-query').fill('Offline');await remote.locator('#lark-search-button').click();
-   await remote.locator('#lark-search-results .search-result-item').first().click();
+   await remote.locator('#shared-search-query').fill('Offline');await remote.locator('#shared-search-button').click();
+   await remote.locator('#shared-search-results .search-result-item').first().click();
    const detail=remote.locator('.song-detail-card:visible');await detail.waitFor();await settled(remote);
    const verify=async()=>{
     await remote.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));
@@ -1098,7 +1103,7 @@ const notes=path.resolve(output);
    await remote.setViewportSize({width:428,height:850});await verify();
    await detail.locator('.song-detail-close').click();await detail.waitFor({state:'hidden'});
    assert.equal(await remote.evaluate(()=>document.querySelector('.search-result-item.is-selected')===document.activeElement),true,'Closing returns focus to the selected source');
-   await remote.locator('#lark-search-results .search-result-item').first().click();await detail.waitFor();await settled(remote);
+   await remote.locator('#shared-search-results .search-result-item').first().click();await detail.waitFor();await settled(remote);
    await remote.evaluate(()=>window.scrollTo(0,0));
    await remote.mouse.click(380,25);await detail.waitFor({state:'hidden'});
    assert.equal(await remote.locator('#remote-menu-panel').isVisible(),false,'The modal click-away layer must not activate the menu beneath it');
@@ -1174,7 +1179,7 @@ const notes=path.resolve(output);
     assert.equal(await panel.locator('[data-request-back]').isVisible(),true);
     assert.equal(await panel.locator('.request-mode-tabs').isVisible(),true);
     assert.ok((await head.boundingBox()).height<=68,'One compact navigation row');
-    if(view==='search')await host.locator('#lark-search-query').fill('Preserved catalog draft');
+    if(view==='search')await host.locator('#shared-search-query').fill('Preserved catalog draft');
     await settled(host);await host.screenshot({path:path.join(notes,`host-phone-${view}.png`)});
     await panel.locator('[data-request-back]').click();
     assert.equal(await input.inputValue(),'Preserved quick request');
@@ -1182,7 +1187,7 @@ const notes=path.resolve(output);
    }
    await host.locator('[data-request-view="quick"]').focus();await host.keyboard.press('ArrowRight');
    assert.equal(await host.locator('#request-search-panel [aria-selected="true"]').evaluate(e=>e===document.activeElement),true,'Keyboard focus follows the newly visible secondary tabs');
-   assert.equal(await host.locator('#lark-search-query').inputValue(),'Preserved catalog draft');
+   assert.equal(await host.locator('#shared-search-query').inputValue(),'Preserved catalog draft');
    await host.setViewportSize({width:412,height:340});
    assert.equal(await host.locator('html').getAttribute('data-host-layout'),'portrait','Keyboard-sized height changes keep compact navigation');
    await host.setViewportSize({width:1440,height:900});await settled(host);

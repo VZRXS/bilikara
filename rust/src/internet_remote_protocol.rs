@@ -1718,6 +1718,12 @@ pub struct RemoteStateV1 {
     pub player_status: Option<RemotePlaybackStatusV1>,
 }
 
+fn valid_queue_version(value: &Option<String>) -> bool {
+    value
+        .as_ref()
+        .is_none_or(|value| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2658,10 +2664,4 @@ mod tests {
             assert!(!encoded.contains(forbidden), "forbidden field {forbidden}");
         }
     }
-}
-
-fn valid_queue_version(value: &Option<String>) -> bool {
-    value
-        .as_ref()
-        .is_none_or(|value| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()))
 }

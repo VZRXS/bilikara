@@ -14,17 +14,53 @@ const qrcode=createRequire(import.meta.url)('../static/qrcode-generator.js');
 const read=name=>readFileSync(path.join(root,'static',name),'utf8');
 let desktop,alpha;before(async()=>{if(process.platform!=='linux')return;desktop=process.env.BILIKARA_TEST_NATIVE_HOST_BINARY||await buildNativeHost();alpha=process.env.BILIKARA_TEST_NATIVE_ALPHA_BINARY||await buildNativeAlpha();},{timeout:300000});
 const evidence=process.env.BILIKARA_KTV_EVIDENCE;
-async function settleLayout(page){
-  await page.evaluate(async()=>{
-    await document.fonts.ready;
-    await Promise.allSettled(document.getAnimations().filter(a=>a.effect?.getTiming().iterations!==Infinity).map(a=>a.finished));
-    await new Promise(resolve=>requestAnimationFrame(resolve));
-  });
+const roomState=async server=>(await server.api('/api/state')).purek;
+async function disconnect(server){
+  await server.api('/api/cast/disconnect',{});
+  return waitFor(async()=>{const s=await server.api('/api/state');return s.cast.phase==='idle'&&!s.cast.busy&&s.purek;},'awaited receiver cleanup');
 }
-async function shot(page,name){if(evidence){
-  await page.evaluate(()=>Promise.all(document.getAnimations().filter(a=>a.effect?.getTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{}))));
+async function settleLayout(page,scope='#purek-modal'){
+  await page.evaluate(async scope=>{
+    await document.fonts.ready;
+    const root=document.querySelector(scope);
+    // WebKit can retain unresolved transitions inside collapsed details. Only
+    // rendered targets in the surface under measurement can affect its bounds.
+    const relevant=document.getAnimations().filter(a=>{
+      const target=a.effect?.target;
+      return a.effect?.getTiming().iterations!==Infinity&&target&&root?.contains(target)
+        &&target.checkVisibility?.({contentVisibilityAuto:true})!==false;
+    });
+    await Promise.allSettled(relevant.map(a=>a.finished));
+    await new Promise(resolve=>requestAnimationFrame(resolve));
+  },scope);
+}
+async function shot(page,name,scope='#purek-modal'){if(evidence){
+  await settleLayout(page,scope);
   mkdirSync(evidence,{recursive:true});await page.screenshot({path:path.join(evidence,name+'.png')});
 }}
+async function checkScannerGeometry(page) {
+  await settleLayout(page);
+  const g=await page.locator('#purek-modal').evaluate(modal=>{
+    const card=modal.querySelector('.purek-card'),body=card.querySelector('.purek-body'),view=card.querySelector('.ktv-scan-view');
+    const c=card.getBoundingClientRect(),b=body.getBoundingClientRect(),v=view.getBoundingClientRect(),h=card.querySelector('.selection-modal-head').getBoundingClientRect();
+    const cs=getComputedStyle(card),ms=getComputedStyle(modal),vs=getComputedStyle(view),bs=getComputedStyle(body);
+    const number=(style,key)=>parseFloat(style[key])||0;
+    return {padding:['paddingTop','paddingRight','paddingBottom','paddingLeft'].map(k=>number(cs,k)),
+      inner:number(vs,'borderTopLeftRadius'),
+      axes:[b.left-c.left-number(cs,'borderLeftWidth'),c.right-b.right-number(cs,'borderRightWidth')],
+      scanWidth:v.width,bodyWidth:body.clientWidth,headerGap:b.top-h.bottom,minHeight:number(vs,'minHeight'),height:v.height,
+      overflow:bs.overflowY,top:c.top-number(ms,'paddingTop'),bottom:innerHeight-number(ms,'paddingBottom')-c.bottom,
+      viewport:c.left>=0&&c.right<=innerWidth+1&&c.top>=0&&c.bottom<=innerHeight+1,
+      targets:[...view.querySelectorAll('button')].filter(n=>n.getClientRects().length).map(n=>{const r=n.getBoundingClientRect();return [r.width,r.height];})};
+  });
+  assert.deepEqual(g.padding,[20,20,20,20],'IOS-09-04 shared content axis');
+  assert.ok(g.axes.every(n=>Math.abs(n-20)<1),JSON.stringify(g));
+  assert.equal(g.inner,14,'IOS-09-04 scanner retains its approved role radius independently of the dialog corners');
+  assert.ok(Math.abs(g.scanWidth-g.bodyWidth)<1&&g.headerGap>=11&&g.height>=g.minHeight-1,JSON.stringify(g));
+  assert.equal(g.overflow,'auto');assert.equal(g.viewport,true);
+  assert.ok(g.top>=-1&&g.bottom>=-1&&Math.abs(g.top-g.bottom)<2,'IOS-09-04 centers in the usable viewport after dock/safe-area/IME insets: '+JSON.stringify(g));
+  assert.ok(g.targets.length&&g.targets.every(([w,h])=>w>=44&&h>=44),'scanner touch targets stay full size');
+}
 async function browserContext(t,engine,server,{host=false,ios=false,phone=false}={}){
   const browser=await engine.launch();t.after(()=>browser.close());const context=await browser.newContext({viewport:{width:host&&!phone?700:393,height:host&&!phone?700:844},hasTouch:true});
   if(host)await context.addCookies([...server.cookies].map(([name,value])=>({name,value,url:server.base})));
@@ -49,20 +85,20 @@ for(const engine of [chromium,webkit])for(const platform of ['desktop','android'
   const toolStyle=node=>{const s=getComputedStyle(node);return [s.height,s.minHeight,s.fontSize,s.fontWeight,s.borderRadius,s.paddingLeft,s.paddingRight,s.backgroundColor,s.color];};
   for(const [language,theme] of [['zh','light'],['en','dark'],['ja','blue']]){
     await host.evaluate(({language,theme})=>{setLanguage(language);applyTheme(theme);},{language,theme});
-    await settleLayout(host);
+    await settleLayout(host,'#purek-settings');
     const scan=await host.locator('#purek-open').evaluate(toolStyle);
     // Compare rendered controls. WebKit can retain an old computed palette
     // for a reference inside a display:none mobile Settings page.
     if(platform!=='desktop'){
       await host.locator('#android-open-settings').click();
       await host.locator('#host-workspace-settings').waitFor({state:'visible'});
-      await settleLayout(host);
+      await settleLayout(host,'#host-workspace-settings');
     }
     const reference=await host.locator('#diagnostic-copy-button').evaluate(toolStyle);
     if(platform!=='desktop'){
       await host.locator('#android-settings-back').click();
       await host.locator('#android-my-page').waitFor({state:'visible'});
-      await settleLayout(host);
+      await settleLayout(host,'#android-my-page');
     }
     const styles={scan,reference};
     assert.deepEqual(styles.scan,styles.reference,'Scan entry reuses the full settings-tool style');
@@ -81,7 +117,7 @@ for(const engine of [chromium,webkit])for(const platform of ['desktop','android'
   }
   await host.evaluate(()=>{setLanguage('zh');applyTheme('light');});
   await host.locator('#purek-settings').scrollIntoViewIfNeeded();
-  await shot(host,`settings-pill-${platform}-${engine.name()}`);
+  await shot(host,`settings-pill-${platform}-${engine.name()}`,'#purek-settings');
   const pill=await host.locator('#purek-open').boundingBox();
   await host.touchscreen.tap(pill.x+pill.width/2,pill.y-4);
   await host.locator(platform==='desktop'?'#ktv-host-empty':'#ktv-host-local-scan').waitFor({state:'visible'});
@@ -114,6 +150,10 @@ for(const engine of [chromium,webkit])for(const platform of ['desktop','android'
   await remote.locator('#ktv-invitation').waitFor({state:'visible'});
   assert.equal(await remote.evaluate(()=>__ktvCameraCalls),0);
   await remote.locator('#ktv-accept').click();await remote.locator('#ktv-scanner').waitFor({state:'visible'});
+  if(platform!=='desktop'){
+    const radius=n=>getComputedStyle(n).borderTopLeftRadius;
+    assert.deepEqual(await Promise.all([host.locator('#ktv-host-scan-view').evaluate(radius),remote.locator('#ktv-scan-view').evaluate(radius)]),['14px','14px'],'IOS-09-04 Host and Remote share the approved scanner radius');
+  }
   assert.equal(await remote.evaluate(()=>__ktvCameraCalls),0,'an invitation/acceptance never starts the camera');
   assert.equal(await remote.locator('#ktv-session-status').isVisible(),false,'Host invitations need no redundant approval status');
   await remote.locator('#ktv-cancel-session').click();await remote.locator('#ktv-remote-modal').waitFor({state:'hidden'});
@@ -133,7 +173,7 @@ for(const engine of [chromium,webkit])for(const platform of ['desktop','android'
   for(const size of[{width:393,height:844},{width:844,height:393}]){
     await remote.setViewportSize(size);await remote.locator('#remote-menu-toggle').click();await remote.locator('#ktv-menu-toggle').click();
     assert.equal(await remote.locator('#remote-menu-panel').evaluate(n=>{const r=n.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth+1&&r.top>=0&&r.bottom<=innerHeight+1&&n.scrollWidth<=n.clientWidth+1;}),true);
-    await shot(remote,`menu-${size.width}-${platform}-${engine.name()}`);await remote.keyboard.press('Escape');
+    await shot(remote,`menu-${size.width}-${platform}-${engine.name()}`,'#remote-menu-panel');await remote.keyboard.press('Escape');
   }
   await host.locator('#purek-close').click();assert.equal(await host.locator('#purek-open').evaluate(n=>n===document.activeElement),true);
   if(platform==='desktop'){
@@ -167,11 +207,16 @@ for(const engine of [chromium,webkit])for(const platform of ['android','ios'])te
     assert.equal(await host.locator('#purek-cancel').isVisible(),false,'no orphan Cancel footer');
     assert.equal(await host.locator('#purek-settings [aria-describedby="purek-info"]').count(),1);
     assert.equal(await host.locator('[data-media-output="settings"] .media-output-help').count(),0);
+    for(const size of [{width:393,height:844},{width:393,height:520},{width:844,height:393},{width:1024,height:768}]){
+      await host.setViewportSize(size);await checkScannerGeometry(host);
+    }
+    await host.setViewportSize({width:393,height:844});
     if(live){
       // Observe WebKit's actual native denial, without relying on a replaced
       // WebIDL method surviving between browser tasks. Chromium also counts calls.
       await host.locator('#purek-error:not([hidden])').waitFor();
       assert.equal(await host.locator('#purek-error').innerText(),await host.evaluate(()=>t('ktv.error.camera_permission')));
+      await checkScannerGeometry(host);
       assert.equal(pickerCalls,0);
       if(engine===chromium)assert.equal(await host.evaluate(()=>__ktvCameraCalls),1,'the outer Scan button opens the camera directly');
     }else assert.equal(pickerCalls,1,'the outer Scan button opens the system picker without live camera');
@@ -190,17 +235,17 @@ for(const engine of [chromium,webkit])for(const platform of ['android','ios'])te
     assert.equal(await host.locator('#purek-close').isDisabled(),true);
     release();await host.locator('#ktv-host-authorization:not([hidden])').waitFor();await host.unroute('**/api/purek/prepare',hold);
     assert.equal(await host.locator('#ktv-host-authorization-url').inputValue(),roomQr(tv.base));
-    assert.equal((await server.api('/api/purek/state')).connected,false,'decoding is not authorization');
+    assert.equal((await roomState(server)).connected,false,'decoding is not authorization');
     tv.state.deny=true;await host.locator('#purek-submit').click();await host.locator('#purek-error:not([hidden])').waitFor();
-    assert.equal((await server.api('/api/purek/state')).connected,false,'official authorization denial cannot be bypassed');
-    tv.state.deny=false;await host.locator('#purek-submit').click();await waitFor(async()=>(await server.api('/api/purek/state')).connected,'authorized fixture connected');
+    assert.equal((await roomState(server)).connected,false,'official authorization denial cannot be bypassed');
+    tv.state.deny=false;await host.locator('#purek-submit').click();await waitFor(async()=>(await roomState(server)).connected,'authorized fixture connected');
     await host.waitForFunction(()=>document.querySelector('#ktv-host-authorization-url').value==='');
     assert.equal(await host.locator('#purek-open').textContent(),await host.evaluate(()=>t('purek.manage')));
     assert.equal(await host.locator('#ktv-host-local-scan').isVisible(),false,'connected device management has no idle scanner');
     await host.locator('#purek-close').click();
     await host.locator('#purek-open').click();
     assert.equal(await host.locator('#purek-modal').isVisible(),true,'mobile management stays separate from the output switch');
-    await host.locator('#purek-submit').click();await waitFor(async()=>!(await server.api('/api/purek/state')).connected,'Host management disconnect');
+    await host.locator('#purek-submit').click();await waitFor(async()=>!(await roomState(server)).connected,'Host management disconnect');
     await host.locator('#purek-close').click();
     await host.locator('#purek-open').click();await host.waitForFunction(()=>!document.querySelector('#purek-close').disabled);
     await host.waitForFunction(()=>document.querySelector('#purek-open').textContent===t('ktv.scan'));
@@ -208,7 +253,7 @@ for(const engine of [chromium,webkit])for(const platform of ['android','ios'])te
     await host.locator('#ktv-host-image-input').setInputFiles(image(tv.description));
     await host.waitForFunction(()=>state.data.purek.connection_type==='dlna'&&!document.querySelector('#purek-submit').disabled);
     assert.equal(await host.locator('#ktv-host-authorization').isVisible(),false);
-    await host.locator('#purek-submit').click();await waitFor(async()=>(await server.api('/api/purek/state')).connected,'DLNA fixture connected');
+    await host.locator('#purek-submit').click();await waitFor(async()=>(await roomState(server)).connected,'DLNA fixture connected');
     assert.equal(tv.state.actions.filter(a=>a==='SetDeviceAuthorization').length,authorizations,'DLNA does not perform Pure K registration');
     const lan=new HttpClient(server.base);await lan.request('/remote');
     assert.equal((await lan.request('/api/purek/prepare',{url:roomQr(tv.base)})).status,403);
@@ -324,7 +369,7 @@ test('actual authenticated encrypted DataChannels carry local QR results, never 
   await remote.evaluate(()=>{navigator.mediaDevices.getUserMedia=__originalGum;});
   await remote.locator('#ktv-camera').click();await remote.waitForFunction(()=>document.querySelector('#ktv-camera-preview').srcObject?.getVideoTracks().length===1);
   await remote.waitForFunction(()=>!document.querySelector('#ktv-camera').hasAttribute('aria-busy')&&!document.querySelector('#ktv-import').disabled);
-  await shot(remote,'scanner-live-camera');
+  await shot(remote,'scanner-live-camera','#ktv-remote-modal');
   await remote.evaluate(()=>{window.__cameraTrack=document.querySelector('#ktv-camera-preview').srcObject.getVideoTracks()[0];});
   const acceptedBeforeBackground=(await server.api('/api/ktv/host')).session.request_id;
   await remote.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'));});
@@ -345,7 +390,7 @@ test('actual authenticated encrypted DataChannels carry local QR results, never 
   assert.ok(await remote.evaluate(()=>__qrReads)>=1);
   assert.equal(await remote.evaluate(()=>__cameraTrack.readyState),'ended','image import stops the actual synthetic camera track');
   assert.equal(await remote.locator('#ktv-open-wechat').isVisible(),false);assert.match(await remote.locator('#ktv-wechat-help').innerText(),/微信|WeChat/);
-  await shot(remote,'official-authorization-instructions');
+  await shot(remote,'official-authorization-instructions','#ktv-remote-modal');
   const staged=(await server.api('/api/ktv/host')).session,stagedConnection=staged.connection_id,actionsBeforeReturn=[...tv.state.actions];
   await remote.evaluate(()=>{window.__returnNode=document.querySelector('#remote-menu-toggle');window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true}));});
   assert.equal(await remote.locator('#ktv-remote-modal').evaluate(n=>n.open),false);assert.equal(await remote.locator('#ktv-authorization-url').inputValue(),'');
@@ -371,8 +416,8 @@ test('actual authenticated encrypted DataChannels carry local QR results, never 
   // UA fixture checks the conditional official-link boundary, not WeChat launch.
   await remote.evaluate(()=>{const original=navigator.userAgent;Object.defineProperty(navigator,'userAgent',{configurable:true,value:original+' MicroMessenger'});document.dispatchEvent(new Event('bilikara:i18n'));});
   assert.equal(await remote.locator('#ktv-open-wechat').isVisible(),true);assert.equal(await remote.locator('#ktv-open-wechat').getAttribute('href'),roomQr(tv.base));
-  tv.state.deny=true;await remote.locator('#ktv-check').click();await remote.locator('#ktv-remote-error:not([hidden])').waitFor();assert.equal((await server.api('/api/purek/state')).connected,false);
-  tv.state.deny=false;await remote.locator('#ktv-check').click();await waitFor(async()=>(await server.api('/api/purek/state')).connected,'real Host registration verified');
+  tv.state.deny=true;await remote.locator('#ktv-check').click();await remote.locator('#ktv-remote-error:not([hidden])').waitFor();assert.equal((await roomState(server)).connected,false);
+  tv.state.deny=false;await remote.locator('#ktv-check').click();await waitFor(async()=>(await roomState(server)).connected,'real Host registration verified');
   await waitFor(async()=>(await server.api('/api/ktv/host')).session.status==='completed','Host completes authorization and its capability probe');
   const verifiedRoom=(await server.api('/api/internet-remote/state')).ktv_room.status;
   await remote.waitForFunction(status=>document.querySelector('#ktv-session-status').textContent===t(`ktv.room.${status}`),verifiedRoom);
@@ -381,8 +426,8 @@ test('actual authenticated encrypted DataChannels carry local QR results, never 
   // An actual probe response is held after real receiver I/O. Busy state must
   // survive SSE/localization; older snapshots must not restore that busy state.
   let releaseProbe;const heldProbe=new Promise(resolve=>{releaseProbe=resolve;});t.after(()=>releaseProbe());
-  const beforeProbe=await server.api('/api/purek/state');
-  await host.route('**/api/purek/output/probe',async route=>{const response=await route.fetch();await heldProbe;await route.fulfill({response});});
+  const beforeProbe=await roomState(server);
+  await host.route('**/api/cast/probe',async route=>{const response=await route.fetch();await heldProbe;await route.fulfill({response});});
   await host.locator('#purek-probe').click();await host.waitForFunction(()=>document.querySelector('#purek-probe').getAttribute('aria-busy')==='true');
   await host.evaluate(()=>setLanguage('ja'));assert.equal(await host.locator('#purek-probe').isDisabled(),true);
   assert.match(await host.locator('#purek-probe').innerText(),/処理中/);releaseProbe();
@@ -392,16 +437,16 @@ test('actual authenticated encrypted DataChannels carry local QR results, never 
   assert.ok(!JSON.stringify(wire).includes('projection_url'));assert.ok(!JSON.stringify(wire).includes('synthetic-ktv-private'));
   assert.ok(!httpBodies.some(body=>body.includes('projection_url')||body.includes('synthetic-ktv-private')||body.includes('pixels')));
   assert.equal(await remote.evaluate(()=>[...Array(localStorage.length)].map((_,i)=>localStorage.getItem(localStorage.key(i))).some(v=>v?.includes('projection_url'))),false);
-  await remote.locator('#ktv-remote-close').click();await server.api('/api/purek/disconnect',{});tv.state.actions=[];
+  await remote.locator('#ktv-remote-close').click();await disconnect(server);tv.state.actions=[];
   await remote.locator('#remote-menu-toggle').click();await remote.locator('#ktv-menu-toggle').click();await remote.locator('#ktv-menu-scan').click();
   await host.locator('#ktv-host-approve:not([hidden])').waitFor();await host.locator('#ktv-host-approve').click();await remote.locator('#ktv-scanner:not([hidden])').waitFor();
   await remote.locator('#ktv-advanced summary').click();await remote.locator('#ktv-room-url').fill('http://8.8.8.8/description.xml');await remote.locator('#ktv-submit-url').click();await remote.locator('#ktv-remote-error:not([hidden])').waitFor();
-  assert.equal((await server.api('/api/purek/state')).room_name,null);
+  assert.equal((await roomState(server)).room_name,null);
   await remote.locator('#ktv-room-url').fill(tv.description);await remote.locator('#ktv-submit-url').click();await remote.locator('#ktv-check:not([hidden])').waitFor();
   assert.equal(await remote.locator('#ktv-authorization').isVisible(),false,'ordinary DLNA has no WeChat step');await remote.locator('#ktv-check').click();
-  await waitFor(async()=>(await server.api('/api/purek/state')).connected,'ordinary DLNA through the relocated input');
+  await waitFor(async()=>(await roomState(server)).connected,'ordinary DLNA through the relocated input');
   assert.ok(tv.state.actions.includes('GetProtocolInfo'));assert.ok(!tv.state.actions.includes('SetDeviceAuthorization'));
-  await remote.locator('#ktv-remote-close').click();await server.api('/api/purek/disconnect',{});tv.state.actions=[];
+  await remote.locator('#ktv-remote-close').click();await disconnect(server);tv.state.actions=[];
   await remote.locator('#remote-menu-toggle').click();await remote.locator('#ktv-menu-toggle').click();await remote.locator('#ktv-menu-scan').click();
   await host.locator('#ktv-host-approve:not([hidden])').waitFor();await host.locator('#ktv-host-approve').click();await remote.locator('#ktv-scanner:not([hidden])').waitFor();
   await remote.locator('#ktv-room-url').fill(roomQr(tv.base));await remote.locator('#ktv-submit-url').click();await remote.locator('#ktv-authorization:not([hidden])').waitFor();
@@ -409,9 +454,9 @@ test('actual authenticated encrypted DataChannels carry local QR results, never 
   await remote.locator('#ktv-check').click();await waitFor(()=>tv.state.actions.includes('SetDeviceAuthorization'),'actual DataChannel check reaches gated SOAP');
   await remote.locator('#ktv-cancel-session').click();
   await waitFor(async()=>(await server.api('/api/ktv/host')).session.status==='canceled','Remote cancellation must reach Rust before the blocked SOAP check completes',4000);
-  assert.equal((await server.api('/api/purek/state')).busy,true,'cancel retains the actual pending I/O lease');
-  tv.state.hold=null;finishRegistration();await waitFor(async()=>!(await server.api('/api/purek/state')).busy,'canceled DataChannel verification rolls back');
-  assert.equal(tv.state.authorized,false);assert.equal((await server.api('/api/purek/state')).connected,false);
+  assert.equal((await roomState(server)).busy,true,'cancel retains the actual pending I/O lease');
+  tv.state.hold=null;finishRegistration();await waitFor(async()=>!(await roomState(server)).busy,'canceled DataChannel verification rolls back');
+  assert.equal(tv.state.authorized,false);assert.equal((await roomState(server)).connected,false);
   const canceledActions=[...tv.state.actions];
   await other.locator('#remote-menu-toggle').click();await other.locator('#ktv-menu-toggle').click();await other.locator('#ktv-menu-scan').click();
   await host.locator('#ktv-host-approve:not([hidden])').waitFor();await host.locator('#ktv-host-approve').click();await other.locator('#ktv-scanner:not([hidden])').waitFor();
@@ -440,7 +485,183 @@ test('actual authenticated encrypted DataChannels carry local QR results, never 
   assert.ok(!JSON.stringify(wire).includes('projection_url'));assert.ok(!JSON.stringify(wire).includes('synthetic-ktv-private'));
   assert.ok(!httpBodies.some(body=>body.includes('projection_url')||body.includes('synthetic-ktv-private')||body.includes('pixels')));
   assert.equal(await remote.evaluate(()=>[localStorage,sessionStorage].some(storage=>[...Array(storage.length)].some((_,i)=>/projection_url|synthetic-ktv-private/.test(storage.getItem(storage.key(i))||'')))),false);
-  assert.deepEqual(errors,[]);await shot(remote,'internet-qr-authorized');
+  assert.deepEqual(errors,[]);await shot(remote,'internet-qr-authorized','#ktv-remote-modal');
+});
+
+// Android's runtime permission Activity briefly hides the WebView while getUserMedia is pending
+// (android-camera-repro.md). Real Host DOM, real MediaStream tracks; only the permission result
+// and the visibility transition are scripted, since desktop engines show no permission Activity.
+async function cameraHarness(context){
+  await context.addInitScript(()=>{
+    window.__gum={calls:0,pending:[],streams:[]};
+    // WebKit does not keep a getUserMedia replaced on the navigator.mediaDevices instance between
+    // tasks, so the prototype is replaced as well: every scan in this page reaches the scripted result.
+    const request=()=>{__gum.calls++;return new Promise((resolve,reject)=>__gum.pending.push({resolve,reject}));};
+    if(window.MediaDevices)Object.defineProperty(MediaDevices.prototype,'getUserMedia',{configurable:true,writable:true,value:request});
+    if(!navigator.mediaDevices)Object.defineProperty(navigator,'mediaDevices',{configurable:true,value:{}});
+    navigator.mediaDevices.getUserMedia=request; // also replaces browserContext's counting wrapper
+    window.__liveStream=()=>{const c=document.createElement('canvas');c.width=64;c.height=48;c.getContext('2d').fillRect(0,0,64,48);const s=c.captureStream(5);__gum.streams.push(s);return s;};
+    window.__setHidden=hidden=>{
+      Object.defineProperty(document,'hidden',{configurable:true,get:()=>hidden});
+      Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>hidden?'hidden':'visible'});
+      document.dispatchEvent(new Event('visibilitychange'));
+    };
+    window.__trackStates=()=>__gum.streams.map(s=>s.getTracks().map(track=>track.readyState).join());
+  });
+}
+const preview=page=>page.evaluate(()=>{const v=document.querySelector('#ktv-host-camera-preview');return{hidden:v.hidden,attached:v.srcObject?__gum.streams.indexOf(v.srcObject):-1};});
+const settled=page=>page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,50)));
+
+for(const engine of[chromium,webkit])test(`${engine.name()} Android Host keeps a camera permission request across the permission Activity and never holds a background camera`,{skip:process.platform!=='linux',timeout:90000},async t=>{
+  const {server}=await startHost(t,alpha,true);
+  const context=await browserContext(t,engine,server,{host:true,phone:true});await cameraHarness(context);
+  const host=await context.newPage(),errors=[];host.on('pageerror',e=>errors.push(e.message));
+  await host.goto(server.base);await host.waitForFunction(()=>state.hasValidStateResponse&&window.BilikaraPureK);
+  await host.evaluate(()=>setLanguage('en'));
+  assert.equal(await host.evaluate(()=>document.documentElement.dataset.hostPlatform),'android');
+  // First permission grant: the dialog's transient hidden must not void the pending request.
+  await host.locator('[data-android-page="my"]').click();await host.locator('#purek-open').click();
+  await host.waitForFunction(()=>__gum.pending.length===1);
+  await host.evaluate(()=>__setHidden(true));await settled(host);
+  await host.evaluate(()=>__setHidden(false));await settled(host);
+  assert.equal(await host.locator('#purek-error').isVisible(),false);
+  await host.evaluate(()=>__gum.pending[0].resolve(__liveStream()));
+  await host.waitForFunction(()=>!document.querySelector('#ktv-host-camera-preview').hidden);
+  assert.deepEqual(await preview(host),{hidden:false,attached:0},'the first grant shows the preview without a second tap');
+  assert.equal(await host.evaluate(()=>__gum.calls),1);
+  assert.deepEqual(await host.evaluate(()=>__trackStates()),['live']);
+  // A running camera is released as soon as the Host really goes to the background.
+  await host.evaluate(()=>__setHidden(true));await settled(host);
+  assert.deepEqual(await host.evaluate(()=>__trackStates()),['ended'],'background releases the running camera');
+  assert.deepEqual(await preview(host),{hidden:true,attached:-1});
+  await host.evaluate(()=>__setHidden(false));await settled(host);
+  assert.equal(await host.evaluate(()=>__gum.calls),1,'returning to the foreground does not reopen the camera');
+  // Denial after the permission Activity closes still reaches the original permission hint.
+  await host.locator('#ktv-host-capture').click();await host.waitForFunction(()=>__gum.pending.length===2);
+  await host.evaluate(()=>__setHidden(true));await settled(host);
+  await host.evaluate(()=>__setHidden(false));
+  await host.evaluate(()=>__gum.pending[1].reject(new DOMException('Permission denied','NotAllowedError')));
+  await host.locator('#purek-error:not([hidden])').waitFor();
+  assert.equal(await host.locator('#purek-error').innerText(),await host.evaluate(()=>t('ktv.error.camera_permission')));
+  assert.equal(await host.locator('#ktv-host-import').isEnabled(),true,'denial keeps the image fallback');
+  // A result that arrives while the Host is still in the background stops its tracks and is never mounted.
+  await host.locator('#ktv-host-capture').click();await host.waitForFunction(()=>__gum.pending.length===3);
+  await host.evaluate(()=>__setHidden(true));await settled(host);
+  await host.evaluate(()=>__gum.pending[2].resolve(__liveStream()));await settled(host);
+  assert.deepEqual(await host.evaluate(()=>__trackStates()),['ended','ended'],'a late background grant never holds the camera');
+  assert.deepEqual(await preview(host),{hidden:true,attached:-1});
+  await host.evaluate(()=>__setHidden(false));await settled(host);
+  assert.deepEqual(await preview(host),{hidden:true,attached:-1},'no automatic reopen after returning');
+  assert.equal(await host.evaluate(()=>__gum.calls),3);
+  // Page retirement still cancels a pending request; its later stream is stopped.
+  await host.locator('#ktv-host-capture').click();await host.waitForFunction(()=>__gum.pending.length===4);
+  await host.evaluate(()=>window.dispatchEvent(new Event('pagehide')));
+  await host.evaluate(()=>__gum.pending[3].resolve(__liveStream()));await settled(host);
+  assert.deepEqual(await host.evaluate(()=>__trackStates()),['ended','ended','ended'],'pagehide cancels the pending request');
+  assert.deepEqual(errors,[]);
+});
+
+for(const engine of[chromium,webkit])test(`${engine.name()} iOS Host still stops a pending camera request when hidden`,{skip:process.platform!=='linux',timeout:90000},async t=>{
+  const {server}=await startHost(t,alpha,true);
+  const context=await browserContext(t,engine,server,{host:true,phone:true,ios:true});await cameraHarness(context);
+  const host=await context.newPage(),errors=[];host.on('pageerror',e=>errors.push(e.message));
+  await host.goto(server.base);await host.waitForFunction(()=>state.hasValidStateResponse&&window.BilikaraPureK);
+  assert.equal(await host.evaluate(()=>document.documentElement.dataset.hostPlatform),'ios');
+  await host.locator('[data-android-page="my"]').click();await host.locator('#purek-open').click();
+  await host.waitForFunction(()=>__gum.pending.length===1);
+  await host.evaluate(()=>__setHidden(true));await settled(host);
+  await host.evaluate(()=>__setHidden(false));
+  await host.evaluate(()=>__gum.pending[0].resolve(__liveStream()));await settled(host);
+  assert.deepEqual(await host.evaluate(()=>__trackStates()),['ended'],'iOS keeps its hide-to-stop policy');
+  assert.deepEqual(await preview(host),{hidden:true,attached:-1});
+  assert.equal(await host.locator('#purek-error').isVisible(),false,'a canceled request is not reported as a denial');
+  assert.deepEqual(errors,[]);
+});
+
+// Independent GIF/BMP encoders (no image tooling in CI): 2-color GIF with LZW clear codes keeping
+// 3-bit codes, and an uncompressed 24-bit BMP of the same QR modules.
+function qrRaster(raw,scale=4){const code=qrcode(0,'M');code.addData(raw);code.make();const n=code.getModuleCount();
+  return {size:(n+8)*scale,dark:(x,y)=>{const c=Math.floor(x/scale)-4,r=Math.floor(y/scale)-4;return r>=0&&c>=0&&r<n&&c<n&&code.isDark(r,c);}};}
+function gifQr(raw){const {size,dark}=qrRaster(raw),out=[],word=v=>out.push(v&255,v>>8);
+  out.push(...Buffer.from('GIF89a'));word(size);word(size);out.push(0x81,0,0,255,255,255,0,0,0,0,0,0,0,0,0,0x2c);word(0);word(0);word(size);word(size);out.push(0,2);
+  const data=[];let acc=0,bits=0,count=0;const emit=code=>{acc|=code<<bits;bits+=3;while(bits>=8){data.push(acc&255);acc>>=8;bits-=8;}};
+  emit(4);for(let y=0;y<size;y++)for(let x=0;x<size;x++){if(count===2){emit(4);count=0;}emit(dark(x,y)?1:0);count++;}emit(5);if(bits)data.push(acc&255);
+  for(let i=0;i<data.length;i+=255){const chunk=data.slice(i,i+255);out.push(chunk.length,...chunk);}out.push(0,0x3b);return Buffer.from(out);}
+function bmpQr(raw){const {size,dark}=qrRaster(raw),row=Math.ceil(size*3/4)*4,data=row*size,b=Buffer.alloc(54+data);
+  b.write('BM',0);b.writeUInt32LE(54+data,2);b.writeUInt32LE(54,10);b.writeUInt32LE(40,14);b.writeInt32LE(size,18);b.writeInt32LE(size,22);b.writeUInt16LE(1,26);b.writeUInt16LE(24,28);b.writeUInt32LE(data,34);
+  for(let y=0;y<size;y++)for(let x=0;x<size;x++){const v=dark(x,size-1-y)?0:255,o=54+y*row+x*3;b[o]=b[o+1]=b[o+2]=v;}return b;}
+const qrFile={gif:raw=>({name:'device.gif',mimeType:'image/gif',buffer:gifQr(raw)}),bmp:raw=>({name:'device.bmp',mimeType:'image/bmp',buffer:bmpQr(raw)})};
+async function scanHost(t,engine,platform){
+  // Desktop uses the real desktop Host binary; the alpha fixture serves the mobile Host page.
+  const {server}=platform==='desktop'?await startHost(t,desktop):await startHost(t,alpha,true),tv=await receiver(t);
+  const context=await browserContext(t,engine,server,{host:true,phone:platform!=='desktop',ios:platform==='ios'});
+  await context.addInitScript(()=>{const deny=()=>Promise.reject(new DOMException('denied','NotAllowedError'));
+    if(window.MediaDevices)Object.defineProperty(MediaDevices.prototype,'getUserMedia',{configurable:true,writable:true,value:deny});
+    if(navigator.mediaDevices)navigator.mediaDevices.getUserMedia=deny;});
+  const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
+  await page.goto(server.base);await page.waitForFunction(()=>state.hasValidStateResponse&&window.BilikaraPureK);
+  await page.evaluate(()=>setLanguage('en'));return {server,tv,page,errors};
+}
+async function openLocalScan(page,first=true){
+  if(first)await page.locator('[data-android-page="my"]').click();
+  await page.locator('#purek-open').click();await page.waitForFunction(()=>!document.querySelector('#purek-close').disabled);
+  await page.locator('#purek-error:not([hidden])').waitFor(); // the automatic camera attempt was denied
+}
+// Resolve to 'prepare' when the decoded text reaches the real Host, otherwise to the visible error text.
+async function importOutcome(page,act){
+  await page.evaluate(()=>{document.querySelector('#purek-error').hidden=true;});
+  const prepared=page.waitForRequest('**/api/purek/prepare',{timeout:8000}).then(()=>'prepare').catch(()=>null);
+  await act();
+  const failed=page.locator('#purek-error:not([hidden])').waitFor({timeout:8000}).then(()=>page.locator('#purek-error').innerText()).catch(()=>null);
+  return (await Promise.race([prepared.then(v=>v||failed),failed.then(v=>v||prepared)]))||'nothing';
+}
+const sharedDecode=(page,file)=>page.evaluate(async([b64,type,name])=>{
+  const file=new File([Uint8Array.from(atob(b64),c=>c.charCodeAt(0))],name,{type});let decoded=null;
+  const scanner=BilikaraKtvScanner.create({video:document.createElement('video'),onDecode:raw=>{decoded=raw;},onError(){}});
+  try{await scanner.file(file);return decoded;}catch(error){return 'error:'+error.code;}
+},[file.buffer.toString('base64'),file.mimeType,file.name]);
+const setHidden=(page,hidden)=>page.evaluate(hidden=>{
+  Object.defineProperty(document,'hidden',{configurable:true,get:()=>hidden});
+  Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>hidden?'hidden':'visible'});
+  document.dispatchEvent(new Event('visibilitychange'));},hidden);
+
+for(const engine of[chromium,webkit])test(`${engine.name()} GIF and BMP QR images decode on Remote, desktop, iOS and direct Android Host import as before`,{skip:process.platform!=='linux',timeout:180000},async t=>{
+  const raw='http://192.168.1.10:8200/description.xml';
+  // Remote and desktop Host keep image/* and the shared Image/canvas decoder (desktop has no local import UI).
+  const {server,page:desktop,errors}=await scanHost(t,engine,'desktop');
+  assert.equal(await desktop.evaluate(()=>document.documentElement.dataset.hostPlatform),'desktop');
+  assert.equal(await desktop.locator('#ktv-host-image-input').getAttribute('accept'),'image/*');
+  const remote=await desktop.context().newPage();await remote.goto(server.base+'/remote');await remote.waitForFunction(()=>window.BilikaraKtvScanner);
+  assert.deepEqual(await remote.evaluate(()=>[...document.querySelectorAll('#ktv-image-input,#ktv-capture-input')].map(n=>n.accept)),['image/*','image/*']);
+  for(const kind of ['gif','bmp']){
+    assert.equal(await sharedDecode(remote,qrFile[kind](raw)),raw,`Remote decodes ${kind}`);
+    assert.equal(await sharedDecode(desktop,qrFile[kind](raw)),raw,`desktop Host decodes ${kind}`);
+  }
+  assert.deepEqual(errors,[]);
+  // iOS Host image import and Android Host direct file input reach the real Host with the decoded text.
+  for(const platform of ['ios','android'])for(const kind of ['gif','bmp']){
+    const {tv,page,errors}=await scanHost(t,engine,platform);await openLocalScan(page);
+    assert.equal(await page.locator('#ktv-host-image-input').getAttribute('accept'),'image/*');
+    assert.equal(await importOutcome(page,()=>page.locator('#ktv-host-image-input').setInputFiles(qrFile[kind](tv.description))),'prepare',`${platform} ${kind} import decodes`);
+    assert.deepEqual(errors,[]);
+  }
+});
+
+// The emulator recheck decoded a valid GIF chosen through the Android system picker (the earlier
+// failure was a zero-byte stale media entry), so the picker keeps image/* and the shared decoder.
+for(const engine of[chromium,webkit])test(`${engine.name()} Android Host system picker decodes GIF and BMP QR images`,{skip:process.platform!=='linux',timeout:180000},async t=>{
+  const viaPicker=async(page,act)=>{const [chooser]=await Promise.all([page.waitForEvent('filechooser'),page.locator('#ktv-host-import').click()]);
+    assert.equal(await chooser.element().getAttribute('accept'),'image/*');return act(chooser);};
+  for(const kind of ['gif','bmp']){
+    const {tv,page,errors}=await scanHost(t,engine,'android');await openLocalScan(page);
+    assert.deepEqual(await page.evaluate(()=>[...document.querySelectorAll('#ktv-host-image-input,#ktv-host-capture-input')].map(n=>n.accept)),['image/*','image/*']);
+    assert.equal(await importOutcome(page,()=>viaPicker(page,chooser=>chooser.setFiles(qrFile[kind](tv.description)))),'prepare',`picker ${kind} decodes`);
+    assert.deepEqual(errors,[]);
+  }
+  // The system picker hides the WebView; its selection after hidden -> visible still decodes.
+  const {tv,page,errors}=await scanHost(t,engine,'android');await openLocalScan(page);
+  assert.equal(await importOutcome(page,()=>viaPicker(page,async chooser=>{await setHidden(page,true);await setHidden(page,false);await chooser.setFiles(qrFile.gif(tv.description));})),'prepare','picker GIF after hidden/visible decodes');
+  assert.deepEqual(errors,[]);
 });
 
 for(const engine of[chromium,webkit])test(`${engine.name()} Desktop explicitly retrieves Remote official links and rejects late or retired handoffs`,{skip:process.platform!=='linux',timeout:90000},async t=>{
@@ -542,10 +763,10 @@ for(const engine of[chromium,webkit])test(`${engine.name()} non-loopback HTTP LA
   await page.locator('#ktv-remote-modal .remote-info-button').click();
   await page.locator('#ktv-transport-info').waitFor({state:'visible'});
   assert.match(await page.locator('#ktv-secure-fallback').innerText(),/HTTP.*未加密/);
-  await shot(page,`http-lan-help-${engine.name()}`);
+  await shot(page,`http-lan-help-${engine.name()}`,'#ktv-remote-modal');
   await page.keyboard.press('Escape');assert.equal(await page.locator('#ktv-remote-modal').isVisible(),true);
   const code=qrcode(0,'M');code.addData(roomQr(tv.base));code.make();
-  await shot(page,`scanner-http-lan-${engine.name()}`);
+  await shot(page,`scanner-http-lan-${engine.name()}`,'#ktv-remote-modal');
   assert.equal(await page.locator('#ktv-remote-title').innerText(),'投屏设备');
   assert.equal(await page.locator('#ktv-scan-view #ktv-import').getAttribute('aria-label'),'导入图片');
   assert.equal(await page.locator('#ktv-import').innerText(),'');
@@ -557,13 +778,13 @@ for(const engine of[chromium,webkit])test(`${engine.name()} non-loopback HTTP LA
   await (await choosing).setFiles({name:'private-image.svg',mimeType:'image/svg+xml',buffer:Buffer.from(code.createSvgTag({cellSize:4,margin:24,scalable:false}))});
   await page.locator('#ktv-authorization').waitFor({state:'visible'});
   assert.equal(await page.locator('#ktv-authorization-url').inputValue(),roomQr(tv.base));
-  assert.equal((await server.api('/api/purek/state')).connected,false);
+  assert.equal((await roomState(server)).connected,false);
   assert.equal((await client.request('/api/purek/prepare',{url:roomQr(tv.base)})).status,403);
   const projection=JSON.stringify(await client.api('/api/state'));
   assert.ok(!projection.includes('projection_url')&&!projection.includes('synthetic-ktv-private'));
-  await page.locator('#ktv-check').click();await waitFor(async()=>(await server.api('/api/purek/state')).connected,'LAN authorized receiver check');
+  await page.locator('#ktv-check').click();await waitFor(async()=>(await roomState(server)).connected,'LAN authorized receiver check');
   await page.waitForFunction(()=>document.querySelector('#ktv-authorization-url').value==='');
-  await shot(page,`http-lan-authorized-${engine.name()}`);
+  await shot(page,`http-lan-authorized-${engine.name()}`,'#ktv-remote-modal');
   await page.locator('#ktv-remote-close').click();
   await page.locator('#remote-menu-toggle').click();await page.locator('#ktv-menu-toggle').click();
   await page.locator('#ktv-menu-scan').waitFor({state:'hidden'});
@@ -578,7 +799,7 @@ for(const engine of[chromium,webkit])test(`${engine.name()} non-loopback HTTP LA
   await page.locator('#ktv-room-url').fill(tv.description);
   const before=tv.state.actions.filter(x=>x==='SetDeviceAuthorization').length;
   await page.locator('#ktv-submit-url').click();await page.locator('#ktv-check').waitFor({state:'visible'});
-  await page.locator('#ktv-check').click();await waitFor(async()=>(await server.api('/api/purek/state')).connected,'LAN pasted DLNA connects');
+  await page.locator('#ktv-check').click();await waitFor(async()=>(await roomState(server)).connected,'LAN pasted DLNA connects');
   assert.equal(tv.state.actions.filter(x=>x==='SetDeviceAuthorization').length,before);
   assert.ok(bodies.some(body=>body.includes('ktv.scan.submit')));
   assert.ok(bodies.every(body=>!body.includes('private-image.svg')&&!body.includes('pixels')&&!body.includes('image/svg')&&!body.includes('data:image')));

@@ -7,6 +7,7 @@ mod audio_stream_ranking;
 pub mod automatic_volume;
 mod av_delay;
 mod cache_planning;
+pub mod dlna_policy;
 mod download_candidate_planning;
 mod ffi;
 mod filename;

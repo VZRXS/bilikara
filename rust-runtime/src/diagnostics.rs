@@ -142,6 +142,43 @@ pub fn probe_connectivity_only(
     probe_connectivity(targets, timeout_ms, &normalized_usernames(local_usernames))
 }
 
+/// T7a's report is already a typed, fail-closed projection. Keep this an
+/// explicit Rust entry point until T5 owns the active trace; never accept raw
+/// frontend JSON here or create a second global cast-state authority.
+#[cfg(feature = "native-host")]
+pub(crate) fn build_diagnostic_artifact_with_cast(
+    request: &DiagnosticRequest,
+    cast: &crate::dlna::diagnostics::Report,
+) -> Result<DiagnosticResult, DiagnosticError> {
+    let mut result = build_diagnostic_artifact(request)?;
+    let mut files = result
+        .files
+        .iter()
+        .map(|(name, data)| {
+            BASE64
+                .decode(data)
+                .map(|bytes| (name.clone(), bytes))
+                .map_err(|_| DiagnosticError {
+                    kind: "cast_artifact_encoding",
+                    message: "Diagnostic encoding failed".into(),
+                })
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    files.insert("diagnostics.cast.json".into(), cast.json().into_bytes());
+    files.insert(
+        "diagnostics.cast.txt".into(),
+        cast.text().as_bytes().to_vec(),
+    );
+    result.markdown.push_str("\n## DLNA\n\n");
+    result.markdown.push_str(cast.text());
+    result.zip_base64 = BASE64.encode(build_zip(&result.markdown, &files)?);
+    result.files = files
+        .into_iter()
+        .map(|(name, bytes)| (name, BASE64.encode(bytes)))
+        .collect();
+    Ok(result)
+}
+
 fn normalized_usernames(values: &[String]) -> Vec<String> {
     let mut names: Vec<String> = values
         .iter()

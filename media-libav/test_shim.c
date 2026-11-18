@@ -226,7 +226,184 @@ static void l1_history_tests(void) {
     av_free(s->cache);av_free(s->converted);
 }
 
+/* Test-only independent demux inspection of finalized cast output. */
+typedef struct {
+    uint32_t status, streams, first_video_key, audio_rate, audio_channels;
+    int64_t duration_us;
+    uint64_t packets[2];
+    int64_t first_pts_us[2],last_end_us[2];
+    int32_t audio_profile;
+} CastCheck;
+BM_EXPORT uint32_t bm_test_cast_check_v1(const BmRequest *q,uint32_t size,CastCheck *r) {
+    if(!q || !r || size!=sizeof(*r)) return BM_INVALID_REQUEST;
+    memset(r,0,sizeof(*r));
+    CastInput in={0};
+    /* Auto-probe only for this test reader; production input stays restricted. */
+    in.call.request=q;
+    in.format=avformat_alloc_context();
+    if(!in.format) return BM_BACKEND_FAILURE;
+    in.format->opaque=&in.call;in.format->io_open=deny_open;
+    in.format->interrupt_callback=(AVIOInterruptCB){interrupted,&in.call};
+    in.format->flags|=AVFMT_FLAG_CUSTOM_IO;
+    AVDictionary *options=NULL;
+    av_dict_set_int(&options,"fd",q->fd,0);
+    int ret=avio_open2(&in.io,"fd:",AVIO_FLAG_READ,&in.format->interrupt_callback,&options);
+    av_dict_free(&options);
+    if(ret<0) goto failed;
+    in.format->pb=in.io;
+    ret=avformat_open_input(&in.format,"",NULL,NULL);
+    if(ret<0) goto failed;
+    ret=avformat_find_stream_info(in.format,NULL);
+    if(ret<0) goto failed;
+    r->streams=in.format->nb_streams;
+    if(r->streams!=2 || in.format->streams[0]->codecpar->codec_id!=AV_CODEC_ID_H264 ||
+        in.format->streams[1]->codecpar->codec_id!=AV_CODEC_ID_AAC) {r->status=BM_CONTRACT;goto done;}
+    r->duration_us=in.format->duration;
+    r->audio_rate=in.format->streams[1]->codecpar->sample_rate;
+    r->audio_channels=in.format->streams[1]->codecpar->ch_layout.nb_channels;
+    r->audio_profile=in.format->streams[1]->codecpar->profile;
+    in.packet=av_packet_alloc();
+    if(!in.packet) {r->status=BM_BACKEND_FAILURE;goto done;}
+    for(;;) {
+        ret=av_read_frame(in.format,in.packet);
+        if(ret==AVERROR_EOF) break;
+        if(ret<0) goto failed;
+        int n=in.packet->stream_index;
+        if(n<0 || n>1 || (in.packet->flags&AV_PKT_FLAG_CORRUPT)) {r->status=BM_INVALID_MEDIA;goto done;}
+        if(n==0 && !r->packets[0]) r->first_video_key=!!(in.packet->flags&AV_PKT_FLAG_KEY);
+        if(!r->packets[n]) r->first_pts_us[n]=av_rescale_q(in.packet->pts,in.format->streams[n]->time_base,AV_TIME_BASE_Q);
+        r->last_end_us[n]=av_rescale_q(in.packet->pts+in.packet->duration,in.format->streams[n]->time_base,AV_TIME_BASE_Q);
+        r->packets[n]++;av_packet_unref(in.packet);
+    }
+    goto done;
+failed:
+    r->status=error_status(ret);
+done:
+    cast_close(&in);return BM_OK;
+}
+
+/* Test-only repeated H.264 fixture: original encoded samples, three GOPs.
+ * Caller provides a test-owned output path; never used by the product. */
+static uint32_t test_cast_fixture(const BmRequest *q,const char *path,int intra) {
+    CastInput in={0};AVFormatContext *out=NULL;uint32_t status=BM_OK;int ret;
+    status=cast_open(&in,q,AVMEDIA_TYPE_VIDEO,AV_CODEC_ID_H264,"mov");
+    if(status) goto done;
+    ret=avformat_alloc_output_context2(&out,NULL,"mp4",path);
+    if(ret<0 || !out) {status=BM_BACKEND_FAILURE;goto done;}
+    AVStream *stream=avformat_new_stream(out,NULL);
+    if(!stream) {status=BM_BACKEND_FAILURE;goto done;}
+    avcodec_parameters_copy(stream->codecpar,in.config);stream->time_base=in.format->streams[0]->time_base;
+    ret=avio_open(&out->pb,path,AVIO_FLAG_WRITE);if(ret<0) goto failed;
+    ret=avformat_write_header(out,NULL);if(ret<0) goto failed;
+    for(int repeat=0;repeat<3;repeat++) {
+        ret=av_seek_frame(in.format,0,0,AVSEEK_FLAG_BACKWARD);if(ret<0) goto failed;
+        int64_t origin=AV_NOPTS_VALUE;
+        for(;;) {
+            ret=av_read_frame(in.format,in.packet);if(ret==AVERROR_EOF) break;if(ret<0) goto failed;
+            AVPacket *p=in.packet;
+            if(intra && !(p->flags&AV_PKT_FLAG_KEY)) {av_packet_unref(p);continue;}
+            if(intra) {p->dts=p->pts;p->duration=av_rescale_q(1001000,AV_TIME_BASE_Q,in.format->streams[0]->time_base);}
+            if(origin==AV_NOPTS_VALUE) origin=p->pts;
+            p->pts-=origin;p->dts-=origin;
+            av_packet_rescale_ts(p,in.format->streams[0]->time_base,stream->time_base);
+            int64_t offset=av_rescale_q((int64_t)repeat*1001000,AV_TIME_BASE_Q,stream->time_base);
+            p->pts+=offset;p->dts+=offset;p->pos=-1;
+            ret=av_write_frame(out,p);av_packet_unref(p);if(ret<0) goto failed;
+        }
+    }
+    ret=av_write_trailer(out);if(ret<0) goto failed;goto done;
+failed: status=error_status(ret);
+done:
+    if(out) {if(out->pb) avio_closep(&out->pb);avformat_free_context(out);}
+    cast_close(&in);return status;
+}
+
+BM_EXPORT uint32_t bm_test_cast_fixture_v1(const BmRequest *q,const char *path) { return test_cast_fixture(q,path,0); }
+BM_EXPORT uint32_t bm_test_cast_intra_fixture_v1(const BmRequest *q,const char *path) { return test_cast_fixture(q,path,1); }
+
+/* Fault injection after genuine demux setup: IO must survive the audio
+ * decode/resample/encode hook, not be collapsed into INVALIDDATA. */
+BM_EXPORT uint32_t bm_test_cast_audio_io_v1(const BmRequest *q) {
+    CastInput in={0};uint32_t transcoded=0;
+    uint32_t status=cast_audio_open(&in,q,0,&transcoded);
+    if(!status) {
+        inject_after=reads+1;inject_error=AVERROR(EIO);
+        int ret;
+        do {ret=cast_read(&in);} while(ret>0);
+        inject_after=0;inject_error=0;
+        status=ret<0?error_status(ret):BM_OK;
+    }
+    cast_close(&in);return status;
+}
+
+/* Native test fixture encoder, independent of the cast resampling/EOF path.
+ * kind 0: 96k FLAC; 1: 5.1 AAC-LC; 2: 32k stereo AAC-LC. */
+BM_EXPORT uint32_t bm_test_cast_audio_v1(const char *path,uint32_t kind,uint32_t seconds) {
+    if(kind>2 || !seconds || seconds>60) return BM_INVALID_REQUEST;
+    AVCodecContext *e=NULL;AVFormatContext *out=NULL;AVFrame *f=NULL;AVPacket *p=NULL;
+    int ret=AVERROR(ENOMEM);
+    const AVCodec *codec=avcodec_find_encoder(kind?AV_CODEC_ID_AAC:AV_CODEC_ID_FLAC);
+    e=avcodec_alloc_context3(codec);f=av_frame_alloc();p=av_packet_alloc();
+    if(!e||!f||!p) goto done;
+    e->sample_rate=kind==2?32000:kind?48000:96000;e->sample_fmt=kind?AV_SAMPLE_FMT_FLTP:AV_SAMPLE_FMT_S16;
+    e->ch_layout=kind==1?(AVChannelLayout)AV_CHANNEL_LAYOUT_5POINT1:(AVChannelLayout)AV_CHANNEL_LAYOUT_STEREO;
+    e->time_base=(AVRational){1,e->sample_rate};e->flags|=AV_CODEC_FLAG_GLOBAL_HEADER;
+    e->bit_rate=384000;e->profile=AV_PROFILE_AAC_LOW;
+    ret=avcodec_open2(e,codec,NULL);if(ret<0) goto done;
+    ret=avformat_alloc_output_context2(&out,NULL,kind?"mp4":"flac",path);if(ret<0||!out) goto done;
+    AVStream *stream=avformat_new_stream(out,NULL);if(!stream) {ret=AVERROR(ENOMEM);goto done;}
+    ret=avcodec_parameters_from_context(stream->codecpar,e);if(ret<0) goto done;
+    stream->time_base=e->time_base;
+    ret=avio_open(&out->pb,path,AVIO_FLAG_WRITE);if(ret<0) goto done;
+    ret=avformat_write_header(out,NULL);if(ret<0) goto done;
+    f->format=e->sample_fmt;f->sample_rate=e->sample_rate;f->nb_samples=e->frame_size;
+    ret=av_channel_layout_copy(&f->ch_layout,&e->ch_layout);if(ret<0) goto done;
+    ret=av_frame_get_buffer(f,0);if(ret<0) goto done;
+    int64_t total=(int64_t)seconds*e->sample_rate;
+    for(int64_t pos=0;;) {
+        if(pos<total) {
+            ret=av_frame_make_writable(f);if(ret<0) goto done;
+            f->nb_samples=(int)FFMIN(e->frame_size,total-pos);f->pts=pos;
+            for(int n=0;n<f->nb_samples;n++) for(int ch=0;ch<e->ch_layout.nb_channels;ch++) {
+                double value=0.125*sin(2*3.141592653589793*440*(pos+n)/e->sample_rate);
+                if(kind) ((float *)f->data[ch])[n]=(float)value;
+                else ((int16_t *)f->data[0])[n*e->ch_layout.nb_channels+ch]=(int16_t)(value*32767);
+            }
+            pos+=f->nb_samples;ret=avcodec_send_frame(e,f);
+        } else ret=avcodec_send_frame(e,NULL);
+        if(ret<0) goto done;
+        for(;;) {
+            ret=avcodec_receive_packet(e,p);
+            if(ret==AVERROR(EAGAIN)||ret==AVERROR_EOF) break;
+            if(ret<0) goto done;
+            av_packet_rescale_ts(p,e->time_base,stream->time_base);p->stream_index=0;
+            ret=av_write_frame(out,p);av_packet_unref(p);if(ret<0) goto done;
+        }
+        if(ret==AVERROR_EOF) break;
+    }
+    ret=av_write_trailer(out);
+done:
+    if(out) {if(out->pb) avio_closep(&out->pb);avformat_free_context(out);}
+    avcodec_free_context(&e);av_frame_free(&f);av_packet_free(&p);
+    return ret<0?error_status(ret):BM_OK;
+}
+
 int main(void) {
+    AVCodecParameters aac={0};
+    aac.codec_id=AV_CODEC_ID_AAC;aac.profile=AV_PROFILE_AAC_LOW;
+    aac.sample_rate=48000;aac.ch_layout=(AVChannelLayout)AV_CHANNEL_LAYOUT_STEREO;
+    assert(cast_aac_copy_supported(&aac));
+    aac.profile=AV_PROFILE_AAC_HE;assert(!cast_aac_copy_supported(&aac));
+    aac.profile=AV_PROFILE_AAC_HE_V2;assert(!cast_aac_copy_supported(&aac));
+    aac.profile=AV_PROFILE_AAC_MAIN;assert(!cast_aac_copy_supported(&aac));
+    aac.profile=AV_PROFILE_UNKNOWN;assert(!cast_aac_copy_supported(&aac));
+    aac.profile=AV_PROFILE_AAC_LOW;aac.ch_layout.nb_channels=6;assert(!cast_aac_copy_supported(&aac));
+    aac.ch_layout.nb_channels=2;aac.sample_rate=32000;assert(!cast_aac_copy_supported(&aac));
+    BmCastInfo cast_info;
+    assert(bm_cast_info_v1(sizeof(cast_info),&cast_info)==BM_OK);
+    assert(bm_cast_info_v1(sizeof(cast_info)-1,&cast_info)==BM_UNAVAILABLE);
+    assert(cast_info.schema==2 && cast_info.request_size==sizeof(BmCastRequest) && cast_info.result_size==sizeof(BmCastResult));
+
     assert(flac_time_matches(95856, (AVRational){1, 96000}, 96000, 96000));
     assert(flac_time_matches(95712, (AVRational){1, 96000}, 96000, 96000));
     /* Both sides of the inclusive 200 ms boundary, in microseconds. */

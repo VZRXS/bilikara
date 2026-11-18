@@ -8,15 +8,63 @@ const source=readFileSync(new URL('../static/ktv-scanner.js',import.meta.url),'u
 function pixels(text,scale=5){const code=qr(0,'M');code.addData(text);code.make();const n=code.getModuleCount(),width=(n+8)*scale,data=new Uint8ClampedArray(width*width*4).fill(255);for(let y=0;y<n;y++)for(let x=0;x<n;x++)if(code.isDark(y,x))for(let dy=0;dy<scale;dy++)for(let dx=0;dx<scale;dx++){const p=(((y+4)*scale+dy)*width+(x+4)*scale+dx)*4;data[p]=data[p+1]=data[p+2]=0;}return{width,height:width,data};}
 function canvas(image){return{width:image.width,height:image.height,getContext:()=>({getImageData:()=>({...image,data:new Uint8ClampedArray(image.data)})})};}
 function environment({dataset={},userAgent='',BarcodeDetector,image=null}={}){
- const timers=new Set(),urls=new Set();let cameraResolve;
- const video={hidden:true,srcObject:null,pause(){},async play(){}},context={jsQR,BarcodeDetector,isSecureContext:true,navigator:{userAgent,mediaDevices:{getUserMedia:()=>new Promise(resolve=>{cameraResolve=resolve;})}},
+ const timers=new Set(),urls=new Set();let cameraResolve,cameraReject;
+ const video={hidden:true,srcObject:null,pause(){},async play(){}},context={jsQR,BarcodeDetector,isSecureContext:true,navigator:{userAgent,mediaDevices:{getUserMedia:()=>new Promise((resolve,reject)=>{cameraResolve=resolve;cameraReject=reject;})}},
   document:{documentElement:{dataset},createElement:()=>image?{...canvas(image),getContext:()=>({fillRect(){},drawImage(){},getImageData:()=>({...image,data:new Uint8ClampedArray(image.data)})})}:{}},performance,requestAnimationFrame:()=>1,cancelAnimationFrame(){},
   URL:class extends URL{static createObjectURL(){urls.add('blob:owned');return'blob:owned';}static revokeObjectURL(url){urls.delete(url);}},
   Image:class{constructor(){this.naturalWidth=image?.width;this.naturalHeight=image?.height;}set src(value){this.value=value;if(value&&image)queueMicrotask(()=>this.onload?.());}},
   setTimeout(fn,ms){const id=setTimeout(fn,ms);timers.add(id);return id;},clearTimeout(id){timers.delete(id);clearTimeout(id);}};
  context.window=context;vm.runInNewContext(source,context);
- return{context,video,timers,urls,cameraResolve:value=>cameraResolve(value),scanner:context.BilikaraKtvScanner};
+ return{context,video,timers,urls,cameraResolve:value=>cameraResolve(value),cameraReject:error=>cameraReject(error),scanner:context.BilikaraKtvScanner};
 }
+
+test('Android Host permission hidden/visible preserves the pending request and starts its first preview',async()=>{
+ const e=environment({dataset:{nativeHost:'true',hostPlatform:'android'}});
+ let stopped=0;const stream={getTracks:()=>[{stop(){stopped++;}}]};
+ const scanner=e.scanner.create({video:e.video,onDecode(){},onError:error=>assert.fail(error)});
+ const opening=scanner.camera();e.context.document.hidden=true;
+ assert.equal(scanner.waitingForAndroidPermission(),true);
+ assert.equal(e.video.srcObject,null,'no camera is held while permission is pending');
+ e.context.document.hidden=false;e.cameraResolve(stream);await opening;
+ assert.equal(e.video.srcObject,stream);assert.equal(e.video.hidden,false);assert.equal(stopped,0);
+ assert.equal(scanner.waitingForAndroidPermission(),false);assert.equal(e.timers.size,0);
+ e.context.document.hidden=true;scanner.stop();
+ assert.equal(stopped,1);assert.equal(e.video.srcObject,null);assert.equal(e.video.hidden,true);
+});
+
+test('Android Host permission rejection after hidden still reaches the original permission error owner',async()=>{
+ const e=environment({dataset:{nativeHost:'true',hostPlatform:'android'}}),errors=[];
+ const scanner=e.scanner.create({video:e.video,onDecode(){},onError:error=>assert.fail(error)});
+ const opening=scanner.camera().catch(error=>errors.push(error.code));e.context.document.hidden=true;
+ assert.equal(scanner.waitingForAndroidPermission(),true);
+ e.cameraReject(new DOMException('Denied','NotAllowedError'));await opening;e.context.document.hidden=false;
+ assert.deepEqual(errors,['camera_permission']);assert.equal(scanner.waitingForAndroidPermission(),false);
+ assert.equal(e.video.srcObject,null);assert.equal(e.timers.size,0);
+});
+
+test('permission result while still backgrounded releases tracks without starting preview or auto-reopening',async()=>{
+ const e=environment({dataset:{nativeHost:'true',hostPlatform:'android'}});let stopped=0,played=0;
+ e.video.play=async()=>{played++;};
+ const scanner=e.scanner.create({video:e.video,onDecode(){},onError:error=>assert.fail(error)});
+ const opening=scanner.camera();e.context.document.hidden=true;
+ assert.equal(scanner.waitingForAndroidPermission(),true);
+ e.cameraResolve({getTracks:()=>[{stop(){stopped++;}}]});await opening;
+ assert.equal(stopped,1);assert.equal(played,0);assert.equal(e.video.srcObject,null);assert.equal(e.video.hidden,true);
+ e.context.document.hidden=false;assert.equal(e.video.srcObject,null);assert.equal(e.timers.size,0);
+});
+
+test('permission visibility exemption is restricted to Android Host; page retirement still cancels it',async()=>{
+ for(const dataset of [{},{nativeHost:'true',hostPlatform:'ios'},{nativeHost:'true',hostPlatform:'desktop'}]){
+   const e=environment({dataset}),scanner=e.scanner.create({video:e.video,onDecode(){},onError(){}});
+   const opening=scanner.camera();assert.equal(scanner.waitingForAndroidPermission(),false);scanner.stop();await opening;
+   let stopped=0;e.cameraResolve({getTracks:()=>[{stop(){stopped++;}}]});await new Promise(resolve=>setImmediate(resolve));assert.equal(stopped,1);
+ }
+ const host=readFileSync(new URL('../static/purek-room.js',import.meta.url),'utf8');
+ const remote=readFileSync(new URL('../static/ktv-remote.js',import.meta.url),'utf8');
+ assert.match(host,/if\(document.hidden&&!scanner.waitingForAndroidPermission\(\)\)stopScan\(\)/);
+ assert.match(host,/window.addEventListener\("pagehide",\(\)=>\{localLife\+\+;scanner.stop\(\)/);
+ assert.match(remote,/if\(document.hidden\)scanner.stop\(\)/,'Remote retains its existing lifecycle');
+});
 test('the real bundled fallback reads QR pixels, rejects blank/multiple codes and tolerates unavailable native detection',async()=>{
  const e=environment(),text='https://wx.chunk.cn/projection/login?place_code=synthetic';
  assert.equal(await e.scanner.decode(canvas(pixels(text))),text);
@@ -66,6 +114,54 @@ test('insecure camera has an explicit photo fallback and canceling image input r
  const e=environment(),scanner=e.scanner.create({video:e.video,onDecode(){assert.fail('no retired decode');},onError(){}});
  e.context.isSecureContext=false;await assert.rejects(scanner.camera(),error=>error.code==='camera_secure');assert.equal(e.timers.size,0);
  const loading=scanner.file({size:100,type:'image/png'});assert.equal(e.urls.size,1);scanner.stop();await assert.rejects(loading,error=>error.name==='AbortError');assert.equal(e.urls.size,0);
+});
+
+test('Android camera denial retains the permission hint and the same surface can import a QR image',async()=>{
+ const text='http://192.168.1.8/description.xml',e=environment({dataset:{nativeHost:'true',hostPlatform:'android'},image:pixels(text)});
+ const elements=new Map(),decoded=[];let loading,markup='',constraints;
+ const node=()=>({value:'',files:[],disabled:false,clicks:0,listeners:{},attributes:{},
+   setAttribute(key,value){this.attributes[key]=value;},addEventListener(key,fn){this.listeners[key]=fn;},
+   click(){this.clicks++;if(!this.disabled)this.listeners.click?.();}});
+ for(const key of ['.ktv-scan-gallery','.ktv-scan-capture','#denied-image-input','#denied-capture-input'])elements.set(key,node());
+ elements.set('video',e.video);
+ const root={classList:{add(){}},set innerHTML(value){markup=value;},querySelector:key=>elements.get(key)};
+ e.context.document.addEventListener=()=>{};
+ e.context.navigator.mediaDevices.getUserMedia=async value=>{constraints=value;throw new DOMException('Permission denied','NotAllowedError');};
+ const surface=e.scanner.surface({root,prefix:'denied',translate:key=>key,onDecode:raw=>decoded.push(raw),
+   onError:error=>assert.fail(error),onCamera(){},onFile:file=>{loading=surface.file(file);}});
+ await assert.rejects(surface.open(),error=>error.code==='camera_permission');
+ assert.equal(constraints.audio,false);assert.equal(constraints.video.facingMode.ideal,'environment');
+ assert.equal(e.timers.size,0);assert.equal(e.video.srcObject,null);assert.equal(e.video.hidden,true);
+ const {languages}=JSON.parse(readFileSync(new URL('../static/i18n.json',import.meta.url),'utf8'));
+ for(const [lang,hint]of [['zh','无法打开相机，请检查权限或改用图片。'],['en','Camera could not open; check permission or import an image.'],['ja','カメラを開けません。権限を確認するか画像を選択してください。']]){
+   assert.equal(languages[lang]['ktv.error.camera_permission'],hint,'existing permission guidance still offers image import');
+ }
+ assert.match(markup,/type="file" accept="image\/\*" capture="environment"/,'system capture/photo picker remains available');
+ assert.equal(surface.gallery.disabled,false);surface.gallery.click();
+ assert.equal(surface.imageInput.clicks,1,'denial does not disable the gallery picker');
+ surface.imageInput.files=[{size:100,type:'image/png'}];surface.imageInput.listeners.change();await loading;
+ assert.deepEqual(decoded,[text]);assert.equal(e.urls.size,0);assert.equal(e.timers.size,0);
+});
+
+test('Android system picker retains image/* and imports a valid GIF QR through the existing decoder',async()=>{
+ const text='http://192.168.1.8/description.xml',e=environment({dataset:{nativeHost:'true',hostPlatform:'android'},image:pixels(text)});
+ const code=qr(0,'M');code.addData(text);code.make();
+ const bytes=Buffer.from(code.createDataURL().split(',')[1],'base64');assert.equal(bytes.subarray(0,6).toString(),'GIF87a');
+ const file=new File([bytes],'qr.gif',{type:'image/gif'});assert.ok(file.size>0);
+ // Node supplies Image/canvas pixels; actual GIF container decoding and the
+ // Android picker were verified by the emulator. This guards the UI/file path.
+ const elements=new Map(),decoded=[];let markup='',loading;
+ const node=()=>({value:'',files:[],listeners:{},clicks:0,setAttribute(){},addEventListener(key,fn){this.listeners[key]=fn;},click(){this.clicks++;this.listeners.click?.();}});
+ for(const key of ['.ktv-scan-gallery','.ktv-scan-capture','#gif-image-input','#gif-capture-input'])elements.set(key,node());
+ elements.set('video',e.video);e.context.document.addEventListener=()=>{};
+ const root={classList:{add(){}},set innerHTML(value){markup=value;},querySelector:key=>elements.get(key)};
+ const surface=e.scanner.surface({root,prefix:'gif',translate:key=>key,onCamera(){},onDecode:raw=>decoded.push(raw),onError:error=>assert.fail(error),
+   onFile:selected=>{assert.equal(selected,file);loading=surface.file(selected);}});
+ assert.equal((markup.match(/accept="image\/\*"/g)||[]).length,2,'gallery and capture keep all browser-supported image formats');
+ surface.gallery.click();assert.equal(surface.imageInput.clicks,1);
+ e.context.document.hidden=true;surface.stop();e.context.document.hidden=false;
+ surface.imageInput.files=[file];surface.imageInput.listeners.change();await loading;
+ assert.deepEqual(decoded,[text]);assert.equal(e.urls.size,0);assert.equal(e.timers.size,0);
 });
 
 test('the full visible frame is decoded, including a QR at each edge without a reticle crop',async()=>{

@@ -35,6 +35,7 @@ mod tests;
 
 #[derive(Default)]
 pub(crate) struct NativeSession {
+    pub cast: crate::native_host::cast_session::State,
     pub desktop: bool,
     sse_frames: [Option<(u64, std::sync::Arc<str>)>; 2],
     pub bbdown_available: bool,
@@ -65,7 +66,7 @@ pub(crate) struct NativeSession {
     pub startup_warning: String,
     pub updates: crate::native_host::updates::UpdateState,
     pub announcements: crate::announcements::State,
-    pub purek: crate::native_host::purek::RoomState,
+    pub local_output: crate::native_host::native_output::LocalOutput,
     pub ktv: crate::native_host::purek::assistance::Assistance,
     pub host_token: String,
     pub state_epoch: String,
@@ -86,6 +87,13 @@ pub(crate) struct NativeSession {
     remote_connection_diagnostics: VecDeque<Value>,
     login_diagnostics: VecDeque<crate::native_host::LoginDiagnostic>,
     library_diagnostics: VecDeque<crate::native_host::LibraryDiagnostic>,
+}
+
+/// Bounded worker input: never clone queue history on the polling hot path.
+pub(crate) struct NativeCastInput {
+    pub current_item: Option<PlaylistItem>,
+    pub next_item: Option<PlaylistItem>,
+    pub playback_generation: u64,
 }
 
 impl std::fmt::Debug for NativeSession {
@@ -693,6 +701,18 @@ impl AppState {
         result
     }
 
+    pub(crate) fn native_cast_input(&self) -> Result<NativeCastInput, ApiError> {
+        let data = self
+            .data
+            .as_ref()
+            .ok_or_else(|| ApiError::new(503, "state_unavailable", "Host is not initialized"))?;
+        Ok(NativeCastInput {
+            current_item: data.current_item.clone(),
+            next_item: data.playlist.first().cloned(),
+            playback_generation: data.playback_generation,
+        })
+    }
+
     pub(crate) fn native_execute(
         &mut self,
         mut command: AppStateRequest,
@@ -844,25 +864,48 @@ impl AppState {
             })
             .cloned()
             .unwrap_or(Value::Null);
-        value["media_output"] = session.purek.controller.projection(&session.purek, host);
-        if session.purek.controller.owns_playback {
+        value["media_output"] = session
+            .local_output
+            .controller
+            .projection(&session.local_output, host);
+        if session.local_output.controller.owns_playback {
             value["player_status"] = snapshot
                 .current_item
                 .as_ref()
                 .map(|i| {
-                    session.purek.controller.observation(
+                    session.local_output.controller.observation(
                         &i.id,
                         snapshot.playback_generation,
-                        &session.purek,
+                        &session.local_output,
                     )
                 })
                 .unwrap_or(Value::Null);
         }
-        value["player_control_command"] = if host && !session.purek.controller.owns_playback {
+        value["player_control_command"] = if host
+            && !session.cast.owns_playback
+            && !session.local_output.controller.owns_playback
+        {
             self.player_control_head().unwrap_or(Value::Null)
         } else {
             Value::Null
         };
+        if host && (session.cast.visible() || !self.cast_preferences()?.is_empty()) {
+            value["cast"] = session.cast.snapshot(self.cast_preferences()?);
+        }
+        if !session.local_output.controller.owns_playback {
+            value["media_output"] = session.cast.output_projection(host);
+        }
+        if session.cast.owns_playback {
+            value["player_status"] = snapshot
+                .current_item
+                .as_ref()
+                .map(|i| {
+                    session
+                        .cast
+                        .observation(&i.id, snapshot.playback_generation)
+                })
+                .unwrap_or(Value::Null);
+        }
         value["capabilities"] = json!({"native_android_alpha":!session.desktop,"native_android_beta":!session.desktop,"desktop_preview":session.desktop,"backend":"rust","platform":if session.desktop {"desktop"} else {"android"},"native_host":true,"event_heartbeat":true,"local_remote":true,"internet_remote":true,"gatcha":true,"shared_search":true,"desktop_tools":false,"playlist_export":session.remote_export_ready,"app_update":true,"announcements":host,"song_rating":true,"catalog_write":true,"maintenance":true});
         value["app"] = json!({"version":session.updates.version_label().unwrap_or_else(|| "0.8.0-preview.0".to_owned()),
             "releases_url":"https://github.com/VZRXS/bilikara/releases"});
@@ -954,7 +997,7 @@ impl AppState {
             value["ktv_assistance"] = crate::native_host::purek::assistance::host_snapshot(session);
         }
         value["ktv_room"] =
-            crate::native_host::purek::assistance::room_status(&session.purek, &session.ktv);
+            crate::native_host::purek::assistance::room_status(&session.cast, &session.ktv);
         value["bbdown"] = json!({"available":session.cache_policy.available_with(session.desktop && session.bbdown_available, session.desktop && session.aria2_available),"download_source":session.cache_policy.download_source,"ready":session.cache_policy.available_with(session.desktop && session.bbdown_available, session.desktop && session.aria2_available),"state":if session.cache_policy.available_with(session.desktop && session.bbdown_available, session.desktop && session.aria2_available) {"ready"} else {"unavailable"},"version":if session.cache_policy.download_source == "bbdown" {"BBDown"} else if session.cache_policy.download_source == "downkyi" {"DownKyi/aria2c"} else {"Rust Native"},"max_cache_items":session.cache_policy.max_cache_items,"message":if !session.cache_policy.available_with(session.desktop && session.bbdown_available, session.desktop && session.aria2_available) {"Imported downloader/preferences unavailable; select supported Native settings explicitly"} else if session.desktop {"Desktop Rust preview"} else {"Android Alpha"}});
         if value["cache_policy"]["enabled"] == false {
             value["bbdown"]["ready"] = json!(false);
@@ -1045,7 +1088,9 @@ impl AppState {
             }
             return Ok(json!({"released":released}));
         }
-        if self.native_session.purek.controller.owns_playback {
+        if self.native_session.cast.owns_playback
+            || self.native_session.local_output.controller.owns_playback
+        {
             return Ok(json!({"claimed":false}));
         }
         let snapshot = self.native_core_snapshot()?;
@@ -1085,7 +1130,9 @@ impl AppState {
     ) -> Result<Value, ApiError> {
         self.native_authorize(identity, true)?;
         let generation = positive(body, "playback_generation")?;
-        if self.native_session.purek.controller.owns_playback {
+        if self.native_session.cast.owns_playback
+            || self.native_session.local_output.controller.owns_playback
+        {
             return Err(ApiError::new(
                 409,
                 "network_output_active",
@@ -1094,6 +1141,7 @@ impl AppState {
         }
         let sequence = positive(body, "status_sequence")?;
         let item_id = text(body, "item_id")?;
+        let reported_item = item_id.clone();
         let current_time = number(body, "current_time")?;
         let duration = if body.get("duration").is_none_or(Value::is_null) {
             0.0
@@ -1119,6 +1167,12 @@ impl AppState {
         let paused = body["is_paused"]
             .as_bool()
             .ok_or_else(|| ApiError::invalid("缺少暂停状态"))?;
+        // Optional logical intent; is_paused stays the media observation.
+        let play_intent = match body.get("play_intent") {
+            None | Some(Value::Null) => None,
+            Some(Value::Bool(intent)) => Some(*intent),
+            Some(_) => return Err(ApiError::invalid("无效的播放意图")),
+        };
         if paused == (phase == "playing") {
             return Err(ApiError::invalid("播放状态不一致"));
         }
@@ -1155,8 +1209,64 @@ impl AppState {
             now,
         })?;
         self.native_session.observation = Some(observation);
+        // Once the handback commands have drained, a report that carries the
+        // Host's logical intent ends the handback's authority: intent already
+        // separates a transient split-player hold from a real user pause, so a
+        // user pause right after the handback must win (P10-stab review F1).
+        // Clients without play_intent only report the media observation; for
+        // them a report must agree with the handback, since an observed pause
+        // can still be that hold or the handback's own seek.
+        let drained = self.player_control_head().is_none();
+        let cast = &mut self.native_session.cast;
+        cast.local_play_intent = play_intent.map(|playing| (generation, reported_item, playing));
+        if cast.resume_status_pending
+            && drained
+            && (play_intent.is_some()
+                || cast
+                    .published_resume
+                    .as_ref()
+                    .is_none_or(|resume| resume["is_paused"].as_bool() == Some(paused)))
+        {
+            cast.resume_status_pending = false;
+        }
         self.native_session.revision += 1;
         Ok(json!({"accepted":true,"duplicate":false}))
+    }
+
+    pub(crate) fn native_cast_observation(
+        &mut self,
+        operation: u64,
+        generation: u64,
+    ) -> Result<(), ApiError> {
+        let snapshot = self.native_core_snapshot()?;
+        if self.native_session.cast.operation != operation
+            || generation != snapshot.playback_generation
+        {
+            return Err(ApiError::new(409, "stale_player", "Playback changed"));
+        }
+        let item = snapshot
+            .current_item
+            .ok_or_else(|| ApiError::new(409, "cast_no_media", "No current song"))?;
+        let state = &self.native_session.cast;
+        let (position, duration, paused) = (state.position, state.duration, state.paused);
+        self.native_session.cast.worker_mutation = true;
+        let result = self.native_execute(AppStateRequest::ApplyPlayerStatusObservation {
+            schema_version: 1,
+            expected_playback_generation: generation,
+            item_id: item.id.clone(),
+            is_paused: paused,
+            current_time: position,
+            duration,
+            now: crate::native_host::now(),
+        });
+        self.native_session.cast.worker_mutation = false;
+        result?;
+        self.native_session.cast.observation_sequence += 1;
+        self.native_session.observation = Some(
+            json!({"item_id":item.id,"playback_generation":generation,"observed_phase":if paused {"paused"} else {"playing"},"is_paused":paused,"current_time":position,"duration":duration}),
+        );
+        self.native_session.revision += 1;
+        Ok(())
     }
 
     pub(crate) fn native_control(
@@ -1179,6 +1289,9 @@ impl AppState {
         } else {
             None
         };
+        if self.native_session.cast.owns_playback {
+            return crate::native_host::cast_session::enqueue(self, body);
+        }
         self.native_execute(AppStateRequest::IssuePlayerControl {
             schema_version: 1,
             control: PlayerControlInput {
@@ -1199,7 +1312,9 @@ impl AppState {
 
     pub(crate) fn native_ack(&mut self, identity: &Identity, body: &Value) -> Result<(), ApiError> {
         self.native_authorize(identity, true)?;
-        if self.native_session.purek.controller.owns_playback {
+        if self.native_session.cast.owns_playback
+            || self.native_session.local_output.controller.owns_playback
+        {
             return Err(ApiError::new(
                 409,
                 "network_output_active",
@@ -1242,6 +1357,12 @@ impl AppState {
             "elapsed_seconds",
             "processing_ratio",
             "reused",
+            "companion_metadata",
+            "companion_packet_scan",
+            "companion_remux",
+            "companion_loudness",
+            "companion_cast",
+            "companion_l1",
         ];
         let mut safe = json!({"at":now});
         for key in fields {
@@ -1346,7 +1467,9 @@ impl AppState {
             "bilibili_login":self.native_session.login_diagnostics,
             "library_refresh":self.native_session.library_diagnostics,
             "ratings":self.native_session.ratings.events,
-            "purek":self.native_session.purek.diagnostics(),
+            "purek":self.native_session.cast.diagnostics(),
+            "cast":self.native_session.cast.trace.as_ref().map(|t|t.report().diagnostics()["cast"].clone()),
+            "cast_self_test":self.native_session.cast.self_test.trace.as_ref().map(|t|t.report().diagnostics()["cast_self_test"].clone()),
             "gatcha_task":self.native_session.login.gacha_snapshot()})
     }
 

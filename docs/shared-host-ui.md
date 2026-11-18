@@ -87,10 +87,20 @@ playback is observed; it shares a feedback slot with seek and play/pause.
 Desktop workspace and scroll ownership remain explicit:
 
 Sources and Session Users keep the same 8px list-to-tool spacing; desktop also
-shares their platform panel inset. Android Source pagination uses Remote's
-44px track and 4px bottom inset, in one native footer frame below the tools.
-The tools' reserved trash slot and the frame's 4px gap supply 8px between visible
-controls. Session-user name actions retain horizontal ellipsis and a 20px
+shares their platform panel inset. Every Host/Remote result pager uses one
+52px outer slot: 44px controls with 4px above and below. Host keeps that slot
+outside list scrolling at the same bottom anchor; Remote keeps document flow.
+Arrow targets are separate 44px squares. Below a 375px viewport, previous/next
+and numeric entry remain visible; numeric entry and Home/End reach boundaries.
+Source tools retain their approved 52px trash slot and 1.15 drag enlargement.
+There is no extra gap between tools and pager: the trash slot's 4px lower inset
+and the pager's 4px upper inset preserve 8px between visible controls. The two
+slots occupy 104px together. Hiding tools collapses their slot without moving
+the pager's bottom edge. A source page filled by the pager's content remains
+within that pager's gesture ownership; change source tabs by tapping (N1).
+Only the result viewport supports swipe paging. Dragging the footer or its
+arrows does not turn pages or switch sub-tabs; short arrow presses turn pages.
+Session-user name actions retain horizontal ellipsis and a 20px
 line with vertical paint room, so descenders such as `g` fit without increasing
 the badge's height.
 
@@ -129,10 +139,68 @@ The favorite chooser presents its folder count beside the section heading using
 the shared small count style. Its single body/footer gap equals the outer inset.
 UP/favorites details hide the outer source-add row and retain their own search.
 Returning restores the same add-input nodes and their unsubmitted drafts.
+The UID field and add/fetch/manual-refresh actions stay on one shared row.
+`request-tabs.css` reserves a 128px input minimum for English Remote; its narrow
+button treatment uses intrinsic text widths, compact inline padding and natural
+word wrapping. Action tracks reserve their longest word as well as the ordinary
+44px button minimum, including busy labels. Remote UID addition uses the existing
+`search.adding` translation; the generic `gatcha.adding` label keeps its other uses.
+At 360px, labels may occupy two 18px lines at 16px within the same
+44px control, without stacking actions or clipping text. At 393px and wider,
+labels remain single-line; Chinese and Japanese keep their existing single-line
+treatment. Rendered input width, line count and text bounds require browser checks.
 Android and iOS source lists share horizontal pagination and selection tools.
 Their browse pages measure the available viewport and fit complete card rows;
 desktop retains its existing workspace layout. Background source metadata that
 does not change visible card content must retain the card's image nodes.
+Search results fill the panel's remaining height after visible query/status
+content; empty status nodes leave neither a track nor a gap. Native name/artist
+contextual navigation stays above its result frame in portrait, landscape and
+two-column tablet layouts, including when a session-user notice is visible.
+The complete contextual bar, including its search toggle, shares the outer
+query/source-form axis. RequestTopSlot spacing is owned by `request-tabs.css`:
+`--request-top-content-gap` is 12px from the bar's bottom to the first card,
+including the grid's 2px `--request-content-paint-inset`. Search, discovery,
+source lists and source details use this same contract on Host and Remote;
+only visible status/notice content adds an intermediate row. Sources add any
+extra top spacing at the TopSlot, retaining the independent 8px list-to-tools
+gap. Header hover paint room extends outside the measured TopSlot/content gap
+without shifting the header.
+Category cover strips preserve their Preview 2 geometry and scroll cues: Host
+74px covers (64px at widths up to 760px), Remote 64px, with their existing
+padding and scrollbar behavior. Their content-role height is an explicit
+exception to ordinary TopSlot height equality; their lower-edge-to-first-card
+gap remains 12px. Only the existing phone text-button strip uses the ordinary
+44px control track. Do not shrink covers or hide desktop horizontal scrollbars
+to make the entire strip match an ordinary query row.
+Desktop name/artist browsing keeps its persistent alphabet filter as separate
+navigation above the contextual TopSlot. Its multi-row height is excluded from
+TopSlot equal-height and cross-page y comparisons, without hiding or collapsing
+the filter. The alphabet-to-TopSlot sequence remains in normal flow, and the
+following TopSlot's lower edge to the first card still measures the shared 12px
+gap. This exception does not apply to native/Remote contextual levels.
+Song results and large category covers default to `--request-song-grid-gap: 8px`;
+UP/favorites and name/artist entry grids default to `--request-compact-grid-gap: 10px`.
+`ui-surfaces.css` owns both tokens and all scoped values; Host and Remote sheets
+only consume them. Native Android/iOS Hosts, including tablets, portrait Host
+and Remote retain 8px song gaps and 10px compact gaps at every width.
+Desktop Host preserves Preview 2 spacing with token overrides: song grids use
+10px; category covers use 16px, or 12px at widths up to 760px; 220px tag grids
+use 12px, while the workspace's 104px compact entries retain 10px. Desktop here
+means non-portrait, non-Remote Host whose `data-host-platform` is neither
+`android` nor `ios`; an unmarked Web Host counts as desktop. Platform markers
+select this exception, not viewport width. The category breakpoint only retains
+the existing desktop spacing response; grid columns and the 200px default
+admission are unchanged.
+Host song grids retain a 200px minimum by default. In a workspace already
+admitted as `data-host-columns="two"`, CSS may yield toward 178px only when
+the actual grid width can hold two cards plus the shared SongGrid gap. Wider
+tracks retain 200px, while insufficient width keeps one column. This follows
+measured stage/workspace admission, never a device name or 1180px threshold.
+Equal-width song cards use nonshrinking 16:9 covers and the existing two-line
+title box. `ui-surfaces.css` reserves a 16px metadata row whether or not an
+owner is present, keeping complete card heights equal without truncating more
+title text or changing the existing title-overflow behavior.
 Category pagination uses the server's exact matched count when supplied; when
 the provider omits it, keep navigation available without displaying a guessed
 total. Phone category switches use ordinary 44px controls and 16px text, with
@@ -228,9 +296,48 @@ suppresses selection; inputs, copyable links, user prose and diagnostic/error
 details retain native copying. This does not install a document-wide gesture
 blocker.
 
+Compact columns and an overlay tool sheet make a landscape mobile Host eligible
+for whole-panel scrolling. Admission additionally requires that the bounded
+layout cannot fit one complete card row after its TopSlot and full footer,
+including the visible 52px tools and 52px Pager, reserve their normal space.
+Overlays with enough height retain their internal owner and Pager bottom anchor,
+including when tools hide. Pagination temporarily restores the bounded layout
+at uninset width with content-dependent scrollbars suppressed to measure that
+budget, then restores styles and scroll offsets
+before paint. This same baseline governs entry and exit, so natural whole-panel
+height cannot feed back into admission. The existing observer also watches the
+panel and its header/body tracks for height and toolbar changes; no polling is
+added. No device or viewport-size breakpoint selects this mode, and portrait,
+two-column and desktop geometry stay unchanged.
+When admitted, the complete Request tool panel is the sole vertical scroll owner.
+Its header, active content, source tools and Pager scroll together. Internal
+source/list/result wrappers use natural height and visible overflow.
+Each page retains its configured minimum rows (at least one complete row),
+measured from real columns; natural content height cannot increase capacity.
+The same outer frame retains safe-area clearance; the scrollport adds 12px
+trailing space and the actual keyboard overlay inset so the Pager stays reachable.
+Source editing cancels pending holds on the actual owner's scroll and uses that
+owner's bounds/offset for drag placement and edge scrolling.
+
 Bounded result grids measure layout border boxes rather than animated paint
 bounds. The first card is observed alongside viewport/content/font changes.
 Headings, footer, safe area and native dock occupy their existing layout tracks
-once. Complete rows are selected with the existing floor policy, never a forced
-three-row rule. Numeric recent geometry is available through the shared pager's
+once. The first native page measures an unpainted real card before committing
+capacity. Hidden, inert or inactive panels wait until visible. A visible panel
+with no measurable height still displays one page: its real grid columns and
+configured minimum rows (at least one) determine capacity even when no full row
+fits. Short-screen scroll ownership remains a separate layout decision.
+Fit cache keys include the actual card border-box height and available fit
+height, along with columns, spacing, fonts, minimum rows and scroll-owner policy.
+The existing coalesced ResizeObserver and font events remeasure current geometry
+after text scaling, rotation, dock/keyboard or tool-row changes. Hiding a page
+clears fit geometry and releases its observed card; re-entry's existing render
+lifecycle observes the new card and schedules a fresh measurement. No timer or
+polling is added. B3's uninset-width overflow decision stays unchanged.
+Loading and refresh retain fitted capacity. Complete rows follow the measured
+floor policy; phone song pages keep their approved minimum of three rows and
+scroll within the same viewport when those rows cannot fit. Remote uses shared
+document-flow budgets of 6 songs or 12 compact/category entries, because its
+content itself expands the document height. Numeric recent geometry is available
+through the shared pager's
 bounded diagnostic snapshot; no query or source identity is recorded.

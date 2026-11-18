@@ -7,9 +7,10 @@ internal object HostLoginLink {
   fun roomAuthorization(value: String): String? = try {
     val uri = URI(value)
     value.takeIf {
-      value.length <= 4096 && uri.scheme in setOf("http", "https") &&
-        uri.host == "wx.chunk.cn" && uri.rawPath == "/projection/login" &&
-        uri.rawUserInfo == null && uri.rawFragment == null && uri.port == -1 &&
+      value.length <= 4096 && uri.scheme?.lowercase() in setOf("http", "https") &&
+        uri.host.equals("wx.chunk.cn", ignoreCase = true) && uri.rawPath.trimEnd('/').equals("/projection/login", ignoreCase = true) &&
+        uri.rawUserInfo == null && uri.rawFragment == null &&
+        (uri.port == -1 || uri.port == if (uri.scheme.equals("https", ignoreCase = true)) 443 else 80) &&
         !uri.rawQuery.isNullOrEmpty() && !value.any { it.isISOControl() }
     }
   } catch (_: Exception) { null }

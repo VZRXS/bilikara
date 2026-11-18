@@ -113,6 +113,11 @@ fn source_kit(data: Vec<u8>) -> Result<()> {
         "media-libav/live_audio.c",
         "media-libav/stretch.cpp",
         "media-libav/REBUILD.md",
+        "REBUILD-ANDROID.md",
+        "records/config.h",
+        "licenses/COPYING.LGPLv2.1",
+        "xtask/Cargo.toml",
+        "rust-toolchain.toml",
         "xtask/Cargo.lock",
         "xtask/src/android_libav.rs",
         "THIRD_PARTY_NOTICES.md",
@@ -123,13 +128,42 @@ fn source_kit(data: Vec<u8>) -> Result<()> {
     }
     Ok(())
 }
-pub(super) fn verify(ndk: &Path, apk: &Path, abi: &str) -> Result<Value> {
+fn kit_binding(
+    info: &Value,
+    abi: &str,
+    kit: &Path,
+    data: &[u8],
+    embedded: bool,
+    notice: &str,
+) -> Result<()> {
+    if embedded {
+        return Err("Source kit must be distributed separately from APK".into());
+    }
+    let kit_name = format!("bilikara-android-libav-9.0.1-{abi}-source-kit.zip");
+    if info["source_kit"] != kit_name
+        || kit.file_name() != Some(OsStr::new(&kit_name))
+        || info["source_kit_sha256"] != format!("{:x}", Sha256::digest(data))
+    {
+        return Err("Separate source kit does not match APK media metadata".into());
+    }
+    if !notice.contains(&kit_name) || !notice.contains("separately alongside this APK") {
+        return Err("Missing separate source-kit distribution notice".into());
+    }
+    Ok(())
+}
+pub(super) fn verify(ndk: &Path, apk: &Path, abi: &str, kit: &Path) -> Result<Value> {
     if !apk.is_absolute()
         || !ndk.is_absolute()
         || fs::symlink_metadata(apk)?.file_type().is_symlink()
         || fs::metadata(apk)?.len() > 512 * 1024 * 1024
     {
         return Err("Use a bounded regular APK and absolute native paths".into());
+    }
+    if !kit.is_absolute()
+        || !fs::symlink_metadata(kit)?.is_file()
+        || fs::metadata(kit)?.len() > 64 * 1024 * 1024
+    {
+        return Err("Use a bounded regular separate source kit and absolute native path".into());
     }
     let tc = android_libav::apk_toolchain(ndk)?;
     let mut zip = zip::ZipArchive::new(fs::File::open(apk)?)?;
@@ -150,7 +184,14 @@ pub(super) fn verify(ndk: &Path, apk: &Path, abi: &str) -> Result<Value> {
     }
     let stage = tempfile::Builder::new()
         .prefix("bilikara-apk-media-")
-        .tempdir()?;
+        .tempdir_in({
+            let scratch = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join(".tmp");
+            fs::create_dir_all(&scratch)?;
+            scratch
+        })?;
     let mut facts = BTreeMap::new();
     for name in LIBRARIES {
         let payload = bytes(
@@ -181,6 +222,7 @@ pub(super) fn verify(ndk: &Path, apk: &Path, abi: &str) -> Result<Value> {
         || info["abi"] != abi
         || info["ndk"] != "27.0.12077973"
         || info["ffmpeg"] != "9.0.1"
+        || info["signalsmith"] != true
     {
         return Err("Invalid final APK media build metadata".into());
     }
@@ -207,12 +249,22 @@ pub(super) fn verify(ndk: &Path, apk: &Path, abi: &str) -> Result<Value> {
             return Err("Empty APK media license".into());
         }
     }
-    source_kit(bytes(
+    let data = fs::read(kit)?;
+    let notice = String::from_utf8(bytes(
         &mut zip,
         &names,
-        &format!("{prefix}/source-kit.zip"),
-        64 * 1024 * 1024,
+        &format!("{prefix}/licenses/libav-source.txt"),
+        64 * 1024,
     )?)?;
+    kit_binding(
+        &info,
+        abi,
+        kit,
+        &data,
+        names.keys().any(|name| name.ends_with("source-kit.zip")),
+        &notice,
+    )?;
+    source_kit(data)?;
     Ok(
         json!({"schema_version":1,"kind":"android-apk-media","abi":abi,"libraries":facts,"rebuild_kit_verified":true}),
     )
@@ -221,7 +273,11 @@ pub(super) fn run(args: Vec<OsString>) -> Result<()> {
     let mut values = BTreeMap::new();
     let mut args = args.into_iter();
     while let Some(k) = args.next() {
-        if !["--ndk", "--apk", "--abi"].iter().any(|n| k == *n) || values.contains_key(&k) {
+        if !["--ndk", "--apk", "--abi", "--source-kit"]
+            .iter()
+            .any(|n| k == *n)
+            || values.contains_key(&k)
+        {
             return Err("Invalid or duplicate verify-android-apk argument".into());
         }
         values.insert(k, args.next().ok_or("Missing argument")?);
@@ -236,13 +292,40 @@ pub(super) fn run(args: Vec<OsString>) -> Result<()> {
         .get(OsStr::new("--abi"))
         .and_then(|v| v.to_str())
         .ok_or("Missing ABI")?;
-    println!("{}", verify(&path("--ndk")?, &path("--apk")?, abi)?);
+    println!(
+        "{}",
+        verify(
+            &path("--ndk")?,
+            &path("--apk")?,
+            abi,
+            &path("--source-kit")?
+        )?
+    );
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn separate_kit_is_bound_to_apk_and_never_embedded() {
+        let name = "bilikara-android-libav-9.0.1-arm64-v8a-source-kit.zip";
+        let data = b"binding fixture only; source contents verified separately";
+        let info =
+            json!({"source_kit":name,"source_kit_sha256":format!("{:x}", Sha256::digest(data))});
+        let notice = format!("{name} distributed separately alongside this APK");
+        let check = |info: &Value, path: &str, data: &[u8], embedded, notice: &str| {
+            kit_binding(info, "arm64-v8a", Path::new(path), data, embedded, notice)
+        };
+        assert!(check(&info, name, data, false, &notice).is_ok());
+        assert!(check(&info, name, data, true, &notice).is_err());
+        assert!(check(&info, "wrong.zip", data, false, &notice).is_err());
+        assert!(check(&info, name, b"tampered", false, &notice).is_err());
+        assert!(check(&json!({"source_kit":name}), name, data, false, &notice).is_err());
+        assert!(check(&info, name, data, false, "missing source notice").is_err());
+        // A matching binding must not turn a non-ZIP into valid rebuild sources.
+        assert!(source_kit(data.to_vec()).is_err());
+    }
     #[test]
     fn archive_names_reject_native_traversal_and_links() {
         for name in [

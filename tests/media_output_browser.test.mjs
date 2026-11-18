@@ -43,11 +43,12 @@ for(const [engine,android] of [[chromium,false],[webkit,false],[chromium,true],[
       localStorage.setItem('bilikara.update.automatic','false');
       if(android)window.BilikaraHostWindow={postMessage(raw){if(['enter','exit'].includes(raw))return;const{id}=JSON.parse(raw);queueMicrotask(()=>this.onmessage({data:JSON.stringify({id,ok:true,data:{layout:'auto',orientation:'system'}})}));}};
     },android);
-    const errors=[],commands=[];let release,gate=null;
+    const errors=[],commands=[];let release,gate=null,failOutput=false;
     await context.route('**/*',async route=>{
       const url=new URL(route.request().url());if(url.origin!==host.base)return route.abort();
       if(/^\/api\/(catalog\/|d1\/)/.test(url.pathname))return route.fulfill({json:{ok:true,data:{items:[],categories:[],total:0}}});
       if(['/api/player/output','/api/player/control'].includes(url.pathname)) {
+        if(failOutput&&url.pathname==='/api/player/output')return route.fulfill({json:{ok:false,error:'synthetic output failure',code:'purek_output_backend_unavailable'}});
         const body=route.request().postDataJSON();commands.push({path:url.pathname,body});if(gate)await gate;
         const data=await page.evaluate(({body,path})=>{
           const data=structuredClone(state.data);data.state_revision++;
@@ -88,6 +89,18 @@ for(const [engine,android] of [[chromium,false],[webkit,false],[chromium,true],[
       assert.equal(await settings.locator('.media-output-error').isVisible(),false,'a query failure is not a playback interruption');
     }
     await page.evaluate(()=>{setLanguage('zh');state.data.media_output.status='authorized';state.data.media_output.last_error=null;render();});
+    // IOS-R2-04b: actual navigation hides ancestors without requiring a snapshot.
+    failOutput=true;
+    await settings.locator('.media-output-targets').click();
+    await page.waitForFunction(()=>document.querySelector('[data-media-output="settings"] .media-output-status').textContent===t('mediaOutput.actionFailed'));
+    const previousPosition=await page.evaluate(()=>{const position=state.data.media_output.position;state.data.state_revision++;state.data.media_output.position++;render();return position;});
+    assert.equal(await settings.locator('.media-output-status').innerText(),await page.evaluate(()=>t('mediaOutput.actionFailed')));
+    await page.evaluate(position=>{state.data.media_output.position=position;render();},previousPosition);
+    await page.locator(android?'[data-android-page="playback"]':'#work-rail-request').click();
+    await settings.waitFor({state:'hidden'});await goSettings();
+    assert.equal(await settings.locator('.media-output-status').isVisible(),false,'re-entering clears temporary action failure');
+    assert.equal(await page.locator('#purek-info .media-output-error').evaluate(n=>n.hidden),true);
+    failOutput=false;
     const switchAtRight=n=>{const target=n.querySelector('.media-output-targets').getBoundingClientRect(),box=n.getBoundingClientRect(),s=getComputedStyle(n);return Math.abs(target.right-(box.right-parseFloat(s.borderRightWidth)-parseFloat(s.paddingRight)))<1;};
     assert.equal(await settings.evaluate(switchAtRight),true,'settings switch aligns with the right content edge');
     if(process.env.BILIKARA_OUTPUT_EVIDENCE){mkdirSync(process.env.BILIKARA_OUTPUT_EVIDENCE,{recursive:true});await page.screenshot({path:path.join(process.env.BILIKARA_OUTPUT_EVIDENCE,`${engine.name()}-${android?'android':'desktop'}-output-settings.png`),animations:'disabled'});}

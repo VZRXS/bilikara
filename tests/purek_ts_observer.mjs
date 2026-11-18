@@ -1,6 +1,6 @@
 // Independent MPEG-TS/ADTS observer; no product muxer is imported.
 import assert from 'node:assert/strict';
-export function inspectTs(bytes,{videoFrames=24,channels,sampleRate}={}){
+export function inspectTs(bytes,{videoFrames=24,channels,sampleRate,profile}={}){
   assert.equal(bytes.length%188,0);const cc=new Map(),streams=new Map(),dts=new Map(),pts=new Map(),elementary=new Map();
   let pmtPid,pat=0,pmt=0;const pcr=[],patTimes=[],pmtTimes=[];
   const stamp=b=>((b[0]>>1)&7)*2**30+b[1]*2**22+(b[2]>>1)*2**15+b[3]*128+(b[4]>>1);
@@ -32,7 +32,10 @@ export function inspectTs(bytes,{videoFrames=24,channels,sampleRate}={}){
   }
   assert.deepEqual([...streams.values()].sort((a,b)=>a-b),[15,27]);assert.ok(pat>=2&&pmt>=2);assert.ok(pcr.length>=24);
   const gap=values=>Math.max(...values.slice(1).map((v,i)=>(v-values[i]+2**33)%2**33/90));
-  assert.ok(gap(pcr)<=40.1,`PCR interval ${gap(pcr)} ms`);
+  // R1 Mode F copies a VBR TS; PCR is emitted on 23.976 fps video packets.
+  // The retained L1/CBR contract continues to require sub-40 ms PCR spacing.
+  const maxPcrMs=profile==='cast-file'?1000/(24000/1001)+0.1:40.1;
+  assert.ok(gap(pcr)<=maxPcrMs,`PCR interval ${gap(pcr)} ms`);
   assert.ok(gap(patTimes)<=100.1);assert.ok(gap(pmtTimes)<=100.1);
   const video=[...streams].find(([,type])=>type===27)[0],audio=[...streams].find(([,type])=>type===15)[0];
   assert.equal(dts.get(video).length,videoFrames);assert.ok(dts.get(audio).length>=2);

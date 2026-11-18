@@ -105,7 +105,9 @@ export async function prepareRealInputs() {
     });
     const loaded = await runNative(probe, [...libraries, inputs.companion], environment);
     assert.equal(loaded.status, 0, loaded.stdout + loaded.stderr);
-    const lines = loaded.stdout.split('\n');
+    // The native probe prints text lines (MSVC CRT emits CRLF). Normalize only
+    // that subprocess text boundary; retain exact facts/configuration checks.
+    const lines = loaded.stdout.replace(/\r\n/g, '\n').split('\n');
     assert.deepEqual(lines.slice(0, 4), ['3998053', '4129125', '4129125', '9.0.1'], 'actual independently loaded library facts');
     const configuration = lines.slice(4).join('\n');
     assert.ok(Buffer.byteLength(configuration) <= 2048);

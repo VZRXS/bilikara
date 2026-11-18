@@ -163,8 +163,8 @@ class MockResults {
 const sharedResults = new MockResults();
 const window = {}; // Optional search-field presentation is exercised in the browser suite.
 const elements = {
-  larkSearchQuery: { value: "pending query" },
-  larkSearchResults: sharedResults,
+  sharedSearchQuery: { value: "pending query" },
+  sharedSearchResults: sharedResults,
 };
 const canonicalBilikaraSearch = {
   query: "pending query",
@@ -175,7 +175,7 @@ const canonicalBilikaraSearch = {
   seq: 1,
   loading: true,
 };
-function setLarkSearchMessage() {}
+function setSharedSearchMessage() {}
 function t(key) { return key; }
 const rows = [];
 function createSearchResultRow(item, options) {
@@ -185,7 +185,7 @@ function createSearchResultRow(item, options) {
 }
 const expandedSearchEagerCoverCount = 6;
 const document = { body: { classList: new MockClassList() }, createElement() { return {}; } };
-function renderLarkSearchResults(items) {
+function renderSharedSearchResults(items) {
   sharedResults.innerHTML = "";
   sharedResults.classList.remove("hidden");
   items.forEach((item) => sharedResults.appendChild(createSearchResultRow(item, { eagerCover: false })));
@@ -199,7 +199,7 @@ const remoteResultPagers = new WeakMap();
 
 syncBilikaraSearchView();
 const pending = {
-  sameContainer: elements.larkSearchResults === sharedResults,
+  sameContainer: elements.sharedSearchResults === sharedResults,
   hidden: sharedResults.classList.contains("hidden"),
   childCount: sharedResults.children.length,
 };
@@ -211,7 +211,7 @@ syncBilikaraSearchView();
 console.log(JSON.stringify({
   pending,
   completed: {
-    sameContainer: elements.larkSearchResults === sharedResults,
+    sameContainer: elements.sharedSearchResults === sharedResults,
     hidden: sharedResults.classList.contains("hidden"),
     rowCount: sharedResults.children.length,
     rowIds: sharedResults.children.map((row) => row.id),

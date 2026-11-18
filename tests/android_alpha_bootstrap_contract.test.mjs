@@ -15,6 +15,17 @@ const TAURI = path.join(ROOT, "src-tauri");
 import { cargoDependencies } from './cargo_manifest_support.mjs';
 
 const AndroidAlphaBootstrapTest = {
+async test_scanner_declares_camera_permission_without_requiring_camera_hardware() {
+const manifest = readFileSync(path.join(TAURI, "gen/android/app/src/main/AndroidManifest.xml"), "utf8");
+const debug = readFileSync(path.join(TAURI, "gen/android/app/src/debug/AndroidManifest.xml"), "utf8");
+const permissions = [...manifest.matchAll(/<uses-permission\b[^>]*android:name="([^"]+)"[^>]*\/>/g)].map(match => match[1]);
+assert.equal(permissions.filter(name => name === "android.permission.CAMERA").length, 1);
+assert.match(manifest, /<uses-feature\b[^>]*android:name="android.hardware.camera"[^>]*android:required="false"[^>]*\/>/);
+for (const permission of ["RECORD_AUDIO", "READ_EXTERNAL_STORAGE", "WRITE_EXTERNAL_STORAGE", "READ_MEDIA_IMAGES"]) {
+assert.ok(!permissions.includes("android.permission." + permission), "scanner needs no " + permission);
+}
+assert.doesNotMatch(debug, /<uses-(?:permission|feature)\b/, "debug inherits main camera declarations without overrides");
+},
 async test_android_links_runtime_without_desktop_launcher() {
 let capability, cargo, dependencies, entry, forbidden, source;
 cargo = (await cargoDependencies(TAURI)).document;
@@ -31,7 +42,7 @@ mod android;`, entry));
 source = readFileSync(path.join(TAURI, "src/android.rs"), "utf8");
 const sharedStartup = readFileSync(path.join(ROOT, "rust-runtime/src/native_host/mobile.rs"), "utf8");
 assert.ok(contains("bilikara_runtime::native_host::mobile::start(", source));
-assert.ok(contains("initialize_native_host(", sharedStartup));
+assert.ok(contains("initialize_native_host_for_startup(", sharedStartup));
 assert.match(source, new RegExp("app\\s*\\.path\\(\\)\\s*\\.app_data_dir\\(\\)",""));
 assert.ok(contains("execute_app_state(AppStateRequest::Snapshot", source));
 for (const forbidden of iterableValues(["Command::new", "backend_process::", "execute_app_state_json", "CString"])) {
@@ -166,8 +177,71 @@ result = (await runNative(node, ["-e", program], process.env, 20 * 1000, ROOT));
 assert.deepEqual(result.status, 0, concatenate(result.stdout, result.stderr));
 }
 };
+test("AndroidAlphaBootstrapTest.test_scanner_declares_camera_permission_without_requiring_camera_hardware", async () => { const instance = Object.create(AndroidAlphaBootstrapTest); await instance.test_scanner_declares_camera_permission_without_requiring_camera_hardware(); });
+
 test("AndroidAlphaBootstrapTest.test_android_links_runtime_without_desktop_launcher", async () => { const instance = Object.create(AndroidAlphaBootstrapTest); await instance.test_android_links_runtime_without_desktop_launcher(); });
 test("AndroidAlphaBootstrapTest.test_bootstrap_ipc_is_local_read_only_and_mobile_scoped", async () => { const instance = Object.create(AndroidAlphaBootstrapTest); await instance.test_bootstrap_ipc_is_local_read_only_and_mobile_scoped(); });
 test("AndroidAlphaBootstrapTest.test_android_scopes_cleartext_and_declares_private_network_media_service", async () => { const instance = Object.create(AndroidAlphaBootstrapTest); await instance.test_android_scopes_cleartext_and_declares_private_network_media_service(); });
 test("AndroidAlphaBootstrapTest.test_native_window_owns_insets_for_bootstrap_and_host", async () => { const instance = Object.create(AndroidAlphaBootstrapTest); await instance.test_native_window_owns_insets_for_bootstrap_and_host(); });
 test("AndroidAlphaBootstrapTest.test_bootstrap_page_reports_native_success_failure_and_wrong_schema", async () => { const instance = Object.create(AndroidAlphaBootstrapTest); await instance.test_bootstrap_page_reports_native_success_failure_and_wrong_schema(); });
+
+// P7 keeps next's bootstrap/scanner contracts and adds R2 optional-resource gates.
+test("Android optional media and cast platform cannot abort Host startup", () => {
+  const startup = readFileSync(path.join(TAURI, "src/android.rs"), "utf8");
+  for (const call of ["crate::android_cast::initialize(app);", "crate::android_media::initialize(app);"]) {
+    assert.ok(startup.includes(call));
+  }
+  assert.doesNotMatch(startup, /initialize_platform_media\(app\)\?/);
+  const media = readFileSync(path.join(ROOT, "rust-runtime/src/native_host/android_media.rs"), "utf8");
+  assert.ok(media.includes("probe.cast_mux_available() && probe.live_l1_available()"));
+  const service = readFileSync(path.join(TAURI, "gen/android/app/src/main/java/com/bilikara/app/HostMediaPlayback.kt"), "utf8");
+  assert.doesNotMatch(service, /createMulticastLock/);
+  assert.ok(service.includes('nativeStopped(reason: Int, lease: Long)'));
+  assert.ok(service.includes('nativeThermal(status: Int, headroom: Float, lease: Long)'));
+  assert.ok(service.includes('if (mode == 2) acquireLocks() else releaseLocks()'));
+  const platform = readFileSync(path.join(TAURI, "gen/android/app/src/main/java/com/bilikara/app/HostCastPlatform.kt"), "utf8");
+  assert.ok(platform.includes('createMulticastLock("bilikara:cast-discovery")'));
+  for (const permission of ["ACCESS_NETWORK_STATE", "POST_NOTIFICATIONS"]) {
+    assert.ok(readFileSync(path.join(TAURI, "gen/android/app/src/main/AndroidManifest.xml"), "utf8").includes("android.permission." + permission));
+  }
+});
+
+test("Android cast report sharing remains a fixed Host-only bounded download", () => {
+  const bridge = readFileSync(path.join(TAURI, "gen/android/app/src/main/java/com/bilikara/app/HostPlatform.kt"), "utf8");
+  const guard = bridge.indexOf("!isMainFrame || sourceOrigin != expected");
+  const action = bridge.indexOf('"share-cast-report"');
+  assert.ok(guard >= 0 && action > guard);
+  assert.ok(bridge.includes('page.path !in listOf("/", "/index.html")'));
+  const exports = readFileSync(path.join(TAURI, "gen/android/app/src/main/java/com/bilikara/app/HostExports.kt"), "utf8");
+  for (const fragment of ['$origin/api/cast/self-test/download', "instanceFollowRedirects = false",
+    "4 * 1024 * 1024", "revokeUriPermission", "FLAG_GRANT_READ_URI_PERMISSION", "if (sharing)"]) {
+    assert.ok(exports.includes(fragment), fragment);
+  }
+});
+
+// P7 review N3/N4: one stop-reason table on each side of nativeStopped, in the
+// documented order, and no stale MainActivity playback entry point.
+test("Android cast stop reasons share one table with Rust and the Host documentation", () => {
+  const service = readFileSync(path.join(TAURI, "gen/android/app/src/main/java/com/bilikara/app/HostMediaPlayback.kt"), "utf8");
+  const platform = readFileSync(path.join(TAURI, "gen/android/app/src/main/java/com/bilikara/app/HostCastPlatform.kt"), "utf8");
+  const rust = readFileSync(path.join(ROOT, "rust-runtime/src/cast_platform.rs"), "utf8");
+  const names = ["NOTIFICATION", "TASK_REMOVED", "SERVICE_FAILURE", "THERMAL_CRITICAL"];
+  const kotlin = Object.fromEntries([...service.matchAll(/const val STOP_([A-Z_]+) = (\d+)/g)].map(m => [m[1], Number(m[2])]));
+  const native = Object.fromEntries([...rust.matchAll(/pub const ([A-Z_]+): i32 = (\d+);/g)].map(m => [m[1], Number(m[2])]));
+  const expected = Object.fromEntries(names.map((name, index) => [name, index + 1]));
+  assert.deepEqual(kotlin, expected);
+  assert.deepEqual(native, expected);
+  const docs = readFileSync(path.join(ROOT, "docs/android-host-beta.md"), "utf8");
+  assert.ok(docs.includes("通知停止、移除任务或 Activity 销毁（配置变更重建除外）、服务失败、热状态 CRITICAL 依次上报停止原因 1–4"));
+  for (const source of [service, platform]) {
+    assert.doesNotMatch(source, /stopOutput\(\d|stopFromPlatform\([^,]+,\s*\d/);
+  }
+  for (const file of ["native_host/cast_session/mod.rs", "native_host/output_platform.rs"]) {
+    const text = readFileSync(path.join(ROOT, "rust-runtime/src", file), "utf8");
+    assert.ok(text.includes("stop_reason::is_known(reason)"), file);
+    assert.doesNotMatch(text, /matches!\(reason, 1\.\.=4\)/, file);
+  }
+  const activity = readFileSync(path.join(TAURI, "gen/android/app/src/main/java/com/bilikara/app/MainActivity.kt"), "utf8");
+  assert.ok(!activity.includes("updateNetworkPlayback"), "Rust calls HostCastPlatform.updateNetworkPlayback directly");
+  assert.ok(platform.includes("fun updateNetworkPlayback(id: Long, mode: Int): Int"));
+});

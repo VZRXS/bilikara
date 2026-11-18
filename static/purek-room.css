@@ -51,7 +51,7 @@
 }
 .purek-action:not(:disabled):active { transform: none; }
 @media (prefers-reduced-motion: reduce) { .purek-action { transition: none !important; } }
-.purek-output { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 14px 20px 0; padding-top: 14px; border-top: 1px solid var(--line); }
+.purek-output { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 12px 0 0; padding-top: 12px; border-top: 1px solid var(--line); }
 .purek-output[hidden] { display: none; }
 #purek-output-name { min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
 .purek-settings .purek-heading {display:grid;grid-template-columns:auto auto auto minmax(0,1fr);align-items:center;gap:6px;margin:0;}
@@ -83,3 +83,60 @@
 .purek-dlna-entry > form {display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;min-width:0;margin-block:8px;}
 .purek-dlna-entry input {width:100%;min-width:0;}
 .purek-dlna-entry > summary:focus-visible {outline:2px solid var(--accent);outline-offset:-2px;border-radius:14px;}
+
+/* R1 T6 receiver controls, inside next's shared Scan/Manage surface. */
+.purek-receivers, #cast-devices {display:grid;gap:12px;min-width:0;}
+.purek-receivers {margin-bottom:12px;}
+#cast-devices:empty {display:none;}
+.purek-receivers h3, .purek-device h4 {margin:0;min-width:0;font-size:16px;overflow-wrap:anywhere;}
+.purek-device {display:grid;gap:8px;min-width:0;}
+.purek-device h4 {flex:1 1 100px;}
+.purek-device + .purek-device {padding-top:12px;border-top:1px solid var(--line);}
+#cast-empty {text-align:center;padding-block:8px;}
+.cast-modes {display:flex;min-width:0;}
+:root .cast-modes > button {min-width:0;flex:1 1 0;padding-inline:4px;}
+:root .cast-modes > button[aria-pressed="true"] {
+  background-color:var(--remote-segmented-control-active-bg);
+  color:var(--remote-segmented-control-active-color);
+  box-shadow:var(--remote-segmented-control-active-shadow);
+}
+.purek-confirm-address {display:flex;align-items:center;gap:8px;min-height:44px;font-size:13px;line-height:1.45;}
+.purek-confirm-address input {appearance:auto;width:18px;height:18px;min-height:0;padding:0;flex:0 0 18px;}
+.purek-device .purek-action {white-space:normal;line-height:18px;padding-inline:12px;}
+
+/* R1 T8 geometry. Shared ui-surfaces.css still owns fill, blur and shadow. */
+dialog.cast-self-test {
+  display:block;box-sizing:border-box;width:min(440px,calc(100vw - 24px));max-width:calc(100vw - 24px);
+  max-height:calc(var(--legacy-vh,1vh) * 100 - 24px);max-height:calc(100dvh - 24px);
+  margin:auto;overflow:auto;color:var(--ink);
+}
+dialog.cast-self-test::backdrop {background:transparent;}
+dialog.cast-self-test:not([open]) {display:none;}
+.cast-self-test > * {margin:0;}
+.cast-self-test > * + * {margin-top:12px;}
+.cast-self-test [hidden] {display:none !important;}
+.cast-self-test .selection-modal-head {padding:0;margin:0;border:0;}
+.cast-self-test .banner-close svg {width:18px;height:18px;display:block;margin:auto;}
+.cast-self-test label[data-test-device-label] {display:grid;gap:8px;}
+.cast-self-test fieldset {padding:0;border:0;margin:0 0 12px;min-width:0;}
+.cast-self-test legend {font-weight:700;margin-bottom:6px;}
+.cast-self-test fieldset label {display:flex;align-items:center;min-height:44px;gap:8px;}
+.cast-self-test input[type="radio"] {appearance:auto;width:18px;height:18px;min-height:0;padding:0;flex:0 0 18px;}
+.cast-self-test footer, .cast-self-test .cast-actions {display:flex;flex-wrap:wrap;gap:8px;}
+.cast-self-test footer button {flex:1 1 110px;}
+.cast-self-test pre {white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;max-height:180px;overflow:auto;}
+.cast-test-announcement {position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;}
+:root .cast-self-test :is(.toolbar-button,.next-button) {
+  height:44px;min-height:44px;min-width:0;padding:0 12px;border-radius:14px;font-size:16px;font-weight:400;line-height:18px;white-space:normal;
+}
+.cast-self-test .confirm-source {min-width:0;margin:0;}
+:root:is([data-host-platform="android"],[data-host-platform="ios"]) dialog.cast-self-test {
+  bottom:max(var(--mobile-dock-height,0px),var(--mobile-ime-height,0px));
+  max-height:calc(100dvh - max(var(--mobile-dock-height,0px),var(--mobile-ime-height,0px)) - 24px);
+}
+
+/* Decision 2: R1 receiver-free link check under the native pipeline test (Host only). */
+.media-output-pipeline-check{margin:0;color:var(--muted);font-size:13px;line-height:1.5}
+.media-output-pipeline-check[hidden]{display:none}
+/* The result belongs to the visible pipeline test action; hide it with the button. */
+.media-output-pipeline-test[hidden]+.media-output-pipeline-check{display:none}

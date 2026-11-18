@@ -1,4 +1,5 @@
 pub mod audio_supplement;
+pub mod cast;
 use crate::internet_remote::{
     InternetRemoteError, InternetRemotePeers, InternetRemoteValidation,
     PlaylistAddBindingSelection, project_remote_state,
@@ -1138,6 +1139,7 @@ impl AppStateResponse {
 
 #[derive(Debug, Clone, PartialEq)]
 struct AppStateData {
+    cast: cast::Preferences,
     queue_departures: Vec<QueueDeparture>,
     stable_cycle_cursor: Option<StableCycleCursor>,
     audio_supplements: HashMap<String, audio_supplement::AudioSupplement>,
@@ -1179,6 +1181,10 @@ pub struct AppState {
     analysis_verification: Option<automatic_volume::VerificationSignal>,
     data: Option<AppStateData>,
     native_storage: Option<NativeHostStorage>,
+    cast_storage: Option<cast::storage::Storage>,
+    cast_startup_dirty: bool,
+    // Process-local startup transaction, completed at Ready or discarded on Shutdown.
+    native_startup_pending: bool,
     next_cache_attempt_token: u64,
     next_item_incarnation_id: u64,
     next_artifact_set_id: u64,
@@ -1234,6 +1240,9 @@ impl Default for AppState {
             #[cfg(feature = "native-host")]
             analysis_verification: None,
             native_storage: None,
+            cast_storage: None,
+            cast_startup_dirty: false,
+            native_startup_pending: false,
             next_cache_attempt_token: 0,
             next_item_incarnation_id: 0,
             next_artifact_set_id: 0,
@@ -2066,6 +2075,7 @@ impl AppStateData {
             .filter(|value| *value <= MAX_SAFE_JSON_INTEGER)
             .ok_or_else(|| rejected("invalid_initial_state", "playback generation exhausted"))?;
         let mut data = Self {
+            cast: Default::default(),
             queue_departures: seed.queue_departures,
             stable_cycle_cursor: seed.stable_cycle_cursor,
             automatic_volume: seed.automatic_volume,
@@ -5164,6 +5174,71 @@ impl AppState {
         {
             return execute_error_response(error);
         }
+        #[cfg(feature = "native-host")]
+        if self.native_session.cast.owns_playback
+            && !self.native_session.cast.l1
+            && matches!(
+                &request,
+                AppStateRequest::SetKeyShift { .. }
+                    | AppStateRequest::ApplyAvDelay {
+                        action: AvDelayCommand::SetEffective { .. }
+                            | AvDelayCommand::SetPersistent { .. }
+                            | AvDelayCommand::Adjust { .. }
+                            | AvDelayCommand::ResetLocal
+                            | AvDelayCommand::ToggleLock,
+                        ..
+                    }
+            )
+        {
+            return execute_error_response(rejected(
+                "cast_setting_unavailable",
+                "Pitch and AV delay cannot change during casting",
+            ));
+        }
+        #[cfg(feature = "native-host")]
+        if self.native_session.cast.owns_playback && !self.native_session.cast.worker_mutation {
+            let control = match &request {
+                AppStateRequest::IssuePlayerControl { control, .. } => Some(
+                    json!({"action":control.action,"playback_generation":control.playback_generation,"item_id":control.item_id,"expected_queue_version":control.expected_queue_version,"delta_seconds":control.delta_seconds,"target_seconds":control.target_seconds}),
+                ),
+                AppStateRequest::AdvanceToNext {
+                    expected_playback_generation,
+                    expected_queue_version,
+                    ..
+                } => Some(
+                    json!({"action":"next","playback_generation":expected_playback_generation,"expected_queue_version":expected_queue_version}),
+                ),
+                AppStateRequest::ApplyPlayerStatusObservation { .. } => {
+                    return execute_error_response(rejected(
+                        "cast_owns_playback",
+                        "Receiver owns playback",
+                    ));
+                }
+                AppStateRequest::SetAudioVariant { .. } if !self.native_session.cast.l1 => {
+                    return execute_error_response(rejected(
+                        "cast_command_unsupported",
+                        "Audio track changes require L1 output",
+                    ));
+                }
+                AppStateRequest::RestartPlaybackProgram { .. } => {
+                    return execute_error_response(rejected(
+                        "cast_command_unsupported",
+                        "This cast command is not supported in R1",
+                    ));
+                }
+                _ => None,
+            };
+            if let Some(control) = control {
+                return match crate::native_host::cast_session::enqueue(self, &control) {
+                    Ok(()) => self.execute_inner(AppStateRequest::Snapshot { schema_version: 1 }),
+                    Err(e) => execute_error_response(rejected(&e.code, &e.message)),
+                };
+            }
+        }
+        #[cfg(feature = "native-host")]
+        let l1_track_change = self.native_session.cast.owns_playback
+            && self.native_session.cast.l1
+            && matches!(&request, AppStateRequest::SetAudioVariant { .. });
         let terminal = match &request {
             AppStateRequest::ApplyCacheEvent {
                 item_id,
@@ -5223,6 +5298,15 @@ impl AppState {
             self.settle_artifact_attempt(&item, token);
         }
         self.observe_artifact_program();
+        #[cfg(feature = "native-host")]
+        if l1_track_change
+            && response.error().is_none()
+            && let Some(data) = &self.data
+        {
+            // The new program generation names a track change inside the same
+            // L1 producer; all other program changes still retire its URI.
+            self.native_session.cast.playback_generation = data.playback_generation;
+        }
         response
     }
 
@@ -5601,6 +5685,9 @@ impl AppState {
                 self.notify_analysis(true);
                 let was_initialized = self.data.take().is_some();
                 self.native_storage = None;
+                self.cast_storage = None;
+                self.cast_startup_dirty = false;
+                self.native_startup_pending = false;
                 self.internet_remote_peers.clear();
                 self.player_controls.clear();
                 self.shutdown_artifact_lifetime();
@@ -5795,8 +5882,11 @@ impl AppState {
                         // including a restart that retains the same item/files.
                         #[cfg(feature = "native-host")]
                         if !output_audio_selection {
-                            self.native_session.purek.program_epoch =
-                                self.native_session.purek.program_epoch.wrapping_add(1);
+                            self.native_session.local_output.program_epoch = self
+                                .native_session
+                                .local_output
+                                .program_epoch
+                                .wrapping_add(1);
                         }
                     }
                     self.data = Some(next);
@@ -6183,6 +6273,20 @@ pub fn initialize_native_host(directory: &Path, initial: AppStateSeed) -> AppSta
         return internal_error_response("Rust AppState lock is poisoned");
     };
     state.initialize_native(directory, initial)
+}
+
+/// Mobile startup owns no usable Host yet. Keep its checkpoint unchanged until
+/// recovery and worker creation succeed; AppState remains the only authority.
+#[cfg(feature = "native-host")]
+pub(crate) fn initialize_native_host_for_startup(
+    directory: &Path,
+    initial: AppStateSeed,
+) -> AppStateResponse {
+    let state = APP_STATE.get_or_init(|| Mutex::new(AppState::default()));
+    let Ok(mut state) = state.lock() else {
+        return internal_error_response("Rust AppState lock is poisoned");
+    };
+    state.initialize_native_startup(directory, initial)
 }
 
 pub(crate) fn begin_cache_attempt_for_runtime(

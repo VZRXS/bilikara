@@ -30,3 +30,13 @@ open /absolute/trusted/bilikara-desktop.app
 检查 Finder 启动、退出后 Host 回收、再次打开、上一场选择、播放/切歌/音轨、Remote、导出和窗口状态。双屏必须使用系统扩展模式并在实际显示器上验证；浏览器截图不能代替此项。
 
 启动诊断在 `~/Library/Application Support/bilikara/data/logs/desktop-startup.log`（或所选隔离数据根的 `logs/`）。日志记录启动与握手失败的受限信息，不应公开附带完整数据目录、cookies 或认证令牌。安装 / 重启失败时保留更新日志与恢复目录，先查明结果再清理。
+
+## 源码测试：回环别名
+
+macOS 的 `lo0` 默认只有 `127.0.0.1`。`rust-runtime` 的 `native-host` 测试里，DLNA 用例会绑定 `127.0.0.2`–`127.0.0.13` 并经 `127.1.0.1` 路由（Linux、Windows 整段 `127/8` 都可用）。在 macOS 本机运行这些测试前先加别名（重启后失效）：
+
+```sh
+for address in 127.0.0.{2..13} 127.1.0.1; do sudo ifconfig lo0 alias "$address" up; done
+```
+
+没有别名时这些用例会写明原因后跳过；设置 `BILIKARA_REQUIRE_LOOPBACK_ALIAS=1` 时改为失败（CI 的 macOS 作业就是这样运行的）。

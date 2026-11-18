@@ -144,6 +144,9 @@ pub(super) fn inspect(executable: &Path, expected: &str, platform: Platform) -> 
     )?;
     for name in [
         "static/fonts/SourceHanSans-VF.ttf",
+        "static/cast-self-test.js",
+        "cast-samples/sample-b.ts",
+        "cast-samples/SOURCE.md",
         "vendor/signalsmith-stretch/SignalsmithStretch.js",
         "vendor/ffmpeg-runtime.json",
     ] {

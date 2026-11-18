@@ -8,27 +8,6 @@
     return;
   }
 
-  // Queue/history own bounded scroll regions; unlike request cards they do
-  // not use document scrolling. Reserve a gap only while they overflow.
-  if (typeof ResizeObserver === "function" && typeof MutationObserver === "function") {
-    for (const list of [elements.queueList, elements.historyList]) {
-      if (!list) continue;
-      let frame = 0;
-      const measure = () => {
-        frame = 0;
-        if (list.clientHeight > 0) list.classList.toggle("has-scroll-inset", list.scrollHeight > list.clientHeight + 1);
-      };
-      const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
-      new ResizeObserver(schedule).observe(list);
-      new MutationObserver(records => {
-        if (records.some(record => record.target === list
-          || [...record.addedNodes, ...record.removedNodes].some(node => node.nodeType === 1))) schedule();
-      }).observe(list, { childList: true, subtree: true });
-      document.fonts?.ready.then(schedule);
-      schedule();
-    }
-  }
-
   state.dragItemId = "";
   state.dragTargetId = "";
   state.dragTargetAfter = false;
@@ -259,12 +238,20 @@
 
   function maybeAutoScrollQueue(clientY) {
     const rect = elements.queueList.getBoundingClientRect();
-    if (clientY < rect.top + dragScrollThresholdPx) {
-      elements.queueList.scrollTop -= dragScrollStepPx;
+    const dock = elements.playbackDock;
+    const top = Math.max(0, rect.top);
+    const bottom = Math.min(rect.bottom, window.innerHeight,
+      dock?.getClientRects().length ? dock.getBoundingClientRect().top : window.innerHeight);
+    const scroll = document.scrollingElement;
+    if (!scroll || bottom <= top) return;
+    // The document is the only scroll owner. A long list's own edges may be
+    // offscreen; drag near the visible edge above the dock instead.
+    if (clientY < top + dragScrollThresholdPx) {
+      scroll.scrollTop -= dragScrollStepPx;
       return;
     }
-    if (clientY > rect.bottom - dragScrollThresholdPx) {
-      elements.queueList.scrollTop += dragScrollStepPx;
+    if (clientY > bottom - dragScrollThresholdPx) {
+      scroll.scrollTop += dragScrollStepPx;
     }
   }
 

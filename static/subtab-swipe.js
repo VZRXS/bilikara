@@ -27,14 +27,12 @@
     return locked === "x" && (Math.abs(dx) >= Math.max(64, Math.min(96, width * .22))
       || (Math.abs(dx) >= 32 && Math.abs(dx) / Math.max(1, elapsed) >= .55));
   }
-  const owners = 'select,input[type="range"],input[type="checkbox"],input[type="radio"],input[type="file"],'
-    + '[contenteditable="true"],[draggable="true"],[role="slider"],.result-page-viewport,.result-pager,.source-editor-tools,'
+  const owners = 'button,input,textarea,select,a,summary,audio,video,[role="button"],[role="tab"],[role="tablist"],'
+    + '[contenteditable="true"],[draggable="true"],[role="slider"],[role="combobox"],[role="textbox"],'
+    + '[hidden],[inert],.result-page-viewport,.result-pager,.source-editor-tools,'
     + '.android-host-dock,.work-rail,[data-subtab-swipe-owner]';
-  function owned(target, root, fixedZone = null) {
+  function owned(target, root) {
     if (!(target instanceof Element) || target.closest(owners)) return true;
-    const control = target.closest('button,input,textarea,a,[role="tab"]');
-    if (control && (!fixedZone || control.disabled || control.getAttribute('aria-disabled') === 'true')) return true;
-    if (!fixedZone && target.closest('[role="tablist"]')) return true;
     for (let node = target; node && node !== root; node = node.parentElement) {
       const style = getComputedStyle(node);
       if (node.scrollWidth > node.clientWidth + 1 && /auto|scroll/.test(style.overflowX)) return true;
@@ -63,12 +61,14 @@
     function valid() { return gesture && !blocked(root) && allowed() && gesture.signature === signature(); }
     function start(x, y, target, id) {
       cancel();
-      const zone = fixedZones().find(node => node?.contains(target) && node.getClientRects().length && !node.closest('[hidden],[inert]'));
-      if (composing || x < 24 || x > innerWidth - 24 || blocked(root) || !allowed() || owned(target, root, zone)) return;
+      // Fixed chrome is an exclusion, never an alternate content origin.
+      // Reject it before creating a candidate, preview or click guard.
+      if (fixedZones().some(node => node?.contains(target)) || composing || x < 24 || x > innerWidth - 24
+        || blocked(root) || !allowed() || owned(target, root)) return;
       const leaves = flatten(tree()), key = current();
       if (leaves.length < 2 || !leaves.some(leaf => leaf.key === key)) return;
       const node = panel();
-      if (!node || (!node.contains(target) && !zone)) return;
+      if (!node || !node.contains(target)) return;
       gesture = {x, y, id, lastX: x, lastY: y, started: performance.now(), axis: "", node,
         clickTarget: target.closest('button,input,textarea,a') || target,
         transform: node.style.transform, signature: signature(), width: node.getBoundingClientRect().width};
@@ -97,9 +97,9 @@
       active.node.style.transform = active.transform;
       active.release?.();
       gesture = null;
-      // A drag starting on a fixed tab must not become that tab's click, even
-      // at a leaf boundary or below the navigation distance. New real taps
-      // clear this guard at start; keyboard activation always remains usable.
+      // A content drag must not also activate its original target, even at
+      // a leaf boundary or below the navigation distance. Fixed chrome and
+      // controls never create this guard; new taps and keyboard input work.
       if (active.axis === 'x') {suppressUntil = performance.now()+400;suppressTarget = active.clickTarget;}
       if (!next) return;
       const focused = active.node.contains(document.activeElement) ? document.activeElement : null;

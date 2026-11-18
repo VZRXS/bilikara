@@ -1,4 +1,4 @@
-//! P1 application service. All session admissions/transitions use AppState;
+//! Retained next L1 local/Audience pipeline; network delivery belongs to T4/T5. All session admissions/transitions use AppState;
 //! worker handles, bounded transport buffers and libav resources do no policy.
 use super::*;
 use crate::experimental_libav::{LibavMetadataProbe, StreamType};
@@ -30,19 +30,15 @@ struct Prepared {
 }
 pub(super) fn signature(
     app: &mut crate::app_state::AppState,
-    l1: bool,
+    _l1: bool,
 ) -> Result<String, ApiError> {
     let facts = app.native_output_audio_facts()?;
-    Ok(if l1 {
-        json!([
-            facts.source.0,
-            facts.source.1,
-            facts.source.2,
-            app.native().purek.program_epoch
-        ])
-    } else {
-        json!([facts.source, facts.track, facts.settings])
-    }
+    Ok(json!([
+        facts.source.0,
+        facts.source.1,
+        facts.source.2,
+        app.native().local_output.program_epoch
+    ])
     .to_string())
 }
 fn path(root: &Path, route: &str) -> Result<PathBuf, ApiError> {
@@ -81,7 +77,6 @@ fn codec_name(name: Option<&str>) -> &'static str {
 }
 fn prepare(
     context: &HostContext,
-    l1: bool,
     position: Option<f64>,
     trace: &super::trace::OutputTrace,
 ) -> Result<Prepared, ApiError> {
@@ -92,25 +87,8 @@ fn prepare(
             .as_ref()
             .filter(|i| i.cache_status == "ready")
             .ok_or_else(|| failure(409, "output_media", "请先缓存当前歌曲"))?;
-        let settings = &state.player_settings;
-        if !l1
-            && (settings.av_offset_ms != 0
-                || settings.key_shift != 0
-                || settings.volume_percent != 100
-                || settings.is_muted)
-        {
-            return Err(failure(
-                409,
-                "output_l1_required",
-                "L0 不处理音画延迟、变调或增益，请恢复默认设置后试播",
-            ));
-        }
         let video = item.video_media_url.clone();
-        let variants = item
-            .audio_variants
-            .iter()
-            .filter(|v| l1 || v["id"].as_str() == Some(item.selected_audio_variant_id.as_str()))
-            .collect::<Vec<_>>();
+        let variants = item.audio_variants.iter().collect::<Vec<_>>();
         if variants.is_empty() || variants.len() > 2 {
             return Err(failure(409, "output_media", "L1 需要一至两条已缓存音轨"));
         }
@@ -138,7 +116,7 @@ fn prepare(
                 .filter(|v| v.is_finite() && (0.0..=21600.0).contains(v))
                 .unwrap_or(0.0)
         });
-        let signature = signature(app, l1)?;
+        let signature = signature(app, true)?;
         let mut handles = Vec::new();
         for route in std::iter::once(&video).chain(audio.iter()) {
             match app.native_pin_media(route) {
@@ -178,7 +156,7 @@ fn prepare(
             "live MPEG-TS libav 管线不可用",
         )
     })?;
-    if !probe.live_ts_available() || (l1 && !probe.live_l1_available()) {
+    if !probe.live_ts_available() || !probe.live_l1_available() {
         return Err(failure(
             501,
             "output_backend_unavailable",
@@ -194,11 +172,9 @@ fn prepare(
     let mut duration_us = 0;
     let mut video_codec = "unknown";
     let mut audio_codecs = Vec::new();
-    for (source, kind, codec) in std::iter::once((&video, StreamType::Video, Some("h264"))).chain(
-        audio
-            .iter()
-            .map(|a| (a, StreamType::Audio, if l1 { None } else { Some("aac") })),
-    ) {
+    for (source, kind, codec) in std::iter::once((&video, StreamType::Video, Some("h264")))
+        .chain(audio.iter().map(|a| (a, StreamType::Audio, None)))
+    {
         let metadata = probe
             .probe_metadata(source, &cancelled)
             .map_err(|_| failure(409, "output_media", "媒体检查失败，请重新缓存"))?;
@@ -233,7 +209,7 @@ fn prepare(
             return Err(failure(
                 409,
                 "output_codec",
-                "投屏需要 H.264 视频；L0 还需要 AAC 音轨。请使用 AVC 和兼容音频重新缓存，FLAC 等音频需选择 L1",
+                "本机管线需要 H.264 视频和受支持的音轨，请重新缓存",
             ));
         }
     }
@@ -253,56 +229,15 @@ fn prepare(
     })
 }
 
-pub(super) fn start(context: &Arc<HostContext>, body: &Value) -> Result<Value, ApiError> {
-    let object = body
-        .as_object()
-        .ok_or_else(|| ApiError::invalid("JSON object required"))?;
-    if object
-        .keys()
-        .any(|k| !matches!(k.as_str(), "experimental" | "framing" | "pipeline"))
-        || body["experimental"] != true
-    {
-        return Err(failure(
-            400,
-            "output_experimental",
-            "试播需要明确指定 experimental: true",
-        ));
-    }
-    let l1 = match body.get("pipeline") {
-        None => false,
-        Some(Value::String(v)) if v == "L0" => false,
-        Some(Value::String(v)) if v == "L1" => true,
-        _ => return Err(ApiError::invalid("pipeline must be L0 or L1")),
-    };
-    let framing = match body.get("framing") {
-        None => stream::Framing::Close,
-        Some(Value::String(v)) if v == "close" => stream::Framing::Close,
-        Some(Value::String(v)) if v == "chunked" => stream::Framing::Chunked,
-        _ => return Err(ApiError::invalid("framing must be close or chunked")),
-    };
-    start_inner(context, l1, framing, None)
-}
 pub(super) fn start_managed(
     context: &Arc<HostContext>,
     position: f64,
     version: u64,
 ) -> Result<Value, ApiError> {
-    start_inner(
-        context,
-        true,
-        stream::Framing::Close,
-        Some((position, version)),
-    )
-}
-fn start_inner(
-    context: &Arc<HostContext>,
-    l1: bool,
-    framing: stream::Framing,
-    managed: Option<(f64, u64)>,
-) -> Result<Value, ApiError> {
-    let (generation, connection, info, trace) = with_app(|app| {
+    let managed = Some((position, version));
+    let (generation, trace) = with_app(|app| {
         let session = app.native();
-        let room = &mut session.purek;
+        let room = &mut session.local_output;
         if managed.is_some_and(|(_, v)| !room.controller.managed(v))
             || (managed.is_none() && room.controller.owns_playback)
         {
@@ -311,56 +246,25 @@ fn start_inner(
         if room.busy || room.output.running.is_some() {
             return Err(busy());
         }
-        let local_preview = managed.is_some() && room.controller.local_preview;
-        let connection = if local_preview {
-            None
-        } else {
-            Some(
-                room.connected
-                    .clone()
-                    .ok_or_else(|| failure(409, "not_authorized", "请先授权房台"))?,
-            )
-        };
-        let info = if local_preview {
-            capabilities::TsProtocol::Mp2t
-        } else {
-            room.output.protocol()?
-        };
-        let trace = super::trace::OutputTrace::new(managed.is_some());
-        trace.configure(
-            if l1 { "L1" } else { "L0" },
-            match framing {
-                stream::Framing::Close => "close",
-                stream::Framing::Chunked => "chunked",
-            },
-            info.mime(),
-            room.output.diagnostic_summary(),
-        );
-        if let Some(connection) = &connection
-            && let Ok(receiver) = protocol::local_address(&connection.room.description)
-        {
-            trace.route(super::trace::route_facts(connection.local, receiver));
-        }
+        let trace = trace::OutputTrace::new();
         room.diagnostics.begin_output(trace.clone());
         room.busy = true;
         room.generation += 1;
         session.revision += 1;
-        Ok((room.generation, connection, info, trace))
+        Ok((room.generation, trace))
     })?;
-    let mut control_started = false;
     let result = (|| {
         super::super::output_platform::apply(
             super::super::output_platform::OutputActivity::Playing,
         )?;
-        let prepared = prepare(context, l1, managed.map(|(p, _)| p), &trace)?;
+        let prepared = prepare(context, managed.map(|(p, _)| p), &trace)?;
         let expected = prepared.signature.clone();
-        let mut running =
-            stream::Running::with_protocol(generation, framing, l1, info, trace.clone())?;
-        if connection.is_none() {
+        let mut running = stream::Running::new(generation, trace.clone())?;
+        {
             let preview = with_app(|app| {
                 Ok(app
                     .native()
-                    .purek
+                    .local_output
                     .local_preview
                     .get_or_insert_with(|| {
                         Arc::new(super::preview::Preview::new(
@@ -377,9 +281,9 @@ fn start_inner(
             .duration_us
             .store(prepared.duration_us, Ordering::Release);
         with_app(|app| {
-            if app.native().purek.generation != generation
-                || managed.is_some_and(|(_, v)| !app.native().purek.controller.managed(v))
-                || signature(app, l1)? != expected
+            if app.native().local_output.generation != generation
+                || managed.is_some_and(|(_, v)| !app.native().local_output.controller.managed(v))
+                || signature(app, true)? != expected
             {
                 return Err(failure(
                     409,
@@ -387,19 +291,13 @@ fn start_inner(
                     "歌曲或播放设置已变化，请重试",
                 ));
             }
-            app.native().purek.output.begin(generation, running.clone());
+            app.native()
+                .local_output
+                .output
+                .begin(generation, running.clone());
             app.native().revision += 1;
             Ok(())
         })?;
-        let uri = if let Some(connection) = &connection {
-            running.bind(
-                context,
-                connection.local,
-                protocol::local_address(&connection.room.description)?,
-            )?
-        } else {
-            format!("{}index.m3u8", running.preview.as_ref().unwrap().base())
-        };
         let worker = running.clone();
         let control_expected = expected.clone();
         let (send, ready) = mpsc::sync_channel(1);
@@ -419,7 +317,7 @@ fn start_inner(
                             }
                             accepted
                         };
-                        let result = if l1 {
+                        let result = {
                             let paths = prepared
                                 .audio
                                 .iter()
@@ -433,12 +331,12 @@ fn start_inner(
                                 &mut visit,
                                 &mut || {
                                     with_app(|app| {
-                                        if app.native().purek.generation != generation
+                                        if app.native().local_output.generation != generation
                                             || signature(app, true)? != control_expected
                                         {
                                             return Err(busy());
                                         }
-                                        let mode = app.native().purek.output.mode;
+                                        let mode = app.native().local_output.output.mode;
                                         let facts = app.native_output_audio_facts()?;
                                         let track = prepared
                                             .tracks
@@ -463,14 +361,6 @@ fn start_inner(
                                     })
                                 },
                             )
-                        } else {
-                            probe.copy_live_ts(
-                                &prepared.video,
-                                &prepared.audio[0],
-                                prepared.start,
-                                &worker.stop,
-                                &mut visit,
-                            )
                         };
                         if !sent {
                             let _ = send.try_send(false);
@@ -487,10 +377,13 @@ fn start_inner(
                     worker.cancel();
                     if managed.is_some() {
                         let _ = with_app(|app| {
-                            if signature(app, l1).is_ok_and(|s| s == control_expected)
-                                && app.native().purek.generation == generation
+                            if signature(app, true).is_ok_and(|s| s == control_expected)
+                                && app.native().local_output.generation == generation
                             {
-                                app.native().purek.controller.fail("purek_output_pipeline");
+                                app.native()
+                                    .local_output
+                                    .controller
+                                    .fail("purek_output_pipeline");
                                 app.native().revision += 1;
                             }
                             Ok(())
@@ -509,14 +402,10 @@ fn start_inner(
                 "媒体封装失败，请检查缓存编码和原生媒体构建",
             ));
         }
-        if let Some(connection) = &connection {
-            control_started = true;
-            renderer::start_transport_traced(connection, &uri, &info.info(), &trace)?;
-        }
         if managed.is_some_and(|(_, v)| {
             !with_app(|app| {
-                Ok(app.native().purek.controller.managed(v)
-                    && signature(app, l1).is_ok_and(|s| s == expected))
+                Ok(app.native().local_output.controller.managed(v)
+                    && signature(app, true).is_ok_and(|s| s == expected))
             })
             .unwrap_or(false)
         }) {
@@ -529,21 +418,9 @@ fn start_inner(
         running.publish();
         let monitor = context.clone();
         let watch = running.clone();
-        let receiver = connection.clone();
         context
-            .spawn("purek-output-monitor", move || {
-                if let Some(receiver) = receiver {
-                    monitor_output(
-                        monitor,
-                        watch,
-                        receiver,
-                        generation,
-                        expected,
-                        managed.is_some(),
-                    );
-                } else {
-                    monitor_preview(monitor, watch, generation, expected);
-                }
+            .spawn("local-output-monitor", move || {
+                monitor_preview(monitor, watch, generation, expected);
             })
             .map_err(|_| network_error())?;
         Ok(())
@@ -552,9 +429,9 @@ fn start_inner(
         trace.terminal(Some(&error.code));
     }
     if result.is_err() {
-        let owned = with_app(|app| {
-            if app.native().purek.generation == generation {
-                app.native().purek.output.end(
+        let _ = with_app(|app| {
+            if app.native().local_output.generation == generation {
+                app.native().local_output.output.end(
                     generation,
                     false,
                     result.as_ref().err().map(|e| e.code.as_str()),
@@ -565,31 +442,22 @@ fn start_inner(
             Ok(false)
         })
         .unwrap_or(false);
-        // The operation lease remains claimed until rollback SOAP finishes.
-        if control_started
-            && owned
-            && let Some(connection) = &connection
-        {
-            let since = Instant::now();
-            let stopped = renderer::transport(connection, "Stop", "");
-            trace.action("Stop", since, &stopped);
-        }
     }
     with_app(|app| {
-        if app.native().purek.generation != generation {
+        if app.native().local_output.generation != generation {
             return Err(busy());
         }
-        app.native().purek.busy = false;
+        app.native().local_output.busy = false;
         app.native().revision += 1;
         result.map(|_| snapshot(app.native()))
     })
 }
 pub(super) fn mark_streaming(generation: u64) {
     let _ = with_app(|app| {
-        if app.native().purek.generation == generation
-            && app.native().purek.output.streaming(generation)
+        if app.native().local_output.generation == generation
+            && app.native().local_output.output.streaming(generation)
         {
-            app.native().purek.controller.streaming();
+            app.native().local_output.controller.streaming();
             app.native().revision += 1;
         }
         Ok(())
@@ -597,8 +465,8 @@ pub(super) fn mark_streaming(generation: u64) {
 }
 fn pipeline_error(generation: u64) {
     let _ = with_app(|app| {
-        if app.native().purek.generation == generation {
-            app.native().purek.output.pipeline_error();
+        if app.native().local_output.generation == generation {
+            app.native().local_output.output.pipeline_error();
             app.native().revision += 1;
         }
         Ok(())
@@ -614,374 +482,30 @@ fn stop_generation(
 ) -> Result<Value, ApiError> {
     let generation = with_app(|app| {
         let session = app.native();
-        let room = &mut session.purek;
+        let room = &mut session.local_output;
         if room.busy || expected.is_some_and(|g| room.generation != g) {
             return Err(busy());
         }
         let active = room.output.running.is_some();
-        let external_active = room
-            .output
-            .running
-            .as_ref()
-            .is_some_and(|r| r.preview.is_none());
         if paused && !active {
             return Err(failure(409, "output_not_running", "当前没有试播输出"));
         }
-        let trace = room.diagnostics.output().filter(|_| active).cloned();
         room.busy = true;
         room.generation += 1;
         room.output.end(room.generation, paused, error);
         session.revision += 1;
-        Ok((
-            room.generation,
-            room.connected.clone().filter(|_| external_active),
-            trace,
-        ))
+        Ok(room.generation)
     })?;
-    let (generation, connection, trace) = (generation.0, generation.1, generation.2);
-    let result = connection
-        .as_ref()
-        .map(|c| {
-            let since = Instant::now();
-            let stopped = renderer::transport(c, "Stop", "");
-            if let Some(trace) = &trace {
-                trace.action("Stop", since, &stopped);
-            }
-            stopped
-        })
-        .transpose();
     with_app(|app| {
         let session = app.native();
-        if session.purek.generation != generation {
+        if session.local_output.generation != generation {
             return Err(busy());
         }
-        session.purek.busy = false;
-        if let Err(error) = &result {
-            session
-                .purek
-                .output
-                .end(generation, false, Some(&error.code));
-        }
+        session.local_output.busy = false;
         session.revision += 1;
-        result.map(|_| snapshot(session))
+        Ok(snapshot(session))
     })
 }
-/// Labels an attempt that delivered no media by what the receiver did,
-/// without asserting why: no request, only rejected requests, or no bytes.
-fn undelivered(running: &stream::Running) -> &'static str {
-    if running.stop.load(Ordering::Acquire) {
-        return "purek_output_pipeline";
-    }
-    match running.trace.received_stream() {
-        (0, 0, _) => "purek_output_not_requested",
-        (0, _, _) => "purek_output_request_rejected",
-        (_, _, 0) => "purek_output_no_delivery",
-        _ => "purek_output_pipeline",
-    }
-}
-struct DeliveryProgress {
-    bytes: u64,
-    at: Instant,
-}
-impl DeliveryProgress {
-    fn advancing(&mut self, now: Instant, bytes: u64, consumer: bool) -> bool {
-        if bytes > self.bytes {
-            self.bytes = bytes;
-            self.at = now;
-        }
-        // Match the stream writer's bounded backpressure tolerance. Neither an
-        // open GET nor an old successful write is perpetual evidence of life.
-        consumer && bytes > 0 && now.duration_since(self.at) < Duration::from_secs(15)
-    }
-}
-
-#[derive(Default)]
-struct DrainSettlement(Option<Instant>);
-impl DrainSettlement {
-    fn complete(&mut self, now: Instant, drained: bool, reachable: bool) -> bool {
-        if !drained {
-            self.0 = None;
-            return false;
-        }
-        let since = *self.0.get_or_insert(now);
-        // Sender EOF is not a statement about the receiver's decoder. Allow a
-        // bounded settle, reset by a late packet/consumer, and retain definite
-        // control failure precedence rather than silently calling it success.
-        reachable && now.duration_since(since) >= Duration::from_secs(2)
-    }
-}
-
-fn monitor_output(
-    context: Arc<HostContext>,
-    running: Arc<stream::Running>,
-    connection: Connection,
-    generation: u64,
-    expected: String,
-    managed: bool,
-) {
-    let mut failures = 0;
-    let mut last = Instant::now() - Duration::from_secs(3);
-    let start = Instant::now();
-    let mut delivery = DeliveryProgress {
-        bytes: 0,
-        at: start,
-    };
-    // Some receivers play a URI but reject or misreport GetTransportInfo.
-    // Then actual delivery decides completion or interruption instead.
-    let mut monitoring = true;
-    let mut unread_since: Option<Instant> = None;
-    let mut reachable = true;
-    let mut drain = DrainSettlement::default();
-    while !context.stop.load(Ordering::Acquire) {
-        let current = with_app(|app| {
-            Ok(app.native().purek.generation == generation
-                && app.native().purek.output.running.is_some())
-        });
-        if !current.unwrap_or(false) {
-            break;
-        }
-        let changed = with_app(|app| signature(app, running.level == "L1").map(|v| v != expected))
-            .unwrap_or(true);
-        if changed
-            || running.stop.load(Ordering::Acquire)
-            || (start.elapsed() > Duration::from_secs(10)
-                && !running.delivered.load(Ordering::Acquire))
-        {
-            let code = if changed {
-                "purek_output_context_changed"
-            } else {
-                undelivered(&running)
-            };
-            if managed && !changed {
-                let _ = with_app(|app| {
-                    if app.native().purek.generation == generation
-                        && !app.native().purek.controller.release_platform
-                    {
-                        app.native().purek.controller.fail(code);
-                        app.native().revision += 1;
-                    }
-                    Ok(())
-                });
-            }
-            let _ = stop_generation(
-                false,
-                if managed && changed { None } else { Some(code) },
-                Some(generation),
-            );
-            // start may still own the operation lease when its monitor first
-            // runs. Retry admission while this generation owns the session;
-            // a completed stop advances generation and exits at the next check.
-            thread::sleep(Duration::from_millis(100));
-            continue;
-        }
-        let mut outcome = None;
-        if last.elapsed() >= Duration::from_secs(2) {
-            last = Instant::now();
-            let state = renderer::transport_state(&connection);
-            let unavailable = state.as_ref().is_err_and(renderer::monitor_unavailable);
-            running.trace.transport_state(state.as_deref(), unavailable);
-            if unavailable {
-                monitoring = false;
-            }
-            {
-                let (_, _, bytes) = running.trace.received_stream();
-                let advancing = delivery.advancing(Instant::now(), bytes, running.has_consumer());
-                // Valid but contradictory state and unsupported monitoring are
-                // advisory while bytes actually advance. Definite HTTP/network
-                // failure still terminates even if its media socket remains open.
-                reachable = state.is_ok() || unavailable;
-                failures = if reachable && advancing {
-                    0
-                } else {
-                    failures + 1
-                };
-                if failures >= 3 {
-                    outcome = Some(
-                        running.drained()
-                            && state.is_ok_and(|s| {
-                                matches!(s.as_str(), "STOPPED" | "NO_MEDIA_PRESENT")
-                            }),
-                    );
-                }
-            }
-        }
-        if !monitoring && outcome.is_none() {
-            if running.has_consumer() {
-                unread_since = None;
-            } else if unread_since.get_or_insert_with(Instant::now).elapsed()
-                >= Duration::from_secs(15)
-            {
-                outcome = Some(false);
-            }
-        }
-        let completed = drain.complete(
-            Instant::now(),
-            running.drained()
-                && running.played.load(Ordering::Acquire)
-                && running.delivered.load(Ordering::Acquire),
-            reachable,
-        );
-        if outcome.is_none() && completed {
-            outcome = Some(true);
-        }
-        if let Some(completed) = outcome {
-            if managed {
-                let _ = with_app(|app| {
-                    if app.native().purek.generation == generation {
-                        if completed {
-                            app.native().purek.controller.finish(&expected);
-                        } else {
-                            app.native()
-                                .purek
-                                .controller
-                                .fail("purek_output_interrupted");
-                        }
-                        app.native().revision += 1;
-                    }
-                    Ok(())
-                });
-            }
-            let _ = stop_generation(
-                false,
-                if completed {
-                    None
-                } else {
-                    Some("purek_output_interrupted")
-                },
-                Some(generation),
-            );
-            thread::sleep(Duration::from_millis(100));
-            continue;
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    running.cancel();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn undelivered_attempts_are_labelled_by_receiver_behaviour() {
-        use super::super::trace::Request;
-        let quiet = stream::Running::new(1, stream::Framing::Close).unwrap();
-        assert_eq!(undelivered(&quiet), "purek_output_not_requested");
-        let rejected = stream::Running::new(2, stream::Framing::Close).unwrap();
-        rejected
-            .trace
-            .request(Request::RejectedPeer { same_subnet: true });
-        assert_eq!(undelivered(&rejected), "purek_output_request_rejected");
-        let empty = stream::Running::new(3, stream::Framing::Close).unwrap();
-        empty.trace.request(Request::Get);
-        assert_eq!(undelivered(&empty), "purek_output_no_delivery");
-        let failed = stream::Running::new(4, stream::Framing::Close).unwrap();
-        failed.cancel();
-        assert_eq!(undelivered(&failed), "purek_output_pipeline");
-    }
-    #[test]
-    fn stale_callbacks_and_busy_monitor_cannot_cancel_or_release_a_new_output() {
-        let _owned = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let running = stream::Running::new(5, stream::Framing::Close).unwrap();
-        with_app(|app| {
-            app.native().purek = RoomState {
-                generation: 5,
-                busy: true,
-                ..Default::default()
-            };
-            app.native().purek.output.begin(5, running.clone());
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(
-            stop_generation(false, None, Some(5)).unwrap_err().code,
-            "purek_busy"
-        );
-        assert!(!running.stop.load(Ordering::Acquire));
-        with_app(|app| {
-            app.native().purek.busy = false;
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(
-            stop_generation(false, None, Some(4)).unwrap_err().code,
-            "purek_busy"
-        );
-        pipeline_error(4);
-        mark_streaming(4);
-        with_app(|app| {
-            assert_eq!(app.native().purek.output.snapshot()["status"], "starting");
-            assert!(!app.native().purek.busy);
-            Ok(())
-        })
-        .unwrap();
-        assert!(!running.stop.load(Ordering::Acquire));
-        mark_streaming(5);
-        let stopped = stop_generation(false, None, Some(5)).unwrap();
-        assert_eq!(stopped["output"]["generation"], 6);
-        assert_eq!(stopped["output"]["status"], "stopped");
-        assert!(running.stop.load(Ordering::Acquire));
-        mark_streaming(5);
-        pipeline_error(5);
-        with_app(|app| {
-            assert_eq!(app.native().purek.output.snapshot()["status"], "stopped");
-            app.native().purek = RoomState::default();
-            Ok(())
-        })
-        .unwrap();
-    }
-}
-
-#[cfg(test)]
-mod delivery_monitor_tests {
-    use super::*;
-    #[test]
-    fn current_writes_required_even_when_consumer_remains_open() {
-        let now = Instant::now();
-        let mut delivery = DeliveryProgress { bytes: 0, at: now };
-        assert!(!delivery.advancing(now, 0, true));
-        assert!(delivery.advancing(now, 188, true));
-        assert!(delivery.advancing(now + Duration::from_secs(14), 188, true));
-        assert!(!delivery.advancing(now + Duration::from_secs(15), 188, true));
-        assert!(delivery.advancing(now + Duration::from_secs(16), 376, true));
-        assert!(!delivery.advancing(now + Duration::from_secs(16), 376, false));
-    }
-    #[test]
-    fn sender_finish_waits_for_drain_and_resets_on_late_packets() {
-        let now = Instant::now();
-        let mut drain = DrainSettlement::default();
-        assert!(!drain.complete(now, false, true));
-        assert!(!drain.complete(now, true, true));
-        assert!(!drain.complete(now + Duration::from_secs(1), false, true));
-        assert!(!drain.complete(now + Duration::from_secs(2), true, true));
-        assert!(!drain.complete(now + Duration::from_secs(3), true, true));
-        assert!(!drain.complete(now + Duration::from_secs(4), true, false));
-        assert!(drain.complete(now + Duration::from_secs(4), true, true));
-    }
-    #[test]
-    fn preview_loss_preserves_the_primary_pipeline_or_decoder_error() {
-        for primary in ["purek_output_pipeline", "purek_output_preview_decode"] {
-            let mut controller = super::super::controller::Controller::default();
-            controller.fail(primary);
-            assert_eq!(record_preview_failure(&mut controller), primary);
-            assert_eq!(controller.error.as_deref(), Some(primary));
-            assert!(controller.release_platform);
-        }
-        let mut controller = super::super::controller::Controller::default();
-        assert_eq!(
-            record_preview_failure(&mut controller),
-            "purek_output_preview_lost"
-        );
-        assert_eq!(
-            controller.error.as_deref(),
-            Some("purek_output_preview_lost")
-        );
-        assert!(controller.release_platform);
-    }
-}
-
 fn record_preview_failure(controller: &mut super::controller::Controller) -> String {
     // Pipeline/decoder failure may cancel the producer before this monitor
     // observes it. Keep that primary error through cleanup; a cancellation
@@ -1002,8 +526,8 @@ fn monitor_preview(
     let started = Instant::now();
     while !context.stop.load(Ordering::Acquire) {
         let current = with_app(|app| {
-            Ok(app.native().purek.generation == generation
-                && app.native().purek.controller.local_preview
+            Ok(app.native().local_output.generation == generation
+                && app.native().local_output.controller.local_preview
                 && signature(app, true).ok().as_deref() == Some(&expected))
         })
         .unwrap_or(false);
@@ -1015,10 +539,10 @@ fn monitor_preview(
             || (started.elapsed() > Duration::from_secs(10) && !running.has_consumer())
         {
             let code = with_app(|app| {
-                if app.native().purek.generation != generation {
+                if app.native().local_output.generation != generation {
                     return Ok(None);
                 }
-                let code = record_preview_failure(&mut app.native().purek.controller);
+                let code = record_preview_failure(&mut app.native().local_output.controller);
                 app.native().revision += 1;
                 Ok(Some(code))
             })
@@ -1030,5 +554,30 @@ fn monitor_preview(
             break;
         }
         thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn preview_loss_preserves_the_primary_pipeline_or_decoder_error() {
+        for primary in ["purek_output_pipeline", "purek_output_preview_decode"] {
+            let mut controller = super::super::controller::Controller::default();
+            controller.fail(primary);
+            assert_eq!(record_preview_failure(&mut controller), primary);
+            assert_eq!(controller.error.as_deref(), Some(primary));
+            assert!(controller.release_platform);
+        }
+        let mut controller = super::super::controller::Controller::default();
+        assert_eq!(
+            record_preview_failure(&mut controller),
+            "purek_output_preview_lost"
+        );
+        assert_eq!(
+            controller.error.as_deref(),
+            Some("purek_output_preview_lost")
+        );
+        assert!(controller.release_platform);
     }
 }

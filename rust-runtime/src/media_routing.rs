@@ -41,6 +41,10 @@ pub(crate) fn loudness_companion() -> Option<&'static Path> {
 
 #[cfg(feature = "native-host")]
 pub(crate) fn output_companion() -> Option<&'static Path> {
+    #[cfg(any(target_os = "android", test))]
+    if crate::native_host::android_media::capability().is_some_and(|c| !c.cast || !c.l1) {
+        return None;
+    }
     capability(CONFIGURATION.get()?).ok()
 }
 
@@ -107,7 +111,7 @@ impl From<ProbeError> for RouteError {
         match e {
             ProbeError::Media(e) => e.into(),
             ProbeError::Cancelled => error("cancelled"),
-            ProbeError::Unavailable(_) => error("unavailable"),
+            ProbeError::Unavailable(_) | ProbeError::NegotiationFailed(_) => error("unavailable"),
             ProbeError::UnsupportedFormat(_) => error("unsupported_format"),
             ProbeError::BackendFailure(_) => error("backend_failure"),
         }
@@ -117,7 +121,7 @@ impl From<ProbeError> for RouteError {
 /// Capability fallback and S3 re-download classification remain independent.
 fn fallback_reason(e: &ProbeError) -> Option<Reason> {
     match e {
-        ProbeError::Unavailable(_) => Some(Reason::Unavailable),
+        ProbeError::Unavailable(_) | ProbeError::NegotiationFailed(_) => Some(Reason::Unavailable),
         ProbeError::UnsupportedFormat(_) => Some(Reason::UnsupportedFormat),
         ProbeError::Media(e) if e.kind.allows_backend_fallback() => match e.kind {
             MediaErrorKind::UnsupportedCodec => Some(Reason::UnsupportedCodec),
@@ -885,3 +889,7 @@ mod tests {
         assert_eq!(failure.diagnostic.unwrap().backend, Backend::PureRust);
     }
 }
+
+#[cfg(test)]
+#[path = "media_routing_android_tests.rs"]
+mod android_tests;
