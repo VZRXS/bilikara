@@ -12,7 +12,7 @@ fn deeply_nested_description_from_notify_returns_structured_error() {
         .stack_size(2 * 1024 * 1024)
         .spawn(move || {
             run(async {
-                let notify = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+                let (notify, _notify_guard) = reserved_notify();
                 let target = notify.local_addr().unwrap();
                 let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
                 sender
@@ -53,6 +53,18 @@ fn deeply_nested_description_from_notify_returns_structured_error() {
         .join()
         .unwrap();
     fixture.join();
+}
+
+/// A loopback NOTIFY socket for collect_renderers, plus a duplicate handle that
+/// keeps its port bound after the collector drops its socket. Announcers can
+/// still be sending when a busy machine ends the window; those late packets
+/// must land here, never in a parallel test that was given the released port
+/// (it would then fetch this test's fixture and break exact fetch counts).
+fn reserved_notify() -> (UdpSocket, std::net::UdpSocket) {
+    let socket = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    socket.set_nonblocking(true).unwrap();
+    let guard = socket.try_clone().unwrap();
+    (UdpSocket::from_std(socket).unwrap(), guard)
 }
 
 fn options(destination: SocketAddr, window: Duration) -> Options {
@@ -157,7 +169,7 @@ fn unsolicited_notify_loads_a_description_and_withdraws_before_search_ends() {
     let fixture = Fixture::start(vec![Reply::raw(None, 200, description("Notify Only", ""))]);
     let location = format!("http://{}/device.xml", fixture.address);
     run(async {
-        let notify = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let (notify, _notify_guard) = reserved_notify();
         let target = notify.local_addr().unwrap();
         let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let cancel = CancellationToken::new();
@@ -353,6 +365,8 @@ fn cancelling_discovery_with_a_pending_description_returns_within_100ms() {
             // Hold the response until the test has observed cancellation.
             stopping.cancelled().await;
         });
+        // The port must be released on cancellation (asserted below); its only
+        // NOTIFY is consumed before cancelling, so no late sender can reach it.
         let notify = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let address = notify.local_addr().unwrap();
         let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
@@ -412,7 +426,7 @@ fn failed_descriptions_retry_only_on_later_advertisements_and_byebye_aborts_infl
     ]);
     let location = format!("http://{}/device.xml", fixture.address);
     run(async {
-        let notify = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let (notify, _notify_guard) = reserved_notify();
         let address = notify.local_addr().unwrap();
         let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let mut updates = Vec::new();
@@ -454,7 +468,7 @@ fn failed_descriptions_retry_only_on_later_advertisements_and_byebye_aborts_infl
     ]);
     let location = format!("http://{}/device.xml", fixture.address);
     run(async {
-        let notify = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let (notify, _notify_guard) = reserved_notify();
         let address = notify.local_addr().unwrap();
         let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let server = tokio::spawn(async move {
@@ -589,12 +603,17 @@ fn msearch_reply_interface_survives_nonlocal_and_virtual_routes() {
 fn location_flood_does_not_hide_a_later_real_renderer() {
     let fixture = Fixture::start(vec![Reply::raw(None, 200, description("Real TV", ""))]);
     let location = format!("http://{}/device.xml", fixture.address);
-    // Reserve and release an unused TCP port; do not rely on any machine NIC.
-    let unused = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let closed_port = unused.local_addr().unwrap().port();
-    drop(unused);
+    // A bound but non-listening loopback port refuses connections without
+    // relying on any machine NIC. Keep it bound for the whole test: a released
+    // port could be given to a parallel test's fixture, which would then receive
+    // these 130 fetches.
+    let refused = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+    refused
+        .bind(&SocketAddr::from((Ipv4Addr::LOCALHOST, 0)).into())
+        .unwrap();
+    let closed_port = refused.local_addr().unwrap().as_socket().unwrap().port();
     run(async {
-        let notify = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let (notify, _notify_guard) = reserved_notify();
         let address = notify.local_addr().unwrap();
         let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let announcer = tokio::spawn(async move {
@@ -627,6 +646,7 @@ fn location_flood_does_not_hide_a_later_real_renderer() {
         assert_eq!(renderers.len(), 1);
         assert_eq!(renderers[0].description.name, "Real TV");
     });
+    drop(refused);
     assert_eq!(fixture.join().len(), 1);
 }
 
@@ -652,7 +672,7 @@ fn full_candidate_pool_preempts_stalled_http_for_a_later_renderer() {
                 }
             }
         });
-        let notify = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let (notify, _notify_guard) = reserved_notify();
         let address = notify.local_addr().unwrap();
         let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let (routed, mut routes) = tokio::sync::mpsc::unbounded_channel();
@@ -737,7 +757,7 @@ fn single_nonrenderer_advertisement_fetches_only_once_in_4500ms() {
     let fixture = CountingFixture::start(Reply::raw(None, 200, source));
     let location = format!("http://{}/server.xml", fixture.address);
     run(async {
-        let notify = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let (notify, _notify_guard) = reserved_notify();
         let address = notify.local_addr().unwrap();
         let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         sender
@@ -789,7 +809,7 @@ fn repeated_terminal_or_single_transient_advertisements_do_not_refetch() {
         let fixture = CountingFixture::start(Reply::raw(None, status, source));
         let location = format!("http://{}/server.xml", fixture.address);
         run(async {
-            let notify = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let (notify, _notify_guard) = reserved_notify();
             let address = notify.local_addr().unwrap();
             let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
             let announcer = tokio::spawn(async move {
@@ -818,6 +838,30 @@ fn repeated_terminal_or_single_transient_advertisements_do_not_refetch() {
         });
         assert_eq!(fixture.count(), 1);
     }
+}
+
+#[test]
+fn reserved_notify_port_stays_bound_after_the_collector_drops_its_socket() {
+    run(async {
+        let (notify, guard) = reserved_notify();
+        let address = notify.local_addr().unwrap();
+        let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        sender.send_to(b"first", address).await.unwrap();
+        let mut buffer = [0; 16];
+        let (length, _) =
+            tokio::time::timeout(Duration::from_secs(2), notify.recv_from(&mut buffer))
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(&buffer[..length], b"first");
+        drop(notify);
+        // A late announcement still has a bound owner, so no parallel test can
+        // be given this port while this test is running.
+        assert!(StdUdpSocket::bind(address).is_err());
+        sender.send_to(b"late", address).await.unwrap();
+        drop(guard);
+        StdUdpSocket::bind(address).unwrap();
+    });
 }
 
 #[test]
