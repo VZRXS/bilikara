@@ -1209,18 +1209,23 @@ impl AppState {
             now,
         })?;
         self.native_session.observation = Some(observation);
-        // A report taken after the handback commands drained and agreeing with
-        // that handback ends its authority over captured local state.
+        // Once the handback commands have drained, a report that carries the
+        // Host's logical intent ends the handback's authority: intent already
+        // separates a transient split-player hold from a real user pause, so a
+        // user pause right after the handback must win (P10-stab review F1).
+        // Clients without play_intent only report the media observation; for
+        // them a report must agree with the handback, since an observed pause
+        // can still be that hold or the handback's own seek.
         let drained = self.player_control_head().is_none();
-        let intended_paused = play_intent.map_or(paused, |playing| !playing);
         let cast = &mut self.native_session.cast;
         cast.local_play_intent = play_intent.map(|playing| (generation, reported_item, playing));
         if cast.resume_status_pending
             && drained
-            && cast
-                .published_resume
-                .as_ref()
-                .is_none_or(|resume| resume["is_paused"].as_bool() == Some(intended_paused))
+            && (play_intent.is_some()
+                || cast
+                    .published_resume
+                    .as_ref()
+                    .is_none_or(|resume| resume["is_paused"].as_bool() == Some(paused)))
         {
             cast.resume_status_pending = false;
         }

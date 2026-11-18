@@ -1230,3 +1230,83 @@ fn output_attempt_captures_logical_play_intent_over_a_transient_hold() {
     host.post("/api/cast/disconnect", json!({})).unwrap();
     host.wait(|s| s["cast"]["phase"] == "idle" && s["cast"]["busy"] == false);
 }
+
+// P10-stab review F1: the handback (seek + play) is applied and acknowledged,
+// then the user pauses before any other status report. That intent-bearing
+// report must end the handback's authority, so the next capture is a pause.
+// An observation-only report (no play_intent) cannot separate that pause from
+// a transient hold and keeps the published handback.
+#[test]
+fn user_pause_right_after_an_applied_handback_is_captured() {
+    if std::env::var_os("BILIKARA_TEST_CAST_ABSENCE_CHILD").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "native_host::cast_session::tests::round1::user_pause_right_after_an_applied_handback_is_captured",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("BILIKARA_TEST_CAST_ABSENCE_CHILD", "1")
+            .env_remove("BILIKARA_TEST_CAST_COMPANION")
+            .env_remove("BILIKARA_TEST_LIBAV_COMPANION")
+            .env_remove("BILIKARA_LIBAV_COMPANION")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let _serial = GLOBAL_APP_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    for with_intent in [true, false] {
+        let host = Host::new();
+        start_local_playback(&host);
+        let receiver = Receiver::new();
+        discover(&host, &receiver);
+        host.post(
+            "/api/purek/prepare",
+            json!({"url":format!("http://{}/description", receiver.address)}),
+        )
+        .unwrap();
+        host.post("/api/cast/connect", json!({})).unwrap();
+        let first = host.wait(|s| {
+            s["cast"]["error_code"] == "cast_backend_unavailable" && s["cast"]["busy"] == false
+        });
+        assert_eq!(first["cast"]["resume"]["is_paused"], false);
+        // The page applies and acknowledges the whole handback.
+        while let Some(seq) = host.snapshot()["player_control_command"]["seq"].as_u64() {
+            host.post("/api/player/control-ack", json!({"seq":seq}))
+                .unwrap();
+        }
+        // The first report after it is the user's own pause.
+        let s = host.snapshot();
+        let mut status = json!({
+            "playback_generation":s["playback_generation"],"item_id":s["current_item"]["id"],
+            "status_sequence":2,"observed_phase":"paused","is_paused":true,
+            "current_time":3.2,"duration":120.0
+        });
+        if with_intent {
+            status["play_intent"] = json!(false);
+        }
+        host.post("/api/player/status", status).unwrap();
+        let before = host.snapshot()["player_control_command"]["seq"].as_u64();
+        host.post("/api/cast/output", json!({"enabled":true}))
+            .unwrap();
+        let second = host.wait(|s| {
+            s["cast"]["error_code"] == "cast_backend_unavailable"
+                && s["cast"]["busy"] == false
+                && s["player_control_command"]["seq"].as_u64() > before
+        });
+        assert_eq!(
+            second["cast"]["resume"]["is_paused"], with_intent,
+            "intent-bearing user pause after the handback must be kept (with_intent={with_intent})"
+        );
+        host.post("/api/cast/disconnect", json!({})).unwrap();
+        host.wait(|s| s["cast"]["phase"] == "idle" && s["cast"]["busy"] == false);
+    }
+}
