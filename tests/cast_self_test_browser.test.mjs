@@ -261,3 +261,20 @@ for (const width of [700, 360, 320]) for (const language of ['zh', 'en', 'ja']) 
     if (width === 320 && language === 'ja') { mkdirSync(new URL('../.tmp/self-test-browser/', import.meta.url), { recursive: true }); await page.screenshot({ path: new URL('../.tmp/self-test-browser/320-ja.png', import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1'), fullPage: true }); }
   });
 }
+
+// P10 review N1: a prepared Pure K room that is not the selected device is
+// stated explicitly instead of silently testing ordinary DLNA.
+for (const language of ['zh', 'en', 'ja']) test(`unmatched prepared room is reported ${language}`, async t => {
+  const page = await open(t, 360, language);
+  const note = page.locator('[data-test-room]');
+  assert.equal(await note.isVisible(), false);
+  await page.evaluate(() => fixture.update({ generation: 1, running: true, stage: 's1', purek_room_unmatched: true }));
+  assert.equal(await note.isVisible(), true);
+  assert.equal(await note.textContent(), dictionary[language]['cast.test.roomUnmatched']);
+  // It stays with the finished report and clears on a matched run.
+  await page.evaluate(() => fixture.update({ running: false, report_available: true }));
+  assert.equal(await note.isVisible(), true);
+  await page.evaluate(() => fixture.update({ generation: 2, running: true, purek_room_unmatched: false }));
+  assert.equal(await note.isVisible(), false);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+});

@@ -176,6 +176,7 @@ pub(super) async fn run(
         companion_aac: Some(companion),
         windows_network_type: Some(profile),
         windows_network_reason: profile_reason,
+        purek_room_unmatched: request.purek_room_unmatched,
         ..Default::default()
     };
     let interfaces = crate::networking::local_interfaces();

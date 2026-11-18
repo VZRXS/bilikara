@@ -238,3 +238,50 @@ test('Host DSP controls follow L0/L1 availability without losing pending guards 
   await page.evaluate(()=>{elements.keyShiftResetButton.setAttribute('aria-busy','true');state.avOffsetSaving=true;renderKeyShiftControls('local');renderAvSyncControls('local',{});});
   assert.equal(await page.locator('#key-shift-reset-button').isDisabled(),true);assert.equal(await page.locator('#av-offset-input').isDisabled(),true);
 });
+
+// P10 review B1: real Host order with production purek-room.js wiring. The
+// disconnect revokes the ordinary session but asks Rust to keep the prepared
+// Pure K room; start is sent only after that disconnect has settled.
+test('Manage self-test disconnects with the prepared room retained before start',async t=>{
+  const page=await openManage(t,{selfTest:true});
+  await page.evaluate(()=>fixture.update({purek:{room_name:'Room',connection_type:'purek'}}));
+  await page.locator('[data-cast-device="one"] [data-cast-compatibility-test]').click();
+  await page.locator('[data-test-start]').click();
+  await page.waitForFunction(()=>fixture.calls.some(c=>c.path==='/api/cast/disconnect'));
+  const paths=()=>page.evaluate(()=>fixture.calls.filter(c=>c.path).map(c=>c.path));
+  assert.deepEqual(await page.evaluate(()=>fixture.calls.filter(c=>c.path==='/api/cast/disconnect')),[{path:'/api/cast/disconnect',payload:{retain_room:true}}]);
+  assert.equal((await paths()).includes('/api/cast/self-test/start'),false);
+  await page.evaluate(()=>{fixture.update({cast:{phase:'recovering',busy:true,operation_id:1}});fixture.resolve({accepted:true,operation_id:1},'/api/cast/disconnect');});
+  await page.waitForTimeout(50);
+  assert.equal((await paths()).includes('/api/cast/self-test/start'),false,'start waits for the disconnect to settle');
+  await page.evaluate(()=>fixture.update({cast:{phase:'idle',busy:false,operation_id:1}}));
+  await page.waitForFunction(()=>fixture.calls.some(c=>c.path==='/api/cast/self-test/start'));
+  const order=await paths();
+  assert.ok(order.indexOf('/api/cast/disconnect')<order.indexOf('/api/cast/self-test/start'),order.join());
+  assert.deepEqual(await page.evaluate(()=>fixture.calls.find(c=>c.path==='/api/cast/self-test/start').payload),{generation:undefined,device_key:'one'});
+  await page.evaluate(()=>fixture.resolve({accepted:true,generation:1},'/api/cast/self-test/start'));
+  await idle(page,'[data-test-start]');
+  assert.deepEqual(await page.evaluate(()=>fixture.messages),[]);
+});
+
+// P10 review N3 / plan decision 2: R1's receiver-free link check is part of
+// next's pipeline test result in the settings output group.
+for(const language of ['zh','en','ja'])test(`pipeline test result reports the R1 link check ${language}`,async t=>{
+  const page=await openManage(t,{language});
+  const line=page.locator('[data-media-output="settings"] .media-output-pipeline-check');
+  assert.equal(await line.isVisible(),false);
+  const text=dictionary[language];
+  await page.evaluate(()=>fixture.update({cast:{pipeline_running:true,pipeline_result:null}}));
+  assert.equal(await line.textContent(),text['mediaOutput.pipelineCheck.running']);
+  await page.evaluate(()=>fixture.update({cast:{pipeline_running:false,pipeline_result:{ok:true,first_byte:true,sample_b:'verified'}}}));
+  assert.equal(await line.textContent(),text['mediaOutput.pipelineCheck.passed']);
+  assert.equal(await line.getAttribute('role'),'status');
+  await page.evaluate(()=>fixture.update({cast:{pipeline_result:{ok:true,first_byte:true,sample_b:'unavailable'}}}));
+  assert.equal(await line.textContent(),text['mediaOutput.pipelineCheck.passedNoSample']);
+  await page.evaluate(()=>fixture.update({cast:{pipeline_result:{ok:false,code:'cast_pipeline_failed',sample_b:'verified'}}}));
+  assert.equal(await line.textContent(),text['mediaOutput.pipelineCheck.failed'].replace('{reason}',text['cast.error.cast_pipeline_failed']));
+  await page.evaluate(()=>fixture.update({cast:{pipeline_result:{ok:false,code:'not_a_known_code'}}}));
+  assert.equal(await line.textContent(),text['mediaOutput.pipelineCheck.failed'].replace('{reason}',text['cast.error.unknown']));
+  const style=await line.evaluate(n=>({size:getComputedStyle(n).fontSize,margin:getComputedStyle(n).marginTop}));
+  assert.deepEqual(style,{size:'13px',margin:'0px'});
+});

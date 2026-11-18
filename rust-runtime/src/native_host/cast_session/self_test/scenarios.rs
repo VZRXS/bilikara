@@ -809,6 +809,18 @@ fn self_test_start_api_freezes_report_before_handoff_playback() {
         host.wait(|s| s["cast"]["phase"] == "active" && s["cast"]["self_test"]["running"] == false);
     assert_eq!(snapshot["cast"]["connected"], true);
     assert_eq!(snapshot["cast"]["owns_playback"], true);
+    // N4: the tested device is the prepared room, so its credential stays.
+    assert!(
+        with_app(|app| Ok(app
+            .native()
+            .cast
+            .room
+            .as_ref()
+            .unwrap()
+            .authorization
+            .is_some()))
+        .unwrap()
+    );
     assert_eq!(snapshot["cast"]["self_test"]["report_available"], true);
     let report = api::dispatch(
         &host.context,
@@ -898,4 +910,275 @@ fn self_test_start_rejects_stale_generation_and_second_authorization_input() {
         with_app(|app| Ok(app.native().cast.self_test.generation)).unwrap(),
         0
     );
+}
+
+/// Enable=1 registrations; the fixture logs Enable=0 releases as the same action.
+fn registrations(receiver: &Receiver) -> usize {
+    let state = receiver.state.lock().unwrap();
+    state
+        .actions
+        .iter()
+        .filter(|a| a.as_str() == "SetDeviceAuthorization")
+        .count()
+        - state.releases
+}
+
+fn wait_long(host: &Host, what: &str, predicate: impl Fn(&Value) -> bool) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        let snapshot = host.snapshot();
+        if predicate(&snapshot) {
+            return snapshot;
+        }
+        assert!(Instant::now() < deadline, "{what}: {}", snapshot["cast"]);
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn room_renderer() -> Renderer {
+    let location = with_app(|app| {
+        Ok(app
+            .native()
+            .cast
+            .room
+            .as_ref()
+            .unwrap()
+            .description
+            .to_string())
+    })
+    .unwrap();
+    let description = reqwest::blocking::get(&location).unwrap().text().unwrap();
+    crate::dlna::session_fixture::renderer(&location, &description)
+}
+
+// P10 review B1: the Host UI order is prepare/connect -> disconnect -> start.
+// The disconnect must still revoke the ordinary registration, while the
+// self-test keeps the prepared room and performs its own Pure K S2/S3.
+#[test]
+#[ignore = "requires trusted BILIKARA_TEST_CAST_COMPANION; production self-test runner"]
+fn self_test_ui_order_disconnect_revokes_session_but_keeps_room_for_purek_test() {
+    let _serial = GLOBAL_APP_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    assert!(std::env::var_os("BILIKARA_TEST_CAST_COMPANION").is_some());
+    let host = Host::new();
+    host.use_long_media();
+    let receiver = Receiver::new();
+    host.post("/api/purek/prepare", json!({"qr_url":receiver.qr()}))
+        .unwrap();
+    host.post("/api/cast/connect", json!({})).unwrap();
+    host.wait(|s| s["cast"]["phase"] == "active" && s["cast"]["connected"] == true);
+    assert_eq!(registrations(&receiver), 1);
+    // static/cast-self-test.js: closePhysical(); disconnect({retain_room:true}); start.
+    host.post("/api/cast/disconnect", json!({"retain_room":true}))
+        .unwrap();
+    host.wait(|s| {
+        s["cast"]["phase"] == "idle"
+            && s["cast"]["connected"] == false
+            && s["cast"]["owns_playback"] == false
+    });
+    assert_eq!(
+        receiver.state.lock().unwrap().releases,
+        1,
+        "disconnect must still revoke the ordinary session registration"
+    );
+    let renderer = room_renderer();
+    let key = renderer_key(&renderer);
+    with_app(|app| {
+        app.native().cast.renderers = vec![renderer];
+        Ok(())
+    })
+    .unwrap();
+    let generation = host.snapshot()["cast"]["self_test"]["generation"]
+        .as_u64()
+        .unwrap();
+    host.post(
+        "/api/cast/self-test/start",
+        json!({"generation":generation,"device_key":key}),
+    )
+    .unwrap();
+    let generation = generation + 1;
+    assert_eq!(
+        host.snapshot()["cast"]["self_test"]["purek_room_unmatched"],
+        false
+    );
+    wait_long(&host, "self-test Pure K registration", |s| {
+        s["cast"]["self_test"]["registration_attempted"] == true
+    });
+    assert_eq!(host.snapshot()["cast"]["self_test"]["registered"], true);
+    assert_eq!(registrations(&receiver), 2);
+    host.post(
+        "/api/cast/self-test/cancel",
+        json!({"generation":generation}),
+    )
+    .unwrap();
+    wait_long(&host, "self-test cancellation", |s| {
+        s["cast"]["self_test"]["running"] == false && s["cast"]["owns_playback"] == false
+    });
+    assert_eq!(receiver.state.lock().unwrap().releases, 2);
+    let report = api::dispatch(
+        &host.context,
+        &host.identity,
+        true,
+        &Method::GET,
+        "/api/cast/self-test/report",
+        "",
+        json!({}),
+    )
+    .unwrap();
+    let test = &report["diagnostics"]["cast_self_test"];
+    assert_eq!(test["metadata"]["target_kind"], "purek");
+    assert_eq!(test["environment"]["purek_room_unmatched"], false);
+    privacy(&report.to_string());
+}
+
+#[test]
+fn disconnect_retains_only_an_authorized_room_and_only_on_request() {
+    let _serial = GLOBAL_APP_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let host = Host::new();
+    let receiver = Receiver::new();
+    let room = || with_app(|app| Ok(app.native().cast.room.is_some())).unwrap();
+    let idle = |s: &Value| s["cast"]["phase"] == "idle" && s["cast"]["busy"] == false;
+    // Ordinary disconnect keeps next's semantics: the prepared room is forgotten.
+    host.post("/api/purek/prepare", json!({"qr_url":receiver.qr()}))
+        .unwrap();
+    host.post("/api/cast/disconnect", json!({})).unwrap();
+    host.wait(idle);
+    assert!(!room());
+    for invalid in [json!("yes"), json!(1)] {
+        host.post("/api/purek/prepare", json!({"qr_url":receiver.qr()}))
+            .unwrap();
+        assert!(
+            host.post("/api/cast/disconnect", json!({"retain_room":invalid}))
+                .is_err()
+        );
+        assert!(room());
+        host.post("/api/cast/disconnect", json!({})).unwrap();
+        host.wait(idle);
+    }
+    // The self-test request keeps the prepared Pure K credential.
+    host.post("/api/purek/prepare", json!({"qr_url":receiver.qr()}))
+        .unwrap();
+    let before = host.snapshot()["purek"]["room_name"].clone();
+    host.post("/api/cast/disconnect", json!({"retain_room":true}))
+        .unwrap();
+    host.wait(idle);
+    assert!(room());
+    assert_eq!(host.snapshot()["purek"]["room_name"], before);
+    // A plain DLNA description is not a Pure K credential and is never kept.
+    host.post(
+        "/api/purek/prepare",
+        json!({"url":format!("http://{}/description", receiver.address)}),
+    )
+    .unwrap();
+    host.post("/api/cast/disconnect", json!({"retain_room":true}))
+        .unwrap();
+    host.wait(idle);
+    assert!(!room());
+    assert!(receiver.state.lock().unwrap().actions.is_empty());
+}
+
+// P10 review N1/N2/N4: a prepared Pure K room that is not the selected device
+// is reported (never silently ignored), the Host output projection shows the
+// probe instead of "stopping", and handoff leaves only the device it took over.
+#[test]
+#[ignore = "requires trusted BILIKARA_TEST_CAST_COMPANION; production S0-S7 timing and real T3/T4"]
+fn self_test_unmatched_room_is_reported_and_handoff_owns_only_the_tested_device() {
+    let _serial = GLOBAL_APP_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    assert!(std::env::var_os("BILIKARA_TEST_CAST_COMPANION").is_some());
+    let host = Host::new();
+    host.use_long_media();
+    let receiver = Receiver::new();
+    host.post("/api/purek/prepare", json!({"qr_url":receiver.qr()}))
+        .unwrap();
+    // A plain DLNA row on another description location.
+    let renderer = receiver.renderer();
+    let location = renderer.description.location.clone();
+    let key = renderer_key(&renderer);
+    with_app(|app| {
+        app.native().cast.renderers = vec![renderer];
+        Ok(())
+    })
+    .unwrap();
+    host.post(
+        "/api/cast/self-test/start",
+        json!({"generation":0,"device_key":key}),
+    )
+    .unwrap();
+    let snapshot = host.snapshot();
+    assert_eq!(snapshot["cast"]["self_test"]["purek_room_unmatched"], true);
+    let output = &snapshot["media_output"];
+    assert_eq!(output["status"], "probing", "{output}");
+    assert_eq!(output["target"], "purek");
+    assert_eq!(output["requested_target"], "purek");
+    assert_eq!(output["busy"], true);
+    assert_eq!(output["desired_playing"], false);
+    let deadline = Instant::now() + Duration::from_secs(180);
+    let mut answered = std::collections::HashSet::new();
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "self-test failed to reach handoff"
+        );
+        let snapshot = host.snapshot();
+        let state = &snapshot["cast"]["self_test"];
+        if state["handoff_available"] == true {
+            break;
+        }
+        assert_eq!(state["running"], true, "self-test ended early: {state}");
+        assert_ne!(snapshot["media_output"]["status"], "stopping");
+        if state["question"] == true && answered.insert(state["question_id"].as_u64().unwrap()) {
+            host.post(
+                "/api/cast/self-test/answer",
+                json!({"generation":1,"question_id":state["question_id"],"cell":state["cell"],
+                "answers":{"video":"normal","audio":"yes","synchronized":"yes"}}),
+            )
+            .unwrap();
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(registrations(&receiver), 0, "the unmatched room is unused");
+    host.post(
+        "/api/cast/self-test/handoff",
+        json!({"generation":1,"start_casting":true}),
+    )
+    .unwrap();
+    let snapshot =
+        host.wait(|s| s["cast"]["phase"] == "active" && s["cast"]["self_test"]["running"] == false);
+    assert_ne!(snapshot["media_output"]["status"], "probing");
+    let room = with_app(|app| {
+        Ok(app
+            .native()
+            .cast
+            .room
+            .as_ref()
+            .map(|room| (room.description.to_string(), room.authorization.is_some())))
+    })
+    .unwrap();
+    assert_eq!(
+        room,
+        Some((location, false)),
+        "N4: no unrelated Pure K room"
+    );
+    let report = api::dispatch(
+        &host.context,
+        &host.identity,
+        true,
+        &Method::GET,
+        "/api/cast/self-test/report",
+        "",
+        json!({}),
+    )
+    .unwrap();
+    let test = &report["diagnostics"]["cast_self_test"];
+    assert_eq!(test["environment"]["purek_room_unmatched"], true);
+    assert_ne!(test["metadata"]["target_kind"], "purek");
+    privacy(&report.to_string());
+    host.post("/api/cast/disconnect", json!({})).unwrap();
+    host.wait(|s| s["cast"]["phase"] == "idle" && s["cast"]["owns_playback"] == false);
+    assert_eq!(registrations(&receiver), 0);
 }

@@ -32,7 +32,7 @@
     "test:libav-wrapper": "node --test tests/libav_xtask_wrapper.test.mjs tests/libav_prerequisite_entry.test.mjs",
     "test:libav-prerequisites": "node --test tests/libav_prerequisite_contract.test.mjs",
     "test:android-apk": "node --test tests/android_apk.test.mjs",
-    "test:android-libav": "node --test tests/android_libav.test.mjs",
+    "test:android-libav": "node --test tests/android_libav.test.mjs tests/android_cast_samples.test.mjs",
     "test:media-entry": "node --test tests/media_driver_entry.test.mjs",
     "test:media-fixtures": "node --test tests/media_fixture_contract.test.mjs",
     "test:media": "node media-libav/test_comparison.mjs",

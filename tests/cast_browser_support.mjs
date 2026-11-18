@@ -29,7 +29,7 @@ export async function openManage(t,{width=700,height=800,language='zh',platform=
     window.state={data,presentationSession:{mode:'singleScreen',phase:'inactive',generation:0},presentationControlBusy:false};
     const calls=[],waiting=[],messages=[];let refreshes=0;
     const sync=()=>{BilikaraPureK.sync(state.data.purek);window.syncOutput();};
-    window.t=key=>dictionary[window.language][key]||key;
+    window.t=(key,values={})=>Object.entries(values).reduce((text,[name,value])=>text.replaceAll(`{${name}}`,String(value)),dictionary[window.language][key]||key);
     window.setAppMessage=message=>messages.push(message);
     window.render=sync;window.closeCacheAdvancedInfo=()=>{};window.syncPresentationPanelVisibility=()=>{};
     window.setRemoteQrPinned=()=>{};window.bindHostContextualInfo=()=>{};window.renderPresentationHostSurface=()=>{};

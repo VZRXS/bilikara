@@ -134,3 +134,7 @@ dialog.cast-self-test:not([open]) {display:none;}
   bottom:max(var(--mobile-dock-height,0px),var(--mobile-ime-height,0px));
   max-height:calc(100dvh - max(var(--mobile-dock-height,0px),var(--mobile-ime-height,0px)) - 24px);
 }
+
+/* Decision 2: R1 receiver-free link check under the native pipeline test (Host only). */
+.media-output-pipeline-check{margin:0;color:var(--muted);font-size:13px;line-height:1.5}
+.media-output-pipeline-check[hidden]{display:none}

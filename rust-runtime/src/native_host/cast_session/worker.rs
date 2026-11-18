@@ -504,11 +504,19 @@ pub(super) async fn handoff(
         state.connected = true;
         state.room_busy = false;
         state.connection_id = Some(token()?);
-        if state.room.is_none() {
+        // P10 review N4: the ordinary session now belongs to the device the
+        // self-test handed over. Keep a prepared room only when it is that
+        // device (its credential was used); never leave an unrelated room.
+        let location = url::Url::parse(&renderer.description.location)
+            .map_err(|_| error("cast_renderer_unavailable"))?;
+        if state
+            .room
+            .as_ref()
+            .is_none_or(|room| room.description != location)
+        {
             state.room = Some(super::super::purek::Room {
                 name: renderer.description.name.clone(),
-                description: url::Url::parse(&renderer.description.location)
-                    .map_err(|_| error("cast_renderer_unavailable"))?,
+                description: location,
                 authorization: None,
             });
         }

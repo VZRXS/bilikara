@@ -67,6 +67,8 @@ pub(crate) async fn run(
             renderer,
             qr,
             confirmed: false,
+            // The double passes its credential directly, not a prepared room.
+            purek_room_unmatched: None,
         },
         trace.clone(),
         cancel.clone(),

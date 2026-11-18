@@ -54,11 +54,19 @@ fn legacy_protocol_error(code: &str) -> &str {
 }
 
 impl State {
+    /// R1 T8 holds local playback while it probes the receiver; it is neither
+    /// an output being stopped nor an ordinary requested network output.
+    fn self_test_owns_output(&self) -> bool {
+        self.self_test.running && self.owns_playback && !self.self_test_handoff_active
+    }
+
     fn status(&self) -> &'static str {
         if self.error_code.as_deref() == Some("missing_av_transport") {
             "unsupported"
         } else if self.error_code.is_some() || self.room_error.is_some() {
             "error"
+        } else if self.self_test_owns_output() {
+            "probing"
         } else if self.owns_playback && !self.output_enabled {
             "stopping"
         } else if !self.owns_playback
@@ -93,10 +101,10 @@ impl State {
     pub(crate) fn output_projection(&self, host: bool) -> Value {
         json!({"schema_version":1,
             "target":if self.owns_playback {"purek"} else {"local"},
-            "requested_target":if self.output_enabled {"purek"} else {"local"},
+            "requested_target":if self.output_enabled || self.self_test_owns_output() {"purek"} else {"local"},
             "status":self.status(),"available":crate::media_routing::output_companion().is_some(),
             "authorized":self.connected,"can_manage":host,"experimental":true,"qualified":false,
-            "busy":self.room_busy || self.pending.is_some() || self.control_busy,
+            "busy":self.room_busy || self.pending.is_some() || self.control_busy || self.self_test_owns_output(),
             "desired_playing":self.output_enabled && !self.paused,"position":self.position,"duration":self.duration,
             "transition_remaining_ms":0,"pipeline_level":if self.owns_playback {Some(if self.l1 {"L1"} else {"L0"})} else {None},
             "stream_generation":self.generation.max(self.room_generation),"producer_eof":false,"preview_tail_sequence":null,

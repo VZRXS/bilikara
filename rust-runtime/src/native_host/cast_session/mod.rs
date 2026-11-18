@@ -493,8 +493,25 @@ pub(super) fn route(
                 app.native().cast.output_enabled = true;
             }
             "/api/cast/disconnect" => {
+                // The compatibility test disconnects the ordinary session first
+                // (its registration is still revoked by replace below) but needs
+                // the prepared Pure K credential afterwards (R1 T8 S2/S3).
+                let retain_room = match body.get("retain_room") {
+                    None | Some(Value::Null) => false,
+                    Some(Value::Bool(retain)) => *retain,
+                    Some(_) => return Err(ApiError::invalid("Invalid retain_room")),
+                };
                 app.native().cast.room_generation += 1;
-                app.native().cast.room = None;
+                if !retain_room
+                    || app
+                        .native()
+                        .cast
+                        .room
+                        .as_ref()
+                        .is_none_or(|room| room.authorization.is_none())
+                {
+                    app.native().cast.room = None;
+                }
                 app.native().cast.room_busy = false;
                 app.native().cast.protocol_state = None;
                 app.native().cast.protocol_error = None;

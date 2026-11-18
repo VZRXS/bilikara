@@ -168,7 +168,22 @@
   }
   const active=()=>["pending","approval_pending","accepted","authorization_pending","connecting","error"].includes(assistance.session?.status);
   const candidateKey=()=>assistance.authorization_link_available===true&&assistance.session?`${assistance.host_epoch}:${assistance.session.request_id}`:"";
+  // Decision 2: next's pipeline test result also reports R1's receiver-free
+  // mux -> loopback -> sample B check (cast.pipeline_result, Rust-owned).
+  function paintPipelineCheck(){
+    const button=document.querySelector('[data-media-output="settings"] .media-output-pipeline-test');
+    if(!button)return;
+    let line=button.parentElement.querySelector(".media-output-pipeline-check");
+    if(!line){line=document.createElement("p");line.className="media-output-pipeline-check";line.setAttribute("role","status");button.after(line);}
+    const running=cast().pipeline_running===true,result=cast().pipeline_result;
+    let value="";
+    if(running)value=t("mediaOutput.pipelineCheck.running");
+    else if(result?.ok===true)value=t(result.sample_b==="verified"?"mediaOutput.pipelineCheck.passed":"mediaOutput.pipelineCheck.passedNoSample");
+    else if(result&&result.ok===false)value=t("mediaOutput.pipelineCheck.failed",{reason:castError(result.code)});
+    line.hidden=!value;text(line,value);
+  }
   function paint(){
+    paintPipelineCheck();
     const connected=snapshot?.connected===true,output=snapshot?.output;
     if(connected||officialOwner&&officialOwner!==candidateKey()){officialUrl="";officialOwner="";}
     byId("purek-output").hidden=!connected;
@@ -339,13 +354,13 @@
     else if(!modal.contains(document.activeElement)){event.preventDefault();(event.shiftKey?last:first)?.focus();}
   },true);
   selfTest=window.BilikaraCastSelfTest?.create({snapshot:()=>state.data,translate:t,post:request,refresh,
-    closePhysical,disconnect:()=>castAction("disconnect"),castBusy:()=>pending||castWorking(),
+    closePhysical,disconnect:payload=>castAction("disconnect",payload),castBusy:()=>pending||castWorking(),
     physicalBusy:()=>state.presentationControlBusy||["activating","recovering"].includes(state.presentationSession?.phase),
     selfTestAvailable:()=>Boolean(cast().self_test),error:message=>setAppMessage(message,true),
     getReport:async()=>{const response=await fetch("/api/cast/self-test/report",{cache:"no-store"}),value=await response.json();if(!response.ok||!value.ok)throw value;return value.data;},
     saveReport:()=>saveTauriBackendDownload("/api/cast/self-test/download"),
     copyReport:value=>window.BilikaraDiagnosticsCopy.copyText(value,{fallbackMessage:t("service.diagnosticsFailed")})});
   document.addEventListener("bilikara:i18n",paint);new MutationObserver(position).observe(document.documentElement,{attributes:true,attributeFilter:["data-host-layout"]});position();
-  window.BilikaraPureK={close,syncPresentation,requestOutput,settleOutput,sync(value){if(stale(value)){if(state.data)state.data.purek=snapshot;return;}apply(value||null);section.hidden=!snapshot;if(!snapshot){close({force:true});wake();return;}
+  window.BilikaraPureK={close,syncPresentation,requestOutput,settleOutput,sync(value){paintPipelineCheck();if(stale(value)){if(state.data)state.data.purek=snapshot;return;}apply(value||null);section.hidden=!snapshot;if(!snapshot){close({force:true});wake();return;}
     applyAssistance(state.data?.ktv_assistance);paint();syncPresentation();if(assistance.session?.status==="approval_pending")show();}};
 })();

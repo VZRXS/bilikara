@@ -21,6 +21,8 @@ pub(crate) struct State {
     registered: bool,
     registration_attempted: bool,
     preferences_persisted: bool,
+    /// A prepared Pure K room exists but the selected device row is not it.
+    purek_room_unmatched: bool,
     pub(super) cancel: CancellationToken,
     answers: Option<mpsc::Sender<AnswerEnvelope>>,
     handoff: Option<tokio::sync::oneshot::Sender<bool>>,
@@ -33,7 +35,7 @@ impl State {
             "cell":self.cell,"question":self.question,"ask_sync":self.ask_sync,
             "question_id":self.question_id,"question_deadline_ms":self.question_deadline_ms,
             "handoff_available":self.handoff.is_some(),
-            "registered":self.registered,"registration_attempted":self.registration_attempted,"preferences_persisted":self.preferences_persisted,
+            "registered":self.registered,"purek_room_unmatched":self.purek_room_unmatched,"registration_attempted":self.registration_attempted,"preferences_persisted":self.preferences_persisted,
             "report_available":self.trace.is_some() && !self.running})
     }
 }
@@ -48,6 +50,8 @@ struct Request {
     renderer: Option<Renderer>,
     qr: Option<String>,
     confirmed: bool,
+    /// None: no prepared Pure K room; Some(true): prepared but not this device.
+    purek_room_unmatched: Option<bool>,
 }
 
 #[cfg(windows)]
@@ -204,6 +208,12 @@ pub(super) fn route(
                 })
                 .and_then(super::super::purek::Room::authorization_url)
                 .map(str::to_owned);
+            // Never silently drop a prepared room: report it as unmatched.
+            let purek_room_unmatched = cast
+                .room
+                .as_ref()
+                .is_some_and(|room| room.authorization.is_some())
+                .then_some(qr.is_none());
             let target = if qr.is_some() {
                 diag::TargetKind::Purek
             } else if renderer.as_ref().is_some_and(|r| {
@@ -269,6 +279,7 @@ pub(super) fn route(
                 trace: Some(trace.clone()),
                 cancel: cancel.clone(),
                 answers: Some(sender),
+                purek_room_unmatched: purek_room_unmatched == Some(true),
                 ..Default::default()
             };
             let snapshot = app.native_snapshot(true)?;
@@ -294,6 +305,7 @@ pub(super) fn route(
                 renderer,
                 qr,
                 confirmed: false,
+                purek_room_unmatched,
             };
             if context
                 .spawn("dlna-self-test", move || {

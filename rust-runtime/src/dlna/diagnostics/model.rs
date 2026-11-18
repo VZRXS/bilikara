@@ -144,6 +144,9 @@ pub struct Environment {
     pub companion_aac: Option<bool>,
     pub companion_annexb: Option<bool>,
     pub sample_b_verified: Option<bool>,
+    /// Self-test only: a prepared Pure K room was (false) or was not (true)
+    /// the tested device. None when no room was prepared.
+    pub purek_room_unmatched: Option<bool>,
 }
 choices!(NetworkProfileReason {
     NoReceiverRoute,

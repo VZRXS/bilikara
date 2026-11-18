@@ -13,7 +13,7 @@
     // Static markup only; device text and diagnostic text use textContent.
     dialog.innerHTML = `<header class="selection-modal-head"><h2 id="cast-test-title" data-test-text="title"></h2><button type="button" class="banner-close" data-test-close aria-label="Close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2"/></svg></button></header>
       <p data-test-text="intro"></p><label data-test-device-label><span data-test-text="target"></span><select class="confirm-source" data-test-device></select></label>
-      <p data-test-retention hidden></p><p data-test-registration hidden></p><p data-test-status role="status" aria-live="polite" tabindex="-1"></p>
+      <p data-test-retention hidden></p><p data-test-registration hidden></p><p data-test-room hidden></p><p data-test-status role="status" aria-live="polite" tabindex="-1"></p>
       <form data-test-questions hidden>
         <p data-test-countdown hidden><span data-test-countdown-text aria-hidden="true"></span><span data-test-countdown-live role="status" aria-live="polite" class="cast-test-announcement"></span></p>
         <fieldset data-answer="video"><legend data-test-text="video"></legend></fieldset>
@@ -93,7 +93,8 @@
     dialog.addEventListener("cancel", event => { event.preventDefault(); close(); });
     el("[data-test-start]").addEventListener("click", event => action(event.currentTarget, async () => {
       const payload = selectedPayload();
-      await adapter.closePhysical(); await adapter.disconnect();
+      // Revoke the ordinary session but keep the prepared Pure K room for S2/S3.
+      await adapter.closePhysical(); await adapter.disconnect({ retain_room: true });
       report = null; reportKey = "";
       await post("start", payload);
     }));
@@ -158,6 +159,9 @@
       el("[data-test-retention]").hidden = !snapshot().selected;
       el("[data-test-registration]").hidden = !test.registration_attempted;
       el("[data-test-registration]").textContent = labelText(test.registered ? "registered" : "unregistered");
+      // The prepared Pure K room was not the selected device; never imply it was tested.
+      el("[data-test-room]").hidden = !test.purek_room_unmatched;
+      el("[data-test-room]").textContent = test.purek_room_unmatched ? labelText("roomUnmatched") : "";
       el("[data-test-status]").textContent = running ? `${labelText(`stage.${test.stage || "s0"}`)}${test.cell ? ` · ${labelText(`cell.${test.cell}`)}` : ""}` : labelText(test.report_available ? "complete" : "ready");
       const key = `${test.generation}:${test.cell}:${test.question_id}`;
       if (key !== questionKey) {
