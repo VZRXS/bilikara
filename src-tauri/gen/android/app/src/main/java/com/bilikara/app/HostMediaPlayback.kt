@@ -24,6 +24,13 @@ object HostMediaPlayback {
   @Volatile internal var service: HostMediaPlaybackService? = null
   internal val gate = CastOutputGate()
 
+  // Stop reasons passed to nativeStopped. Same table as Rust
+  // cast_platform::stop_reason and docs/android-host-beta.md.
+  const val STOP_NOTIFICATION = 1
+  const val STOP_TASK_REMOVED = 2
+  const val STOP_SERVICE_FAILURE = 3
+  const val STOP_THERMAL_CRITICAL = 4
+
   // Same next operation/result codes: 0 stopped, 1 paused, 2 playing;
   // result 0 success, 1 platform failure, 2 foreground required.
   // The lease fences delayed intents and callbacks across rapid reconnects.
@@ -88,7 +95,7 @@ class HostMediaPlaybackService : Service() {
       val headroom = if (Build.VERSION.SDK_INT >= 30) power.getThermalHeadroom(0) else Float.NaN
       HostMediaPlayback.reportThermal(status, headroom, servedLease)
       if (status >= PowerManager.THERMAL_STATUS_CRITICAL && Build.VERSION.SDK_INT >= 29) {
-        stopOutput(4, servedLease)
+        stopOutput(HostMediaPlayback.STOP_THERMAL_CRITICAL, servedLease)
       } else handler.postDelayed(this, 15_000)
     }
   }
@@ -121,7 +128,7 @@ class HostMediaPlaybackService : Service() {
     HostMediaPlayback.gate.current { lease, mode ->
       if (intent?.action == STOP) {
         val requested = intent.getLongExtra("lease", 0)
-        if (requested == lease && lease != 0L) stopOutput(1, lease)
+        if (requested == lease && lease != 0L) stopOutput(HostMediaPlayback.STOP_NOTIFICATION, lease)
         else if (lease == 0L) stopSelfResult(startId)
         return@current
       }
@@ -144,7 +151,7 @@ class HostMediaPlaybackService : Service() {
           handler.post(thermal)
         }
       }
-      catch (_: RuntimeException) { stopOutput(3, lease) }
+      catch (_: RuntimeException) { stopOutput(HostMediaPlayback.STOP_SERVICE_FAILURE, lease) }
     }
     return START_NOT_STICKY
   }
@@ -184,7 +191,7 @@ class HostMediaPlaybackService : Service() {
     }) HostMediaPlayback.reportStopped(reason, lease)
   }
   override fun onTaskRemoved(rootIntent: Intent?) {
-    HostMediaPlayback.stopFromPlatform(this, 2)
+    HostMediaPlayback.stopFromPlatform(this, HostMediaPlayback.STOP_TASK_REMOVED)
     super.onTaskRemoved(rootIntent)
   }
   override fun onDestroy() {
@@ -194,7 +201,7 @@ class HostMediaPlaybackService : Service() {
       releaseLocks()
       if (HostMediaPlayback.service === this) {
         HostMediaPlayback.service = null
-        if (!expectedStop) stopOutput(3, servedLease)
+        if (!expectedStop) stopOutput(HostMediaPlayback.STOP_SERVICE_FAILURE, servedLease)
       }
     }
     super.onDestroy()

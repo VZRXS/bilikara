@@ -61,7 +61,8 @@ pub(super) fn apply(phase: OutputActivity) -> Result<(), ApiError> {
 }
 #[cfg(target_os = "android")]
 pub fn interrupted(lease: u64, reason: i32) {
-    if !matches!(reason, 1..=4) {
+    use crate::cast_platform::stop_reason;
+    if !stop_reason::is_known(reason) {
         return;
     }
     // AppState -> resource lock is the admission order. Check inside AppState
@@ -78,8 +79,8 @@ pub fn interrupted(lease: u64, reason: i32) {
             return Ok(());
         }
         let code = match reason {
-            1 => "purek_output_notification_stop",
-            4 => "purek_output_thermal",
+            stop_reason::NOTIFICATION => "purek_output_notification_stop",
+            stop_reason::THERMAL_CRITICAL => "purek_output_thermal",
             _ => "purek_output_platform_stopped",
         };
         applied.lease = None;

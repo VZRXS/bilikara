@@ -218,3 +218,30 @@ test("Android cast report sharing remains a fixed Host-only bounded download", (
     assert.ok(exports.includes(fragment), fragment);
   }
 });
+
+// P7 review N3/N4: one stop-reason table on each side of nativeStopped, in the
+// documented order, and no stale MainActivity playback entry point.
+test("Android cast stop reasons share one table with Rust and the Host documentation", () => {
+  const service = readFileSync(path.join(TAURI, "gen/android/app/src/main/java/com/bilikara/app/HostMediaPlayback.kt"), "utf8");
+  const platform = readFileSync(path.join(TAURI, "gen/android/app/src/main/java/com/bilikara/app/HostCastPlatform.kt"), "utf8");
+  const rust = readFileSync(path.join(ROOT, "rust-runtime/src/cast_platform.rs"), "utf8");
+  const names = ["NOTIFICATION", "TASK_REMOVED", "SERVICE_FAILURE", "THERMAL_CRITICAL"];
+  const kotlin = Object.fromEntries([...service.matchAll(/const val STOP_([A-Z_]+) = (\d+)/g)].map(m => [m[1], Number(m[2])]));
+  const native = Object.fromEntries([...rust.matchAll(/pub const ([A-Z_]+): i32 = (\d+);/g)].map(m => [m[1], Number(m[2])]));
+  const expected = Object.fromEntries(names.map((name, index) => [name, index + 1]));
+  assert.deepEqual(kotlin, expected);
+  assert.deepEqual(native, expected);
+  const docs = readFileSync(path.join(ROOT, "docs/android-host-beta.md"), "utf8");
+  assert.ok(docs.includes("通知停止、移除任务或 Activity 销毁（配置变更重建除外）、服务失败、热状态 CRITICAL 依次上报停止原因 1–4"));
+  for (const source of [service, platform]) {
+    assert.doesNotMatch(source, /stopOutput\(\d|stopFromPlatform\([^,]+,\s*\d/);
+  }
+  for (const file of ["native_host/cast_session/mod.rs", "native_host/output_platform.rs"]) {
+    const text = readFileSync(path.join(ROOT, "rust-runtime/src", file), "utf8");
+    assert.ok(text.includes("stop_reason::is_known(reason)"), file);
+    assert.doesNotMatch(text, /matches!\(reason, 1\.\.=4\)/, file);
+  }
+  const activity = readFileSync(path.join(TAURI, "gen/android/app/src/main/java/com/bilikara/app/MainActivity.kt"), "utf8");
+  assert.ok(!activity.includes("updateNetworkPlayback"), "Rust calls HostCastPlatform.updateNetworkPlayback directly");
+  assert.ok(platform.includes("fun updateNetworkPlayback(id: Long, mode: Int): Int"));
+});

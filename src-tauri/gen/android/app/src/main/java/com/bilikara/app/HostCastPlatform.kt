@@ -58,7 +58,7 @@ object HostCastPlatform {
         // Configuration recreation must not tear down an active cast/scan.
         if (!value.isChangingConfigurations) {
           synchronized(multicast) { alive = false; multicast.releaseAll() }
-          HostMediaPlayback.stopFromPlatform(context, 2)
+          HostMediaPlayback.stopFromPlatform(context, HostMediaPlayback.STOP_TASK_REMOVED)
         }
       }
       override fun onActivityCreated(value: Activity, state: Bundle?) { }

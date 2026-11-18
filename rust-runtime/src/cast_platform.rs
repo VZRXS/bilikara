@@ -153,6 +153,23 @@ pub(crate) fn has_platform_state() -> bool {
     installed().is_some()
 }
 
+/// Android platform stop reasons reported through `HostMediaPlayback.nativeStopped`.
+/// Same table as Kotlin `HostMediaPlayback.STOP_*` and docs/android-host-beta.md.
+pub mod stop_reason {
+    /// The notification's stop action.
+    pub const NOTIFICATION: i32 = 1;
+    /// Task removal or a non-configuration Activity destruction.
+    pub const TASK_REMOVED: i32 = 2;
+    /// The foreground service failed to start or was destroyed unexpectedly.
+    pub const SERVICE_FAILURE: i32 = 3;
+    /// Thermal status reached CRITICAL.
+    pub const THERMAL_CRITICAL: i32 = 4;
+
+    pub fn is_known(reason: i32) -> bool {
+        (NOTIFICATION..=THERMAL_CRITICAL).contains(&reason)
+    }
+}
+
 pub fn initialization_failure() -> Option<InitializationFailure> {
     match installed() {
         Some(Err(reason)) => Some(reason),
