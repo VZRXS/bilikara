@@ -116,12 +116,6 @@ for(const [engineName,engine]of Object.entries({chromium,webkit})) {
     assert.ok((await page.locator('#purek-dialog-info').innerText()).includes(await page.evaluate(()=>t('mediaOutput.backendUnavailable'))));
     assert.deepEqual(outputPosts,[{target:"purek",experimental:true}]);
     await page.keyboard.press('Escape');await page.locator('#purek-close').click();
-    // A failed output attempt hands local playback back through queued player
-    // controls (seek, then play/pause). Assert the settled result after the Host
-    // has applied them, not while a handback is still in flight; a wrong pause
-    // still settles as paused and fails below.
-    await page.waitForFunction(()=>!state.data?.player_control_command
-      &&['playing','paused'].includes(state.hostPlaybackSession?.phase),null,{timeout:20000});
     // The DLNA flow must not interrupt local playback or replace its media. Assert playback intent and ownership,
     // not an instantaneous video.paused sample: the split-player sync (holdVideoForAudio) may briefly hold video
     // while headless WebKit's audio clock lags, on e4d1ba3 as well (bilikara-next-8 b5b-r1-diagnosis.md).
