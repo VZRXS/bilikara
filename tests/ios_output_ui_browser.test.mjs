@@ -50,6 +50,13 @@ async function open(t,engine,platform){
         paused:[session.video?.paused,session.audio?.paused],stack:String(new Error().stack).split(/\r?\n/).slice(1,6).map(l=>l.trim()).join(' <- ')});
       value=next;
     }});
+    // Also name each player-control command the page applies (classic-script global).
+    const apply=window.applyRemotePlayerControl;window.commandLog=[];
+    window.applyRemotePlayerControl=function(command,...rest){
+      if(command?.seq&&!window.commandLog.some(c=>c.seq===command.seq)&&window.commandLog.length<20)window.commandLog.push({seq:command.seq,
+        action:command.action,target:command.target_seconds??null,ms:Math.round(performance.now()),resume:state.data?.cast?.resume??null});
+      return apply.call(this,command,...rest);
+    };
   });
   t.after(()=>assert.deepEqual(errors,[]));return{page,host};
 }
@@ -116,7 +123,7 @@ for(const [engineName,engine]of Object.entries({chromium,webkit})) {
       phase:state.hostPlaybackSession.phase,intent:state.hostPlaybackSession.logicalPlayIntent,local:state.localShouldBePlaying,
       networkHold:Boolean(state.networkOutputHoldingLocal),target:state.data.media_output.target})),
       {same:true,phase:'playing',intent:true,local:true,networkHold:false,target:'local'},
-      'intent transitions: '+JSON.stringify(await page.evaluate(()=>window.intentLog)));
+      'intent transitions: '+JSON.stringify(await page.evaluate(()=>({intent:window.intentLog,commands:window.commandLog}))));
   });
 
   // B5b (R8 §14.3): the output group's add-device entry is separate from DLNA availability. Native Alpha has no
