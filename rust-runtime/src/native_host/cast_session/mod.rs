@@ -200,6 +200,29 @@ fn renderer_key(renderer: &Renderer) -> String {
     preference_key(renderer).unwrap_or_else(|| renderer.context.device_key.clone())
 }
 
+/// Disconnect's room policy. Only a Host-prepared, authorized Pure K room may
+/// survive a `retain_room` request (device self-test). A room still staged by
+/// a Remote assistance candidate is released with that candidate first: its
+/// credential was never checked by the Host and must not outlive the
+/// candidate that owns it, nor be adopted by a later self-test or connect.
+pub(crate) fn disconnect_room(
+    state: &mut crate::app_state::native_session::NativeSession,
+    retain_room: bool,
+) {
+    let staged = crate::native_host::purek::assistance::release_staged_room(state);
+    state.cast.room_generation += 1;
+    if !retain_room
+        || staged
+        || state
+            .cast
+            .room
+            .as_ref()
+            .is_none_or(|room| room.authorization.is_none())
+    {
+        state.cast.room = None;
+    }
+}
+
 /// Local paused state captured before the session takes playback. Until the
 /// Host reports a status consistent with this session's own handback, a report
 /// can still describe the session's hold or an unapplied handback seek
@@ -539,17 +562,7 @@ pub(super) fn route(
                     Some(Value::Bool(retain)) => *retain,
                     Some(_) => return Err(ApiError::invalid("Invalid retain_room")),
                 };
-                app.native().cast.room_generation += 1;
-                if !retain_room
-                    || app
-                        .native()
-                        .cast
-                        .room
-                        .as_ref()
-                        .is_none_or(|room| room.authorization.is_none())
-                {
-                    app.native().cast.room = None;
-                }
+                disconnect_room(app.native(), retain_room);
                 app.native().cast.room_busy = false;
                 app.native().cast.protocol_state = None;
                 app.native().cast.protocol_error = None;

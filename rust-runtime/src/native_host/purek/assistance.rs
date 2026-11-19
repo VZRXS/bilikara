@@ -349,6 +349,24 @@ fn retire(app: &mut AppState, phase: Phase) {
         state.revision += 1;
     }
 }
+/// A room staged by a Remote assistance candidate was never checked or
+/// adopted by the Host. When such a candidate still owns the current
+/// unconnected room it is discarded together with that room; returns whether
+/// this happened. Used before a room-generation change (disconnect) so the
+/// Remote's credential can never outlive the candidate that staged it.
+pub(crate) fn release_staged_room(state: &mut NativeSession) -> bool {
+    let staged = state
+        .ktv
+        .candidate
+        .as_ref()
+        .is_some_and(|candidate| candidate.current(&state.state_epoch, &state.cast));
+    if staged {
+        discard_candidate(state);
+        state.revision += 1;
+    }
+    staged
+}
+
 fn discard_candidate(state: &mut NativeSession) {
     let Some(candidate) = state.ktv.candidate.take() else {
         return;
@@ -1629,6 +1647,120 @@ mod tests {
                 .as_str(),
             "http://192.168.1.9/host-owned.xml"
         );
+    }
+    fn purek_qr() -> String {
+        let mut inner = Url::parse("https://conn.dolphinstar.cn/Remote").unwrap();
+        inner.query_pairs_mut().extend_pairs([
+            ("url", "http://192.168.1.8"),
+            ("token", "synthetic-retain-token"),
+            ("name", "Fixture room"),
+        ]);
+        let mut official = Url::parse("https://wx.chunk.cn/projection/login").unwrap();
+        official
+            .query_pairs_mut()
+            .append_pair("place_code", "fixture");
+        official.query_pairs_mut().append_pair(
+            "projection_url",
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(inner.as_str()),
+        );
+        official.to_string()
+    }
+    // v0.9 P1 (requirement 4.8): retaining the room for the device self-test
+    // must never retain a Remote's staged, unchecked Pure K credential.
+    #[test]
+    fn retain_room_disconnect_releases_a_remote_staged_credential_with_its_candidate() {
+        for internet in [false, true] {
+            for phase in ["staged", "checking", "check-failed"] {
+                let mut app = setup();
+                let id = if internet {
+                    secure(&mut app, "phone")
+                } else {
+                    lan(&mut app, "phone", true).1
+                };
+                let request = staged_url(&mut app, &id, &purek_qr());
+                assert!(
+                    app.native()
+                        .cast
+                        .room
+                        .as_ref()
+                        .unwrap()
+                        .authorization
+                        .is_some()
+                );
+                // Mirror purek::assisted_connect: the check takes the next room
+                // generation and owns the receiver I/O under the same lock.
+                let mut cancel = None;
+                if phase != "staged" {
+                    begin_check(&mut app, &id, (&request, "host-epoch")).unwrap();
+                    app.native().cast.room_generation += 1;
+                    app.native().cast.room_busy = true;
+                    let g = app.native().cast.room_generation;
+                    app.native().ktv.connecting = Some((g, "host-epoch".into()));
+                    let token = crate::dlna::CancellationToken::new();
+                    app.native().cast.connection_cancel = Some(token.clone());
+                    cancel = Some(token);
+                    if phase == "check-failed" {
+                        app.native().cast.room_error = Some("purek_authorization".into());
+                        checked(&mut app, &id, false, Some("purek_authorization".into()));
+                        release_io(&mut app, g, "host-epoch");
+                    }
+                }
+                // The Host starts a device self-test while the Remote's
+                // credential is still staged.
+                crate::native_host::cast_session::disconnect_room(app.native(), true);
+                assert!(
+                    app.native().cast.room.is_none(),
+                    "{internet} {phase}: no orphaned credential"
+                );
+                assert!(
+                    app.native().ktv.candidate.is_none(),
+                    "{internet} {phase}: candidate released"
+                );
+                if phase == "checking" {
+                    assert!(
+                        cancel.as_ref().is_some_and(|c| c.is_cancelled()),
+                        "{internet} {phase}: the in-flight check is canceled"
+                    );
+                }
+                // The stale assistance session cannot keep control and the
+                // Remote must scan again before any new staging.
+                refresh(&mut app);
+                let session = app.native().ktv.session.as_ref().unwrap();
+                assert!(
+                    !session.phase.active()
+                        || session.room_generation == app.native().cast.room_generation
+                );
+                assert!(host_candidate_connection(&mut app, (&request, "host-epoch")).is_err());
+                assert!(begin_check(&mut app, &id, (&request, "host-epoch")).is_err());
+            }
+        }
+    }
+    #[test]
+    fn retain_room_keeps_host_prepared_or_adopted_credentials_only() {
+        let mut app = setup();
+        // Host-prepared room (no assistance candidate): kept for the self-test.
+        app.native().cast.room = Some(Room::parse(&purek_qr()).unwrap());
+        crate::native_host::cast_session::disconnect_room(app.native(), true);
+        assert!(app.native().cast.room.is_some());
+        // Without retain_room every room is forgotten.
+        crate::native_host::cast_session::disconnect_room(app.native(), false);
+        assert!(app.native().cast.room.is_none());
+        // A recovery record for a disconnected Remote is a staged credential
+        // as well; retaining the room releases it rather than adopting it.
+        let id = secure(&mut app, "phone");
+        staged_url(&mut app, &id, &purek_qr());
+        retire(&mut app, Phase::Disconnected);
+        assert!(
+            app.native()
+                .ktv
+                .candidate
+                .as_ref()
+                .is_some_and(|c| c.recoverable)
+        );
+        crate::native_host::cast_session::disconnect_room(app.native(), true);
+        assert!(app.native().cast.room.is_none());
+        assert!(app.native().ktv.candidate.is_none());
+        assert!(request_resume(&mut app, &id).is_ok() || app.native().ktv.candidate.is_none());
     }
     #[test]
     fn explicit_retry_clears_the_old_failure_without_replacing_candidate_ownership() {
