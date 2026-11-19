@@ -68,6 +68,7 @@
     "test:native-media-entry": "node --test tests/native_desktop_media_entry.test.mjs",
     "test:native-shared": "node tests/run_desktop_rust_host.mjs",
     "test:native-launcher": "node --test tests/desktop_launcher.test.mjs",
+    "test:native-gstreamer-desktop": "node --test tests/native_gstreamer_desktop.test.mjs",
     "test:native-smoke": "node tests/run_native_smoke.mjs",
     "test:remote-load": "node --test tests/remote_sse_load.test.mjs",
     "test:frontend": "node --test tests/frontend_tests.test.mjs",
