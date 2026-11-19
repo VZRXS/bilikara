@@ -215,7 +215,10 @@
     byId("purek-cancel").hidden=submit.hidden;
     byId("purek-cancel").parentElement.hidden=submit.hidden;
     modal.classList.toggle("is-actions-empty",submit.hidden);
-    byId("purek-close").disabled=pending||selfTest?.busy()||cast().self_test?.running===true;
+    // Closing is an immediate UI action (AGENTS §5.2): running discovery, scan
+    // or checks continue or abort through their own tickets; only the store
+    // self-test owns the dialog until it settles.
+    byId("purek-close").disabled=selfTest?.busy()||cast().self_test?.running===true;
     // A Remote-assisted check fails on the Host worker; show its stage here too.
     const stored=!connected&&!pending&&String(snapshot?.error_code||"").startsWith("purek_")&&snapshot?.error_stage?snapshot.error_code:"";
     if(actionError||stored){const value=errorText(actionError||stored);if(byId("purek-error").textContent!==value)byId("purek-error").textContent=value;byId("purek-error").hidden=false;storedShown=!actionError;}
@@ -279,10 +282,15 @@
   }
   function show(){
     if(opened||!snapshot)return;opened=true;previousFocus=document.activeElement;
-    inert=[...document.body.children].filter(n=>n!==modal&&!["SCRIPT","STYLE","LINK"].includes(n.tagName)).map(n=>[n,n.inert]);inert.forEach(([n])=>{n.inert=true;});
+    // The critical banner region (e.g. the startup session choice) paints above
+    // dialogs and must stay operable. An inert ancestor cannot be undone below
+    // it, so inert the app shell's other children instead of the whole shell.
+    const banner=document.getElementById("critical-banner-region"),shell=banner?.parentElement;
+    inert=[...document.body.children].filter(n=>n!==modal&&!["SCRIPT","STYLE","LINK"].includes(n.tagName))
+      .flatMap(n=>n===shell?[...n.children].filter(child=>child!==banner):[n]).map(n=>[n,n.inert]);inert.forEach(([n])=>{n.inert=true;});
     modal.classList.remove("hidden");paint();byId("purek-close").focus({preventScroll:true});window.BilikaraHostWindow?.postMessage("purek-open");
   }
-  function close({force=false}={}){if(!opened||(pending||selfTest?.busy()||cast().self_test?.running)&&!force)return;stopScan();officialUrl="";officialOwner="";byId("ktv-host-authorization-url").value="";actionError="";storedShown=false;byId("purek-error").hidden=true;closeCacheAdvancedInfo();opened=false;modal.classList.add("hidden");inert.forEach(([n,v])=>{n.inert=v;});inert=[];previousFocus?.focus({preventScroll:true});window.BilikaraHostWindow?.postMessage("purek-close");}
+  function close({force=false}={}){if(!opened||(selfTest?.busy()||cast().self_test?.running)&&!force)return;stopScan();officialUrl="";officialOwner="";byId("ktv-host-authorization-url").value="";actionError="";storedShown=false;byId("purek-error").hidden=true;closeCacheAdvancedInfo();opened=false;modal.classList.add("hidden");inert.forEach(([n,v])=>{n.inert=v;});inert=[];previousFocus?.focus({preventScroll:true});window.BilikaraHostWindow?.postMessage("purek-close");}
   async function openScanner(){
     if(!opened||!mobile||active()||snapshot?.connected||pending)return;
     await action(byId("purek-open"),()=>scanner.open());

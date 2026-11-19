@@ -83,7 +83,11 @@
       if (opened) return;
       opened = true;
       focusBefore = document.activeElement;
-      inert = Array.from(document.body.children).filter(el => el !== modal && !["SCRIPT", "STYLE", "LINK"].includes(el.tagName)).map(el => [el, el.inert]);
+      // Keep the critical banner region (startup session choice) operable: an
+      // inert ancestor cannot be undone below it, so inert the shell's other children.
+      const banner = document.getElementById("critical-banner-region"), shell = banner?.parentElement;
+      inert = Array.from(document.body.children).filter(el => el !== modal && !["SCRIPT", "STYLE", "LINK"].includes(el.tagName))
+        .flatMap(el => el === shell ? Array.from(el.children).filter(child => child !== banner) : [el]).map(el => [el, el.inert]);
       inert.forEach(([el]) => { el.inert = true; });
       modal.classList.remove("hidden");
       closeButton.focus({ preventScroll: true });
