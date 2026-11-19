@@ -136,7 +136,9 @@ impl Executable {
     }
 
     /// Trusted Host configuration only; never deserialize this from an API/FFI.
+    // DEPRECATED (v0.9): the native Host no longer discovers BBDown.
     #[cfg(feature = "native-host")]
+    #[allow(dead_code)]
     pub(crate) fn discover(directory: &Path) -> Option<Self> {
         if let Some(path) = std::env::var_os("BB_DOWN_PATH").filter(|v| !v.is_empty()) {
             return Self::check(PathBuf::from(path)); // explicit missing override fails closed

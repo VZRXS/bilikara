@@ -466,7 +466,8 @@ fn job(
                 ApiError::new(
                     501,
                     "bbdown_unavailable",
-                    "BBDown executable unavailable; configure BB_DOWN_PATH and restart Host",
+                    // DEPRECATED (v0.9): BBDown is never discovered.
+                    "BBDown is deprecated and no longer available; select Rust Native or DownKyi",
                 )
             })?,
             force_avc: true,

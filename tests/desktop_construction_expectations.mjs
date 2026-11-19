@@ -109,8 +109,9 @@ export function expectedPackage(fixture, environment, { development, prefix, mac
     CFBundleExecutable: 'bilikara-desktop-host', CFBundleIdentifier: 'com.bilikara.backend', CFBundleName: 'bilikara backend',
     CFBundlePackageType: 'APPL', CFBundleShortVersionString: '0.8.0', CFBundleVersion: '0.8.0', LSUIElement: true,
   } });
-  const tool = environment.PATH.split(path.delimiter).map(p => path.join(p, `BBDown${suffix}`)).find(p => existsSync(p));
-  if (tool) { copy(tool, `${vendor}/BBDown${suffix}`); if (macosApp) link(`${resources}/vendor/BBDown`, '../../Frameworks/BBDown'); }
+  // DEPRECATED (v0.9): BBDown is never staged, even when one is on PATH.
+  // const tool = environment.PATH.split(path.delimiter).map(p => path.join(p, `BBDown${suffix}`)).find(p => existsSync(p));
+  // if (tool) { copy(tool, `${vendor}/BBDown${suffix}`); if (macosApp) link(`${resources}/vendor/BBDown`, '../../Frameworks/BBDown'); }
   if (process.platform === 'darwin') copy(path.join(root, `tools/aria2/macos-${arch}.json`), `${resources}/vendor/aria2-macos.json`);
   if (prefix) {
     const data = JSON.parse(readFileSync(path.join(prefix, 'bin/ffmpeg-runtime.json')));
@@ -141,10 +142,11 @@ export function expectedPackage(fixture, environment, { development, prefix, mac
   if (compliance) {
     for (const name of ['LICENSE', 'LEGAL.md', 'THIRD_PARTY_NOTICES.md']) copy(path.join(root, name), `${docs}/${name}`);
     const licenses = `${docs}/THIRD_PARTY_LICENSES`;
-    copy(path.join(root, 'third_party/BBDown-LICENSE.txt'), `${licenses}/BBDown-LICENSE.txt`);
+    // DEPRECATED (v0.9): BBDown license/version/source records are not packaged.
+    // copy(path.join(root, 'third_party/BBDown-LICENSE.txt'), `${licenses}/BBDown-LICENSE.txt`);
     copy(path.join(root, 'third_party/ebur128-LICENSE.txt'), `${licenses}/ebur128-LICENSE.txt`);
     copy(environment.BILIKARA_FFMPEG_SOURCE_ARCHIVE, `${docs}/THIRD_PARTY_SOURCES/ffmpeg-9.0.1.tar.xz`);
-    text(`${licenses}/bbdown-version.txt`, `${(environment.XTASK_FIXTURE_TOOL_VERSION || 'BBDown 1.6.3').replace(/\r\n|\r/g, '\n')}\n`);
+    // text(`${licenses}/bbdown-version.txt`, `${(environment.XTASK_FIXTURE_TOOL_VERSION || 'BBDown 1.6.3').replace(/\r\n|\r/g, '\n')}\n`);
     text(`${licenses}/libav-source.txt`, 'FFmpeg libraries (libav) redistribution notes\n\n'
       + 'This native product uses dynamically loaded libraries from the FFmpeg project.\n'
       + 'FFmpeg and ffprobe executables are not bundled. The library build disables\n'
@@ -154,17 +156,17 @@ export function expectedPackage(fixture, environment, { development, prefix, mac
       + '- Exact source archive: ../THIRD_PARTY_SOURCES/ffmpeg-9.0.1.tar.xz\n'
       + '- Build scripts and companion source: ../THIRD_PARTY_SOURCES/media-libav/\n'
       + '- Upstream legal information: https://ffmpeg.org/legal.html\n');
-    let toolPath = realpathSync(tool);
-    if (toolPath.startsWith('\\\\?\\UNC\\')) toolPath = `\\\\${toolPath.slice(8)}`;
-    else if (toolPath.startsWith('\\\\?\\')) toolPath = toolPath.slice(4);
-    let notice = 'BBDown redistribution notes\n\n'
-      + 'The packaged runtime includes a pinned BBDown vendor executable and restores\n'
-      + 'the writable runtime copy from that immutable vendor instead of polling releases.\n\n'
-      + `- Bundled build path: ${toolPath}\n`;
-    for (const [label, key] of [['Version', 'VERSION'], ['Upstream release commit', 'RELEASE_COMMIT'], ['Asset', 'ARCHIVE_NAME'], ['Source URL', 'SOURCE_URL'], ['Asset SHA-256', 'SHA256']]) {
-      notice += `- ${label}: ${environment[`BILIKARA_BBDOWN_${key}`]?.trim() || 'not recorded'}\n`;
-    }
-    text(`${licenses}/bbdown-source.txt`, `${notice}- Upstream repository: https://github.com/nilaoda/BBDown\n- License: MIT; see BBDown-LICENSE.txt\n`);
+    // let toolPath = realpathSync(tool);
+    // if (toolPath.startsWith('\\\\?\\UNC\\')) toolPath = `\\\\${toolPath.slice(8)}`;
+    // else if (toolPath.startsWith('\\\\?\\')) toolPath = toolPath.slice(4);
+    // let notice = 'BBDown redistribution notes\n\n'
+    //   + 'The packaged runtime includes a pinned BBDown vendor executable and restores\n'
+    //   + 'the writable runtime copy from that immutable vendor instead of polling releases.\n\n'
+    //   + `- Bundled build path: ${toolPath}\n`;
+    // for (const [label, key] of [['Version', 'VERSION'], ['Upstream release commit', 'RELEASE_COMMIT'], ['Asset', 'ARCHIVE_NAME'], ['Source URL', 'SOURCE_URL'], ['Asset SHA-256', 'SHA256']]) {
+    //   notice += `- ${label}: ${environment[`BILIKARA_BBDOWN_${key}`]?.trim() || 'not recorded'}\n`;
+    // }
+    // text(`${licenses}/bbdown-source.txt`, `${notice}- Upstream repository: https://github.com/nilaoda/BBDown\n- License: MIT; see BBDown-LICENSE.txt\n`);
   }
   if (shell && !macosApp) {
     copy(fixture, `bilikara-desktop${suffix}`);

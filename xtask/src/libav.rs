@@ -246,6 +246,8 @@ pub fn stage(config: &Config, prefix: &Path, layout: &files::Layout) -> Result<(
         false,
     )?;
     files::copy(&config.root.join("LICENSE"), &sources.join("xtask/LICENSE"))?;
+    // The copied xtask source retains the deprecated prepare-bbdown tool, so
+    // its license input stays with the rebuild kit.
     for name in ["BBDown-LICENSE.txt", "ebur128-LICENSE.txt"] {
         files::copy(
             &config.root.join("third_party").join(name),

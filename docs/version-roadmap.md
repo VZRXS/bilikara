@@ -37,7 +37,7 @@ Reliable desktop behavior, preserved data and layouts, recoverable upgrades and 
 
 ## Downloading and media
 
-Rust Native remains the default downloader; shared Rust services own scheduling, retries, cancellation, validation and atomic publication. BBDown and DownKyi/aria2c remain explicit alternatives with accepted pins. Packaged media uses in-process libav, without FFmpeg/ffprobe programs; external test oracles remain test dependencies. Resume/proxy/crash-recovery work follows validated needs rather than a new engine or source-policy rewrite.
+Rust Native remains the default downloader; shared Rust services own scheduling, retries, cancellation, validation and atomic publication. DownKyi/aria2c remains an explicit alternative with accepted pins. BBDown is deprecated from v0.9: native packages no longer bundle it and the native Host no longer runs it (the code remains commented for reference). Packaged media uses in-process libav, without FFmpeg/ffprobe programs; external test oracles remain test dependencies. Resume/proxy/crash-recovery work follows validated needs rather than a new engine or source-policy rewrite.
 
 ## Shared UI, mobile and casting
 

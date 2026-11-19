@@ -316,9 +316,9 @@ It does not apply to third-party tools, platform content, downloaded media, cach
 - License: MIT License, according to the upstream repository at the time this notice was written
 - Notes:
   - BBDown is an independent third-party project.
-  - Packaged builds bundle the architecture-matched BBDown 1.6.3 release asset from upstream tag `1.6.3` / commit `45622f79cd766e0fc6f5cbd49fcf4960340f35c3`.
-  - Release builds verify a pinned SHA-256 for each supported Windows and macOS asset and retain the selected URL, hash, version output, and MIT license in packaged compliance material.
-  - Packaged runtime repair copies the immutable vendor executable to the writable tool directory and does not poll GitHub for a newer BBDown release.
+  - Deprecated since v0.9: native desktop packages no longer bundle, verify or invoke BBDown, and their compliance material no longer carries BBDown records.
+  - Releases through v0.8 bundled the architecture-matched BBDown 1.6.3 release asset from upstream tag `1.6.3` / commit `45622f79cd766e0fc6f5cbd49fcf4960340f35c3`, verified a pinned SHA-256 for each supported Windows and macOS asset, and retained the selected URL, hash, version output, and MIT license in packaged compliance material.
+  - Those releases' packaged runtime repair copied the immutable vendor executable to the writable tool directory and did not poll GitHub for a newer BBDown release.
   - Non-packaged development environments may still use the legacy online acquisition path when no local binary is available.
   - BBDown's README includes its own usage notice. Users and redistributors should review the upstream repository before use or redistribution.
   - Account data such as `BBDown.data`, cookies, or tokens may contain sensitive user information and must not be shared, committed, uploaded, or published.
@@ -403,7 +403,7 @@ legacy product, rather than making them dependencies of the native package.
 ## 9. Bilibili and External Services
 
 - Bilibili: bilikara can parse Bilibili URLs, use Bilibili embedded playback, interact with Bilibili APIs, and rely on user-provided account login data.
-- GitHub: non-packaged development mode may use GitHub Releases to acquire BBDown; packaged builds do not poll for BBDown updates. aria2 release metadata is checked for an official matching asset before the project mirror is used.
+- GitHub: the legacy non-packaged development mode may use GitHub Releases to acquire BBDown (deprecated since v0.9); packaged builds do not acquire BBDown. aria2 release metadata is checked for an official matching asset before the project mirror is used.
 - QR code generation for native LAN and Internet Remote access is local; it does not send private invitation links to an external QR service.
 
 These services are independent third parties. bilikara is not affiliated with, endorsed by, sponsored by, or officially associated with them.

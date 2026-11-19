@@ -2,7 +2,7 @@
 use crate::{
     Result, build_backend_executable, compliance,
     config::{Config, Os},
-    files, libav, macos, tools,
+    files, libav, macos,
 };
 use serde_json::Value;
 use std::{
@@ -112,8 +112,9 @@ pub fn backend_path(config: &Config, dist: &Path) -> PathBuf {
 pub fn build_backend(config: &Config, dist: &Path) -> Result<PathBuf> {
     let prefix = libav::prefix(config)?
         .ok_or("BILIKARA_LIBAV_PREFIX is required for a complete native bundle")?;
-    let mut inputs = compliance::input_files(config)?;
-    inputs.extend(tools::bbdown_path(config)?);
+    let inputs = compliance::input_files(config)?;
+    // DEPRECATED (v0.9): BBDown is not a packaging input.
+    // inputs.extend(tools::bbdown_path(config)?);
     let executable = build_backend_executable(config)?;
     let name = if config.platform.os == Os::Macos {
         "bilikara.app"

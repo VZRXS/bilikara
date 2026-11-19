@@ -13,6 +13,7 @@ use std::{
     time::Duration,
 };
 
+#[allow(dead_code)] // DEPRECATED (v0.9): BBDown is no longer packaged.
 fn executable(path: &Path) -> bool {
     if !path.is_file() {
         return false;
@@ -29,6 +30,7 @@ fn executable(path: &Path) -> bool {
     }
 }
 
+#[allow(dead_code)] // DEPRECATED (v0.9): BBDown is no longer packaged.
 pub fn bbdown(config: &Config) -> Result<Option<PathBuf>> {
     let tool = bbdown_path(config)?;
     if let Some(path) = &tool
@@ -80,6 +82,7 @@ pub fn bbdown(config: &Config) -> Result<Option<PathBuf>> {
     Ok(tool)
 }
 
+#[allow(dead_code)] // DEPRECATED (v0.9): BBDown is no longer packaged.
 pub fn help(path: &Path) -> Result<(bool, String)> {
     let mut command = Command::new(path);
     command.arg("--help");
@@ -96,6 +99,7 @@ pub fn help(path: &Path) -> Result<(bool, String)> {
     ))
 }
 
+#[allow(dead_code)] // DEPRECATED (v0.9): BBDown is no longer packaged.
 pub fn bbdown_path(config: &Config) -> Result<Option<PathBuf>> {
     let mut paths: Vec<_> = env::split_paths(config.env.get("PATH").unwrap_or_default()).collect();
     let extensions: Vec<_> = if config.platform.os == Os::Windows {
@@ -128,6 +132,7 @@ pub fn bbdown_path(config: &Config) -> Result<Option<PathBuf>> {
     })
 }
 
+#[allow(dead_code)] // DEPRECATED (v0.9): BBDown is no longer packaged.
 fn windows_tool(candidate: &Path) -> Option<PathBuf> {
     let normalized = candidate
         .to_string_lossy()

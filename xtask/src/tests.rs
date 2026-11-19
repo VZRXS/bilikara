@@ -573,9 +573,10 @@ fn release_compliance_enforces_configured_source_digest_and_license() {
             ),
         ],
     );
+    // DEPRECATED (v0.9): the BBDown license is no longer a packaging input.
     assert_eq!(
         compliance::input_files(&c).unwrap(),
-        [license.clone(), loudness_license, archive.clone()]
+        [loudness_license, archive.clone()]
     );
     c.env.0.insert(
         "BILIKARA_FFMPEG_SOURCE_SHA256".into(),
@@ -601,12 +602,14 @@ fn release_compliance_enforces_configured_source_digest_and_license() {
         .0
         .remove(std::ffi::OsStr::new("BILIKARA_FFMPEG_SOURCE_ARCHIVE"));
     fs::remove_file(license).unwrap();
-    assert!(
-        compliance::input_files(&c)
-            .unwrap_err()
-            .to_string()
-            .contains("BBDown license file not found")
-    );
+    // DEPRECATED (v0.9): a missing BBDown license no longer blocks packaging.
+    // assert!(
+    //     compliance::input_files(&c)
+    //         .unwrap_err()
+    //         .to_string()
+    //         .contains("BBDown license file not found")
+    // );
+    assert!(compliance::input_files(&c).is_ok());
 }
 
 #[test]

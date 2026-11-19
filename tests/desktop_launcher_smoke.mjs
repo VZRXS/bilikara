@@ -40,7 +40,9 @@ export async function verifyLauncher(output) {
     const installed = path.join(temporary, 'Installed product 空 & $name');
     cpSync(source, installed, { recursive: true, dereference: false, verbatimSymlinks: true });
     const executable = path.join(installed, path.basename(selected));
-    const images = [path.basename(selected), '_internal/bilikara-desktop-host', '_internal/bilikara-updater', '_internal/vendor/BBDown'].map(file => {
+    // DEPRECATED (v0.9): BBDown is no longer packaged ('_internal/vendor/BBDown').
+    assert.equal(existsSync(path.join(source, '_internal/vendor/BBDown')), false, 'deprecated BBDown must not be packaged');
+    const images = [path.basename(selected), '_internal/bilikara-desktop-host', '_internal/bilikara-updater'].map(file => {
       const original = path.join(source, file), copied = path.join(installed, file);
       assert.deepEqual(readFileSync(copied), readFileSync(original), 'relocation preserves compiled executable bytes');
       return { original, copied, sha256: createHash('sha256').update(readFileSync(original)).digest('hex') };

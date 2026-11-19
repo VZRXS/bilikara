@@ -220,11 +220,13 @@ fn validate_package_contents(
     } else {
         "bilikara_media_libav.dll"
     };
-    let tool = if platform == "macos" {
-        "BBDown"
-    } else {
-        "BBDown.exe"
-    };
+    // DEPRECATED (v0.9): native packages no longer carry BBDown. Installed
+    // v0.8.x installers still require it, so their updates need a manual install.
+    // let tool = if platform == "macos" {
+    //     "BBDown"
+    // } else {
+    //     "BBDown.exe"
+    // };
     let mut required = vec![
         "static/index.html",
         "static/app.js",
@@ -250,7 +252,7 @@ fn validate_package_contents(
     required.push("vendor/ffmpeg-runtime.json");
     for file in required.into_iter().map(|p| assets.join(p)).chain([
         assets.join("vendor").join(companion),
-        assets.join("vendor").join(tool),
+        // assets.join("vendor").join(tool),
     ]) {
         let actual = file.canonicalize().map_err(io_error("package_missing"))?;
         if !actual.starts_with(&root)

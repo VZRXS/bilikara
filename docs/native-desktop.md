@@ -91,19 +91,33 @@ so a backend target override cannot cross-compile the tool itself; the tool's
 `--target` follows `prepare-desktop` and selects the backend/shell output.
 The Tauri target hint keeps its existing native-target behavior.
 `TAURI_ENV_DEBUG=false` or `0` selects release-profile adjacent preparation and
-requires the same complete prefix, BBDown execution/version check and macOS
-portability checks as before. Other values retain debug preparation. The
+requires the same complete prefix and macOS portability checks as before; the
+former BBDown execution/version check is retired with BBDown (see below). Other values retain debug preparation. The
 Android/iOS development hook returns without building or staging desktop code.
 Source macOS development retains the adjacent `_internal` layout; final macOS
 bundle assembly/signing is a separate release step.
 
-For a product build, prepare the existing pinned BBDown vendor on a matching
-native runner with Rust and curl, then prepare a matching libav-only prefix with
-the documented `media-libav` scripts:
+**BBDown is deprecated (v0.9).** Product builds no longer stage, require or
+version-check a BBDown executable, and their license directory no longer carries
+BBDown records. A BBDown found on the build PATH is ignored. The native Host never
+discovers or executes BBDown: a saved `bbdown` download source stays visible as
+unavailable/deprecated until the user explicitly selects Rust Native or DownKyi,
+and selecting `bbdown` returns 501 `bbdown_unavailable`. Installed v0.8.x update
+installers still require `vendor/BBDown(.exe)` inside a Windows/macOS update
+package, so moving from v0.8.x to a package without BBDown needs a manual
+installation. The retired code paths remain in the source as commented,
+`DEPRECATED (v0.9)` references. The legacy Python source Host keeps its frozen
+BBDown compatibility surface for development only.
+
+The deprecated `prepare-bbdown` tool remains for existing CI callers; packaging
+ignores its output:
 
 ```sh
 cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- prepare-bbdown /absolute/generated/bbdown-vendor
 ```
+
+For a product build, prepare a matching libav-only prefix with the documented
+`media-libav` scripts.
 
 The optional `--platform` / `--arch` retain the existing target aliases. The tool
 verifies the unchanged six archive pins before selecting one safe executable,
@@ -116,8 +130,7 @@ possible and never recursively clears the vendor tree. CI sets up the pinned
 Rust toolchain and native MSVC environment before this command. It requires no
 product build, libav prefix, Python or application Runtime.
 
-Set `BILIKARA_LIBAV_PREFIX` to its absolute path, consume `metadata.env` as build
-environment values, and put the prepared BBDown on the **build** PATH, then run:
+Set `BILIKARA_LIBAV_PREFIX` to its absolute path, then run:
 
 ```sh
 npm run build
@@ -182,7 +195,7 @@ repository Rust toolchain and native compiler/linker environment.
 `scripts/libav_manifest.py` retains the Python
 manifest/closure interface for legacy diagnostics and compatibility consumers;
 `bilikara.ffmpeg_vendor` forwards to it. Prepared same-build libav provenance,
-the pinned BBDown checks and native release artifact gates remain required.
+and native release artifact gates remain required (the BBDown checks are retired).
 
 On Linux, the third-party Tauri CLI optionally probes the system's
 `lsb_release` before invoking the hook; some distributions implement that command
@@ -409,8 +422,10 @@ with a restricted local TLS fixture, synthetic FFmpeg-generated test media and
 WebKit. Set `BILIKARA_TEST_LIBAV_COMPANION` to the actual native prepared library;
 missing, malformed or foreign inputs fail. Install the pinned test browser with
 `npm exec -- playwright install webkit`. Playback clocks, login/binding,
-LAN/Internet controls, PNG/CSV/ZIP, restart, cache policy/cancellation and a
-compiled BBDown command fixture remain exercised. FFmpeg is a test-only generator;
+LAN/Internet controls, PNG/CSV/ZIP, restart and cache policy/cancellation remain
+exercised; the compiled BBDown executor case is retired with BBDown (v0.9), and
+`npm run test:native-host` instead verifies that the actual Host never discovers
+or executes a BBDown named by `BB_DOWN_PATH`. FFmpeg is a test-only generator;
 the fixture does not qualify a real provider download. Linux CI runs this gate
 after preparing the prefix and installing browser/system prerequisites.
 
@@ -422,9 +437,9 @@ and `BILIKARA_TEST_BROWSER` can select another installed browser.
 `BILIKARA_TEST_ACTIVE_PITCH=1` requires completed real Signalsmith DSP.
 This browser profile does not qualify Android devices or native windowing.
 An audio/engine failure is a failed validation, not a reason to stub DSP.
-`--bbdown-real` instead requires the explicitly supplied pinned
-`BILIKARA_TEST_BBDOWN_PATH`; synthetic provider responses alone do not establish
-real BBDown/provider compatibility. The Python desktop browser orchestrator is
+The driver's `--bbdown` / `--bbdown-real` options are deprecated with BBDown
+(v0.9): the native Host no longer executes BBDown, so they are not a supported
+gate. The Python desktop browser orchestrator is
 retired; source Host UI/FFI harnesses remain separate consumers.
 
 `BILIKARA_TEST_TAURI_EXE=/absolute/generated/bilikara/bilikara-desktop npm run
@@ -439,8 +454,8 @@ The driver writes screenshots/logs with
 same declared executable. Linux execution does not qualify foreign windowing.
 
 `npm run test:desktop-build` exercises native construction with a controlled PATH
-without Python, including missing dependencies/provenance, BBDown version
-rejection and no application Runtime linkage. CI runs that same command once
+without Python, including missing dependencies/provenance, ignoring a deprecated
+BBDown on PATH and no application Runtime linkage. CI runs that same command once
 after pinned host-native xtask checks and Node setup. `npm run test:libav-wrapper`
 checks the actual Bash helper from external source directories and independent
 rebuild kits using a recording Cargo command. `npm run test:libav-prerequisites`
@@ -638,9 +653,9 @@ Preview 1 already used `_internal/static/` and `_internal/vendor/`. Its
 libraries; the native backend links the Rust crates directly and does not load
 those DLLs. The Python/PyInstaller payload and its app-local API-set/UCRT copies
 are not restored. Native packaging retains the actual private DLL dependency
-closure in `vendor/` and uses Windows system API sets/UCRT. The pinned Windows
-downloader keeps the published filename `vendor/BBDown.exe`, independent of
-`PATH`/`PATHEXT` capitalization during discovery.
+closure in `vendor/` and uses Windows system API sets/UCRT. Through v0.8 the
+pinned Windows downloader used the published filename `vendor/BBDown.exe`;
+v0.9 packages no longer contain it.
 
 `_internal/` groups installed program files with the native Rust backend and no
 Python payload. Windows again creates a writable `runtime/` beside it, with
@@ -693,7 +708,7 @@ the fixed element stays within the stage. Physical multi-display/WebView device
 acceptance remains separate from this browser regression.
 
 Bundles contain no Python interpreter, PyInstaller payload, temporary Python
-FFI libraries, FFmpeg or ffprobe executables. BBDown stays pinned and vendored.
+FFI libraries, FFmpeg or ffprobe executables. BBDown is deprecated and not bundled.
 aria2c uses the existing Rust preparation and managed-tool policy; macOS carries
 the pinned download manifest rather than making aria2c a required bundled file.
 Libav is discovered from the installed resources and configured through typed
@@ -1138,7 +1153,8 @@ fixed recipe and shutdown policy. Neither command runs automatically or acquires
 credentials. `test:catalog-maintenance` checks the CLI against isolated services.
 
 Cache tasks append to `logs/<source>/<item_id>.log` under the data directory,
-where source is `native`, `bbdown` or `downkyi`. Lines use local timestamps and
+where source is `native` or `downkyi` (`bbdown` logs belong to releases before
+its v0.9 deprecation). Lines use local timestamps and
 start with the song title. Logs are not merged or truncated at 1 MiB. Song logs
 remain for the whole Host run, including items that already left the current
 song/playlist, so failed or slow downloads stay diagnosable; Host shutdown
@@ -1249,11 +1265,10 @@ bounded retries remain in force. DownKyi retries transient media validation
 failures within its ten-attempt budget; terminal authentication/capability errors
 remain terminal.
 
-BBDown and Native can attempt guest downloads; upstream access restrictions still
-apply. DownKyi retains its login requirement. BBDown can preserve an EAC3-only
-audio track on native desktop too. Its progress reports observed media/temporary
-file lengths once per second; total bytes remain unknown until the artifact is
-complete (this is not an exact wire-byte counter). yt-dlp interfaces remain,
+Native can attempt guest downloads; upstream access restrictions still apply.
+DownKyi retains its login requirement. (Before its v0.9 deprecation, BBDown could
+also download as a guest and preserve an EAC3-only audio track; it reported
+observed file lengths once per second rather than exact wire bytes.) yt-dlp interfaces remain,
 but both `yt-dlp` and `ytdlp` selections are unavailable: status reports disabled,
 and prepare/selection return 501 `cache_source_unavailable`. No native yt-dlp
 process is launched. Updates have no fixed total download deadline;
@@ -1273,8 +1288,8 @@ configuration also validates login and replaces the active credential. Logout
 clears the active credential and saved login; logout or a successful QR login
 records only the dismissed environment value's digest, preventing that same
 value from reappearing after restart. A different environment value is a new
-override. Desktop QR credentials remain in `BBDown.data`; active credentials are
-passed to BBDown through its `-c` argument. `bilikara_native` is a separate local
+override. Desktop QR credentials remain in the legacy-named `BBDown.data` file;
+since BBDown's v0.9 deprecation no BBDown process receives them. `bilikara_native` is a separate local
 Host/Remote browser identity cookie and is never a Bilibili credential.
 
 Desktop **Open login page** opens Bilibili's normal website in a separate,
@@ -1309,7 +1324,7 @@ inherit the job; if shutdown hangs after shell death, a five-second watchdog
 exits the Host so the owning Job handle closes. The explicitly detached update
 installer can finish after Host exit. Windows process behavior and native dialogs still require platform testing.
 
-On Linux, supervised BBDown/aria2c processes receive a kernel parent-death
+On Linux, supervised aria2c processes (and formerly BBDown) receive a kernel parent-death
 signal before executing. A parent check closes the startup race, so Host crashes
 and forced termination also stop the tools when Rust cleanup cannot run. Normal
 cancellation and timeouts still terminate and reap the owned process group. This

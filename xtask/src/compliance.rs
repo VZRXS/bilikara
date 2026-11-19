@@ -55,6 +55,7 @@ fn archive(config: &Config) -> Result<Option<PathBuf>> {
     Ok(Some(path))
 }
 
+#[allow(dead_code)] // DEPRECATED (v0.9): retained until BBDown code is removed.
 fn bbdown_license(config: &Config) -> Result<PathBuf> {
     let value = config.env.text("BILIKARA_BBDOWN_LICENSE_FILE");
     let path = if value.is_empty() {
@@ -74,8 +75,10 @@ fn bbdown_license(config: &Config) -> Result<PathBuf> {
 
 pub fn input_files(config: &Config) -> Result<Vec<PathBuf>> {
     let source = archive(config)?;
+    // DEPRECATED (v0.9): BBDown is not distributed, so its license is no
+    // longer a packaging input.
     let mut inputs = vec![
-        bbdown_license(config)?,
+        // bbdown_license(config)?,
         config.root.join("third_party/ebur128-LICENSE.txt"),
     ];
     inputs.extend(source);
@@ -124,41 +127,42 @@ programs, GPL and nonfree components; see libav/COPYING.LGPLv2.1 and libav/LICEN
             recorded(config, "BILIKARA_FFMPEG_SOURCE_SHA256"),
         ),
     )?;
-    let tool =
-        tools::bbdown_path(config)?.ok_or("Prepare the pinned BBDown vendor before packaging")?;
-    let canonical = tool.canonicalize()?;
-    // pathlib.resolve's Windows display omits the extended-length prefix.
-    let build_path = canonical.to_string_lossy();
-    let build_path = build_path
-        .strip_prefix(r"\\?\UNC\")
-        .map(|s| format!(r"\\{s}"))
-        .unwrap_or_else(|| {
-            build_path
-                .strip_prefix(r"\\?\")
-                .unwrap_or(&build_path)
-                .into()
-        });
-    fs::write(
-        licenses.join("bbdown-source.txt"),
-        format!(
-            "BBDown redistribution notes\n\n\
-The packaged runtime includes a pinned BBDown vendor executable and restores\n\
-the writable runtime copy from that immutable vendor instead of polling releases.\n\n\
-- Bundled build path: {build_path}\n\
-- Version: {}\n\
-- Upstream release commit: {}\n\
-- Asset: {}\n\
-- Source URL: {}\n\
-- Asset SHA-256: {}\n\
-- Upstream repository: https://github.com/nilaoda/BBDown\n\
-- License: MIT; see BBDown-LICENSE.txt\n",
-            recorded(config, "BILIKARA_BBDOWN_VERSION"),
-            recorded(config, "BILIKARA_BBDOWN_RELEASE_COMMIT"),
-            recorded(config, "BILIKARA_BBDOWN_ARCHIVE_NAME"),
-            recorded(config, "BILIKARA_BBDOWN_SOURCE_URL"),
-            recorded(config, "BILIKARA_BBDOWN_SHA256"),
-        ),
-    )?;
+    // DEPRECATED (v0.9): BBDown is no longer packaged; no redistribution notes.
+    // let tool =
+    //     tools::bbdown_path(config)?.ok_or("Prepare the pinned BBDown vendor before packaging")?;
+    // let canonical = tool.canonicalize()?;
+    // // pathlib.resolve's Windows display omits the extended-length prefix.
+    // let build_path = canonical.to_string_lossy();
+    // let build_path = build_path
+    //     .strip_prefix(r"\\?\UNC\")
+    //     .map(|s| format!(r"\\{s}"))
+    //     .unwrap_or_else(|| {
+    //         build_path
+    //             .strip_prefix(r"\\?\")
+    //             .unwrap_or(&build_path)
+    //             .into()
+    //     });
+    // fs::write(
+    //     licenses.join("bbdown-source.txt"),
+    //     format!(
+    //         "BBDown redistribution notes\n\n\
+    // The packaged runtime includes a pinned BBDown vendor executable and restores\n\
+    // the writable runtime copy from that immutable vendor instead of polling releases.\n\n\
+    // - Bundled build path: {build_path}\n\
+    // - Version: {}\n\
+    // - Upstream release commit: {}\n\
+    // - Asset: {}\n\
+    // - Source URL: {}\n\
+    // - Asset SHA-256: {}\n\
+    // - Upstream repository: https://github.com/nilaoda/BBDown\n\
+    // - License: MIT; see BBDown-LICENSE.txt\n",
+    //         recorded(config, "BILIKARA_BBDOWN_VERSION"),
+    //         recorded(config, "BILIKARA_BBDOWN_RELEASE_COMMIT"),
+    //         recorded(config, "BILIKARA_BBDOWN_ARCHIVE_NAME"),
+    //         recorded(config, "BILIKARA_BBDOWN_SOURCE_URL"),
+    //         recorded(config, "BILIKARA_BBDOWN_SHA256"),
+    //     ),
+    // )?;
     if let Some(source) = archive(config)? {
         files::copy(
             &source,
@@ -167,14 +171,15 @@ the writable runtime copy from that immutable vendor instead of polling releases
                 .join(source.file_name().ok_or("missing archive filename")?),
         )?;
     }
-    files::copy(
-        &bbdown_license(config)?,
-        &licenses.join("BBDown-LICENSE.txt"),
-    )?;
-    let (success, output) = tools::help(&tool)?;
-    if !success || output.trim().is_empty() {
-        return Err("BBDown compliance execution failed".into());
-    }
-    fs::write(licenses.join("bbdown-version.txt"), output)?;
+    // DEPRECATED (v0.9): BBDown license/version records are not packaged.
+    // files::copy(
+    //     &bbdown_license(config)?,
+    //     &licenses.join("BBDown-LICENSE.txt"),
+    // )?;
+    // let (success, output) = tools::help(&tool)?;
+    // if !success || output.trim().is_empty() {
+    //     return Err("BBDown compliance execution failed".into());
+    // }
+    // fs::write(licenses.join("bbdown-version.txt"), output)?;
     Ok(())
 }

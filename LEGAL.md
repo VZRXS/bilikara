@@ -35,8 +35,9 @@ This project does not grant permission to bypass access controls, technical rest
 
 ## 4. Third-Party Download and Processing Tools
 
-Native desktop builds invoke BBDown and dynamically load FFmpeg libraries
-(libav). Retained legacy source builds may also invoke the FFmpeg programs.
+Native desktop builds dynamically load FFmpeg libraries (libav). BBDown is
+deprecated since v0.9: native builds no longer bundle or invoke it. Retained
+legacy source builds may still invoke BBDown and the FFmpeg programs.
 
 These tools are independent third-party projects. They are not owned by this project unless explicitly stated.
 

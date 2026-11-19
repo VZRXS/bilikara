@@ -66,17 +66,21 @@ preparation('repeated staging preserves user data and replaces stale static reso
   assert.equal(existsSync(stale), false); assert.equal(readFileSync(path.join(data, 'sentinel'), 'utf8'), 'never remove');
 });
 
-preparation('prepared inputs work for debug and explicit release, with strict BBDown pin', async c => {
+// DEPRECATED (v0.9): BBDown is no longer packaged, so a BBDown on PATH is
+// ignored (never staged or version-checked) instead of being pinned.
+preparation('prepared inputs work for debug and explicit release; BBDown on PATH is not packaged', async c => {
   const prefix = c.prefix(); c.toolFixture();
   for (const debug of ['true', 'false', '0']) {
     const { output, commands } = await c.checkPreparation({ BILIKARA_LIBAV_PREFIX: prefix, TAURI_ENV_DEBUG: debug, BILIKARA_BBDOWN_VERSION: '1.6.3' });
     assert.equal(commands[0].includes('--release'), debug !== 'true');
     assert.equal(json(path.join(output, '_internal/native-desktop.json')).development, debug === 'true');
     assert.ok(existsSync(path.join(output, 'license/THIRD_PARTY_SOURCES/xtask/Cargo.toml')));
+    assert.equal(existsSync(path.join(output, `_internal/vendor/BBDown${suffix}`)), false);
   }
-  await c.checkPreparation({ BILIKARA_LIBAV_PREFIX: prefix, TAURI_ENV_DEBUG: 'false', BILIKARA_BBDOWN_VERSION: 'incorrect' }, [], 'does not match pinned');
-  await c.checkPreparation({ BILIKARA_LIBAV_PREFIX: prefix, TAURI_ENV_DEBUG: 'false', BILIKARA_BBDOWN_VERSION: '1.6.3',
-    XTASK_FIXTURE_TOOL_VERSION: 'BBDown 9.9.9' }, [], 'does not match pinned');
+  // await c.checkPreparation({ BILIKARA_LIBAV_PREFIX: prefix, TAURI_ENV_DEBUG: 'false', BILIKARA_BBDOWN_VERSION: 'incorrect' }, [], 'does not match pinned');
+  // await c.checkPreparation({ BILIKARA_LIBAV_PREFIX: prefix, TAURI_ENV_DEBUG: 'false', BILIKARA_BBDOWN_VERSION: '1.6.3',
+  //   XTASK_FIXTURE_TOOL_VERSION: 'BBDown 9.9.9' }, [], 'does not match pinned');
+  await c.checkPreparation({ BILIKARA_LIBAV_PREFIX: prefix, TAURI_ENV_DEBUG: 'false', BILIKARA_BBDOWN_VERSION: 'incorrect' });
 });
 
 preparation('explicit and environment targets retain precedence; mobile hooks do nothing', async c => {
@@ -109,7 +113,9 @@ preparation('bad prefix, tools, dependencies, provenance and manifest fail close
   await c.checkPreparation({ BILIKARA_LIBAV_PREFIX: 'relative' }, [], 'absolute same-build prefix');
   await c.checkPreparation({ TAURI_ENV_DEBUG: 'false' }, [], 'BILIKARA_LIBAV_PREFIX is required');
   const prefix = c.prefix(); const env = { BILIKARA_LIBAV_PREFIX: prefix };
-  await c.checkPreparation({ ...env, TAURI_ENV_DEBUG: 'false' }, [], 'Prepare the pinned BBDown vendor');
+  // DEPRECATED (v0.9): a release preparation no longer requires BBDown.
+  // await c.checkPreparation({ ...env, TAURI_ENV_DEBUG: 'false' }, [], 'Prepare the pinned BBDown vendor');
+  await c.checkPreparation({ ...env, TAURI_ENV_DEBUG: 'false' });
   const manifestFile = path.join(prefix, 'bin/ffmpeg-runtime.json'); const manifest = json(manifestFile);
   for (const [changes, error] of [
     [{ version: '8.1.2' }, 'Invalid packaged FFmpeg manifest'],
@@ -199,16 +205,19 @@ release('target precedence and repeated shared output paths preserve the contrac
   await c.checkRelease(env); await c.checkRelease(env); await c.checkRelease({ CARGO_BUILD_TARGET: 'foreign' }, [], 'matching target');
 });
 
-release('BBDown compliance preserves universal newline conversion', async c => {
-  await c.checkRelease({ XTASK_FIXTURE_TOOL_VERSION: 'BBDown 1.6.3\r\nbanner\rline' });
-});
+// DEPRECATED (v0.9): BBDown version records are no longer packaged.
+// release('BBDown compliance preserves universal newline conversion', async c => {
+//   await c.checkRelease({ XTASK_FIXTURE_TOOL_VERSION: 'BBDown 1.6.3\r\nbanner\rline' });
+// });
 
 release('required tool and complete prefix cannot fall back to development or system', async c => {
   await c.checkRelease({ BILIKARA_LIBAV_PREFIX: '', TAURI_ENV_DEBUG: 'true' }, [], 'BILIKARA_LIBAV_PREFIX is required');
   await c.checkRelease({ BILIKARA_LIBAV_PREFIX: 'relative' }, [], 'absolute same-build prefix');
   await c.checkRelease({ BILIKARA_LIBAV_PREFIX: path.join(c.directory, 'absent prefix') }, [], 'incomplete; no system fallback');
-  await c.checkRelease({ BILIKARA_BBDOWN_VERSION: 'incorrect' }, [], 'does not match pinned');
-  rmSync(path.join(c.bin, `BBDown${suffix}`)); await c.checkRelease({}, [], 'Prepare the pinned BBDown vendor');
+  // DEPRECATED (v0.9): BBDown is neither pinned nor required.
+  // await c.checkRelease({ BILIKARA_BBDOWN_VERSION: 'incorrect' }, [], 'does not match pinned');
+  // rmSync(path.join(c.bin, `BBDown${suffix}`)); await c.checkRelease({}, [], 'Prepare the pinned BBDown vendor');
+  rmSync(path.join(c.bin, `BBDown${suffix}`)); await c.checkRelease({});
 });
 
 release('invalid libraries, provenance, source digest, license and JSON are rejected', async c => {
@@ -228,7 +237,8 @@ release('invalid libraries, provenance, source digest, license and JSON are reje
   }
   await c.checkRelease({ BILIKARA_FFMPEG_SOURCE_SHA256: '0'.repeat(64) }, [], 'SHA-256 mismatch');
   await c.checkRelease({ BILIKARA_FFMPEG_SOURCE_ARCHIVE: path.join(c.directory, 'missing.tar.xz') }, [], 'source archive not found');
-  await c.checkRelease({ BILIKARA_BBDOWN_LICENSE_FILE: path.join(c.directory, 'missing-license.txt') }, [], 'BBDown license file not found');
+  // DEPRECATED (v0.9): the BBDown license is no longer a packaging input.
+  // await c.checkRelease({ BILIKARA_BBDOWN_LICENSE_FILE: path.join(c.directory, 'missing-license.txt') }, [], 'BBDown license file not found');
   writeFileSync(file, '{invalid'); await c.releasePath({}, [], 'key must be a string');
 });
 
@@ -256,9 +266,11 @@ release('assembly refuses debug/incompatible/version metadata and a missing upda
     ? 'bilikara-updater (No such file or directory)' : 'os error 2');
 });
 
-release('cleanup refuses overlapping supplied tool/archive/license without changing bytes', async c => {
+release('cleanup refuses an overlapping supplied archive without changing bytes', async c => {
   const { env } = await c.checkRelease({}, [], undefined, false);
-  for (const kind of ['tool', 'archive', 'license']) {
+  // DEPRECATED (v0.9): the BBDown tool and license are no longer inputs.
+  // for (const kind of ['tool', 'archive', 'license']) {
+  for (const kind of ['archive']) {
     const supplied = path.join(c.product, kind === 'tool' ? `BBDown${suffix}` : 'prepared input');
     copyFileSync(path.join(c.bin, `BBDown${suffix}`), supplied); const guarded = { ...env };
     if (kind === 'tool') guarded.PATH = `${c.product}${path.delimiter}${env.PATH}`;

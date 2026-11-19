@@ -191,29 +191,32 @@ pub fn stage_resources(
     if macos_app {
         macos::write_backend_plist(config, destination, &version)?;
     }
-    if let Some(tool) = tools::bbdown(config)? {
-        let filename = config.platform.executable("BBDown");
-        for entry in fs::read_dir(&layout.vendor)? {
-            let entry = entry?;
-            if entry.file_name() != filename.as_str()
-                && entry
-                    .file_name()
-                    .to_string_lossy()
-                    .eq_ignore_ascii_case(&filename)
-            {
-                fs::remove_file(entry.path())?;
-            }
-        }
-        copy(&tool, &layout.vendor.join(&filename))?;
-        if macos_app {
-            relative_link(
-                &Path::new("../../Frameworks").join(&filename),
-                &vendor.join(filename),
-            )?;
-        }
-    } else if !config.development {
-        return Err("Prepare the pinned BBDown vendor before packaging".into());
-    }
+    // DEPRECATED (v0.9): BBDown is no longer packaged. The Rust Native and
+    // DownKyi (aria2c) downloaders replace it; the staging below is retained
+    // only as a reference until the code is removed.
+    // if let Some(tool) = tools::bbdown(config)? {
+    //     let filename = config.platform.executable("BBDown");
+    //     for entry in fs::read_dir(&layout.vendor)? {
+    //         let entry = entry?;
+    //         if entry.file_name() != filename.as_str()
+    //             && entry
+    //                 .file_name()
+    //                 .to_string_lossy()
+    //                 .eq_ignore_ascii_case(&filename)
+    //         {
+    //             fs::remove_file(entry.path())?;
+    //         }
+    //     }
+    //     copy(&tool, &layout.vendor.join(&filename))?;
+    //     if macos_app {
+    //         relative_link(
+    //             &Path::new("../../Frameworks").join(&filename),
+    //             &vendor.join(filename),
+    //         )?;
+    //     }
+    // } else if !config.development {
+    //     return Err("Prepare the pinned BBDown vendor before packaging".into());
+    // }
     if config.platform.os == Os::Macos {
         tools::aria2_metadata(config, &vendor)?;
     }

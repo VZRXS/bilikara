@@ -37,13 +37,14 @@ pub(super) fn package_assets(root: &Path) -> Result<PathBuf, String> {
     }
     if manifest["development"] != true {
         let vendor = root.join("vendor");
-        let bbdown = if cfg!(windows) {
-            "BBDown.exe"
-        } else {
-            "BBDown"
-        };
-        if !vendor.join(bbdown).is_file()
-            || !vendor.join(companion_name()).is_file()
+        // DEPRECATED (v0.9): BBDown is no longer part of a complete bundle.
+        // let bbdown = if cfg!(windows) {
+        //     "BBDown.exe"
+        // } else {
+        //     "BBDown"
+        // };
+        // if !vendor.join(bbdown).is_file()
+        if !vendor.join(companion_name()).is_file()
             || !vendor.join("ffmpeg-runtime.json").is_file()
             || (cfg!(target_os = "macos") && !vendor.join("aria2-macos.json").is_file())
         {

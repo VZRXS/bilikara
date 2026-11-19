@@ -204,7 +204,8 @@ pub(super) fn inspect(executable: &Path, expected: &str, platform: Platform) -> 
         "THIRD_PARTY_NOTICES.md",
         "THIRD_PARTY_LICENSES/libav-source.txt",
         "THIRD_PARTY_LICENSES/libav/COPYING.LGPLv2.1",
-        "THIRD_PARTY_LICENSES/BBDown-LICENSE.txt",
+        // DEPRECATED (v0.9): BBDown is no longer packaged.
+        // "THIRD_PARTY_LICENSES/BBDown-LICENSE.txt",
         "THIRD_PARTY_LICENSES/signalsmith-stretch/LICENSE.txt",
     ] {
         require(

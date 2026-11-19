@@ -77,27 +77,50 @@ test('native HiRes and video quality changes preserve captured attempts and appl
   }finally{hold=false;release();if(host)await host.close();await provider.close();if(completed)rmSync(directory,{recursive:true,force:true});else process.stderr.write(`cache preference failure fixture retained: ${directory}\n`);}
 });
 
-test('real BBDown Dolby-only cache preserves independent ordered requested audio pages', { skip: linuxOnly, timeout: 120000 }, async t => {
-  assert.ok(process.env.BILIKARA_TEST_LIBAV_COMPANION && existsSync(process.env.BILIKARA_TEST_LIBAV_COMPANION), 'required real native media companion is missing');
-  const directory = home(t), control = path.join(directory, 'child'); mkdirSync(control); writeFileSync(path.join(control, 'mode'), 'dolby');
-  const binary = path.join(directory, `BBDown${suffix}`), compiled = await runNative('rustc', ['--edition=2024', '--target', nativeTarget(), path.join(root, 'tests/bbdown_fixture.rs'), '-o', binary]); assert.equal(compiled.status, 0, compiled.stderr);
-  const provider = await videoFixture(target => {
-    const url = new URL(target, 'https://api.bilibili.com');
-    if (url.pathname === '/x/web-interface/wbi/view') return { code: 0, data: { aid: 123, bvid: 'BV1xx411c7mD', title: 'Fixture', owner: { mid: 42, name: 'Fixture' }, pages: [{ page: 1, cid: 457, duration: 999, part: 'original' }, { page: 2, cid: 458, duration: 500, part: '' }] } };
-    if (url.pathname.endsWith('/nav')) return { code: 0, data: { wbi_img: { img_url: `https://example.invalid/${'a'.repeat(32)}.png`, sub_url: `https://example.invalid/${'b'.repeat(32)}.png` } } };
-    if (url.pathname === '/x/player/wbi/playurl') return { code: 0, data: { dash: { video: [{ id: 64, codecid: 7, baseUrl: 'https://api.bilibili.com/video.mp4', bandwidth: 10 }], audio: [], flac: null, dolby: { audio: [{ id: 30250, baseUrl: 'https://api.bilibili.com/audio-eac3.m4a' }] } } } };
-    return { code: 0, data: {} };
-  });
-  let host;
+// DEPRECATED (v0.9): BBDown is no longer discovered or executed by the native
+// Host, so the former real-BBDown Dolby cache case is retained only as a
+// comment. The case below verifies the deprecation boundary on the actual Host.
+// test('real BBDown Dolby-only cache preserves independent ordered requested audio pages', { skip: linuxOnly, timeout: 120000 }, async t => {
+//   assert.ok(process.env.BILIKARA_TEST_LIBAV_COMPANION && existsSync(process.env.BILIKARA_TEST_LIBAV_COMPANION), 'required real native media companion is missing');
+//   const directory = home(t), control = path.join(directory, 'child'); mkdirSync(control); writeFileSync(path.join(control, 'mode'), 'dolby');
+//   const binary = path.join(directory, `BBDown${suffix}`), compiled = await runNative('rustc', ['--edition=2024', '--target', nativeTarget(), path.join(root, 'tests/bbdown_fixture.rs'), '-o', binary]); assert.equal(compiled.status, 0, compiled.stderr);
+//   const provider = await videoFixture(target => {
+//     const url = new URL(target, 'https://api.bilibili.com');
+//     if (url.pathname === '/x/web-interface/wbi/view') return { code: 0, data: { aid: 123, bvid: 'BV1xx411c7mD', title: 'Fixture', owner: { mid: 42, name: 'Fixture' }, pages: [{ page: 1, cid: 457, duration: 999, part: 'original' }, { page: 2, cid: 458, duration: 500, part: '' }] } };
+//     if (url.pathname.endsWith('/nav')) return { code: 0, data: { wbi_img: { img_url: `https://example.invalid/${'a'.repeat(32)}.png`, sub_url: `https://example.invalid/${'b'.repeat(32)}.png` } } };
+//     if (url.pathname === '/x/player/wbi/playurl') return { code: 0, data: { dash: { video: [{ id: 64, codecid: 7, baseUrl: 'https://api.bilibili.com/video.mp4', bandwidth: 10 }], audio: [], flac: null, dolby: { audio: [{ id: 30250, baseUrl: 'https://api.bilibili.com/audio-eac3.m4a' }] } } } };
+//     return { code: 0, data: {} };
+//   });
+//   let host;
+//   try {
+//     host = await start(directory, { ...isolatedEnvironment(directory), ...provider.environment, BILIKARA_CF_API_URL: '', BILIKARA_CATALOG_SHEETS_URL: '', BB_DOWN_PATH: binary, BILIKARA_BBDOWN_FIXTURE_ROOT: control, BILIKARA_BBDOWN_MEDIA: path.join(root, 'tests/fixtures/bbdown'), BILIKARA_BBDOWN_EXPECT_COOKIE: ';' });
+//     await host.api('/api/session-users/add', { name: 'Fixture' }); await host.api('/api/cache-policy', { download_source: 'bbdown', audio_hires: true });
+//     for (const [selected, page, label] of [[[2], 2, 'P2'], [[2, 1], 1, 'original']]) {
+//       const state = await host.api('/api/playlist/add', { url: 'https://www.bilibili.com/video/BV1xx411c7mD', requester_name: 'Fixture', selected_video_page: 1, selected_audio_pages: selected, allow_repeat: true }), id = (state.playlist.length ? state.playlist : [state.current_item]).at(-1).id;
+//       const item = await waitFor(async () => { const state = await host.api('/api/state'), item = [state.current_item, ...state.playlist].find(v => v && v.id === id); return ['ready', 'failed'].includes(item.cache_status) ? item : undefined; }, 'cache publication deadline', 25000);
+//       assert.equal(item.cache_status, 'ready', item.cache_message); assert.equal(item.video_page, 1); assert.deepEqual(item.audio_variants.map(v => v.page), selected); const chosen = item.audio_variants.find(v => v.id === item.selected_audio_variant_id); assert.equal(chosen.page, page); assert.equal(chosen.label, label); assert.ok(item.cache_message.includes(String(selected.length)));
+//     }
+//   } finally { if (host) await host.close(); await provider.close(); }
+// });
+
+test('deprecated BBDown is never discovered or executed, even when BB_DOWN_PATH names one', { skip: process.platform === 'win32' ? 'POSIX executable fixture' : false, timeout: 60000 }, async t => {
+  const directory = home(t), marker = path.join(directory, 'bbdown-executed'), binary = path.join(directory, 'BBDown');
+  writeFileSync(binary, `#!/bin/sh\nprintf executed > '${marker}'\necho 'BBDown version 1.6.3'\n`, { mode: 0o755 });
+  const host = await start(directory, { ...isolatedEnvironment(directory), BILIKARA_CF_API_URL: '', BILIKARA_CATALOG_SHEETS_URL: '', BB_DOWN_PATH: binary });
   try {
-    host = await start(directory, { ...isolatedEnvironment(directory), ...provider.environment, BILIKARA_CF_API_URL: '', BILIKARA_CATALOG_SHEETS_URL: '', BB_DOWN_PATH: binary, BILIKARA_BBDOWN_FIXTURE_ROOT: control, BILIKARA_BBDOWN_MEDIA: path.join(root, 'tests/fixtures/bbdown'), BILIKARA_BBDOWN_EXPECT_COOKIE: ';' });
-    await host.api('/api/session-users/add', { name: 'Fixture' }); await host.api('/api/cache-policy', { download_source: 'bbdown', audio_hires: true });
-    for (const [selected, page, label] of [[[2], 2, 'P2'], [[2, 1], 1, 'original']]) {
-      const state = await host.api('/api/playlist/add', { url: 'https://www.bilibili.com/video/BV1xx411c7mD', requester_name: 'Fixture', selected_video_page: 1, selected_audio_pages: selected, allow_repeat: true }), id = (state.playlist.length ? state.playlist : [state.current_item]).at(-1).id;
-      const item = await waitFor(async () => { const state = await host.api('/api/state'), item = [state.current_item, ...state.playlist].find(v => v && v.id === id); return ['ready', 'failed'].includes(item.cache_status) ? item : undefined; }, 'cache publication deadline', 25000);
-      assert.equal(item.cache_status, 'ready', item.cache_message); assert.equal(item.video_page, 1); assert.deepEqual(item.audio_variants.map(v => v.page), selected); const chosen = item.audio_variants.find(v => v.id === item.selected_audio_variant_id); assert.equal(chosen.page, page); assert.equal(chosen.label, label); assert.ok(item.cache_message.includes(String(selected.length)));
-    }
-  } finally { if (host) await host.close(); await provider.close(); }
+    const state = await host.api('/api/state');
+    assert.equal(state.cache_policy.download_source, 'native');
+    assert.equal(state.cache_policy.download_source_choices.some(choice => choice.value === 'bbdown'), false);
+    const rejected = await host.request('/api/cache-policy', { download_source: 'bbdown' });
+    assert.equal(rejected.status, 501);
+    const body = JSON.parse(rejected.body);
+    assert.equal(body.code, 'bbdown_unavailable', rejected.body.toString());
+    assert.match(body.error, /deprecated/);
+    const after = await host.api('/api/state');
+    assert.equal(after.cache_policy.download_source, 'native');
+    assert.equal(after.cache_policy.enabled, true);
+  } finally { await host.close(); }
+  assert.equal(existsSync(marker), false, 'deprecated BBDown must never be executed');
 });
 
 test('real >32MiB legacy history and 1001 archives import and reopen without loss or source mutation', { timeout: 120000 }, async t => {

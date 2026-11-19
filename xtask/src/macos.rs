@@ -184,7 +184,7 @@ fn finalize_with(
     let mut objects = Vec::new();
     nested_code(&app.join("Contents"), &main, &mut objects)?;
     objects.sort();
-    // Inspect every actual code object, including Host/updater/BBDown, before
+    // Inspect every actual code object, including Host/updater (and any nested tool), before
     // signing helpers and libraries, then sealing the backend envelope.
     for object in std::iter::once(&main).chain(objects.iter()) {
         inspect(object)?;

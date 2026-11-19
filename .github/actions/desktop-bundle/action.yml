@@ -71,19 +71,21 @@ runs:
       shell: pwsh
       run: ./scripts/setup_msvc.ps1 -Arch '${{ inputs.arch }}'
 
-    - name: Prepare pinned BBDown vendor
-      shell: bash
-      run: |
-        bbdown_dir="$RUNNER_TEMP/bilikara-bbdown-vendor"
-        cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- prepare-bbdown "$bbdown_dir" --platform '${{ inputs.slug }}' --arch '${{ inputs.arch }}'
-        printf '%s\n' "$bbdown_dir/bin" >> "$GITHUB_PATH"
-        cat "$bbdown_dir/metadata.env" >> "$GITHUB_ENV"
-
-    - name: Verify prepared BBDown discovery from native environment
-      shell: bash
-      env:
-        BILIKARA_TEST_BBDOWN_DIR: ${{ runner.temp }}/bilikara-bbdown-vendor
-      run: cargo test --manifest-path xtask/Cargo.toml --locked --target host-tuple prepared_bbdown_is_discoverable_from_native_environment -- --ignored
+    # DEPRECATED (v0.9): BBDown is no longer packaged, so the bundle job no
+    # longer prepares or verifies it.
+    # - name: Prepare pinned BBDown vendor
+    #   shell: bash
+    #   run: |
+    #     bbdown_dir="$RUNNER_TEMP/bilikara-bbdown-vendor"
+    #     cargo run --manifest-path xtask/Cargo.toml --locked --target host-tuple -- prepare-bbdown "$bbdown_dir" --platform '${{ inputs.slug }}' --arch '${{ inputs.arch }}'
+    #     printf '%s\n' "$bbdown_dir/bin" >> "$GITHUB_PATH"
+    #     cat "$bbdown_dir/metadata.env" >> "$GITHUB_ENV"
+    #
+    # - name: Verify prepared BBDown discovery from native environment
+    #   shell: bash
+    #   env:
+    #     BILIKARA_TEST_BBDOWN_DIR: ${{ runner.temp }}/bilikara-bbdown-vendor
+    #   run: cargo test --manifest-path xtask/Cargo.toml --locked --target host-tuple prepared_bbdown_is_discoverable_from_native_environment -- --ignored
 
     - name: Restore platform-independent signed media source
       if: runner.os != 'Windows'
@@ -179,19 +181,9 @@ runs:
             throw "Packaged Rust library was not found: $library"
           }
         }
-        foreach ($tool in @('BBDown.exe')) {
-          $vendor = $files | Where-Object { $_.Name -eq $tool -and $_.FullName -match '[\\/]vendor[\\/]' } | Select-Object -First 1
-          if (-not $vendor) {
-            throw "Packaged vendor tool was not found: $tool"
-          }
-          if ($tool -eq 'BBDown.exe') {
-            & $vendor.FullName --help
-          } else {
-            & $vendor.FullName -version
-          }
-          if ($LASTEXITCODE -ne 0) {
-            throw "Packaged vendor tool execution failed: $tool"
-          }
+        # DEPRECATED (v0.9): BBDown is no longer a packaged vendor tool.
+        if ($files | Where-Object Name -eq 'BBDown.exe') {
+          throw "Deprecated BBDown must not be packaged"
         }
 
     - name: Verify native backend and bundled tools on macOS
@@ -201,10 +193,11 @@ runs:
         test -x dist/bilikara.app/Contents/MacOS/bilikara-desktop-host
         test -x dist/bilikara.app/Contents/MacOS/bilikara-updater
         test -f dist/bilikara.app/Contents/Resources/native-desktop.json
-        # Native code lives in Frameworks; the runtime resource path is a relative symlink.
-        bbdown_vendor="dist/bilikara.app/Contents/Resources/vendor/BBDown"
-        test -x "$bbdown_vendor"
-        "$bbdown_vendor" --help
+        # DEPRECATED (v0.9): BBDown is no longer packaged (formerly a Frameworks
+        # executable behind a relative vendor symlink).
+        test ! -e dist/bilikara.app/Contents/Resources/vendor/BBDown
+        test ! -L dist/bilikara.app/Contents/Resources/vendor/BBDown
+        test ! -e dist/bilikara.app/Contents/Frameworks/BBDown
 
     - name: Setup Node.js
       uses: actions/setup-node@v6

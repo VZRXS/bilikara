@@ -72,7 +72,9 @@ test('actual Host serves a working Signalsmith AudioWorklet under pinned Chromiu
 for (const [name, options, marker] of [
   ['actual native Host, login, media clocks, LAN/Internet controls, exports and restart', [], 'Desktop Rust entry/browser core loop passed'],
   ['actual native cache policy, immutable publications, cancellation and persisted settings', ['--cache-policy'], 'Actual desktop import, exports, native mutations and no-reimport restart passed'],
-  ['actual native BBDown executor with a compiled tool, failures and process cancellation', ['--bbdown'], 'Actual desktop import, exports, native mutations and no-reimport restart passed'],
+  // DEPRECATED (v0.9): the native Host no longer discovers or executes BBDown;
+  // native_host_recheck.test.mjs verifies that boundary on the actual Host.
+  // ['actual native BBDown executor with a compiled tool, failures and process cancellation', ['--bbdown'], 'Actual desktop import, exports, native mutations and no-reimport restart passed'],
 ]) test(name, {
   skip: process.platform !== 'linux' && 'Linux scoped TLS/WebKit media gate; native Windows/macOS gates remain separate',
   timeout: 360000,

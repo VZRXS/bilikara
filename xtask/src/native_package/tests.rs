@@ -126,7 +126,8 @@ impl Fixture {
             "THIRD_PARTY_NOTICES.md",
             "THIRD_PARTY_LICENSES/libav-source.txt",
             "THIRD_PARTY_LICENSES/libav/COPYING.LGPLv2.1",
-            "THIRD_PARTY_LICENSES/BBDown-LICENSE.txt",
+            // DEPRECATED (v0.9): BBDown is no longer packaged.
+            // "THIRD_PARTY_LICENSES/BBDown-LICENSE.txt",
             "THIRD_PARTY_LICENSES/signalsmith-stretch/LICENSE.txt",
         ] {
             fs::create_dir_all(docs.join(name).parent().unwrap()).unwrap();
@@ -258,7 +259,8 @@ fn missing_resources_notices_updater_and_top_level_fail() {
         "THIRD_PARTY_NOTICES.md",
         "THIRD_PARTY_LICENSES/libav-source.txt",
         "THIRD_PARTY_LICENSES/libav/COPYING.LGPLv2.1",
-        "THIRD_PARTY_LICENSES/BBDown-LICENSE.txt",
+        // DEPRECATED (v0.9): BBDown is no longer packaged.
+        // "THIRD_PARTY_LICENSES/BBDown-LICENSE.txt",
         "THIRD_PARTY_LICENSES/signalsmith-stretch/LICENSE.txt",
     ] {
         files.push(fixture.docs.join(name));

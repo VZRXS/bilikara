@@ -99,8 +99,9 @@ impl CachePolicy {
             value["download_source_choices"].as_array_mut().unwrap().push(json!({"value":self.download_source,"label":format!("{} (unavailable in Desktop Rust)", self.download_source)}));
         }
         if self.download_source == "bbdown" && !bbdown {
+            // DEPRECATED (v0.9): BBDown is no longer bundled or discovered.
             value["unavailable_reason"] = json!(
-                "BBDown unavailable: configure an installed compatible executable with BB_DOWN_PATH and restart Host, or select Native"
+                "BBDown is deprecated and no longer available; select Rust Native or DownKyi"
             );
         }
         value["avc_quality_cap"] = json!(&self.video_quality);
@@ -128,10 +129,11 @@ impl CachePolicy {
                 "yt-dlp インターフェースは保持されていますが、このバージョンでは無効です",
             ]
         } else if self.download_source == "bbdown" && !bbdown {
+            // DEPRECATED (v0.9): BBDown is no longer bundled or discovered.
             [
-                "BBDown 不可用：请配置 BB_DOWN_PATH 后重启 Host，或选择 Rust Native",
-                "BBDown unavailable: configure BB_DOWN_PATH and restart Host, or select Rust Native",
-                "BBDown が利用できません。BB_DOWN_PATH を設定して Host を再起動するか、Rust Native を選択してください",
+                "BBDown 已弃用，不再随应用提供：请选择 Rust Native 或 DownKyi",
+                "BBDown is deprecated and no longer available; select Rust Native or DownKyi",
+                "BBDown は非推奨となり、利用できなくなりました。Rust Native または DownKyi を選択してください",
             ]
         } else {
             [
@@ -455,7 +457,8 @@ pub(super) fn update(
             return Err(ApiError::new(
                 501,
                 "bbdown_unavailable",
-                "BBDown unavailable: configure an installed compatible executable with BB_DOWN_PATH and restart Host",
+                // DEPRECATED (v0.9): BBDown is no longer bundled or discovered.
+                "BBDown is deprecated and no longer available; select Rust Native or DownKyi",
             ));
         }
         if next != app.native().cache_policy {

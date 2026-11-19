@@ -130,7 +130,7 @@
 </table>
 
 - 歌曲会提前缓存，失败后可重试；退出后清理播放缓存，歌单和播放器设置会保留。
-- 默认使用内置 Rust Native，也可选择 BBDown 或 DownKyi / aria2c。Bilibili 登录二维码过期后自动刷新，凭据保存在本机，请勿分享登录凭据或完整数据目录。
+- 默认使用内置 Rust Native，也可选择 DownKyi / aria2c。BBDown 自 v0.9 起已弃用，不再随应用提供；旧版保存的 BBDown 下载源会显示为不可用，需要手动改选。Bilibili 登录二维码过期后自动刷新，凭据保存在本机，请勿分享登录凭据或完整数据目录。
 - Hi-Res 与清晰度都在新建下载任务时生效，不会中断正在下载的任务或自动重下已缓存歌曲。[自动音量（实验性功能）](docs/automatic-volume.md)默认关闭，须由 Host 明确设定基准。
 - 遇到播放或启动问题，可在设置中导出诊断包。Windows 数据位于应用旁的 `runtime/data/`；macOS 位于 `~/Library/Application Support/bilikara/data/`。
 

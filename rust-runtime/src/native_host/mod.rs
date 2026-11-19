@@ -435,11 +435,15 @@ fn start_observed(
             mobile::platform().into()
         },
     );
-    let bbdown = if desktop {
-        crate::cache_runtime::bbdown::Executable::discover(&directory)
-    } else {
-        None
-    };
+    // DEPRECATED (v0.9): BBDown is no longer bundled, discovered or executed.
+    // A saved `bbdown` source stays visible as unavailable until the user
+    // explicitly selects Rust Native or DownKyi; it is never switched silently.
+    // let bbdown = if desktop {
+    //     crate::cache_runtime::bbdown::Executable::discover(&directory)
+    // } else {
+    //     None
+    // };
+    let bbdown: Option<crate::cache_runtime::bbdown::Executable> = None;
     // Only a selected aria2 backend is a readiness dependency. Probing an
     // optional aria2 binary launches subprocesses (and may time out); Native
     // and BBDown users must not wait for those capability checks at startup.

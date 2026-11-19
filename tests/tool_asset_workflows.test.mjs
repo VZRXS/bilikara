@@ -33,7 +33,9 @@ const portable = file => file.split(path.sep).join('/');
 const runBash = (body, directory, env = process.env) => runNative(bash,
   ['--noprofile', '--norc', '-e', '-o', 'pipefail', '-c', body], env, 20_000, directory);
 
-test('actual macOS backend gate executes the relative tool link and rejects permissions/missing binaries', {skip: process.platform === 'win32'}, async () => {
+// DEPRECATED (v0.9): the macOS gate formerly executed the packaged BBDown
+// through its relative vendor link; it now rejects any packaged BBDown.
+test('actual macOS backend gate requires the Host/updater and rejects a deprecated packaged BBDown', {skip: process.platform === 'win32'}, async () => {
   assert.ok(bash); const directory = ownedDirectory('macOS backend gate');
   const contents = path.join(directory, 'dist/bilikara.app/Contents');
   try {
@@ -42,15 +44,13 @@ test('actual macOS backend gate executes the relative tool link and rejects perm
       const file = path.join(contents, 'MacOS', name); writeFileSync(file, '#!/bin/sh\nexit 0\n'); chmodSync(file, 0o755);
     }
     writeFileSync(path.join(contents, 'Resources/native-desktop.json'), '{}');
-    const tool = path.join(contents, 'Frameworks/BBDown');
-    writeFileSync(tool, '#!/bin/sh\nprintf "%s\\n" "$*" > calls.log\n'); chmodSync(tool, 0o755);
-    symlinkSync('../../Frameworks/BBDown', path.join(contents, 'Resources/vendor/BBDown'));
     const invoke = () => runBash(script(bundle, 'Verify native backend and bundled tools on macOS'), directory);
     let result = await invoke(); assert.equal(result.status, 0, result.stderr);
-    assert.equal(readFileSync(path.join(directory, 'calls.log'), 'utf8'), '--help\n');
-    chmodSync(tool, 0o644); assert.notEqual((await invoke()).status, 0);
-    rmSync(tool); assert.notEqual((await invoke()).status, 0);
-    writeFileSync(tool, '#!/bin/sh\nexit 0\n'); chmodSync(tool, 0o755); assert.equal((await invoke()).status, 0);
+    const tool = path.join(contents, 'Frameworks/BBDown');
+    writeFileSync(tool, '#!/bin/sh\nexit 0\n'); chmodSync(tool, 0o755); assert.notEqual((await invoke()).status, 0);
+    symlinkSync('../../Frameworks/BBDown', path.join(contents, 'Resources/vendor/BBDown')); assert.notEqual((await invoke()).status, 0);
+    rmSync(tool); assert.notEqual((await invoke()).status, 0, 'a dangling vendor link is rejected too');
+    rmSync(path.join(contents, 'Resources/vendor/BBDown')); result = await invoke(); assert.equal(result.status, 0, result.stderr);
     rmSync(path.join(contents, 'MacOS/bilikara-updater')); assert.notEqual((await invoke()).status, 0);
   } finally { rmSync(directory, {recursive: true, force: true}); }
 });
@@ -146,8 +146,10 @@ test('ordinary bundle keeps tool pins/preparation/signature/package gates withou
   includes(job, ["if: matrix.kind == 'desktop'", 'BILIKARA_REQUIRE_TAURI_SMOKE=1', 'node --test tests/macos_tauri_smoke.test.mjs']);
   excludes(job, ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'aws s3', '--tool-smoke', "& './libav-smoke.ps1'", 'BILIKARA_REQUIRE_BACKEND_SMOKE', 'setup-python', 'pip install']);
   includes(bundle, ['Build Windows libav libraries and companion', '--target host-tuple -- verify-native-desktop', 'Build POSIX libav libraries and companion',
-    '--target host-tuple -- prepare-bbdown', 'Verify native backend and bundled tools on Windows', 'Verify native backend and bundled tools on macOS',
-    'Locked aria2c metadata-only checks', 'BBDown', 'bilikara_media_libav.dll', 'bilikara-desktop-host.exe', 'native-desktop.json']);
+    'Verify native backend and bundled tools on Windows', 'Verify native backend and bundled tools on macOS',
+    'Locked aria2c metadata-only checks', 'Deprecated BBDown must not be packaged', 'bilikara_media_libav.dll', 'bilikara-desktop-host.exe', 'native-desktop.json']);
+  // DEPRECATED (v0.9): no active (uncommented) bundle step prepares BBDown.
+  assert.ok(!bundle.split('\n').some(line => !line.trim().startsWith('#') && line.includes('prepare-bbdown')), 'BBDown preparation is retired');
   excludes(bundle, ['ilammy/msvc-dev-cmd', 'for ($attempt', 'Start-Sleep', 'scripts/prepare_bbdown_vendor.py', 'Verify clean BBDown runtime restore on Windows',
     'BILIKARA_REQUIRE_ARIA2_TOOL_SMOKE=1', 'Packaged portable FFmpeg checks', 'Running extracted portable FFmpeg checks']);
   for (const name of ['build-windows', 'build-posix']) includes(read(`media-libav/${name}-libraries.sh`), ['--disable-programs']);
