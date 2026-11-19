@@ -57,8 +57,12 @@ function gestureFixture(family) {
       return null;
     }
     contains(target) { for (let node = target; node; node = node.parentElement) if (node === this) return true; return false; }
+    matches(selector) { return this.selectors.includes(selector); }
+    querySelector(selector) { return selector === ':scope > .has-result-pages' ? this.results ?? null : null; }
     getClientRects() { return [{}]; }
-    getBoundingClientRect() { return {width: 300}; }
+    // Points are at clientY 100; result grids extend below it unless a case
+    // gives them an earlier bottom (a partly filled page).
+    getBoundingClientRect() { return {width: 300, bottom: this.bottom ?? 1000}; }
     animate() { animations++; return {cancel() {}, finished: new Promise(() => {})}; }
   }
   const root = new Element(), panel = new Element([], root), fixed = new Element([], root);
@@ -114,6 +118,28 @@ for (const family of ['touch', 'pointer']) {
       assert.equal(f.root.emit('click', {target, detail: 1}).defaultPrevented, false, label + ': clicks remain available');
       f.binding.destroy();
     }
+  });
+  test(`${family}: result cards keep pager ownership, the blank space below a partly filled page switches sub-tabs`, () => {
+    const results = f => {
+      const viewport = f.child(['.result-page-viewport']);
+      viewport.results = f.child(['.has-result-pages'], viewport);
+      viewport.results.childNodes = [{}];
+      return viewport;
+    };
+    const over = gestureFixture(family), filled = results(over);
+    filled.results.bottom = 300;
+    over.start(filled);
+    assert.equal(over.move(over.content).defaultPrevented, false, 'a start over the rendered cards stays with the pager');
+    over.finish();
+    assert.equal(over.snapshot().key, 'request.quick');
+    over.binding.destroy();
+    const below = gestureFixture(family), partial = results(below);
+    partial.results.bottom = 60;
+    below.start(partial);
+    assert.equal(below.move(below.content).defaultPrevented, true, 'blank space below the cards is content space');
+    below.finish();
+    assert.equal(below.snapshot().key, 'request.search');
+    below.binding.destroy();
   });
   test(`${family}: a content-origin drag keeps ownership when crossing fixed chrome and commits one adjacent leaf`, () => {
     const f = gestureFixture(family);

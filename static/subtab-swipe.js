@@ -31,8 +31,18 @@
     + '[contenteditable="true"],[draggable="true"],[role="slider"],[role="combobox"],[role="textbox"],'
     + '[hidden],[inert],.result-page-viewport,.result-pager,.source-editor-tools,'
     + '.android-host-dock,.work-rail,[data-subtab-swipe-owner]';
-  function owned(target, root) {
-    if (!(target instanceof Element) || target.closest(owners)) return true;
+  // Result viewports own swipes over their cards, but the blank space below a
+  // partly filled page is not result content (result-pagination.js leaves it
+  // too). Decided once from the start point.
+  function freeResultSpace(owner, y) {
+    if (!owner.matches('.result-page-viewport') || owner.parentElement?.closest(owners)) return false;
+    const results = owner.querySelector(':scope > .has-result-pages');
+    return Boolean(results && results.childNodes.length) && y > results.getBoundingClientRect().bottom;
+  }
+  function owned(target, root, y) {
+    if (!(target instanceof Element)) return true;
+    const owner = target.closest(owners);
+    if (owner && !freeResultSpace(owner, y)) return true;
     for (let node = target; node && node !== root; node = node.parentElement) {
       const style = getComputedStyle(node);
       if (node.scrollWidth > node.clientWidth + 1 && /auto|scroll/.test(style.overflowX)) return true;
@@ -64,7 +74,7 @@
       // Fixed chrome is an exclusion, never an alternate content origin.
       // Reject it before creating a candidate, preview or click guard.
       if (fixedZones().some(node => node?.contains(target)) || composing || x < 24 || x > innerWidth - 24
-        || blocked(root) || !allowed() || owned(target, root)) return;
+        || blocked(root) || !allowed() || owned(target, root, y)) return;
       const leaves = flatten(tree()), key = current();
       if (leaves.length < 2 || !leaves.some(leaf => leaf.key === key)) return;
       const node = panel();

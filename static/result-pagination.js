@@ -302,6 +302,9 @@
     return Array.from({ length }, (_, index) => start + index);
   }
 
+  // Longest wait for a prepared page's covers before its cards commit anyway.
+  const PAINT_PATIENCE_MS = 300;
+
   function create(container, { translate, renderItems, reportError, rows = 0, ignoreSwipe = "", footer = null, fit = null, minimumRows = 1, retainPages = false, onCommit = () => {} }) {
     const viewport = document.createElement("div");
     viewport.className = "result-page-viewport";
@@ -401,6 +404,27 @@
       publishPageSize();
       onCommit(model.items, container);
       scheduleLayout();
+      warmNeighbors();
+    }
+    // Render and decode the loaded neighbouring pages off-DOM while idle, so a
+    // swipe previews and commits them without first fetching their covers.
+    // The paint cache holds three pages: the current one and its neighbours.
+    let warmScheduled = false;
+    function warmNeighbors() {
+      if (!retainPages || warmScheduled) return;
+      warmScheduled = true;
+      const run = () => {
+        warmScheduled = false;
+        if (paintBusy || deferPaint || paintSize !== model.pageSize || (fit && !fitPanelVisible())) return;
+        // Only cached pages: goTo() commits that same array, which keys the
+        // paint cache (peek() slices a fresh array for uncached pages).
+        for (const next of [model.page + 1, model.page - 1]) {
+          const items = model.cache.get(next);
+          if (items) preparedPage(items, options.emptyText);
+        }
+      };
+      if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(run, {timeout: 500});
+      else setTimeout(run, 120);
     }
     function prepareModelPaint() {
       const ticket = ++paintTicket, items = model.items, language = options.language;
@@ -408,9 +432,14 @@
       const entry = preparedPage(items, options.emptyText);
       paintBusy = !entry.ready || deferPaint;
       if (!deferPaint && (entry.ready || !container.childNodes.length)) commitPaint(entry);
-      paintPromise = entry.promise.then(() => {
+      // A turn waits for the prepared page's covers at most PAINT_PATIENCE_MS
+      // (neighbours are normally prepared ahead by warmNeighbors). A slow
+      // cover never stalls the turn: the committed card nodes keep loading
+      // and decode in place, as v0.8 pages did.
+      const patience = new Promise(resolve => setTimeout(resolve, PAINT_PATIENCE_MS));
+      paintPromise = Promise.race([entry.promise, patience]).then(() => {
         if (ticket !== paintTicket || items !== model.items || language !== options.language) return;
-        if (!deferPaint) {
+        if (!deferPaint && (livePaint !== entry || paintBusy)) {
           commitPaint(entry); paintBusy = false; model.onChange();
         }
         return entry;
@@ -418,6 +447,11 @@
     }
     const ignoresSwipe = target => typeof ignoreSwipe === "function"
       ? ignoreSwipe(target) : Boolean(ignoreSwipe && target.closest(ignoreSwipe));
+    // The blank space below a partly filled page is not result content: a
+    // gesture starting there belongs to the section swipe (subtab-swipe.js
+    // applies the same geometry). Decided once, at gesture start.
+    const belowResults = y => Number.isFinite(y) && container.childNodes.length > 0
+      && y > container.getBoundingClientRect().bottom;
 
     function scheduleLayout() {
       if (layoutFrame !== null) return;
@@ -709,6 +743,8 @@
         else renderItems(model.items, options.emptyText);
       }
       const busy = model.loading || paintBusy;
+      // Prefetched neighbour data arrives here; prepare its cards too.
+      if (!busy) warmNeighbors();
       pager.setAttribute("aria-label", translate("pagination.label"));
       pager.setAttribute("aria-busy", String(busy));
       container.setAttribute("aria-busy", String(busy));
@@ -944,6 +980,7 @@
     viewport.addEventListener("pointerdown", event => {
       if (ignoresSwipe(event.target)) return;
       suppressClick = false;
+      if (belowResults(event.clientY)) return;
       if (event.pointerType === "touch" || !event.isPrimary || model.loading || settling || (event.pointerType === "mouse" && event.button !== 0)) return;
       drag = { id: event.pointerId, x: event.clientX, y: event.clientY, horizontal: false };
     }, { passive: true });
@@ -988,6 +1025,7 @@
       suppressClick = false;
       if (model.loading || settling) return;
       const point = event.touches[0];
+      if (belowResults(point.clientY)) return;
       drag = {id:"touch", touchId:point.identifier, x:point.clientX, y:point.clientY, horizontal:false};
     }, {passive:true});
     viewport.addEventListener("touchmove", event => {
