@@ -90,6 +90,8 @@
       title: text(scene.title),
       videoUrl: text(scene.videoUrl),
       ...(scene.nativeOutput===true?{nativeOutput:true,nativeOutputPeriod:Math.max(0,Math.trunc(finiteNumber(scene.nativeOutputPeriod)))}:{}),
+      // Host engine composites one decoded stream into this window natively.
+      ...(scene.nativeSurface===true&&scene.nativeOutput!==true?{nativeSurface:true}:{}),
       displayMetadata: {
         requester: text(metadata.requester),
         duration: text(metadata.duration),

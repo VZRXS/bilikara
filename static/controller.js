@@ -476,6 +476,9 @@
   }
 
   function retireVideo() {
+    state.nativeTracker?.dispose();
+    state.nativeTracker = null;
+    if (document.documentElement.dataset.nativeVideo) delete document.documentElement.dataset.nativeVideo;
     state.video?.bilikaraNativeOutputRelease?.();
     state.stopGeometryObservation?.();
     state.stopGeometryObservation = null;
@@ -654,7 +657,64 @@
     else elements.frame.style.removeProperty("--presentation-video-aspect");
   }
 
+  // Reports only this window's stage rectangle; the Audience never receives
+  // engine commands (its capability admits set_media_engine_surface alone).
+  function trackNativeStage(stage) {
+    if (typeof invoke !== "function") return null;
+    let frame = null, lastKey = "", disposed = false;
+    const send = (surface) => {
+      const key = JSON.stringify(surface);
+      if (key === lastKey) return;
+      lastKey = key;
+      invoke("set_media_engine_surface", { surface }).catch(() => { lastKey = ""; });
+    };
+    const measure = () => {
+      frame = null;
+      if (disposed) return;
+      const rect = stage.getBoundingClientRect();
+      send({ visible: stage.isConnected && rect.width >= 2 && rect.height >= 2,
+        x: rect.x, y: rect.y, width: rect.width, height: rect.height });
+    };
+    const schedule = () => {
+      if (!disposed && frame === null) frame = window.requestAnimationFrame(measure);
+    };
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(schedule) : null;
+    observer?.observe(stage);
+    window.addEventListener("resize", schedule);
+    schedule();
+    return {
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        observer?.disconnect();
+        window.removeEventListener("resize", schedule);
+        if (frame !== null) window.cancelAnimationFrame(frame);
+        lastKey = "";
+        send({ visible: false, x: 0, y: 0, width: 0, height: 0 });
+      },
+    };
+  }
+
+  // The Host's native engine decodes once; this window only exposes a
+  // transparent stage whose rectangle the shell composites into.
+  function mountNativeSurface(scene) {
+    retireVideo();
+    document.documentElement.dataset.theme = scene.theme;
+    document.title = scene.title ? `${scene.title} · bilikara Stage` : "bilikara Stage";
+    const stage = document.createElement("div");
+    stage.className = "native-video-stage";
+    stage.dataset.presentationOutputVideo = "native";
+    preserveOverlayAndReplace(stage);
+    document.documentElement.dataset.nativeVideo = "active";
+    state.nativeTracker = trackNativeStage(stage);
+    renderOverlay();
+  }
+
   function mountScene(scene) {
+    if (scene.nativeSurface) {
+      mountNativeSurface(scene);
+      return;
+    }
     const retained=state.video;
     if(scene.nativeOutput&&retained?.bilikaraNativeOutputRelease){
       retained.bilikaraNativeOutputRelease.source(scene.videoUrl,{period:scene.nativeOutputPeriod,error:()=>setError(t('controller.outputVideoFailed'),'controller.outputVideoFailed')});
@@ -735,6 +795,7 @@
     const shouldMount = !state.scene
       || nextScene.currentItemIdentity !== state.scene.currentItemIdentity
       || nextScene.videoUrl !== state.scene.videoUrl
+      || Boolean(nextScene.nativeSurface) !== Boolean(state.scene.nativeSurface)
       || nextScene.nativeOutputPeriod !== state.scene.nativeOutputPeriod;
     const sceneKey = JSON.stringify(nextScene);
     const sceneChanged = sceneKey !== state.sceneKey;

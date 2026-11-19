@@ -1405,7 +1405,18 @@
       "purek.manualAddress": "手动输入设备地址或纯 K 链接",
       "purek.addressConfirmed": "确认链接来自当前门店房台",
       "mediaOutput.dspUnavailable": "当前投屏方式不支持变调和延迟。请使用 L1 直播输出，或切回本地播放。",
-      "purek.manualAddressHint": "输入设备提供的 DLNA 地址，或当前房台的纯 K 链接并完成授权。连接后，用 DLNA 开关切换播放输出。"
+      "purek.manualAddressHint": "输入设备提供的 DLNA 地址，或当前房台的纯 K 链接并完成授权。连接后，用 DLNA 开关切换播放输出。",
+      "playbackEngine.label": "播放引擎",
+      "playbackEngine.hint": "选择本机播放引擎；正在播放时切换会在当前位置重新载入本曲",
+      "playbackEngine.gstreamer": "GStreamer（原生）",
+      "playbackEngine.legacy": "兼容模式（WebView）",
+      "playbackEngine.activeStatus": "当前使用：{engine}",
+      "playbackEngine.fallbackStatus": "GStreamer 出错（{reason}），已回退到兼容模式；重新选择 GStreamer 可再次尝试",
+      "playbackEngine.unavailablePlatform": "本平台暂未提供 GStreamer，使用兼容模式播放",
+      "playbackEngine.unavailableRuntime": "未找到所需的 GStreamer 组件，使用兼容模式播放",
+      "playbackEngine.unavailableRenderer": "当前 WebView 渲染模式（已禁用 DMA-BUF 或合成）无法叠加原生画面，使用兼容模式播放",
+      "playbackEngine.fallbackNotice": "GStreamer 播放失败，已在当前位置切换到兼容模式",
+      "playbackEngine.switchFailed": "无法切换播放引擎"
     },
     "en": {
       "presentation.feedback.volume": "Volume",
@@ -2811,7 +2822,18 @@
       "purek.manualAddress": "Enter a device address or Pure K link",
       "purek.addressConfirmed": "This link is from the receiver in this venue",
       "mediaOutput.dspUnavailable": "Pitch and A/V delay are unavailable with this delivery mode. Use L1 live output or return to local playback.",
-      "purek.manualAddressHint": "Enter the device's DLNA address, or authorize the Pure K link for your current room. After connecting, use the DLNA switch to change playback output."
+      "purek.manualAddressHint": "Enter the device's DLNA address, or authorize the Pure K link for your current room. After connecting, use the DLNA switch to change playback output.",
+      "playbackEngine.label": "Playback engine",
+      "playbackEngine.hint": "Choose this device’s playback engine; switching during playback reloads the current song at its position",
+      "playbackEngine.gstreamer": "GStreamer (native)",
+      "playbackEngine.legacy": "Compatibility mode (WebView)",
+      "playbackEngine.activeStatus": "Active: {engine}",
+      "playbackEngine.fallbackStatus": "GStreamer failed ({reason}); using compatibility mode. Select GStreamer again to retry",
+      "playbackEngine.unavailablePlatform": "GStreamer is not available on this platform; using compatibility mode",
+      "playbackEngine.unavailableRuntime": "Required GStreamer components are missing; using compatibility mode",
+      "playbackEngine.unavailableRenderer": "The WebView renderer (DMA-BUF or compositing disabled) cannot layer native video; using compatibility mode",
+      "playbackEngine.fallbackNotice": "GStreamer playback failed; switched to compatibility mode at the current position",
+      "playbackEngine.switchFailed": "Could not switch the playback engine"
     },
     "ja": {
       "presentation.feedback.volume": "音量",
@@ -4217,7 +4239,18 @@
       "purek.manualAddress": "機器のアドレスまたは純 K リンクを入力",
       "purek.addressConfirmed": "このリンクが現在の店舗の部屋のものだと確認しました",
       "mediaOutput.dspUnavailable": "現在の配信方式ではキー変更と音声遅延を調整できません。L1 ライブ出力またはローカル再生に切り替えてください。",
-      "purek.manualAddressHint": "機器の DLNA アドレス、または現在の部屋の純 K リンクを入力し、認証を完了してください。接続後、DLNA スイッチで再生出力を切り替えます。"
+      "purek.manualAddressHint": "機器の DLNA アドレス、または現在の部屋の純 K リンクを入力し、認証を完了してください。接続後、DLNA スイッチで再生出力を切り替えます。",
+      "playbackEngine.label": "再生エンジン",
+      "playbackEngine.hint": "この端末の再生エンジンを選択します。再生中に切り替えると現在位置から曲を再読み込みします",
+      "playbackEngine.gstreamer": "GStreamer（ネイティブ）",
+      "playbackEngine.legacy": "互換モード（WebView）",
+      "playbackEngine.activeStatus": "使用中：{engine}",
+      "playbackEngine.fallbackStatus": "GStreamer でエラーが発生しました（{reason}）。互換モードで再生しています。GStreamer を再選択すると再試行します",
+      "playbackEngine.unavailablePlatform": "このプラットフォームでは GStreamer を利用できません。互換モードで再生します",
+      "playbackEngine.unavailableRuntime": "必要な GStreamer コンポーネントが見つかりません。互換モードで再生します",
+      "playbackEngine.unavailableRenderer": "現在の WebView 描画モード（DMA-BUF または合成が無効）ではネイティブ映像を重ねられないため、互換モードで再生します",
+      "playbackEngine.fallbackNotice": "GStreamer の再生に失敗したため、現在位置から互換モードに切り替えました",
+      "playbackEngine.switchFailed": "再生エンジンを切り替えられませんでした"
     }
   }
 }

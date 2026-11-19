@@ -520,6 +520,12 @@ const state = {
   translations: {},
   translationsLoaded: false,
   theme: "light",
+  mediaEngineStatus: null,
+  mediaEngineFallback: null,
+  mediaEngineSwitchInFlight: false,
+  hostPlaybackSessionCarry: null,
+  nativeSurfaceTracker: null,
+  nativeHoleFrame: null,
 };
 
 function legacyPlaybackStartStateForSession(session = state.hostPlaybackSession) {
@@ -1853,6 +1859,7 @@ function currentPresentationScene() {
     generation: state.presentationSession.generation,
     item: currentItem?.id || "",
     nativePeriod:nativeOutput?state.nativeOutputPreview?.period():null,
+    nativeSurface: !nativeOutput && state.hostPlaybackSession?.engine === "gstreamer",
     title: currentItem?.display_title || currentItem?.title || "",
     theme: state.theme,
     language: state.language,
@@ -1869,6 +1876,7 @@ function currentPresentationScene() {
     videoUrl,
     nativeOutput,
     nativeOutputPeriod:nativeOutput?state.nativeOutputPreview?.period():null,
+    nativeSurface: !nativeOutput && state.hostPlaybackSession?.engine === "gstreamer",
     displayMetadata: {
       requester: String(currentItem?.requester_name || ""),
       duration: formatDurationSeconds(durationSecondsForItem(currentItem)),
@@ -10609,6 +10617,7 @@ function render() {
   renderAvSyncControls(playbackMode, data.player_settings);
   renderVolumeControls(playbackMode);
   renderKeyShiftControls(playbackMode);
+  renderMediaEngineSettings();
   applyStoredVolumeToMountedPlayer();
   renderPlayer(currentItem, playbackMode);
   renderCurrentPresentationScene();
@@ -13456,6 +13465,10 @@ function applyStoredVolumeToSplitPlayer(video, audio) {
   if (!video || !audio) {
     return;
   }
+  if (video.bilikaraNative) {
+    syncNativePlaybackSettings();
+    return;
+  }
   // The video carries the native controls; only the selected audio is amplified.
   video.bilikaraVolume = state.localPlayerVolume;
   video.volume = Math.min(1, state.localPlayerVolume);
@@ -13537,6 +13550,9 @@ function beginSplitPlayerSeek(video, audio, options = {}) {
   ) {
     return false;
   }
+  if (video.bilikaraNative) {
+    return beginNativePlayerSeek(session, options);
+  }
 
   session.avOffsetAlignment = false;
   audio.bilikaraPitch?.reset();
@@ -13608,6 +13624,7 @@ function targetAudioTimeFromVideo(video, audio) {
 }
 
 function settleSplitPlayerSeek(video, audio, force = false) {
+  if (video?.bilikaraNative) return false;
   const session = state.hostPlaybackSession;
   if (
     !isActiveSplitPlayer(video, audio)
@@ -14212,6 +14229,9 @@ function requestSplitPlaybackStart(
   { source = "", userGesture = false } = {},
 ) {
   if(holdLocalPlaybackForNetworkOutput())return false;
+  // The native engine has no separate start transaction; callers fall back to
+  // the ordinary intent path.
+  if (video?.bilikaraNative) return false;
   if (window.BilikaraAndroidPlayback?.blockStart()) return true;
   if (userGesture && isActiveSplitPlayer(video, audio)) {
     if (!video.paused && !audio.paused && resumeForegroundAudioOutput(video, audio, {renew: true})) {
@@ -14325,6 +14345,9 @@ function setSplitPlaybackIntent(
   const session = state.hostPlaybackSession;
   if (!video || !audio || !isActiveSplitPlayer(video, audio)) {
     return false;
+  }
+  if (video.bilikaraNative) {
+    return setNativePlaybackIntent(session, shouldPlay, { source, userGesture });
   }
   if (shouldPlay && userGesture) session?.retryReadiness?.();
   if (window.BilikaraAndroidPlayback?.interceptIntent(shouldPlay, source)) return true;
@@ -14743,6 +14766,11 @@ function scheduleWebKitSplitPlaybackRetry(video, audio, { userGesture, prefix })
 }
 
 function startSplitPlaybackPair(video, audio, { userGesture = false } = {}) {
+  if (video?.bilikaraNative) {
+    // Native start is an ordinary play intent for the bound program.
+    return isActiveSplitPlayer(video, audio)
+      && setNativePlaybackIntent(state.hostPlaybackSession, true, { source: "native-start", userGesture });
+  }
   if (window.BilikaraAndroidPlayback?.blockStart()) return false;
   const session = state.hostPlaybackSession;
   if (
@@ -15178,6 +15206,8 @@ function hasSplitPlaybackStartProgress(session, video, audio) {
 }
 
 function syncSplitPlayer(video, audio, offsetSeconds, forceCorrection = false) {
+  // One native pipeline clock keeps audio and video aligned.
+  if (video?.bilikaraNative) return;
   if (window.BilikaraAndroidPlayback?.blockStart()) return "pause";
   if (!video || !audio || !isActiveSplitPlayer(video, audio)) {
     return "none";
@@ -15925,6 +15955,10 @@ function ensureAudioPitchSource(audio) {
 
 function applyMediaVolume(media) {
   if (!media) return;
+  if (media.bilikaraNative) {
+    syncNativePlaybackSettings();
+    return;
+  }
   const volume = Math.max(0, Math.min(5, state.localPlayerVolume));
   // iOS does not expose a writable element volume. Reuse the existing Web
   // Audio gain route for attenuation as well as boost. WebKit iOS prepares it
@@ -15995,6 +16029,10 @@ function recoverAudioPitchOutput(audio, kind) {
 
 function applyKeyShiftToAudio(audio, overrideKeyShift = null) {
   if (!audio || audio.bilikaraPitchRetired) return;
+  if (audio.bilikaraNative) {
+    syncNativePlaybackSettings();
+    return;
+  }
   const rawKeyShift = Number(overrideKeyShift ?? state.pendingPlayerKeyShift?.value ?? state.data?.player_settings?.key_shift ?? 0);
   const keyShift = Number.isFinite(rawKeyShift) ? Math.max(-6, Math.min(6, rawKeyShift)) : 0;
   if (!keyShift && !audio.bilikaraPitch) return; // native zero-shift path
@@ -16562,7 +16600,16 @@ function retireHostPlaybackSession(
     }
   }
 
-  const retiredMedia = [session.video, session.audio].filter(Boolean);
+  const retiredMedia = session.engine === "gstreamer"
+    ? []
+    : [session.video, session.audio].filter(Boolean);
+  if (session.engine === "gstreamer") {
+    const controller = session.native;
+    session.native = null;
+    session.nativeStage = null;
+    void controller?.stop();
+    deactivateNativeVideoSurface();
+  }
   retiredMedia.forEach((media) => {
     media.bilikaraInlineControls?.dispose();
     disposeAudioPitchShifter(media);
@@ -16776,6 +16823,9 @@ function claimPendingHostPlaybackRestore(session, currentItem) {
 }
 
 function mountHostPlaybackSessionElements(session, currentItem, mountData) {
+  if (shouldMountNativeHostPlayback(session)) {
+    return mountNativeHostPlaybackSession(session, currentItem, mountData);
+  }
   const video = document.createElement("video");
   video.dataset.playerRole = "video";
   video.bilikaraOwnedPause = false;
@@ -16828,6 +16878,514 @@ function mountHostPlaybackSessionElements(session, currentItem, mountData) {
   });
   replaceHostPlayerView(video, audio);
   return { video, audio };
+}
+
+// ---- Native GStreamer execution (desktop preview) --------------------------
+// The engine executes the exact claimed program; AppState still decides every
+// transition. A native session uses media-element shaped facades so status
+// reports, presentation publication and Remote progress stay engine neutral.
+
+function nativePlaybackModule() {
+  return globalThis.BilikaraNativePlayback || null;
+}
+
+function nativePlaybackEngineSelected() {
+  const status = state.mediaEngineStatus;
+  return Boolean(
+    nativePlaybackModule()?.available()
+    && status?.gstreamer?.available
+    && status.configured === "gstreamer"
+    && !state.mediaEngineFallback
+    && !networkOutputOwnsPlayback()
+  );
+}
+
+function activeMediaEngine(session = state.hostPlaybackSession) {
+  return session?.engine === "gstreamer" ? "gstreamer" : "legacy";
+}
+
+async function hydrateMediaEngineStatus() {
+  const native = nativePlaybackModule();
+  if (!native?.available()) {
+    state.mediaEngineStatus = null;
+    renderMediaEngineSettings();
+    return null;
+  }
+  const status = await Promise.race([
+    native.status(),
+    new Promise(resolve => window.setTimeout(() => resolve(null), 3000)),
+  ]);
+  state.mediaEngineStatus = status && typeof status === "object" ? status : null;
+  renderMediaEngineSettings();
+  return state.mediaEngineStatus;
+}
+
+function nativeKeyShift() {
+  const raw = Number(state.pendingPlayerKeyShift?.value ?? state.data?.player_settings?.key_shift ?? 0);
+  return Number.isFinite(raw) ? Math.max(-6, Math.min(6, raw)) : 0;
+}
+
+function nativePlaybackSettings() {
+  const volume = Number(state.localPlayerVolume);
+  return {
+    volume: Number.isFinite(volume) ? Math.max(0, Math.min(4, volume)) : 1,
+    muted: Boolean(state.localPlayerMuted),
+    keyShift: nativeKeyShift(),
+    avDelayMs: currentAvOffsetMs(),
+  };
+}
+
+// Volume, mute, key shift and signed AV delay follow the same Rust/local
+// settings that drive Legacy; changes are pushed only when they differ.
+function syncNativePlaybackSettings(session = state.hostPlaybackSession) {
+  const controller = session?.engine === "gstreamer" ? session.native : null;
+  if (!controller || controller.disposed) return false;
+  const settings = nativePlaybackSettings();
+  const key = JSON.stringify(settings);
+  if (key === session.nativeSettingsKey) return false;
+  session.nativeSettingsKey = key;
+  void controller.applySettings(settings);
+  return true;
+}
+
+function activateNativeVideoSurface(stage) {
+  deactivateNativeVideoSurface();
+  const native = nativePlaybackModule();
+  if (!native || !stage) return;
+  document.documentElement.dataset.nativeVideo = "active";
+  state.nativeSurfaceTracker = native.createSurfaceTracker(stage, { label: "host", onMeasure: () => updateNativeVideoHoles() });
+  updateNativeVideoHoles();
+}
+
+function deactivateNativeVideoSurface() {
+  state.nativeSurfaceTracker?.dispose();
+  state.nativeSurfaceTracker = null;
+  if (document.documentElement.dataset.nativeVideo) {
+    delete document.documentElement.dataset.nativeVideo;
+  }
+  document.documentElement.style.removeProperty("--native-video-hole");
+  elements.playerPanel?.style.removeProperty("--native-video-panel-hole");
+  if (state.nativeHoleFrame) window.cancelAnimationFrame(state.nativeHoleFrame);
+  state.nativeHoleFrame = null;
+}
+
+function roundedRectPath(x, y, width, height, radius) {
+  const r = Math.max(0, Math.min(radius, width / 2, height / 2));
+  const f = value => Math.round(value * 100) / 100;
+  return `M${f(x + r)} ${f(y)}H${f(x + width - r)}A${f(r)} ${f(r)} 0 0 1 ${f(x + width)} ${f(y + r)}`
+    + `V${f(y + height - r)}A${f(r)} ${f(r)} 0 0 1 ${f(x + width - r)} ${f(y + height)}`
+    + `H${f(x + r)}A${f(r)} ${f(r)} 0 0 1 ${f(x)} ${f(y + height - r)}V${f(y + r)}`
+    + `A${f(r)} ${f(r)} 0 0 1 ${f(x + r)} ${f(y)}Z`;
+}
+
+// Page and panel backgrounds are painted by pseudo-elements with an even-odd
+// hole at the stage, so the native frame below shows only there while every
+// DOM overlay keeps painting above it.
+function updateNativeVideoHoles() {
+  if (state.nativeHoleFrame) return;
+  state.nativeHoleFrame = window.requestAnimationFrame(() => {
+    state.nativeHoleFrame = null;
+    const stage = state.hostPlaybackSession?.nativeStage;
+    if (document.documentElement.dataset.nativeVideo !== "active" || !stage?.isConnected) return;
+    const frame = elements.playerFrame?.getBoundingClientRect();
+    if (!frame) return;
+    const radius = Number.parseFloat(getComputedStyle(elements.playerFrame).borderTopLeftRadius) || 0;
+    const width = Math.max(document.documentElement.clientWidth, window.innerWidth);
+    const height = Math.max(document.documentElement.clientHeight, window.innerHeight);
+    const hole = roundedRectPath(frame.x, frame.y, frame.width, frame.height, radius);
+    document.documentElement.style.setProperty(
+      "--native-video-hole",
+      `path(evenodd, "M0 0H${width}V${height}H0Z ${hole}")`,
+    );
+    const panel = elements.playerPanel?.getBoundingClientRect();
+    if (panel) {
+      const local = roundedRectPath(frame.x - panel.x, frame.y - panel.y, frame.width, frame.height, radius);
+      elements.playerPanel.style.setProperty(
+        "--native-video-panel-hole",
+        `path(evenodd, "M-1 -1H${panel.width + 1}V${panel.height + 1}H-1Z ${local}")`,
+      );
+    }
+  });
+}
+
+function shouldMountNativeHostPlayback(session) {
+  return Boolean(
+    nativePlaybackEngineSelected()
+    && session?.playbackProgram?.artifact_set_id
+    && globalThis.document?.documentElement?.dataset?.hostPlatform !== "ios"
+  );
+}
+
+function mountNativeHostPlaybackSession(session, currentItem, mountData) {
+  const native = nativePlaybackModule();
+  const program = Object.freeze({ ...session.playbackProgram, playback_generation: session.playbackGeneration });
+  const controller = native.createController({
+    program,
+    settings: nativePlaybackSettings(),
+    onObservation: observation => handleNativePlaybackObservation(session, observation),
+  });
+  const stage = document.createElement("div");
+  stage.className = "native-video-stage";
+  stage.dataset.playerRole = "native-video";
+  stage.dataset.playerItemId = currentItem.id;
+  stage.setAttribute("aria-hidden", "true");
+  session.engine = "gstreamer";
+  session.native = controller;
+  session.nativeStage = stage;
+  session.nativeSettingsKey = JSON.stringify(nativePlaybackSettings());
+  session.video = controller.video;
+  session.audio = controller.audio;
+  controller.video.dataset.playerItemId = currentItem.id;
+  controller.audio.dataset.playerItemId = currentItem.id;
+  session.mountData = mountData;
+  controller.loadPort = () => beginNativeHostPlaybackLoading(session);
+  session.mediaBackend = native.createGStreamerPlaybackAdapter({
+    program,
+    controller,
+    current: () => (isCurrentHostPlaybackSession(session, controller.video, controller.audio) ? program : null),
+  });
+  replaceHostPlayerView(stage);
+  activateNativeVideoSurface(stage);
+  return { video: controller.video, audio: controller.audio };
+}
+
+function beginNativeHostPlaybackLoading(session) {
+  if (
+    !isCurrentHostPlaybackSession(session, session?.video, session?.audio)
+    || session.engine !== "gstreamer"
+    || session.phase !== "binding"
+    || session.loadingStarted
+    || !session.mountData?.videoUrl
+    || !session.mountData?.audioUrl
+  ) {
+    return false;
+  }
+  session.loadingStarted = true;
+  const restore = session.playbackRestore;
+  session.playbackRestore = null;
+  const itemId = session.video.dataset.playerItemId || "";
+  const play = Boolean(session.logicalPlayIntent) && !shouldHoldCurrentItemForTransition(itemId);
+  const startSeconds = restore && Number.isFinite(restore.currentTime) ? Math.max(0, restore.currentTime) : 0;
+  session.nativeLoadStartedAt = performance.now();
+  session.native.load({
+    videoUrl: session.mountData.videoUrl,
+    audioUrl: session.mountData.audioUrl,
+    startSeconds,
+    play,
+  }).then((accepted) => {
+    if (!accepted) failNativeHostPlayback(session, session.native?.failure() || "load-rejected");
+  }, () => failNativeHostPlayback(session, "load-failed"));
+  return true;
+}
+
+function commitNativeHostPlaybackReady(session) {
+  if (
+    state.hostPlaybackSession !== session
+    || session.engine !== "gstreamer"
+    || session.readyCommitted
+    || !isCurrentHostPlaybackSession(session, session.video, session.audio)
+  ) {
+    return false;
+  }
+  session.readyCommitted = true;
+  session.initialIntentApplied = true;
+  session.readyCommitCount += 1;
+  session.mediaBackend?.observe(session.mediaBackend.program, { type: "ready" });
+  setHostPlaybackSessionPhase(session, "ready-paused");
+  const itemId = session.video.dataset.playerItemId || "";
+  if (shouldHoldCurrentItemForTransition(itemId)) {
+    state.localShouldBePlaying = false;
+    void session.native.pause();
+  } else {
+    state.localShouldBePlaying = Boolean(session.logicalPlayIntent);
+  }
+  publishPresentationPlaybackState(session, { force: true }).catch(() => {});
+  if (Number(state.data?.player_control_command?.seq) > Number(state.lastAppliedPlayerControlSeq || 0)) {
+    applyRemotePlayerControl(state.data.player_control_command, state.data.current_item,
+      frontendPlaybackMode(state.data.playback_mode));
+  }
+  return true;
+}
+
+function handleNativePlaybackObservation(session, observation) {
+  if (!isCurrentHostPlaybackSession(session, session.video, session.audio) || session.engine !== "gstreamer") {
+    return;
+  }
+  const itemId = session.video.dataset.playerItemId || "";
+  switch (observation.type) {
+    case "ready":
+      commitNativeHostPlaybackReady(session);
+      break;
+    case "playing":
+      if (!session.readyCommitted) commitNativeHostPlaybackReady(session);
+      if (session.logicalPlayIntent === false || shouldHoldCurrentItemForTransition(itemId)) {
+        void session.native.pause();
+        break;
+      }
+      setHostPlaybackSessionPhase(session, "playing");
+      if (session.nativeLoadStartedAt) {
+        recordPlaybackTrace("native-first-playing", `${Math.round(performance.now() - session.nativeLoadStartedAt)}ms`);
+        session.nativeLoadStartedAt = 0;
+      }
+      if (session.presentationFeedbackPlayPending) {
+        session.presentationFeedbackPlayPending = false;
+        showPresentationOperationFeedback({ kind: "play", value: "" });
+      }
+      break;
+    case "paused":
+      if (session.readyCommitted && session.phase === "playing") setHostPlaybackSessionPhase(session, "paused");
+      break;
+    case "eos":
+      handleNativePlaybackEnded(session).catch(() => {});
+      break;
+    case "error":
+      if (observation.fatal) {
+        failNativeHostPlayback(session, observation.code);
+        return;
+      }
+      if (observation.code === "stalled") recoverNativePlaybackStall(session);
+      break;
+    default:
+      break;
+  }
+  if (state.hostPlaybackSession === session) {
+    reportPlayerStatus(itemId, session.video, session);
+    if (observation.type === "position") reportPlayerStatusHeartbeat(itemId, session.video, session);
+  }
+}
+
+// The engine only observes the drained end. The existing generation-checked
+// Host transition owns history and the single automatic advance.
+async function handleNativePlaybackEnded(session) {
+  if (
+    state.localPlaybackEndHandled
+    || !state.localShouldBePlaying
+    || session.logicalPlayIntent === false
+    || !isCurrentHostPlaybackSession(session, session.video, session.audio)
+    || !session.readyCommitted
+  ) {
+    return false;
+  }
+  if (shouldHoldCurrentItemForTransition(state.data?.current_item)) return false;
+  state.localPlaybackEndHandled = true;
+  session.mediaBackend?.observe(session.mediaBackend.program, { type: "eos", drained: true });
+  state.localShouldBePlaying = false;
+  session.seekResumePending = false;
+  reportPlayerStatus(session.video.dataset.playerItemId || "", session.video, session);
+  await handleLocalPlaybackEnded("media-ended", session);
+  return true;
+}
+
+function setNativePlaybackIntent(session, shouldPlay, { source = "", userGesture = false } = {}) {
+  const controller = session?.native;
+  if (!controller || session.engine !== "gstreamer") return false;
+  const itemId = session.video.dataset.playerItemId || "";
+  const nextIntent = Boolean(shouldPlay);
+  const changedIntent = session.logicalPlayIntent !== nextIntent;
+  session.logicalPlayIntent = nextIntent;
+  if (source) recordPlaybackTrace("native-intent", `${source}:${nextIntent ? "play" : "pause"}`);
+  void userGesture;
+  if (!nextIntent) session.presentationFeedbackPlayPending = false;
+  if (shouldHoldCurrentItemForTransition(itemId)) {
+    state.localShouldBePlaying = false;
+    void controller.pause();
+    return true;
+  }
+  state.localShouldBePlaying = nextIntent;
+  if (!session.readyCommitted) return true;
+  if (nextIntent) {
+    if (changedIntent) session.presentationFeedbackPlayPending = true;
+    if (controller.ended()) {
+      // A replay after the drained end is an explicit seek to the start.
+      void controller.seek(0, true);
+    } else {
+      void controller.play().catch(() => {});
+    }
+  } else {
+    void controller.pause();
+    setHostPlaybackSessionPhase(session, "paused");
+    if (changedIntent) showPresentationOperationFeedback({ kind: "pause", value: "" });
+  }
+  reportPlayerStatus(itemId, session.video, session);
+  return true;
+}
+
+function beginNativePlayerSeek(session, options = {}) {
+  const controller = session?.native;
+  if (!controller || session.engine !== "gstreamer") return false;
+  const itemId = session.video.dataset.playerItemId || "";
+  const resumeAfterSeek = Boolean(options.resumeAfterSeek && !shouldHoldCurrentItemForTransition(itemId));
+  const updateIntent = options.updateIntent !== false;
+  const target = Number.isFinite(options.targetTime) ? Math.max(0, options.targetTime) : controller.position();
+  const callback = typeof options.onSettled === "function" ? options.onSettled : null;
+  session.seekSettling = true;
+  session.seekUpdatesLogicalIntent = updateIntent;
+  if (updateIntent) {
+    session.logicalPlayIntent = resumeAfterSeek;
+    state.localShouldBePlaying = resumeAfterSeek;
+  }
+  const playIntent = updateIntent ? resumeAfterSeek : Boolean(session.logicalPlayIntent);
+  const sequence = (session.nativeSeekSequence = Number(session.nativeSeekSequence || 0) + 1);
+  controller.seek(target, playIntent).then((applied) => {
+    if (session.nativeSeekSequence === sequence) session.seekSettling = false;
+    if (!isCurrentHostPlaybackSession(session, session.video, session.audio)) {
+      callback?.(false);
+      return;
+    }
+    callback?.(Boolean(applied));
+    if (applied && updateIntent && options.presentationFeedback !== false && Number.isFinite(options.targetTime)) {
+      showPresentationOperationFeedback({ kind: "seek", value: target === 0 ? "0:00" : formatDurationSeconds(target) });
+    }
+    reportPlayerStatus(itemId, session.video, session);
+  }, () => {
+    if (session.nativeSeekSequence === sequence) session.seekSettling = false;
+    callback?.(false);
+  });
+  return true;
+}
+
+// A non-fatal stall (position frozen while playing) is recovered once per
+// program by an accurate seek to the current position; a second stall falls
+// back to Legacy through the bounded failure path.
+function recoverNativePlaybackStall(session) {
+  if (session.nativeStallRecovered) {
+    failNativeHostPlayback(session, "stalled");
+    return;
+  }
+  session.nativeStallRecovered = true;
+  const position = session.native.position();
+  void session.native.seek(position, Boolean(session.logicalPlayIntent));
+}
+
+// Bounded fallback: one Legacy replacement of the same claimed program at the
+// preserved position. The fallback stays in effect until the user explicitly
+// selects GStreamer again, so a failing engine can never cause a retry loop.
+function failNativeHostPlayback(session, code) {
+  if (state.hostPlaybackSession !== session || session.engine !== "gstreamer") return false;
+  const reason = String(code || "native-error").slice(0, 120);
+  state.mediaEngineFallback = { reason, at: Date.now() };
+  recordPlaybackTrace("native-fallback", reason);
+  setAppMessage(t("playbackEngine.fallbackNotice"), true);
+  remountCurrentHostPlaybackSession(session, { reason: "fallback" });
+  renderMediaEngineSettings();
+  return true;
+}
+
+// Retire the current execution and remount the same claimed program, keeping
+// its logical position, intent and status sequence. Ownership is retained:
+// AppState refuses to re-admit a generation that was retired by this client.
+function remountCurrentHostPlaybackSession(session = state.hostPlaybackSession, { reason = "switch" } = {}) {
+  const currentItem = state.data?.current_item;
+  if (!session || state.hostPlaybackSession !== session || !currentItem) return false;
+  const position = Number(session.video?.currentTime || 0);
+  const restore = session.readyCommitted || session.engine === "gstreamer";
+  state.hostPlaybackSessionCarry = {
+    generation: session.playbackGeneration,
+    statusSequence: Number(session.statusSequence || 0),
+    reason,
+  };
+  if (restore && session.playbackProgram) {
+    state.pendingPlaybackRestore = {
+      itemId: currentItem.id,
+      itemIncarnationId: session.playbackProgram.item_incarnation_id,
+      variantId: session.playbackProgram.selected_audio_variant_id,
+      currentTime: Number.isFinite(position) ? position : 0,
+      wasPlaying: session.logicalPlayIntent !== false,
+    };
+  }
+  retireHostPlaybackSession(session, { releaseProgramOwnership: false, preserveAdvanceDelayOverlay: true });
+  render();
+  return true;
+}
+
+function renderMediaEngineSettings() {
+  const row = document.getElementById("playback-engine-row");
+  const select = document.getElementById("playback-engine-select");
+  const detail = document.getElementById("playback-engine-status");
+  if (!row || !select || !detail) return;
+  const status = state.mediaEngineStatus;
+  const available = Boolean(status?.gstreamer?.available);
+  const configured = status?.configured === "gstreamer" && available ? "gstreamer" : "legacy";
+  const gstOption = select.querySelector('option[value="gstreamer"]');
+  if (gstOption) {
+    gstOption.disabled = !available;
+    gstOption.textContent = t("playbackEngine.gstreamer");
+  }
+  const legacyOption = select.querySelector('option[value="legacy"]');
+  if (legacyOption) legacyOption.textContent = t("playbackEngine.legacy");
+  if (!state.mediaEngineSwitchInFlight) select.value = configured;
+  select.disabled = !available || state.mediaEngineSwitchInFlight;
+  const active = activeMediaEngine();
+  let text;
+  if (!status) {
+    text = t("playbackEngine.unavailablePlatform");
+  } else if (!available) {
+    text = status.gstreamer?.reason === "runtime-plugins-missing"
+      ? t("playbackEngine.unavailableRuntime")
+      : status.gstreamer?.reason === "webview-renderer-unsupported"
+        ? t("playbackEngine.unavailableRenderer")
+        : t("playbackEngine.unavailablePlatform");
+  } else if (state.mediaEngineFallback) {
+    text = t("playbackEngine.fallbackStatus").replace("{reason}", state.mediaEngineFallback.reason);
+  } else {
+    text = t("playbackEngine.activeStatus").replace("{engine}",
+      t(active === "gstreamer" ? "playbackEngine.gstreamer" : "playbackEngine.legacy"));
+  }
+  if (detail.textContent !== text) detail.textContent = text;
+  row.dataset.activeEngine = active;
+  row.dataset.configuredEngine = configured;
+  row.dataset.fallback = state.mediaEngineFallback ? "true" : "false";
+}
+
+function bindMediaEngineSettings() {
+  const select = document.getElementById("playback-engine-select");
+  if (!select || select.dataset.bound === "true") return;
+  select.dataset.bound = "true";
+  select.addEventListener("change", (event) => {
+    void changeMediaEnginePreference(event.currentTarget.value);
+  });
+  window.addEventListener("resize", () => updateNativeVideoHoles());
+}
+
+async function changeMediaEnginePreference(engine) {
+  const native = nativePlaybackModule();
+  const select = document.getElementById("playback-engine-select");
+  if (!native?.available() || state.mediaEngineSwitchInFlight || !["gstreamer", "legacy"].includes(engine)) return;
+  state.mediaEngineSwitchInFlight = true;
+  select?.setAttribute("aria-busy", "true");
+  renderMediaEngineSettings();
+  try {
+    state.mediaEngineStatus = await native.setPreference(engine);
+    // An explicit choice clears an earlier automatic fallback.
+    state.mediaEngineFallback = null;
+    const session = state.hostPlaybackSession;
+    const wanted = nativePlaybackEngineSelected() ? "gstreamer" : "legacy";
+    if (session && activeMediaEngine(session) !== wanted && isCurrentHostPlaybackSession(session, session.video, session.audio)) {
+      // Deliberate switch: reload the current track at its logical position.
+      remountCurrentHostPlaybackSession(session, { reason: "switch" });
+    }
+  } catch (error) {
+    setAppMessage(String(error?.message || error || t("playbackEngine.switchFailed")), true);
+  } finally {
+    state.mediaEngineSwitchInFlight = false;
+    select?.removeAttribute("aria-busy");
+    renderMediaEngineSettings();
+  }
+}
+
+function setupNativeHostPlaybackSession(session, currentItem) {
+  const { video } = session;
+  ["loadedmetadata", "durationchange", "timeupdate", "play", "pause", "seeked", "ended"].forEach((eventName) => {
+    addMountedPlayerListener(video, eventName, () => {
+      publishPresentationPlaybackState(session, { force: eventName !== "timeupdate" }).catch(() => {});
+      if (eventName === "timeupdate") {
+        maybeShowRatingPromptForProgress(currentItem, video.currentTime, video.duration);
+        updateNativeVideoHoles();
+      }
+    });
+  });
+  syncNativePlaybackSettings(session);
+  beginHostPlaybackSessionOwnershipClaim(session);
 }
 
 function beginHostPlaybackSessionElementLoading(session) {
@@ -16948,6 +17506,13 @@ function reconcileHostPlaybackSession(currentItem) {
 
   const session = createHostPlaybackSession(playbackGeneration, playbackProgram);
   state.hostPlaybackSession = session;
+  // An engine switch or fallback remounts the same generation: continue its
+  // status sequence so Rust does not reject the replacement as stale.
+  const carry = state.hostPlaybackSessionCarry;
+  state.hostPlaybackSessionCarry = null;
+  if (carry?.generation === playbackGeneration) {
+    session.statusSequence = Math.max(Number(session.statusSequence || 0), Number(carry.statusSequence || 0));
+  }
   session.playbackRestore = mountData.mountable
     ? claimPendingHostPlaybackRestore(session, currentItem)
     : null;
@@ -17002,6 +17567,7 @@ function holdLocalPlaybackForNetworkOutput() {
     state.localPlaybackStartGeneration=Number(state.localPlaybackStartGeneration||0)+1;
     if(session) {clearSplitPlaybackStartupWatchdog(session);if(session.readyCommitted)setHostPlaybackSessionPhase(session,"paused");}
   }
+  if (session?.engine === "gstreamer" && session.native) void session.native.pause();
   for (const media of elements.playerFrame.querySelectorAll('video:not([data-player-role="native-output"]),audio')) {
     media.bilikaraAudioClock?.stop();
     if(!media.paused) {media.dataset.bilikaraInternalPause="true";media.pause();}
@@ -17032,6 +17598,10 @@ function renderPlayer(currentItem, playbackMode) {
   const reconciliation = reconcileHostPlaybackSession(currentItem);
   if (reconciliation.kind !== "mounted") {
     const retained=reconciliation.session;
+    if (retained?.engine === "gstreamer") {
+      syncNativePlaybackSettings(retained);
+      updateNativeVideoHoles();
+    }
     if(retained?.phase==="binding" && !retained.loadingStarted) {
       if(retained.ownershipClaimed)retained.mediaBackend.load(retained.mediaBackend.program);
       else beginHostPlaybackSessionOwnershipClaim(retained);
@@ -17039,6 +17609,10 @@ function renderPlayer(currentItem, playbackMode) {
     return;
   }
   const { session, video, audio } = reconciliation;
+  if (session.engine === "gstreamer") {
+    setupNativeHostPlaybackSession(session, currentItem);
+    return;
+  }
 
   state.localPlayerRequestedRate = Number(video.playbackRate || 1) || 1;
   applyStoredVolumeToSplitPlayer(video, audio);
@@ -17469,9 +18043,13 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
     if (action === "next-track") {
       requestNextTrack(expectedPlaybackGeneration, command.expected_queue_version ?? null).catch(() => {});
     } else {
-      const video = elements.playerFrame.querySelector("video");
-      const audio = elements.playerFrame.querySelector('audio[data-player-role="audio"]');
       const playbackSession = state.hostPlaybackSession;
+      // A native session has no media elements; its facades are the pair.
+      const nativePair = playbackSession?.engine === "gstreamer" ? activeLocalPlayerElements() : null;
+      const video = nativePair ? nativePair.video : elements.playerFrame.querySelector("video");
+      const audio = nativePair
+        ? nativePair.audio
+        : elements.playerFrame.querySelector('audio[data-player-role="audio"]');
       if (!video || !isCurrentHostPlaybackSession(playbackSession, video, audio)) return;
       if (video && isCurrentHostPlaybackSession(playbackSession, video, audio)) {
         // WebKit can keep a successful active pair in "starting" until its
@@ -24074,6 +24652,9 @@ async function startPolling() {
   syncApplicationRestartAvailability();
   initSearchDetailController();
   await initializeLocalPresentation();
+  // Select the execution engine before the first program can be mounted.
+  bindMediaEngineSettings();
+  try { await hydrateMediaEngineStatus(); } catch { state.mediaEngineStatus = null; }
   try {
     await fetchState();
   } catch (error) {

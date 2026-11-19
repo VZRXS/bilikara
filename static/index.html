@@ -408,6 +408,16 @@
                 </span>
               </label>
             </div>
+            <div class="cache-panel-row cache-policy-row playback-engine-row" id="playback-engine-row">
+              <label class="cache-quality-field" for="playback-engine-select" title="选择本机播放引擎" data-i18n-title="playbackEngine.hint">
+                <span class="cache-panel-label" data-i18n="playbackEngine.label">播放引擎</span>
+                <span class="runtime-settings-select-shell"><select id="playback-engine-select" class="cache-quality-select">
+                  <option value="gstreamer" data-i18n="playbackEngine.gstreamer">GStreamer</option>
+                  <option value="legacy" data-i18n="playbackEngine.legacy">兼容模式（WebView）</option>
+                </select></span>
+              </label>
+              <p class="cache-panel-hint playback-engine-status" id="playback-engine-status" role="status" aria-live="polite"></p>
+            </div>
             <div class="cache-panel-row cache-policy-row" id="cache-source-row">
               <label class="cache-quality-field" for="cache-download-source-select" title="选择下载器（Downkyi需登录哔哩哔哩账号）" data-i18n-title="service.downloadSourceHint">
                 <span class="cache-panel-label" data-i18n="service.downloadSource">下载器</span>
@@ -2031,6 +2041,7 @@
   <script src="/ktv-scanner.js" defer></script>
   <script src="/request-input.js" defer></script>
   <script src="/media-backend.js" defer></script>
+  <script src="/native-playback.js" defer></script>
   <script src="/audio-clock.js" defer></script>
   <script src="/pitch-player.js" defer></script>
   <script src="/export-guard.js" defer></script>

@@ -12306,3 +12306,75 @@ html .volume-adjust-popover::backdrop {
 }
 .bbdown-login-link[hidden] { display: none; }
 .bbdown-login-link[aria-busy="true"] { opacity: .55; cursor: wait; }
+
+/* Native GStreamer stage (desktop preview). The shell composites the decoded
+   frame beneath pixels this page leaves transparent. Backgrounds that cover
+   the stage move to pseudo-elements carrying an even-odd hole, so every DOM
+   overlay (controls, QR, notices, feedback cards) still paints above video. */
+html[data-native-video="active"],
+html[data-native-video="active"] body {
+  /* The root also carries the page gradient; it would cover the stage. */
+  background: transparent;
+}
+
+html[data-native-video="active"] body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    var(--mobile-viewport-wash, none),
+    radial-gradient(circle at top left, var(--bg-glow), transparent 28%),
+    linear-gradient(140deg, var(--bg) 0%, var(--bg-middle) 45%, var(--bg-deep) 100%);
+  clip-path: var(--native-video-hole, none);
+}
+
+/* The Linux shell paints a solid app-shell colour; keep that look on the
+   holed background layer instead. */
+html[data-native-video="active"] body[data-tauri-platform="linux"] .app-shell {
+  background: transparent;
+}
+
+html[data-native-video="active"] body[data-tauri-platform="linux"]::before {
+  background: var(--bg-middle);
+}
+
+html[data-native-video="active"] .player-panel {
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  isolation: isolate;
+}
+
+html[data-native-video="active"] .player-panel::before {
+  display: none;
+}
+
+html[data-native-video="active"] .player-panel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--panel);
+  pointer-events: none;
+  clip-path: var(--native-video-panel-hole, none);
+}
+
+html[data-native-video="active"] .player-panel.is-tauri-fullscreen::after {
+  background: #000;
+}
+
+html[data-native-video="active"] .player-frame,
+html[data-native-video="active"] .player-panel.is-tauri-fullscreen,
+html[data-native-video="active"] .player-panel.is-tauri-fullscreen .player-frame {
+  background: transparent;
+}
+
+.native-video-stage {
+  position: absolute;
+  inset: 0;
+  background: transparent;
+  pointer-events: none;
+}

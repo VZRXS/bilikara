@@ -293,3 +293,19 @@ body.is-cursor-hidden * {
   opacity: 0;
   pointer-events: none;
 }
+
+/* Native GStreamer stage: the shell composites the Host pipeline's frames
+   beneath transparent pixels; overlays (QR, notices, cards) stay above. */
+html[data-native-video="active"],
+html[data-native-video="active"] body,
+html[data-native-video="active"] .presentation-output-shell,
+html[data-native-video="active"] .presentation-output-frame {
+  background: transparent;
+}
+
+.presentation-output-frame .native-video-stage {
+  position: absolute;
+  inset: 0;
+  background: transparent;
+  pointer-events: none;
+}
