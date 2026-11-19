@@ -4,6 +4,7 @@ use crate::dlna::cast_http::{LiveOptions, LiveStream};
 use crate::experimental_libav::{
     LibavMetadataProbe, ProbeError,
     cast_mux::{CastFile, CastFormat, CastInputs, CastSession, CastSummary},
+    live_audio::Control,
 };
 use std::path::Component;
 
@@ -178,28 +179,133 @@ pub(super) fn probe() -> Result<LibavMetadataProbe, ApiError> {
     })
 }
 pub(super) const MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+/// The pitch, delay and track a file-mode output renders into its file.
+/// Volume and mute stay with the receiver, as before.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct Baked {
+    pub key_shift: i32,
+    pub offset_ms: i32,
+    pub track: String,
+}
+impl Baked {
+    /// The Host's current settings for this item, or None once it is no
+    /// longer the current program (T5 retires that output).
+    pub(super) fn current(app: &crate::app_state::AppState, item: &PlaylistItem) -> Option<Self> {
+        let facts = app.native_output_audio_facts().ok()?;
+        (facts.source.0 == item.id
+            && facts.source.1 == item.item_incarnation_id
+            && facts.source.2 == item.artifact_set_id)
+            .then_some(Self {
+                key_shift: facts.settings.key_shift,
+                offset_ms: facts.settings.av_offset_ms,
+                track: facts.track,
+            })
+    }
+    /// Neutral settings keep T3's copied audio: the exact file format the
+    /// store self-test qualifies. Anything else is an L1 render.
+    pub(super) fn neutral(item: &PlaylistItem) -> Self {
+        Self {
+            key_shift: 0,
+            offset_ms: 0,
+            track: item.selected_audio_variant_id.clone(),
+        }
+    }
+    pub(super) fn is_neutral(&self) -> bool {
+        self.key_shift == 0 && self.offset_ms == 0
+    }
+}
+
+pub(super) struct Prepared {
+    pub file: CastFile,
+    /// What the published file actually contains.
+    pub baked: Baked,
+    /// Why later DSP edits cannot be rendered for this source (None: an edit
+    /// regenerates the file through L1).
+    pub refusal: Option<&'static str>,
+}
+
+/// File delivery always starts at 0 and the receiver seeks over SOAP, so a
+/// regeneration keeps the existing position and Seek semantics.
 pub(super) fn file(
     context: Arc<HostContext>,
     session: Arc<CastSession>,
     item: PlaylistItem,
-    position: f64,
+    wanted: Baked,
     stop: Arc<AtomicBool>,
-) -> tokio::task::JoinHandle<Result<CastFile, ApiError>> {
+) -> tokio::task::JoinHandle<Result<Prepared, ApiError>> {
     tokio::task::spawn_blocking(move || {
         let input = inputs(&context, &item)?;
         let probe = probe()?;
-        session
-            .mux(
-                &probe,
-                &CastInputs {
-                    video: &input.video,
-                    audio: &input.audio,
-                    start_us: (position * 1_000_000.0) as i64,
-                },
-                CastFormat::Ts,
-                &stop,
-            )
-            .map_err(|e| prepare_error(e, "Cannot prepare cast media"))
+        let t3 = |input: &Inputs| {
+            session
+                .mux(
+                    &probe,
+                    &CastInputs {
+                        video: &input.video,
+                        audio: &input.audio,
+                        start_us: 0,
+                    },
+                    CastFormat::Ts,
+                    &stop,
+                )
+                .map_err(|e| prepare_error(e, "Cannot prepare cast media"))
+        };
+        if wanted.is_neutral() && wanted.track == item.selected_audio_variant_id {
+            let file = t3(&input)?;
+            let refusal = l1_refusal(probe.live_l1_available(), &file.summary);
+            return Ok(Prepared {
+                file,
+                baked: Baked::neutral(&item),
+                refusal,
+            });
+        }
+        let facts = probe
+            .cast_preflight(&input.video, &stop)
+            .map_err(|e| prepare_error(e, "Cannot inspect cast media"))?;
+        if let Some(refusal) = l1_refusal(probe.live_l1_available(), &facts) {
+            // Not renderable by L1: the unprocessed copy, as before.
+            return Ok(Prepared {
+                file: t3(&input)?,
+                baked: Baked::neutral(&item),
+                refusal: Some(refusal),
+            });
+        }
+        let control = Control {
+            offset_ms: wanted.offset_ms,
+            key_shift: wanted.key_shift,
+            volume_percent: 100,
+            muted: false,
+            track: 0,
+            mode: bilikara_rust::output_audio::OffsetMode::Splice,
+        };
+        let summary = CastSummary {
+            packets: 0,
+            bytes: 0,
+            audio_transcoded: true,
+            ..facts
+        };
+        let file = session
+            .write_ts(&stop, summary, |write| {
+                // Full speed, one fixed control snapshot, the selected track.
+                probe.render_live_ts(
+                    &input.video,
+                    &[input.audio.as_path()],
+                    0,
+                    &stop,
+                    &mut |bytes, _, _| write(bytes),
+                    &mut || Ok(control),
+                )
+            })
+            .map_err(|e| prepare_error(e, "Cannot render cast media"))?;
+        Ok(Prepared {
+            file,
+            baked: Baked {
+                track: item.selected_audio_variant_id.clone(),
+                ..wanted
+            },
+            refusal: None,
+        })
     })
 }
 pub(super) struct Live {

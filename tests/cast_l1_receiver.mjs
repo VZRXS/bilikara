@@ -41,13 +41,24 @@ try{
   const peer=await loopbackAlias('127.0.0.2','L1 late join from another peer')?'127.0.0.2':undefined;
   await f.connect();let s=await f.status('streaming');
   const original=s.current_item,connection=s.purek.output.target_room_id;
-  assert.equal(s.media_output.pipeline_level,'L0');assert.equal(s.media_output.pipeline_reason,'file_mode');
-  // The R1 file/no-L1 retreat rejects controls without changing their values.
-  const settings=s.player_settings;
-  for(const [route,body] of [['/api/player/key-shift',{key_shift:2}],['/api/player/av-delay-action',{type:'adjust',delta_ms:20}]]){
-    assert.equal((await f.remote.request(route,body)).status,409);
-    assert.deepEqual((await f.state()).player_settings,settings);
-  }
+  // File delivery renders pitch, delay and track into a regenerated file:
+  // edits are accepted, quick edits settle into one render and one new URI,
+  // and neutral settings return to the unprocessed T3 copy.
+  assert.equal(s.media_output.pipeline_level,'L1');assert.equal(s.media_output.pipeline_reason,null);
+  // Runtime capabilities describe a live L1 stream only.
+  for(const [key,value] of Object.entries(s.purek.output.capabilities))if(key.startsWith('supports_'))assert.equal(value,false,key);
+  const sets=()=>f.actions.filter(a=>a==='SetAVTransportURI').length;
+  const regenerated=(previous,label)=>waitFor(async()=>{const s=await f.state();return f.uri!==previous&&s.media_output.status==='streaming'&&!s.media_output.busy&&s;},label,30000);
+  const neutralFile=f.uri,setsBefore=sets();
+  await f.remote.api('/api/player/key-shift',{key_shift:1});await f.remote.api('/api/player/key-shift',{key_shift:2});
+  s=await regenerated(neutralFile,'file regeneration');
+  assert.equal(sets(),setsBefore+1,'two quick edits settle into one regeneration');
+  assert.equal(s.player_settings.key_shift,2);assert.equal(s.media_output.pipeline_level,'L1');
+  const pitched=f.uri,rendered=await waitFor(()=>f.media.find(m=>m.uri===pitched),'regenerated file capture',30000);
+  assert.equal(Number(rendered.headers['content-length']),rendered.bytes.length);
+  writeFileSync(path.join(process.env.BILIKARA_TEST_PUREK_HOME,'file-dsp.ts'),rendered.bytes);
+  await f.remote.api('/api/player/key-shift',{key_shift:0});
+  s=await regenerated(pitched,'neutral file');assert.equal(s.player_settings.key_shift,0);
   await f.client.api('/api/cast/command',{command:'cast.set_device_mode',device_key:s.cast.selected,revision:s.revision,mode:'live'});
   s=await waitFor(async()=>{const s=await f.state();return s.media_output.pipeline_level==='L1'&&s.media_output.status==='streaming'&&!s.media_output.busy&&s;},'T4 L1 publication');
   const uri=f.uri,generation=s.media_output.stream_generation,playback=s.playback_generation;

@@ -98,12 +98,20 @@ impl State {
         }
     }
 
-    /// Why casting cannot apply pitch, delay or track edits live: file
-    /// delivery, or a live source L1 refused. None while L1 runs or not casting.
+    /// Why casting cannot apply pitch, delay or track edits: the source or
+    /// companion L1 refused (`long_gop`, `l1_unavailable`), or a file output
+    /// still being prepared (`file_mode`). None while edits reach the receiver
+    /// (live L1, or file regeneration) and when not casting.
+    fn live_l1(&self) -> bool {
+        self.l1 && self.mode == Mode::Live
+    }
+
     pub(crate) fn pipeline_reason(&self) -> Option<&'static str> {
-        (self.owns_playback && !self.l1).then(|| match self.mode {
-            Mode::File => "file_mode",
-            _ => self.l1_refusal.unwrap_or("l1_unavailable"),
+        (self.owns_playback && !self.l1).then(|| {
+            self.l1_refusal.unwrap_or(match self.mode {
+                Mode::File => "file_mode",
+                _ => "l1_unavailable",
+            })
         })
     }
 
@@ -258,8 +266,10 @@ impl State {
                     "has_connection_manager":self.connected && renderer.is_some_and(|r|r.description.connection_manager.is_some()),
                     "protocol_info_state":self.protocol_state.unwrap_or(crate::dlna::diagnostics::ProtocolState::NotChecked),"protocol_info_error":self.protocol_error.as_deref().map(legacy_protocol_error),
                     "supports_play":false,"supports_pause":false,"supports_seek":false,
-                    "supports_live_stream":self.l1,"supports_midstream_param_change":self.l1,
-                    "supports_runtime_av_offset":self.l1,"supports_track_switch":self.l1,"supports_pitch_shift":self.l1,
+                    // Runtime capabilities of an admitted live L1 stream only; file
+                    // regeneration is reported by pipeline_level, never here.
+                    "supports_live_stream":self.live_l1(),"supports_midstream_param_change":self.live_l1(),
+                    "supports_runtime_av_offset":self.live_l1(),"supports_track_switch":self.live_l1(),"supports_pitch_shift":self.live_l1(),
                     "sink_formats":self.sink_formats()},
                 "pipeline_level":if self.owns_playback {Some(if self.l1 {"L1"} else {"L0"})} else {None},
                 "offset_mode":match self.offset_mode {bilikara_rust::output_audio::OffsetMode::Splice=>"splice",bilikara_rust::output_audio::OffsetMode::Gradual=>"gradual"},"last_error":self.output_error(),

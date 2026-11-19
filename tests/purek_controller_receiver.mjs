@@ -12,7 +12,7 @@ try{
   assert.equal((await f.remote.request('/api/player/output',{target:'purek',experimental:true})).status,403);
   assert.equal((await f.client.request('/api/player/output',{target:'purek'})).status,400);
   const initial=await f.state();await f.connect();let s=await f.status('streaming');
-  assert.equal(s.purek.connection_type,dlna?'dlna':'purek');assert.equal(s.media_output.qualified,false);assert.equal(s.media_output.pipeline_level,'L0');assert.equal(s.media_output.pipeline_reason,'file_mode');
+  assert.equal(s.purek.connection_type,dlna?'dlna':'purek');assert.equal(s.media_output.qualified,false);assert.equal(s.media_output.pipeline_level,'L1');assert.equal(s.media_output.pipeline_reason,null);
   assert.equal((await f.client.api('/api/player/claim-program',{playback_generation:s.playback_generation,item_incarnation_id:s.current_item.item_incarnation_id,artifact_set_id:s.current_item.artifact_set_id},{'X-Bilikara-Client':'controller-fixture'})).claimed,false);
   assert.equal((await f.client.request('/api/player/control-ack',{seq:1})).status,409);
   const publicState=await f.remote.api('/api/state');assert.equal(publicState.media_output.can_manage,false);assert.equal(publicState.purek,undefined);assert.equal(publicState.cast,undefined);
@@ -35,7 +35,9 @@ try{
   await f.command('seek-absolute',{target_seconds:15});await waitFor(()=>f.position===15,'real receiver Seek');await f.status('streaming');assert.equal(f.uri,first);
   await f.command('pause');await f.status('paused');await f.command('seek-absolute',{target_seconds:20});await waitFor(()=>f.position===20,'paused receiver Seek');await f.status('paused');
   await f.command('play');await f.status('streaming');
-  for(const [path,body] of [['/api/player/key-shift',{key_shift:2}],['/api/player/restart-program',{}],['/api/player/output',{offset_mode:'gradual'}]])assert.equal((await (path==='/api/player/restart-program'?f.client:f.remote).request(path,body)).status,409,path+' R1 unavailable L1 operation is explicit');
+  // File DSP edits regenerate the file (covered by cast_l1_receiver.mjs);
+  // restarting the program stays unavailable while the receiver owns playback.
+  assert.equal((await f.client.request('/api/player/restart-program',{})).status,409,'restart-program is explicit while casting');
   assert.equal((await f.remote.request('/api/player/next',{playback_generation:s.playback_generation,expected_queue_version:'stale'})).status,409);
   await f.remote.api('/api/player/next',{playback_generation:s.playback_generation});
   s=await waitFor(async()=>{const s=await f.state();return s.current_item?.id!==initial.current_item.id&&s.media_output.status==='streaming'&&!s.media_output.busy&&s;},'next cached song');

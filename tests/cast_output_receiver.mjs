@@ -20,7 +20,9 @@ try{
   for(let i=0;i<5;i++)assert.equal((await transfer(f.uri,{headersOnly:true})).status,200,'new readers never get 409');
   if(await loopbackAlias('127.0.0.2','R1 output pull from another LAN peer'))
     assert.equal((await transfer(f.uri,{localAddress:'127.0.0.2'})).status,200,'LAN peer mismatch does not reject possession of the URI');
-  assert.equal((await f.client.request('/api/player/key-shift',{key_shift:1})).status,409,'R1 raw output explicitly rejects L1-only edits');
+  // The unprocessed T3 copy is published while settings are neutral; edits
+  // would regenerate it through L1 (cast_l1_receiver.mjs covers that path).
+  {const s=await f.state();assert.equal(s.media_output.pipeline_level,'L1');assert.equal(s.media_output.pipeline_reason,null);}
   const selected=(await f.state()).cast.selected;
   await f.client.api('/api/player/output',{target:'local'});let s=await f.status('authorized');
   assert.equal(s.cast.connected,true);assert.equal(s.cast.owns_playback,false);assert.equal(f.releases,0);

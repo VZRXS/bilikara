@@ -1071,6 +1071,100 @@ fn long_gop_live_keeps_raw_t3_reports_why_and_still_seeks() {
     assert_eq!(snap["media_output"]["pipeline_reason"], "long_gop");
 }
 
+fn set_count(receiver: &Receiver) -> usize {
+    receiver
+        .state
+        .lock()
+        .unwrap()
+        .actions
+        .iter()
+        .filter(|a| *a == "SetAVTransportURI")
+        .count()
+}
+
+#[test]
+#[ignore = "requires trusted BILIKARA_TEST_CAST_COMPANION; actual file render and HTTP endpoint"]
+fn file_mode_regenerates_dsp_edits_once_and_defers_them_while_paused() {
+    let _serial = GLOBAL_APP_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let receiver = Receiver::new();
+    let host = Host::new();
+    host.use_long_media();
+    let renderer = receiver.renderer();
+    with_app(|app| {
+        app.native().cast.renderers.push(renderer.clone());
+        Ok(())
+    })
+    .unwrap();
+    host.connect(renderer);
+    let snap = host.wait(|s| s["media_output"]["status"] == "streaming");
+    assert_eq!(snap["cast"]["effective_mode"], "file");
+    // A 2-second GOP source: edits are rendered into a regenerated file.
+    assert_eq!(snap["media_output"]["pipeline_level"], "L1");
+    assert_eq!(snap["media_output"]["pipeline_reason"], Value::Null);
+    let generation = snap["cast"]["generation"].as_u64().unwrap();
+    let sets = set_count(&receiver);
+    host.post("/api/player/key-shift", json!({"key_shift":1}))
+        .unwrap();
+    host.post("/api/player/key-shift", json!({"key_shift":2}))
+        .unwrap();
+    let snap = host.wait(|s| {
+        s["cast"]["generation"].as_u64().unwrap() > generation
+            && s["cast"]["busy"] == false
+            && s["media_output"]["status"] == "streaming"
+    });
+    assert_eq!(set_count(&receiver), sets + 1, "one settled regeneration");
+    assert_eq!(snap["media_output"]["pipeline_level"], "L1");
+    // Paused: the edit waits for Play instead of replaying the receiver.
+    host.command("pause");
+    let paused = host.snapshot()["cast"]["generation"].as_u64().unwrap();
+    let sets = set_count(&receiver);
+    host.post("/api/player/key-shift", json!({"key_shift":0}))
+        .unwrap();
+    thread::sleep(Duration::from_millis(2500));
+    let snap = host.snapshot();
+    assert_eq!(snap["cast"]["generation"].as_u64().unwrap(), paused);
+    assert_eq!(snap["cast"]["is_paused"], true);
+    assert_eq!(set_count(&receiver), sets);
+    host.command("play");
+    let snap = host.wait(|s| {
+        s["cast"]["generation"].as_u64().unwrap() > paused
+            && s["cast"]["busy"] == false
+            && s["media_output"]["status"] == "streaming"
+    });
+    assert_eq!(snap["cast"]["is_paused"], false);
+    assert_eq!(set_count(&receiver), sets + 1);
+}
+
+#[test]
+#[ignore = "requires trusted BILIKARA_TEST_CAST_COMPANION; actual file mux and HTTP endpoint"]
+fn long_gop_file_mode_keeps_the_t3_copy_and_rejects_dsp_edits() {
+    let _serial = GLOBAL_APP_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let receiver = Receiver::new();
+    let host = Host::new();
+    host.use_video("long-gop-12s.mp4");
+    let renderer = receiver.renderer();
+    with_app(|app| {
+        app.native().cast.renderers.push(renderer.clone());
+        Ok(())
+    })
+    .unwrap();
+    host.connect(renderer);
+    let snap = host.wait(|s| s["media_output"]["status"] == "streaming");
+    assert_eq!(snap["cast"]["effective_mode"], "file");
+    assert_eq!(snap["media_output"]["pipeline_level"], "L0");
+    assert_eq!(snap["media_output"]["pipeline_reason"], "long_gop");
+    assert_eq!(
+        host.post("/api/player/key-shift", json!({"key_shift":2}))
+            .unwrap_err()
+            .code,
+        "cast_setting_unavailable"
+    );
+}
+
 #[path = "platform_tests.rs"]
 mod platform_tests;
 #[path = "tests_round1.rs"]

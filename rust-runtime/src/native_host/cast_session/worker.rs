@@ -12,7 +12,7 @@ use crate::dlna::{
     dlna_policy::{FileMetadata, TransportState},
     purek,
 };
-use crate::experimental_libav::cast_mux::{CastFile, CastSession};
+use crate::experimental_libav::cast_mux::CastSession;
 use std::time::Instant;
 
 // Allow slow receivers (including two 2.5s replies in one poll). Commands can
@@ -465,6 +465,10 @@ struct Output {
     playback_generation: u64,
     live: Option<media::Live>,
     l1: bool,
+    /// File delivery: the settings rendered into the published file, and a
+    /// differing Host setting with the time it was first seen (debounce).
+    baked: Option<media::Baked>,
+    regenerate: Option<(media::Baked, Instant)>,
     began: Instant,
     start: f64,
     receiver_origin: f64,
@@ -578,10 +582,14 @@ pub(super) async fn handoff(
         Ok(())
     });
 }
+/// Settings must stay unchanged this long before a file is regenerated, so
+/// repeated pitch or delay steps cost one render and one receiver restart.
+const REGENERATE_SETTLE: Duration = Duration::from_secs(1);
+
 type Prefetch = (
     String,
     Arc<AtomicBool>,
-    tokio::task::JoinHandle<Result<CastFile, ApiError>>,
+    tokio::task::JoinHandle<Result<media::Prepared, ApiError>>,
 );
 
 async fn play_session(
@@ -867,6 +875,32 @@ async fn play_session(
                 control = Some(Control::ProgramChanged);
                 update(id, |s| s.control_busy = true);
             }
+            // File delivery renders pitch, delay and track into the file. A
+            // differing Host setting regenerates it at the current position
+            // once it has settled; a paused output regenerates on Play.
+            let mut dsp_stale = false;
+            if mode == Mode::File
+                && out.l1
+                && let Some(baked) = out.baked.clone()
+            {
+                match with_app(|app| Ok(media::Baked::current(app, &out.item)))?
+                    .filter(|wanted| *wanted != baked)
+                {
+                    None => out.regenerate = None,
+                    Some(wanted) => {
+                        dsp_stale = true;
+                        let settled = out.regenerate.as_ref().is_some_and(|(seen, since)| {
+                            *seen == wanted && since.elapsed() >= REGENERATE_SETTLE
+                        });
+                        if out.regenerate.as_ref().is_none_or(|(seen, _)| *seen != wanted) {
+                            out.regenerate = Some((wanted, Instant::now()));
+                        } else if settled && control.is_none() && !out.paused {
+                            control = Some(Control::Restart);
+                            update(id, |s| s.control_busy = true);
+                        }
+                    }
+                }
+            }
             if let Some(control) = control {
                 match control {
                     Control::Probe => { query_capabilities(&client,id,trace,connection,Some(out.id),cancel).await; }
@@ -886,7 +920,11 @@ async fn play_session(
                             s.receiver_state = Some("paused");
                         });
                     }
-                    Control::Pause | Control::Play if mode == Mode::File => {
+                    // Play with stale file settings rebuilds (the arm below).
+                    Control::Pause | Control::Play
+                        if mode == Mode::File
+                            && !(dsp_stale && matches!(control, Control::Play)) =>
+                    {
                         let pause = matches!(control, Control::Pause);
                         let action = if pause {
                             soap(client.pause(cancel)).await
@@ -1011,7 +1049,9 @@ async fn play_session(
                 prefetched = Some((
                     media_key(item),
                     pre_stop.clone(),
-                    media::file(context.clone(), files.clone(), item.clone(), 0.0, pre_stop),
+                    // Next songs usually start with neutral settings; a
+                    // mismatch is rendered on demand when the song starts.
+                    media::file(context.clone(), files.clone(), item.clone(), media::Baked::neutral(item), pre_stop),
                 ));
             }
             if Instant::now() >= next_poll {
@@ -1274,7 +1314,7 @@ async fn play_session(
 async fn take_prefetch(
     prefetch: &mut Option<Prefetch>,
     cancel: &CancellationToken,
-) -> Option<(String, CastFile)> {
+) -> Option<(String, media::Prepared)> {
     let (key, stop, mut task) = prefetch.take()?;
     let result = tokio::select! {
         biased;
@@ -1320,7 +1360,7 @@ async fn start_output(
     resources: OutputContext<'_>,
     mode: Mode,
     mut position: f64,
-    mut cached: Option<(String, CastFile)>,
+    mut cached: Option<(String, media::Prepared)>,
 ) -> Result<Output, ApiError> {
     loop {
         let before = with_app(|app| app.native_cast_input())?;
@@ -1348,7 +1388,7 @@ async fn start_output_once(
     resources: OutputContext<'_>,
     mode: Mode,
     position: f64,
-    cached: Option<(String, CastFile)>,
+    cached: Option<(String, media::Prepared)>,
 ) -> Result<Output, ApiError> {
     let OutputContext {
         context,
@@ -1404,6 +1444,9 @@ async fn start_output_once(
         trace.http_at(output_id, trace.elapsed(), event);
     }
     let mut live = None;
+    // File delivery: what the published file renders, and why later DSP
+    // edits cannot be rendered for this source.
+    let mut file_profile: Option<(media::Baked, Option<&'static str>)> = None;
     let duration;
     let mut origin = position;
     let published = if mode == Mode::Live {
@@ -1429,16 +1472,23 @@ async fn start_output_once(
             }
         }
     } else {
-        let file = match cached.filter(|(key, _)| *key == media_key(&item) && position == 0.0) {
-            Some((_, file)) => file,
-            None => media::file(context.clone(), files, item.clone(), 0.0, stop.clone())
+        // The Host settings this file must carry, read once at preparation;
+        // later edits regenerate it (the run loop's debounce).
+        let wanted = with_app(|app| Ok(media::Baked::current(app, &item)))?
+            .unwrap_or_else(|| media::Baked::neutral(&item));
+        let prepared = match cached.filter(|(key, prepared)| {
+            *key == media_key(&item) && position == 0.0 && prepared.baked == wanted
+        }) {
+            Some((_, prepared)) => prepared,
+            None => media::file(context.clone(), files, item.clone(), wanted, stop.clone())
                 .await
                 .map_err(|_| error("cast_prepare_failed"))??,
         };
-        duration = file.summary.duration_us as f64 / 1_000_000.0
-            + file.summary.source_start_us as f64 / 1_000_000.0;
+        duration = prepared.file.summary.duration_us as f64 / 1_000_000.0
+            + prepared.file.summary.source_start_us as f64 / 1_000_000.0;
+        file_profile = Some((prepared.baked, prepared.refusal));
         endpoint
-            .publish_file(generation, file, TsMime::Mp2t)
+            .publish_file(generation, prepared.file, TsMime::Mp2t)
             .map_err(|_| error("cast_publish_failed"))?
     };
     let sinks = query_capabilities(client, id, trace, connection, Some(output_id), cancel).await;
@@ -1511,8 +1561,16 @@ async fn start_output_once(
     update(id, |s| {
         s.phase = Phase::Active;
         s.owns_playback = true;
-        s.l1 = live.as_ref().is_some_and(|live| live.l1);
-        s.l1_refusal = live.as_ref().and_then(|live| live.refusal);
+        // L1 means the Host's DSP edits reach the receiver: applied live, or
+        // rendered into a regenerated file.
+        s.l1 = live.as_ref().is_some_and(|live| live.l1)
+            || file_profile
+                .as_ref()
+                .is_some_and(|(_, refusal)| refusal.is_none());
+        s.l1_refusal = live
+            .as_ref()
+            .and_then(|live| live.refusal)
+            .or_else(|| file_profile.as_ref().and_then(|(_, refusal)| *refusal));
         s.connected = true;
         s.paused = false;
         s.duration = duration;
@@ -1525,8 +1583,13 @@ async fn start_output_once(
         generation,
         item,
         playback_generation: snap.playback_generation,
-        l1: live.as_ref().is_some_and(|live| live.l1),
+        l1: live.as_ref().is_some_and(|live| live.l1)
+            || file_profile
+                .as_ref()
+                .is_some_and(|(_, refusal)| refusal.is_none()),
         live,
+        baked: file_profile.map(|(baked, _)| baked),
+        regenerate: None,
         began: Instant::now(),
         start: origin,
         receiver_origin: origin,

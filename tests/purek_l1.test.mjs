@@ -13,14 +13,14 @@ import {inspectTs} from './purek_ts_observer.mjs';
 
 // Decode only in the outer test process. The isolated Host and its receiver
 // retain their executable-denying PATH and cannot depend on a media CLI.
-async function verifyCastAudio(directory){
-  const ts=path.join(directory,'captured.ts'),pcm=path.join(directory,'captured.f32');
+async function decodeTone(directory,name){
+  const ts=path.join(directory,`${name}.ts`),pcm=path.join(directory,`${name}.f32`);
   const decoded=await runNative(process.env.BILIKARA_TEST_FIXTURE_FFMPEG||'ffmpeg',[
     '-hide_banner','-loglevel','error','-y','-i',ts,'-map','0:a:0','-ac','1','-ar','48000','-f','f32le',pcm,
   ],process.env,30000);
   assert.equal(decoded.status,0,decoded.stderr);
   const samples=readFileSync(pcm);
-  function tone(start,end){
+  return function tone(start,end){
     const first=Math.round(start*48000),last=Math.round(end*48000);
     assert.ok(samples.length>=last*4,'actual decoded tail');
     let crossings=0,power=0;
@@ -30,7 +30,14 @@ async function verifyCastAudio(directory){
       if(i>first&&samples.readFloatLE((i-1)*4)<=0&&value>0)crossings++;
     }
     return {frequency:crossings/(end-start),rms:Math.sqrt(power/(last-first))};
-  }
+  };
+}
+
+async function verifyCastAudio(directory){
+  // File delivery rendered the original track at +2 semitones from the start.
+  const file=(await decodeTone(directory,'file-dsp'))(1.0,1.5);
+  assert.ok(Math.abs(file.frequency-440*2**(2/12))<4,`file render with +2 semitones: ${JSON.stringify(file)}`);
+  const tone=await decodeTone(directory,'captured');
   // Sample the opening inside the producer's initial lead (before any edit) and
   // the final state at least one second after the media already delivered when
   // the receiver saw the last edit acknowledged. A slow Host moves that window

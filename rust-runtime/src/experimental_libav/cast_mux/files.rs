@@ -343,6 +343,92 @@ impl CastSession {
         format: CastFormat,
         stop: &AtomicBool,
     ) -> Result<CastFile, ProbeError> {
+        self.generate(format, stop, |file, staging, remaining| {
+            if let Some(file) = file {
+                let mut write_error = None;
+                let result = probe.cast_run(
+                    inputs,
+                    CastOutput::FileTs,
+                    CastPacing::FullSpeed,
+                    remaining,
+                    stop,
+                    &mut |event| match event {
+                        CastEvent::Start(_) => true,
+                        CastEvent::Data { bytes, .. } => match file.write_all(bytes) {
+                            Ok(()) => true,
+                            Err(e) => {
+                                write_error = Some(e);
+                                false
+                            }
+                        },
+                    },
+                );
+                if let Some(e) = write_error {
+                    return Err(io_error(e));
+                }
+                result
+            } else {
+                probe.cast_run(
+                    inputs,
+                    CastOutput::Mp4(staging),
+                    CastPacing::FullSpeed,
+                    remaining,
+                    stop,
+                    &mut |_| true,
+                )
+            }
+        })
+    }
+    /// Publish a TS produced by the caller (an L1 render with a fixed DSP
+    /// snapshot) through the same staging, quota and lease boundary as T3.
+    /// `summary` describes the source; its byte and packet counts are set
+    /// from what was actually written.
+    pub fn write_ts(
+        &self,
+        stop: &AtomicBool,
+        mut summary: CastSummary,
+        produce: impl FnOnce(&mut dyn FnMut(&[u8]) -> bool) -> Result<(), ProbeError>,
+    ) -> Result<CastFile, ProbeError> {
+        self.generate(CastFormat::Ts, stop, |file, _, remaining| {
+            let file = file.ok_or_else(|| io_error("TS staging file missing"))?;
+            let mut written = 0_u64;
+            let mut write_error = None;
+            produce(&mut |bytes| {
+                written = written.saturating_add(bytes.len() as u64);
+                if written > remaining {
+                    write_error = Some(io_error("session quota exhausted"));
+                    return false;
+                }
+                match file.write_all(bytes) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        write_error = Some(io_error(e));
+                        false
+                    }
+                }
+            })?;
+            if let Some(e) = write_error {
+                return Err(e);
+            }
+            if written == 0 || !written.is_multiple_of(188) {
+                return Err(io_error("invalid rendered TS"));
+            }
+            summary.bytes = written;
+            summary.packets = written / 188;
+            Ok(summary)
+        })
+    }
+    /// Shared staging: a unique `.part` file in the private session directory,
+    /// synced, size-checked against the summary and the remaining quota, then
+    /// renamed without replacement and charged to the session. TS producers
+    /// write through the open handle; MP4 is written by libav at the staging
+    /// path while this handle is closed, then reopened to sync.
+    fn generate(
+        &self,
+        format: CastFormat,
+        stop: &AtomicBool,
+        produce: impl FnOnce(Option<&mut File>, &Path, u64) -> Result<CastSummary, ProbeError>,
+    ) -> Result<CastFile, ProbeError> {
         // Serialize generators within a session; readers never acquire this lock.
         let _generation = loop {
             if stop.load(Ordering::Acquire) {
@@ -378,39 +464,11 @@ impl CastSession {
                 .create_new(true)
                 .open(&staging)
                 .map_err(io_error)?;
-            let mut write_error = None;
             let summary = if format == CastFormat::Ts {
-                let result = probe.cast_run(
-                    inputs,
-                    CastOutput::FileTs,
-                    CastPacing::FullSpeed,
-                    remaining,
-                    stop,
-                    &mut |event| match event {
-                        CastEvent::Start(_) => true,
-                        CastEvent::Data { bytes, .. } => match file.write_all(bytes) {
-                            Ok(()) => true,
-                            Err(e) => {
-                                write_error = Some(e);
-                                false
-                            }
-                        },
-                    },
-                );
-                if let Some(e) = write_error {
-                    return Err(io_error(e));
-                }
-                result?
+                produce(Some(&mut file), &staging, remaining)?
             } else {
                 drop(file);
-                let summary = probe.cast_run(
-                    inputs,
-                    CastOutput::Mp4(&staging),
-                    CastPacing::FullSpeed,
-                    remaining,
-                    stop,
-                    &mut |_| true,
-                )?;
+                let summary = produce(None, &staging, remaining)?;
                 file = OpenOptions::new()
                     .write(true)
                     .open(&staging)
