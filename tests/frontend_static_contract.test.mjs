@@ -105,7 +105,7 @@ test('manual bundle labels do not authorize publication/mirroring', () => {
 });
 
 test('all real Cargo/Node application manifests and lock roots preserve the release version and shell boundary', async () => {
-  const expected = '0.8.0'; assert.equal(JSON.parse(read('src-tauri/tauri.conf.json')).version, expected);
+  const expected = '0.9.0'; assert.equal(JSON.parse(read('src-tauri/tauri.conf.json')).version, expected);
   for (const manifest of ['src-tauri', 'rust', 'rust-runtime']) { const result = await runNative('cargo', ['metadata', '--manifest-path', path.join(root, manifest, 'Cargo.toml'), '--locked', '--no-deps', '--format-version=1']); assert.equal(result.status, 0, result.stderr); const metadata = JSON.parse(result.stdout), member = metadata.packages.find(v => path.resolve(v.manifest_path) === path.join(root, manifest, 'Cargo.toml')); assert.ok(member); assert.equal(member.version, expected); if (manifest === 'src-tauri') { const lib = member.targets.find(v => v.name === 'bilikara_app'); assert.deepEqual(new Set(lib.crate_types), new Set(['staticlib', 'cdylib', 'rlib'])); } }
   assert.equal(read('rust-runtime/Cargo.lock').match(/\[\[package\]\]\nname = "bilikara_runtime"\nversion = "([^"]+)"/)[1], expected);
   assert.equal(JSON.parse(read('package.json')).version, expected); const lock = JSON.parse(read('package-lock.json')); assert.equal(lock.version, expected); assert.equal(lock.packages[''].version, expected);

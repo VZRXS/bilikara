@@ -10,6 +10,8 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 
 const root = path.resolve(fileURLToPath(new URL('../', import.meta.url)));
+// The macOS backend bundle carries the product's package version.
+const packageVersion = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).version;
 export const suffix = process.platform === 'win32' ? '.exe' : '';
 export function nativeTarget() {
   const arch = { x64: 'x86_64', arm64: 'aarch64' }[process.arch];
@@ -107,7 +109,7 @@ export function expectedPackage(fixture, environment, { development, prefix, mac
   } });
   if (macosApp) put('Contents/Info.plist', { kind: 'file', mode: fileMode, plist: {
     CFBundleExecutable: 'bilikara-desktop-host', CFBundleIdentifier: 'com.bilikara.backend', CFBundleName: 'bilikara backend',
-    CFBundlePackageType: 'APPL', CFBundleShortVersionString: '0.8.0', CFBundleVersion: '0.8.0', LSUIElement: true,
+    CFBundlePackageType: 'APPL', CFBundleShortVersionString: packageVersion, CFBundleVersion: packageVersion, LSUIElement: true,
   } });
   // DEPRECATED (v0.9): BBDown is never staged, even when one is on PATH.
   // const tool = environment.PATH.split(path.delimiter).map(p => path.join(p, `BBDown${suffix}`)).find(p => existsSync(p));

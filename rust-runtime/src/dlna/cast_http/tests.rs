@@ -237,7 +237,7 @@ fn common(reply: &Reply, mime: &str, file: bool, converted: bool) {
     assert_eq!(reply.headers["ext"], "");
     assert_eq!(
         reply.headers["server"],
-        "Windows/11 UPnP/1.0 bilikara/0.8.0"
+        "Windows/11 UPnP/1.0 bilikara/0.9.0"
     );
     assert_eq!(reply.headers["cache-control"], "no-store");
     assert_eq!(reply.headers["connection"], "close");
