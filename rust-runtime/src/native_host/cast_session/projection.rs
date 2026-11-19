@@ -414,6 +414,11 @@ pub(crate) fn resume_local(app: &mut crate::app_state::AppState) -> Result<(), A
                 delta_seconds: 0.0,
                 target_seconds: (action == "seek-absolute")
                     .then(|| resume["position"].as_f64().unwrap_or(0.0)),
+                // The restore seek carries the intended play state, so the
+                // Host settles directly into it (no transient pause). The
+                // following play/pause matches it and remains for clients
+                // that predate atomic restoration.
+                play_intent: (action == "seek-absolute").then(|| resume["is_paused"] != true),
             },
             now: now(),
         })?;

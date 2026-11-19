@@ -533,6 +533,11 @@ pub(crate) fn maintain(context: Arc<HostContext>) {
                                     item_id: f.source.0.clone(),
                                     delta_seconds: 0.0,
                                     target_seconds: action["target_seconds"].as_f64(),
+                                    // Atomic restore: the seek carries the
+                                    // resulting intent; the trailing command
+                                    // stays for compatibility and is a no-op.
+                                    play_intent: (action["action"] == "seek-absolute")
+                                        .then_some(c.playing),
                                 },
                                 now: now(),
                             })?;

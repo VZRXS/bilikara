@@ -13566,7 +13566,8 @@ function beginSplitPlayerSeek(video, audio, options = {}) {
   session.seekSettleStartedAt = Date.now();
   session.seekResumePending = resumeAfterSeek;
   session.seekUpdatesLogicalIntent = options.updateIntent !== false;
-  session.presentationFeedbackSeekTarget = session.seekUpdatesLogicalIntent && Number.isFinite(options.targetTime)
+  session.presentationFeedbackSeekTarget = session.seekUpdatesLogicalIntent
+    && options.presentationFeedback !== false && Number.isFinite(options.targetTime)
     ? options.targetTime : null;
   if (session.seekUpdatesLogicalIntent) {
     session.logicalPlayIntent = resumeAfterSeek;
@@ -17537,9 +17538,15 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
             (action === "seek-relative" && Number.isFinite(deltaSeconds) && deltaSeconds !== 0)
             || (action === "seek-absolute" && Number.isFinite(targetSeconds))
           ) {
-            const resumeAfterSeek = audio && isTauriWebKitRuntime()
-              ? state.localShouldBePlaying
-              : !video.paused || state.localShouldBePlaying;
+            // A handback restore names its resulting intent; apply seek and
+            // intent as one transition instead of inferring it from a hold.
+            const restoreIntent = action === "seek-absolute" && typeof command?.play_intent === "boolean"
+              ? command.play_intent : null;
+            const resumeAfterSeek = restoreIntent !== null
+              ? restoreIntent
+              : audio && isTauriWebKitRuntime()
+                ? state.localShouldBePlaying
+                : !video.paused || state.localShouldBePlaying;
             const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : Number.POSITIVE_INFINITY;
             const nextTime = action === "seek-absolute"
               ? Math.max(0, targetSeconds)
@@ -17551,7 +17558,8 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
               const started = beginSplitPlayerSeek(video, audio, {
                 resumeAfterSeek,
                 targetTime: clampedNextTime,
-                diagnosticAction: "manual-video-seek",
+                presentationFeedback: restoreIntent === null,
+                diagnosticAction: restoreIntent === null ? "manual-video-seek" : "handback-restore-seek",
                 onSettled: (applied) => {
                   if (applied) {
                     reportPlayerStatus(currentItem.id, video, playbackSession);
@@ -17582,7 +17590,9 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
           playbackSession.presentationFeedbackPlayPending = true;
           confirmPresentationPlaybackFeedback(playbackSession);
         }
-        playbackSession.presentationFeedbackPreviousControl = { action, seq, item_id: commandItemId,
+        // A handback restore is not a user Restart, even at position zero.
+        playbackSession.presentationFeedbackPreviousControl = typeof command?.play_intent === "boolean" ? null : {
+          action, seq, item_id: commandItemId,
           playback_generation: expectedPlaybackGeneration, target_seconds: command.target_seconds, at: Date.now() };
       }
     }

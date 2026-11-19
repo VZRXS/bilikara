@@ -904,6 +904,7 @@ fn native_and_ffi_controls_share_one_fifo_and_host_only_ack() {
             item_id: "first".into(),
             delta_seconds: 11.0,
             target_seconds: None,
+            play_intent: None,
         },
         now: 4.0,
     })

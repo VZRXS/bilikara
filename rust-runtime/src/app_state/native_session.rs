@@ -1304,6 +1304,8 @@ impl AppState {
                 item_id,
                 delta_seconds: delta,
                 target_seconds: target,
+                // Remote transport keeps separate seek and play/pause actions.
+                play_intent: None,
             },
             now,
         })?;

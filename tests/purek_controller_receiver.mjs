@@ -43,7 +43,9 @@ try{
   f.position=37;await waitFor(async()=>(await f.state()).cast.position===37,'receiver position');f.refuse=true;
   s=await waitFor(async()=>{const s=await f.state();return s.media_output.status==='error'&&s.media_output.target==='local'&&s;},'recovery returns local',20000);assert.equal(s.media_output.target,'local');assert.equal(s.cast.connected,false);assert.equal(s.cast.resume.position,37);
   assert.equal(s.player_control_command.action,'seek-absolute');assert.equal(s.player_control_command.target_seconds,37);
-  keys(s.player_control_command,'seq action item_id playback_generation delta_seconds target_seconds issued_at');
+  // Atomic handback: the restore seek carries the receiver's playing intent.
+  keys(s.player_control_command,'seq action item_id playback_generation delta_seconds target_seconds issued_at play_intent');
+  assert.equal(s.player_control_command.play_intent,true);
   f.refuse=false;await f.connect();await f.status('streaming');await waitFor(()=>f.media.length>=3,'real reconnected bytes');
   f.position=119;await waitFor(async()=>(await f.state()).cast.position===119,'near-end observation');f.transport='STOPPED';
   s=await waitFor(async()=>{const s=await f.state();return s.current_item?.id==='purek-fixture-2'&&s.cast.phase==='idle'&&s;},'receiver natural finish advances once');

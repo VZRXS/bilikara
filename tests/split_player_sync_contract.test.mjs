@@ -405,7 +405,8 @@ restore_call = (await this._slice("const maybeRestorePlayback = () =>", "const s
 remote_controls = (await this._slice("function applyRemotePlayerControl", "async function ackRemotePlayerControl"));
 assert.ok(contains("diagnosticAction: \"restore-video-seek\"", restore_call));
 assert.ok(contains("action === \"seek-relative\" || action === \"seek-absolute\"", remote_controls));
-assert.ok(contains("diagnosticAction: \"manual-video-seek\"", remote_controls));
+// A Cast handback restore names its own seek label; manual seeks keep theirs.
+assert.ok(contains("diagnosticAction: restoreIntent === null ? \"manual-video-seek\" : \"handback-restore-seek\"", remote_controls));
 assert.ok(contains("setMediaCurrentTime(video, clampedNextTime)", remote_controls));
 presentation_controls = (await this._slice("async function handlePresentationHostControl", "function queuePlayerFrameSingleClick"));
 assert.ok(contains("action === \"seek\"", presentation_controls));

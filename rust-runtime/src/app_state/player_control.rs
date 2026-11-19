@@ -14,6 +14,12 @@ pub struct PlayerControlInput {
     #[serde(default)]
     pub delta_seconds: f64,
     pub target_seconds: Option<f64>,
+    /// Resulting play intent of an absolute seek, applied atomically by the
+    /// Host player. Issued by local handback restoration (Cast and native
+    /// output) so the restored position never settles through an
+    /// unintended pause before a separate play command arrives.
+    #[serde(default)]
+    pub play_intent: Option<bool>,
 }
 
 #[derive(Debug, Default)]
@@ -99,6 +105,9 @@ impl AppState {
         {
             return Err(rejected("invalid_player_control", "跳转范围无效"));
         }
+        if control.play_intent.is_some() && control.action != "seek-absolute" {
+            return Err(rejected("invalid_player_control", "无效的播放操作"));
+        }
         let queue = &mut self.player_controls;
         if queue.commands.len() >= 16 {
             return Err(rejected("player_busy", "播放器仍在处理操作，请稍后再试"));
@@ -112,6 +121,9 @@ impl AppState {
             "playback_generation":control.playback_generation,"item_id":control.item_id,
             "delta_seconds":control.delta_seconds,"target_seconds":control.target_seconds,"issued_at":now});
         let mut command = command;
+        if let Some(play_intent) = control.play_intent {
+            command["play_intent"] = json!(play_intent);
+        }
         if control.action == "next-track" {
             command["expected_queue_version"] = json!(
                 control
