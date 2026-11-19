@@ -31,9 +31,15 @@ async function verifyCastAudio(directory){
     }
     return {frequency:crossings/(end-start),rms:Math.sqrt(power/(last-first))};
   }
-  // Sample after the live producer's bounded lead and the edit sequence, so
-  // these windows measure the stable opening and final DSP states.
-  const before=tone(0.7,1.2),after=tone(8.0,8.5);
+  // Sample the opening inside the producer's initial lead (before any edit) and
+  // the final state at least one second after the media already delivered when
+  // the receiver saw the last edit acknowledged. A slow Host moves that window
+  // later instead of sampling before the edits landed; it must still fit.
+  const {last_edit_received_seconds:landed}=JSON.parse(readFileSync(path.join(directory,'edits.json'),'utf8'));
+  assert.ok(Number.isFinite(landed)&&landed>=0,`edit position: ${landed}`);
+  const settled=Math.max(8.0,landed+1.0);
+  assert.ok(settled+0.5<=9.9,`edits finished at ${landed.toFixed(2)}s, too late to observe a settled final window`);
+  const before=tone(0.7,1.2),after=tone(settled,settled+0.5);
   assert.ok(Math.abs(before.frequency-440)<4,`original 440Hz tone: ${JSON.stringify(before)}`);
   assert.ok(Math.abs(after.frequency-660*2**(2/12))<4,`FLAC track with +2 semitones: ${JSON.stringify(after)}`);
   assert.ok(Math.abs(after.rms/before.rms-0.35)<0.035,`live 35% gain: ${after.rms/before.rms}`);

@@ -21,6 +21,21 @@ function firstVideo(bytes){
   assert.fail('video PES at joined keyframe');
 }
 
+// Media seconds already delivered on an open GET: the latest PES timestamp
+// relative to the stream's first video PES.
+function receivedSeconds(chunks){
+  const bytes=Buffer.concat(chunks),whole=bytes.subarray(0,bytes.length-bytes.length%188);
+  const origin=firstVideo(whole).pts;let latest=origin;
+  for(let n=0;n<whole.length;n+=188){
+    const p=whole.subarray(n,n+188);
+    if(!(p[1]&64)||!(p[3]&16))continue;
+    const b=p.subarray((p[3]&32)?5+p[4]:4);
+    if(b.length<14||b[0]!==0||b[1]!==0||b[2]!==1||!(b[7]&0x80))continue;
+    const t=b.subarray(9,14);latest=Math.max(latest,((t[0]>>1)&7)*2**30+t[1]*2**22+(t[2]>>1)*2**15+t[3]*128+(t[4]>>1));
+  }
+  return (latest-origin)/90000;
+}
+
 const f=await fixture({vendor:true});
 try{
   const peer=await loopbackAlias('127.0.0.2','L1 late join from another peer')?'127.0.0.2':undefined;
@@ -43,6 +58,7 @@ try{
   const beforeActions=f.actions.filter(a=>['Stop','SetAVTransportURI','Play'].includes(a));
   const offset=value=>f.remote.api('/api/player/av-delay-action',{type:'set_effective',effective_delay_ms:value});
   const change=async action=>{await action();await delay(120);};
+  let landed;
   async function editDuringStream(){
     await change(()=>offset(150));await change(()=>offset(0));await change(()=>offset(-150));
     await change(()=>f.remote.api('/api/player/output',{offset_mode:'gradual'}));
@@ -52,6 +68,9 @@ try{
     await change(()=>f.remote.api('/api/player/volume',{volume_percent:35,is_muted:true}));
     await change(()=>f.remote.api('/api/player/volume',{is_muted:false}));
     await change(()=>f.remote.api('/api/player/output',{offset_mode:'splice'}));
+    // The producer cannot apply an acknowledged edit before media it has
+    // already delivered, so this bounds the final edit's position from below.
+    landed=receivedSeconds(f.received.get(uri));
     s=await f.state();assert.equal(s.media_output.stream_generation,generation);assert.equal(f.uri,uri);
     assert.equal(s.media_output.offset_mode,'splice');assert.equal(s.current_item.selected_audio_variant_id,'instrumental');
     assert.equal(s.playback_generation,playback+1);assert.equal(s.player_settings.key_shift,2);
@@ -74,6 +93,7 @@ try{
   assert.equal(skipped%24,0);assert.ok(late.bytes.includes(Buffer.from([0,0,1,0x65])),'joined IDR');
   inspectTs(late.bytes,{videoFrames:240-skipped,channels:2,sampleRate:48000});
   writeFileSync(path.join(process.env.BILIKARA_TEST_PUREK_HOME,'captured.ts'),full.bytes);
+  writeFileSync(path.join(process.env.BILIKARA_TEST_PUREK_HOME,'edits.json'),JSON.stringify({last_edit_received_seconds:landed}));
   const counters=new Map();for(let i=0;i<late.bytes.length;i+=188){const p=late.bytes.subarray(i,i+188),pid=((p[1]&31)<<8)|p[2];if(pid!==8191&&(p[3]&16)&&!counters.has(pid)){assert.equal(p[3]&15,0,'fresh reader starts each PID at zero');counters.set(pid,0);}}
   // T5 program replacement retains the receiver connection and registration.
   await f.remote.api('/api/player/next',{playback_generation:s.playback_generation});
