@@ -48,7 +48,9 @@ runs:
         done
         printf '%s\n' 'Acquire::Retries "1";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/80-bilikara-ci >/dev/null
         sudo timeout --kill-after=15s 600s apt-get update
-        sudo timeout --kill-after=15s 600s apt-get install -y g++ libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf ffmpeg
+        # The Linux shell links the GStreamer engine: its Cargo build needs the
+        # GStreamer core and plugins-base development files (pkg-config).
+        sudo timeout --kill-after=15s 600s apt-get install -y g++ libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev patchelf ffmpeg
 
     - name: Setup repository Rust toolchain
       uses: ./.github/actions/rust-toolchain

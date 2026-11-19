@@ -46,6 +46,11 @@
     "allow-acknowledge-presentation-command",
     "allow-publish-presentation-playback-state",
     "allow-publish-presentation-output-state",
-    "allow-deactivate-local-presentation"
+    "allow-deactivate-local-presentation",
+    "allow-get-media-engine-status",
+    "allow-set-media-engine-preference",
+    "allow-media-engine-command",
+    "allow-set-media-engine-surface",
+    "allow-get-media-engine-snapshot"
   ]
 }

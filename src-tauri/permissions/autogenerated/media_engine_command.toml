@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-media-engine-command"
+description = "Enables the media_engine_command command without any pre-configured scope."
+commands.allow = ["media_engine_command"]
+
+[[permission]]
+identifier = "deny-media-engine-command"
+description = "Denies the media_engine_command command without any pre-configured scope."
+commands.deny = ["media_engine_command"]

@@ -72,7 +72,10 @@ pub(crate) fn run() {
         context
     };
     let startup_log_for_setup = startup_log.clone();
-    let run_result = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "linux")]
+    let builder = builder.manage(crate::native_media::NativeMedia::default());
+    let run_result = builder
         .manage(presentation::PresentationState::default())
         .manage(crate::bilibili_login::LoginWindows::default())
         .manage(window_lifecycle::ApplicationLifecycleState::default())
@@ -110,6 +113,11 @@ pub(crate) fn run() {
             presentation::record_presentation_video_geometry,
             presentation::deactivate_local_presentation,
             presentation::set_network_presentation,
+            crate::native_media::get_media_engine_status,
+            crate::native_media::set_media_engine_preference,
+            crate::native_media::media_engine_command,
+            crate::native_media::set_media_engine_surface,
+            crate::native_media::get_media_engine_snapshot,
         ])
         .setup(move |app| {
             let startup_log = startup_log_for_setup.clone();

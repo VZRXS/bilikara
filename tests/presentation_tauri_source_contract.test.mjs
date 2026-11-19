@@ -50,7 +50,13 @@ main_permissions = new Set((Symbol.iterator in Object(this.main_capability["perm
 controller_permissions = new Set((Symbol.iterator in Object(this.controller_capability["permissions"]) ? this.controller_capability["permissions"] : Object.keys(this.controller_capability["permissions"])));
 assert.ok(!contains("core:window:allow-set-fullscreen", main_permissions));
 assert.ok(contains("allow-set-window-fullscreen", main_permissions));
-assert.deepEqual(controller_permissions, new Set(["core:event:allow-listen", "core:event:allow-unlisten", "allow-get-presentation-session", "allow-mark-presentation-controller-ready", "allow-request-presentation-output-state", "allow-record-presentation-video-geometry", "allow-deactivate-local-presentation"]));
+// The Audience may report its native stage rectangle; it never receives
+// engine commands, status or preference permissions.
+assert.deepEqual(controller_permissions, new Set(["core:event:allow-listen", "core:event:allow-unlisten", "allow-get-presentation-session", "allow-mark-presentation-controller-ready", "allow-request-presentation-output-state", "allow-record-presentation-video-geometry", "allow-deactivate-local-presentation", "allow-set-media-engine-surface"]));
+for (const engine_permission of ["allow-media-engine-command", "allow-get-media-engine-status", "allow-set-media-engine-preference", "allow-get-media-engine-snapshot"]) {
+assert.ok(!contains(engine_permission, controller_permissions));
+assert.ok(contains(engine_permission, main_permissions));
+}
 assert.ok(contains("allow-publish-presentation-output-state", main_permissions));
 assert.ok(!contains("allow-request-presentation-output-state", main_permissions));
 assert.ok(!contains("allow-record-presentation-video-geometry", main_permissions));

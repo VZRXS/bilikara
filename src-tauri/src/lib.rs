@@ -15,6 +15,8 @@ mod desktop_import;
 #[cfg(desktop)]
 mod desktop_storage;
 #[cfg(desktop)]
+mod native_media;
+#[cfg(desktop)]
 mod platform;
 #[cfg(desktop)]
 mod playback_hints;

@@ -297,6 +297,27 @@ and the desktop rebuild kit at
 `license/THIRD_PARTY_SOURCES/media-libav/signalsmith/`. The native wrapper is
 `media-libav/stretch.cpp`; the browser WebAssembly module remains independent.
 
+## GStreamer playback engine (Linux desktop, v0.9 Preview 1)
+
+- The Linux x86_64 desktop shell embeds bilikara's native playback engine
+  (`media-engine/`, MIT, this project) through the gstreamer-rs bindings
+  `gstreamer` 0.23.7, `gstreamer-app` 0.23.5, `gstreamer-video` 0.23.6,
+  `gstreamer-base` 0.23.6 and `glib` 0.20.12 (each MIT OR Apache-2.0). Locked
+  versions and checksums are in `media-engine/Cargo.lock` and
+  `src-tauri/Cargo.lock`.
+- GStreamer itself (core, base, good and libav plugins; LGPL-2.1-or-later) is
+  **not redistributed**. The engine dynamically uses the operating system's
+  GStreamer 1.20 or newer runtime and plugins, which keep their distribution
+  licenses and source offers. The `gst-libav` decoders use the system FFmpeg
+  libraries, not bilikara's packaged libav prefix.
+- Hardware video decoders are ranked out by default; software decoding is the
+  supported preview configuration.
+- The engine's pitch element compiles the same Signalsmith Stretch 1.3.2 C++
+  source (`media-libav/stretch.cpp` and `media-libav/signalsmith/`, MIT) as the
+  native media output DSP above.
+- Windows, macOS, Android and iOS builds do not include the engine in this
+  preview and keep the existing WebView (Legacy) playback path.
+
 ## 1. bilikara
 
 - Project: bilikara

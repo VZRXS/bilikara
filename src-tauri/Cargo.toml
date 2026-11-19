@@ -57,6 +57,8 @@ tauri = { version = "2", features = ["unstable"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+webkit2gtk = { version = "=2.0.2", features = ["v2_40"] }
+bilikara-media-engine = { path = "../media-engine" }
 
 [features]
 default = ["custom-protocol"]

@@ -17,6 +17,25 @@ pub(crate) fn configure_linux_main_window(window: &tauri::WebviewWindow) -> Resu
     header.set_decoration_layout(Some(":minimize,maximize,close"));
     gtk_window.set_titlebar(Some(&header));
     header.show();
+    // Native video is composited beneath the WebView's transparent stage; the
+    // window's backing surface therefore needs an alpha channel. The page
+    // itself stays opaque everywhere else.
+    if let Some(visual) = WidgetExt::screen(&gtk_window).and_then(|screen| screen.rgba_visual()) {
+        gtk_window.set_visual(Some(&visual));
+    }
+    // The page's stage hole must be transparent in WebKit's own output: make
+    // the WebView background transparent before the Host page loads. Every
+    // page paints its own opaque background, and the theme background stays
+    // beneath as the fallback. WebKit's DMA-BUF renderer (the default) clears
+    // pixels that become transparent; its legacy non-DMA-BUF and
+    // non-compositing paths keep stale pixels, so native video reports itself
+    // unavailable there (native_media::webview_renderer_supported).
+    let _ = window.with_webview(|webview| {
+        use webkit2gtk::WebViewExt;
+        webview
+            .inner()
+            .set_background_color(&gtk::gdk::RGBA::new(1.0, 1.0, 1.0, 0.0));
+    });
     Ok(())
 }
 

@@ -105,3 +105,17 @@ test('native browser media caller runs once after required prefix, test oracle a
   assert.match(job, /needs.preflight.outputs.scope == 'full'/);
   assert.doesNotMatch(step,/python|continue-on-error|\|\| true/);
 });
+
+test('Linux desktop checks install the GStreamer development files before the first shell Cargo build',()=>{
+  const job=desktopChecks;
+  const manifest=readFileSync(path.join(root,'src-tauri/Cargo.toml'),'utf8');
+  const linux=manifest.split(/^(?=\[)/m).find(section=>section.startsWith(`[target.'cfg(target_os = "linux")'.dependencies]`));
+  assert.ok(linux?.split('\n').includes('bilikara-media-engine = { path = "../media-engine" }'),'the Linux shell links the engine');
+  const install=job.split(/^      - name:/m).find(block=>block.includes('Install Tauri system dependencies'));
+  assert.ok(install,'missing Linux system dependency step');
+  assert.match(install,/if: runner.os == 'Linux'/);
+  const packages=install.split('\n').find(line=>line.includes('apt-get install -y'));
+  for (const name of ['libgstreamer1.0-dev','libgstreamer-plugins-base1.0-dev','libwebkit2gtk-4.1-dev'])
+    assert.ok(packages?.split(/\s+/).includes(name),`${name} must be installed with the shell's system dependencies`);
+  assert.ok(job.indexOf('Install Tauri system dependencies')<job.indexOf('cd ../src-tauri'));
+});

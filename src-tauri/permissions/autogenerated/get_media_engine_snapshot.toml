@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-media-engine-snapshot"
+description = "Enables the get_media_engine_snapshot command without any pre-configured scope."
+commands.allow = ["get_media_engine_snapshot"]
+
+[[permission]]
+identifier = "deny-get-media-engine-snapshot"
+description = "Denies the get_media_engine_snapshot command without any pre-configured scope."
+commands.deny = ["get_media_engine_snapshot"]

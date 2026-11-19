@@ -2208,6 +2208,10 @@ fn create_controller_window(
     #[cfg(windows)]
     let builder =
         builder.additional_browser_args(crate::desktop_storage::WINDOWS_WEBVIEW_BROWSER_ARGS);
+    // Linux composites native video beneath the Audience stage (see
+    // native_media); the window needs an alpha-capable surface.
+    #[cfg(target_os = "linux")]
+    let builder = builder.transparent(true);
     builder
         .on_navigation(move |candidate| {
             crate::backend_process::window_origin_authorized(

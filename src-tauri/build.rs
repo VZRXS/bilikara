@@ -51,6 +51,11 @@ fn main() {
         "request_presentation_output_state",
         "record_presentation_video_geometry",
         "deactivate_local_presentation",
+        "get_media_engine_status",
+        "set_media_engine_preference",
+        "media_engine_command",
+        "set_media_engine_surface",
+        "get_media_engine_snapshot",
     ]);
     let mut attributes = tauri_build::Attributes::new().app_manifest(app_manifest);
     if windows_msvc {

@@ -1042,7 +1042,7 @@ pub(crate) fn playback_hint_path(window: &tauri::WebviewWindow) -> Result<PathBu
     host_ui_preference_path(window, crate::playback_hints::FILENAME)
 }
 
-fn host_ui_preference_path(
+pub(crate) fn host_ui_preference_path(
     window: &tauri::WebviewWindow,
     filename: &str,
 ) -> Result<PathBuf, String> {
