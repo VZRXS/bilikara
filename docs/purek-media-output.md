@@ -303,8 +303,14 @@ Windows 桌面为 `runtime/data/cast-devices.json`）。规则：
   HEAD 返回长度；单段、开放和后缀 Range 返回 206 与 `Content-Range`，不可满足的有效范围 416，其他 Range
   忽略并返回 200 全量。暂停、恢复和跳转使用 SOAP Pause／Play／Seek，保持同一 URI。
 - **模式 L（直播）**：无 Content-Length、忽略所有 Range、`Accept-Ranges: none`。每个读者从播放点之前最近的
-  关键帧加入，按读者重写 continuity counter。暂停／恢复重建 URI；`/api/cast/command` 的跳转在直播模式返回
-  `cast_seek_unsupported`。
+  关键帧加入，按读者重写 continuity counter。暂停／恢复重建 URI；跳转（`/api/cast/command` 与
+  `/api/player/control`）不向接收端发 SOAP Seek：播放中在目标位置重建生产者和 URI，从目标之前最近的关键帧开始，
+  位置按新流的实际起点计；暂停中只记录目标，恢复时从该位置重建。
+- **视频编码**：两种模式都只转发 H.264。HEVC／AV1 缓存在开播预检或合流时返回
+  `cast_media_unsupported_codec`（不是笼统的 `cast_prepare_failed`），提示对该歌曲“重新下载缓存”。
+  连接接收端期间（`cast.connected`），DownKyi 的新下载也只选 AVC（原生下载器本来只下 AVC）；
+  手动重新缓存（`/api/cache/retry` 带 `force:true`）因此得到 AVC 版本。连接状态的变化按解码兼容性变化处理，
+  替换仍在进行的下载；已完成的缓存不会被自动替换。
 - 开播顺序 Stop → SetAVTransportURI（转义后的 DIDL-Lite；被 SOAP Fault 拒绝时空元数据重试一次）→ Play。
   **开播前的 Stop 任何错误都忽略**，只完整记录进诊断。GetProtocolInfo 失败、为空或未列出 MPEG-TS 都不阻止
   起播，默认按 `http-get:*:video/MP2T:*`。
@@ -354,10 +360,16 @@ L1 在同一个 MPEG-TS muxer 中保留 H.264 视频包，音频解码后统一�
 
 ### 投屏中的 L1
 
-直播模式、companion 具备 L1 且当前歌曲有 1–2 条缓存音轨时，L1 通过 T4 的唯一外部生产者
+直播模式下，companion 具备 L1 且片源最长关键帧间隔不超过 4 秒时，L1 通过 T4 的唯一外部生产者
 （`LiveStream::external` 与不可复制的 `LiveProducer`）向接收端供流；T4 继续负责 HTTP、环形缓冲、
 关键帧加入和每个读者的 continuity 重写（`rust-runtime/src/native_host/cast_session/l1.rs`）。
-文件模式或 L1 不可用时走 T3 合流。
+开播前一次只读包预检（`cast_preflight`）决定是否走 L1，结果直接交给 L1 复用，不重复读取。
+文件模式、companion 不具备 L1，或片源有超过 4 秒的关键帧间隔（`live_ts.c` 拒绝距关键帧 4 秒以上的包，
+T3 没有此限制）时走 T3 合流；这两种直播情况仍可跳转，但不能实时调整。
+
+- **音轨**：companion 的 L1 ABI 一次渲染至多两条音轨。会话送入当前音轨，以及按歌曲顺序的第一条
+  其他已缓存音轨；未缓存的音轨被略过，不再使 L1 失败（当前音轨本身必须已缓存）。切到这两条之外的
+  已缓存音轨时，会话在当前位置重建生产者和 URI，而不是从头播放。
 
 - **节流预留：投屏中调整变调、音画延迟、音轨或音量，接收端约 1.9 秒后才听到变化。**
   生产者节流从 `producer.start()` 成功时起算，提前量为 `min(突发量, 2 s) − 100 ms`，默认 1.9 秒；
@@ -369,7 +381,9 @@ L1 在同一个 MPEG-TS muxer 中保留 H.264 视频包，音频解码后统一�
 - **非 L1 时禁用**：投屏拥有播放、实际管线不是 L1（文件模式或 L1 不可用）时，AppState 拒绝变调、
   延迟和换轨且不改设置；Host 的变调和延迟控件禁用，信息气泡显示原因，控件经独立的
   `host-*-network-dsp` 描述节点关联原因。L1 时开放；本地和独立 native 输出不受影响。
-  不从接收端声明推测 L1。
+  不从接收端声明推测 L1。原因见 `media_output.pipeline_reason`：`file_mode`（文件交付）、
+  `long_gop`（片源关键帧间隔过长，T3 直播）或 `l1_unavailable`（companion 不具备 L1）；L1、未投屏和
+  独立 native 输出时为 `null`。信息气泡对 `long_gop` 说明是片源原因（换交付方式无效），其余说明交付方式。
 
 `pipeline_level`（`media_output` 与 `purek.output` 一致）：
 

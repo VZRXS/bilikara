@@ -922,10 +922,11 @@ impl AppState {
                     .unwrap()
                     .push(json!({"value":"downkyi","label":"DownKyi (aria2c)"}));
             }
-            let effective = crate::native_host::preferences::MediaSelection::new(
+            let effective = crate::native_host::preferences::MediaSelection::for_output(
                 &session.cache_policy,
                 &session.player_media,
                 true,
+                session.cast.connected,
             );
             value["cache_policy"]["force_avc"] = json!(effective.force_avc);
             value["cache_policy"]["avc_quality_cap"] = json!(session.player_media.avc_quality_cap);

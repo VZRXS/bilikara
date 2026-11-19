@@ -297,8 +297,21 @@ impl MediaSelection {
     }
 
     pub(crate) fn new(policy: &CachePolicy, player: &PlayerMedia, desktop: bool) -> Self {
-        let force_avc =
-            policy.download_source != "downkyi" || player.details["hevc_supported"] == false;
+        Self::for_output(policy, player, desktop, false)
+    }
+
+    /// `cast_avc`: a connected DLNA/Pure K receiver is only qualified for
+    /// H.264, so new downloads stay AVC even where DownKyi and the local
+    /// player allow HEVC. Already cached HEVC songs are re-cached explicitly.
+    pub(crate) fn for_output(
+        policy: &CachePolicy,
+        player: &PlayerMedia,
+        desktop: bool,
+        cast_avc: bool,
+    ) -> Self {
+        let force_avc = cast_avc
+            || policy.download_source != "downkyi"
+            || player.details["hevc_supported"] == false;
         let cap = if !force_avc {
             ""
         } else if desktop {
@@ -540,6 +553,44 @@ mod tests {
             assert_eq!(changed, native);
             assert!(!changed.requires_replacement(&native));
         }
+    }
+
+    #[test]
+    fn connected_cast_receiver_keeps_new_downkyi_downloads_avc() {
+        let policy = CachePolicy::default()
+            .updated(&json!({"download_source":"downkyi", "video_quality":"1080P 高清"}))
+            .unwrap();
+        let player = PlayerMedia::reported(
+            &json!({"hevc_supported":true,"avc_supported":true,"max_avc_quality_index":3}),
+        )
+        .unwrap();
+        let local = MediaSelection::for_output(&policy, &player, true, false);
+        assert_eq!(local, MediaSelection::new(&policy, &player, true));
+        assert!(!local.force_avc);
+        let cast = MediaSelection::for_output(&policy, &player, true, true);
+        assert!(cast.force_avc);
+        // The HEVC-capable local player no longer lifts the AVC cap.
+        assert_eq!(
+            cast.avc_cap,
+            MediaSelection::new(
+                &policy,
+                &PlayerMedia::reported(
+                    &json!({"hevc_supported":false,"avc_supported":true,"max_avc_quality_index":3}),
+                )
+                .unwrap(),
+                true
+            )
+            .avc_cap
+        );
+        // A decoder-compatibility change replaces retained work both ways.
+        assert!(cast.requires_replacement(&local));
+        assert!(local.requires_replacement(&cast));
+        // Native downloads are already AVC: connecting changes nothing.
+        let native = CachePolicy::default();
+        assert_eq!(
+            MediaSelection::for_output(&native, &player, true, true),
+            MediaSelection::new(&native, &player, true)
+        );
     }
 
     #[test]

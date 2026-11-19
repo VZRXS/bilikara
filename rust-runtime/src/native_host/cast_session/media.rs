@@ -2,8 +2,8 @@ use super::*;
 use crate::app_state::PlaylistItem;
 use crate::dlna::cast_http::{LiveOptions, LiveStream};
 use crate::experimental_libav::{
-    LibavMetadataProbe,
-    cast_mux::{CastFile, CastFormat, CastInputs, CastSession},
+    LibavMetadataProbe, ProbeError,
+    cast_mux::{CastFile, CastFormat, CastInputs, CastSession, CastSummary},
 };
 use std::path::Component;
 
@@ -50,6 +50,53 @@ fn path(root: &Path, route: &str) -> Result<PathBuf, ApiError> {
 pub(super) fn inputs(context: &HostContext, item: &PlaylistItem) -> Result<Inputs, ApiError> {
     inputs_for(context, item, false)
 }
+/// The companion's L1 ABI renders at most two tracks. Send the selected one
+/// and, when cached, the first other cached variant in item order (both in
+/// item order). Uncached variants are left out instead of refusing L1;
+/// selecting a variant outside these restarts the stream at the current
+/// position (worker.rs).
+pub(super) fn l1_track_ids(
+    variants: &[serde_json::Map<String, Value>],
+    selected: &str,
+) -> Vec<String> {
+    let cached = variants
+        .iter()
+        .filter(|v| v.get("audio_url").and_then(Value::as_str).is_some())
+        .filter_map(|v| {
+            v.get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+        })
+        .collect::<Vec<_>>();
+    let partner = cached.iter().find(|id| **id != selected).copied();
+    cached
+        .into_iter()
+        .filter(|id| *id == selected || Some(*id) == partner)
+        .map(str::to_owned)
+        .collect()
+}
+/// Why live delivery cannot run L1 for this source. `live_ts.c` refuses any
+/// video packet more than 4 s after its keyframe; T3 has no such limit, so
+/// those sources keep the raw T3 stream and report the reason.
+pub(super) fn l1_refusal(available: bool, facts: &CastSummary) -> Option<&'static str> {
+    if !available {
+        return Some("l1_unavailable");
+    }
+    let longest = facts.gop_us.unwrap_or(facts.duration_us);
+    (longest > 4_000_000).then_some("long_gop")
+}
+/// Source-codec refusals are the user's actionable case (re-cache as H.264);
+/// every other preparation failure keeps the generic code.
+pub(super) fn prepare_error(error: ProbeError, message: &'static str) -> ApiError {
+    match error {
+        ProbeError::Media(e) if e.kind == crate::MediaErrorKind::UnsupportedCodec => ApiError::new(
+            409,
+            "cast_media_unsupported_codec",
+            "Casting needs H.264 video; re-cache this song as H.264",
+        ),
+        _ => ApiError::new(409, "cast_prepare_failed", message),
+    }
+}
 fn inputs_for(context: &HostContext, item: &PlaylistItem, l1: bool) -> Result<Inputs, ApiError> {
     let audio = item
         .audio_variants
@@ -79,13 +126,18 @@ fn inputs_for(context: &HostContext, item: &PlaylistItem, l1: bool) -> Result<In
     input.video = path(&context.cache_root, &item.video_media_url)?;
     input.audio = path(&context.cache_root, audio)?;
     if l1 {
+        let ids = l1_track_ids(&item.audio_variants, &item.selected_audio_variant_id);
         for variant in &item.audio_variants {
-            let id = variant["id"]
-                .as_str()
-                .filter(|id| !id.is_empty())
-                .ok_or_else(|| ApiError::invalid("Invalid L1 track"))?;
-            let route = variant["audio_url"]
-                .as_str()
+            let Some(id) = variant
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| ids.iter().any(|t| t == id))
+            else {
+                continue;
+            };
+            let route = variant
+                .get("audio_url")
+                .and_then(Value::as_str)
                 .ok_or_else(|| ApiError::invalid("Uncached L1 track"))?;
             input
                 .leases
@@ -147,12 +199,16 @@ pub(super) fn file(
                 CastFormat::Ts,
                 &stop,
             )
-            .map_err(|_| ApiError::new(409, "cast_prepare_failed", "Cannot prepare cast media"))
+            .map_err(|e| prepare_error(e, "Cannot prepare cast media"))
     })
 }
 pub(super) struct Live {
     pub stream: Arc<LiveStream>,
     pub l1: bool,
+    /// Track ids the L1 producer renders; empty for the raw T3 stream.
+    pub tracks: Vec<String>,
+    /// Why this live stream is raw T3 instead of L1.
+    pub refusal: Option<&'static str>,
     task: Option<tokio::task::JoinHandle<Result<(), ApiError>>>,
 }
 impl Live {
@@ -190,10 +246,21 @@ pub(super) async fn live(
         // it on this producer, acknowledge readiness before publishing its URI.
         let prepared = (|| {
             let probe = probe()?;
-            let l1 = probe.live_l1_available() && (1..=2).contains(&item.audio_variants.len());
-            Ok((inputs_for(&context, &item, l1)?, probe, l1))
+            let base = inputs(&context, &item)?;
+            // One read-only packet pass decides L1 and is reused by it.
+            let facts = probe
+                .cast_preflight(&base.video, producing.cancellation())
+                .map_err(|e| prepare_error(e, "Cannot inspect live media"))?;
+            let refusal = l1_refusal(probe.live_l1_available(), &facts);
+            // Keep the base leases until the L1 set holds its own pins.
+            let input = if refusal.is_none() {
+                inputs_for(&context, &item, true)?
+            } else {
+                base
+            };
+            Ok((input, probe, facts, refusal))
         })();
-        let (input, probe, l1) = match prepared {
+        let (input, probe, facts, refusal) = match prepared {
             Ok(prepared) => prepared,
             Err(e) => {
                 let _ = ready.send(Err(e));
@@ -201,13 +268,14 @@ pub(super) async fn live(
                 return Ok(());
             }
         };
-        if ready.send(Ok(l1)).is_err() {
+        let tracks = input.tracks.iter().map(|(id, _)| id.clone()).collect();
+        if ready.send(Ok((refusal, tracks))).is_err() {
             producing.cancel();
             return Ok(());
         }
-        if l1 {
+        if refusal.is_none() {
             return super::l1::generate(
-                &probe, &input, &item, position, identity, producing, producer,
+                &probe, &input, &item, facts, position, identity, producing, producer,
             );
         }
         producer
@@ -230,8 +298,8 @@ pub(super) async fn live(
             "Live producer failed",
         ))
     });
-    let l1 = match initialized {
-        Ok(l1) => l1,
+    let (refusal, tracks) = match initialized {
+        Ok(prepared) => prepared,
         Err(e) => {
             stream.cancel();
             let _ = task.await;
@@ -240,7 +308,9 @@ pub(super) async fn live(
     };
     let mut live = Live {
         stream,
-        l1,
+        l1: refusal.is_none(),
+        tracks,
+        refusal,
         task: Some(task),
     };
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
@@ -264,3 +334,67 @@ pub(super) async fn live(
 
 #[cfg(test)]
 mod android_tests;
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+
+    fn variants(spec: &[(&str, bool)]) -> Vec<serde_json::Map<String, Value>> {
+        spec.iter()
+            .map(|(id, cached)| {
+                let mut v = json!({"id":id});
+                if *cached {
+                    v["audio_url"] = json!(format!("/media/{id}.m4a"));
+                }
+                v.as_object().unwrap().clone()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn l1_sends_the_selected_track_and_one_cached_partner_in_item_order() {
+        let pair = variants(&[("original", true), ("instrumental", true)]);
+        assert_eq!(
+            l1_track_ids(&pair, "instrumental"),
+            ["original", "instrumental"]
+        );
+        // More than the ABI's two tracks: the selected one plus the first
+        // other cached variant; uncached variants no longer refuse L1.
+        let pages = variants(&[("p1", false), ("p2", true), ("p3", true), ("p4", true)]);
+        assert_eq!(l1_track_ids(&pages, "p4"), ["p2", "p4"]);
+        assert_eq!(l1_track_ids(&pages, "p2"), ["p2", "p3"]);
+        assert_eq!(l1_track_ids(&variants(&[("solo", true)]), "solo"), ["solo"]);
+        // The selected track must itself be cached (inputs() refuses first).
+        assert_eq!(l1_track_ids(&pages, "p1"), ["p2"]);
+    }
+
+    #[test]
+    fn l1_refusal_reports_the_companion_and_the_four_second_keyframe_limit() {
+        let facts = |gop_us: Option<i64>, duration_us: i64| CastSummary {
+            packets: 1,
+            bytes: 1,
+            profile: 100,
+            level: 40,
+            width: 1920,
+            height: 1080,
+            has_b_frames: false,
+            audio_transcoded: false,
+            source_start_us: 0,
+            duration_us,
+            gop_us,
+        };
+        assert_eq!(l1_refusal(true, &facts(Some(2_000_000), 240_000_000)), None);
+        assert_eq!(l1_refusal(true, &facts(Some(4_000_000), 240_000_000)), None);
+        assert_eq!(
+            l1_refusal(true, &facts(Some(4_000_001), 240_000_000)),
+            Some("long_gop")
+        );
+        // A single keyframe makes the whole video one group of pictures.
+        assert_eq!(l1_refusal(true, &facts(None, 3_000_000)), None);
+        assert_eq!(l1_refusal(true, &facts(None, 9_000_000)), Some("long_gop"));
+        assert_eq!(
+            l1_refusal(false, &facts(Some(1_000_000), 9_000_000)),
+            Some("l1_unavailable")
+        );
+    }
+}

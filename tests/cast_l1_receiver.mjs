@@ -41,7 +41,7 @@ try{
   const peer=await loopbackAlias('127.0.0.2','L1 late join from another peer')?'127.0.0.2':undefined;
   await f.connect();let s=await f.status('streaming');
   const original=s.current_item,connection=s.purek.output.target_room_id;
-  assert.equal(s.media_output.pipeline_level,'L0');
+  assert.equal(s.media_output.pipeline_level,'L0');assert.equal(s.media_output.pipeline_reason,'file_mode');
   // The R1 file/no-L1 retreat rejects controls without changing their values.
   const settings=s.player_settings;
   for(const [route,body] of [['/api/player/key-shift',{key_shift:2}],['/api/player/av-delay-action',{type:'adjust',delta_ms:20}]]){
@@ -51,7 +51,7 @@ try{
   await f.client.api('/api/cast/command',{command:'cast.set_device_mode',device_key:s.cast.selected,revision:s.revision,mode:'live'});
   s=await waitFor(async()=>{const s=await f.state();return s.media_output.pipeline_level==='L1'&&s.media_output.status==='streaming'&&!s.media_output.busy&&s;},'T4 L1 publication');
   const uri=f.uri,generation=s.media_output.stream_generation,playback=s.playback_generation;
-  assert.equal(s.cast.effective_mode,'live');assert.equal(s.media_output.authorized,true);
+  assert.equal(s.cast.effective_mode,'live');assert.equal(s.media_output.authorized,true);assert.equal(s.media_output.pipeline_reason,null);
   assert.equal(s.purek.output.target_room_id,connection);
   for(const key of ['supports_midstream_param_change','supports_pitch_shift','supports_runtime_av_offset','supports_track_switch'])assert.equal(s.purek.output.capabilities[key],true,key);
   const head=await transfer(uri,{method:'HEAD'});assert.equal(head.status,200);assert.equal(head.headers['content-length'],undefined);assert.equal(head.headers['content-type'],'video/MP2T');

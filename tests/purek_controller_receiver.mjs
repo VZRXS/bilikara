@@ -12,12 +12,12 @@ try{
   assert.equal((await f.remote.request('/api/player/output',{target:'purek',experimental:true})).status,403);
   assert.equal((await f.client.request('/api/player/output',{target:'purek'})).status,400);
   const initial=await f.state();await f.connect();let s=await f.status('streaming');
-  assert.equal(s.purek.connection_type,dlna?'dlna':'purek');assert.equal(s.media_output.qualified,false);assert.equal(s.media_output.pipeline_level,'L0');
+  assert.equal(s.purek.connection_type,dlna?'dlna':'purek');assert.equal(s.media_output.qualified,false);assert.equal(s.media_output.pipeline_level,'L0');assert.equal(s.media_output.pipeline_reason,'file_mode');
   assert.equal((await f.client.api('/api/player/claim-program',{playback_generation:s.playback_generation,item_incarnation_id:s.current_item.item_incarnation_id,artifact_set_id:s.current_item.artifact_set_id},{'X-Bilikara-Client':'controller-fixture'})).claimed,false);
   assert.equal((await f.client.request('/api/player/control-ack',{seq:1})).status,409);
   const publicState=await f.remote.api('/api/state');assert.equal(publicState.media_output.can_manage,false);assert.equal(publicState.purek,undefined);assert.equal(publicState.cast,undefined);
   assert.ok(!JSON.stringify(publicState.media_output).includes('Controller fixture'));
-  assert.deepEqual(Object.keys(s.media_output).sort(),['schema_version','target','requested_target','status','available','authorized','can_manage','experimental','qualified','busy','desired_playing','position','duration','transition_remaining_ms','pipeline_level','stream_generation','producer_eof','preview_tail_sequence','offset_mode','last_error','measured_adjust_latency_ms','position_source','thermal_status','thermal_headroom','failure'].sort());
+  assert.deepEqual(Object.keys(s.media_output).sort(),['schema_version','target','requested_target','status','available','authorized','can_manage','experimental','qualified','busy','desired_playing','position','duration','transition_remaining_ms','pipeline_level','pipeline_reason','stream_generation','producer_eof','preview_tail_sequence','offset_mode','last_error','measured_adjust_latency_ms','position_source','thermal_status','thermal_headroom','failure'].sort());
   // Exact next 3057fb7 wire fields: the adapter may not leak the new authority.
   const keys=(value,expected)=>assert.deepEqual(Object.keys(value).sort(),expected.split(' ').sort());
   keys(s.purek,'auto_discovery busy connected room_name connection_type discovered error_code error_stage capabilities output revision state_epoch');

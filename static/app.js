@@ -15736,7 +15736,9 @@ function renderNetworkDspHelp(panel, helpId) {
   const unavailable = networkDspUnavailable();
   help.hidden = !unavailable;
   help.parentElement.querySelector("[data-network-dsp-default]").hidden = unavailable;
-  setTextContent(help, t("mediaOutput.dspUnavailable"));
+  // A refused source cannot be fixed by changing the delivery mode.
+  const reason = state.data?.media_output?.pipeline_reason;
+  setTextContent(help, t(reason === "long_gop" ? "mediaOutput.dspUnavailableSource" : "mediaOutput.dspUnavailable"));
   // Keep the positioned bubble associated only with its info trigger.
   // Disabled controls describe the reason itself, including while the bubble is closed.
   for (const control of panel.querySelectorAll("input,button:not(.cache-advanced-info-button)")) {

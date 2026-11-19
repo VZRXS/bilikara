@@ -544,6 +544,9 @@ impl Host {
         // The short upstream fixture ends around 1s. A live pause under CPU
         // load can legitimately resume later; use actual 30s media, not a
         // fictitious duration or a longer assertion deadline.
+        self.use_video("keyframes-30s.mp4");
+    }
+    fn use_video(&self, name: &str) {
         let snapshot = with_app(|app| app.native_core_snapshot()).unwrap();
         let fixtures =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("src/native_host/cast_session/fixtures");
@@ -552,7 +555,7 @@ impl Host {
                 .context
                 .cache_root
                 .join(item.video_media_url.strip_prefix("/media/").unwrap());
-            std::fs::copy(fixtures.join("keyframes-30s.mp4"), &video).unwrap();
+            std::fs::copy(fixtures.join(name), &video).unwrap();
             std::fs::copy(
                 fixtures.join("audio-30s.m4a"),
                 video.with_file_name("audio.m4a"),
@@ -843,7 +846,7 @@ fn purek_disconnect_and_replacement_await_enable_zero() {
 }
 
 #[test]
-fn api_device_revision_permissions_busy_and_live_seek_rejection() {
+fn api_device_revision_permissions_busy_and_live_seek_restart() {
     let _serial = GLOBAL_APP_TEST_LOCK
         .lock()
         .unwrap_or_else(|p| p.into_inner());
@@ -889,19 +892,42 @@ fn api_device_revision_permissions_busy_and_live_seek_rejection() {
         state.owns_playback = true;
         state.mode = Mode::Live;
         state.operation = 1;
+        state.position = 30.0;
+        state.duration = 120.0;
         Ok(())
     })
     .unwrap();
     let generation = host.snapshot()["playback_generation"].clone();
+    // Live delivery accepts Seek: the worker restarts the producer at the
+    // target instead of seeking the receiver. Only one command is pending.
+    host.post(
+        "/api/cast/command",
+        json!({"action":"seek-relative","delta_seconds":15,"playback_generation":generation}),
+    )
+    .unwrap();
+    with_app(|app| {
+        let state = &mut app.native().cast;
+        assert!(matches!(state.control, Some(Control::Seek(target)) if target == 45.0));
+        assert!(state.control_busy);
+        Ok(())
+    })
+    .unwrap();
     assert_eq!(
         host.post(
             "/api/cast/command",
-            json!({"action":"seek-relative","delta_seconds":15,"playback_generation":generation})
+            json!({"action":"pause","playback_generation":generation})
         )
         .unwrap_err()
         .code,
-        "cast_seek_unsupported"
+        "cast_busy"
     );
+    with_app(|app| {
+        let state = &mut app.native().cast;
+        state.control = None;
+        state.control_busy = false;
+        Ok(())
+    })
+    .unwrap();
     host.post(
         "/api/cast/command",
         json!({"action":"pause","playback_generation":generation}),
@@ -979,6 +1005,70 @@ fn learned_live_mode_pause_resume_mode_switch_and_connect_cancellation() {
     let count = receiver.state.lock().unwrap().actions.len();
     thread::sleep(Duration::from_millis(2200));
     assert_eq!(receiver.state.lock().unwrap().actions.len(), count);
+}
+
+#[test]
+#[ignore = "requires trusted BILIKARA_TEST_CAST_COMPANION; actual live producer and HTTP endpoint"]
+fn long_gop_live_keeps_raw_t3_reports_why_and_still_seeks() {
+    let _serial = GLOBAL_APP_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let receiver = Receiver::new();
+    let host = Host::new();
+    host.use_video("long-gop-12s.mp4");
+    let renderer = receiver.renderer();
+    let key = renderer_key(&renderer);
+    with_app(|app| {
+        app.native().cast.renderers.push(renderer.clone());
+        Ok(())
+    })
+    .unwrap();
+    host.post("/api/cast/command",json!({"command":"cast.set_device_learning","device_key":key,"revision":host.snapshot()["revision"],"learned_mode":"live","learned_variant":"original"})).unwrap();
+    host.connect(renderer);
+    host.wait(|_| receiver.state.lock().unwrap().bytes > 0);
+    let snap = host.snapshot();
+    assert_eq!(snap["cast"]["effective_mode"], "live");
+    // L1 refuses a packet more than 4 s after its keyframe; the raw T3
+    // stream plays instead and says why its DSP is unavailable.
+    assert_eq!(snap["media_output"]["pipeline_level"], "L0");
+    assert_eq!(snap["media_output"]["pipeline_reason"], "long_gop");
+    assert_eq!(
+        host.post("/api/player/key-shift", json!({"key_shift":2}))
+            .unwrap_err()
+            .code,
+        "cast_setting_unavailable"
+    );
+    // Live Seek restarts the producer (a new generation and URI) from the
+    // keyframe before the target, never with a receiver SOAP Seek.
+    let generation = snap["cast"]["generation"].as_u64().unwrap();
+    let uri = receiver.state.lock().unwrap().uri.clone();
+    let playback = snap["playback_generation"].clone();
+    host.post(
+        "/api/cast/command",
+        json!({"action":"seek-absolute","target_seconds":11,"playback_generation":playback}),
+    )
+    .unwrap();
+    let snap = host.wait(|s| {
+        s["cast"]["busy"] == false
+            && s["cast"]["generation"].as_u64().unwrap() > generation
+            && s["media_output"]["status"] == "streaming"
+    });
+    assert_ne!(receiver.state.lock().unwrap().uri, uri);
+    assert!(
+        !receiver
+            .state
+            .lock()
+            .unwrap()
+            .actions
+            .iter()
+            .any(|a| a == "Seek")
+    );
+    let position = snap["cast"]["position"].as_f64().unwrap();
+    assert!(
+        (10.0..=12.0).contains(&position),
+        "keyframe origin: {position}"
+    );
+    assert_eq!(snap["media_output"]["pipeline_reason"], "long_gop");
 }
 
 #[path = "platform_tests.rs"]

@@ -31,7 +31,11 @@ try{
   const body=await transfer(live,{headers:{Range:'bytes=188-375'}});assert.equal(body.status,200);assert.ok(body.bytes.length>188);
   await f.command('pause');await f.status('paused');
   await f.command('play');await f.status('streaming');assert.notEqual(f.uri,live);
-  assert.equal((await f.remote.request('/api/player/control',{action:'seek-absolute',target_seconds:1,item_id:s.current_item.id,playback_generation:s.playback_generation})).status,409,'live Seek stays explicitly unavailable');
+  // Live Seek restarts the producer at the target: a new URI, never a receiver SOAP Seek.
+  const resumed=f.uri,soapSeeks=f.actions.filter(a=>a==='Seek').length;s=await f.state();
+  await f.remote.api('/api/player/control',{action:'seek-absolute',target_seconds:1,item_id:s.current_item.id,playback_generation:s.playback_generation});
+  s=await waitFor(async()=>{const s=await f.state();return f.uri!==resumed&&s.media_output.status==='streaming'&&!s.media_output.busy&&s;},'live seek restart');
+  assert.equal(f.actions.filter(a=>a==='Seek').length,soapSeeks,'live Seek never seeks the receiver');
   s=await f.disconnect();assert.equal(s.cast.connected,false);assert.ok(f.releases>0);
   assert.equal(s.media_output.target,'local');assert.equal(s.player_control_command.action,'seek-absolute');
   const report=await f.client.api('/api/cast/report');assert.ok(report.diagnostics.cast.output);assert.ok(!JSON.stringify(report).includes('synthetic-only'));

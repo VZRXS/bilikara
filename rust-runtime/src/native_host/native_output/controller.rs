@@ -124,7 +124,9 @@ impl Controller {
             "available":crate::media_routing::output_companion().is_some(),"authorized":false,
             "can_manage":host,"experimental":true,"qualified":false,"busy":room.busy||self.pending,
             "desired_playing":self.playing,"position":self.position,"duration":self.duration,
-            "transition_remaining_ms":self.transition_remaining,"pipeline_level":output["pipeline_level"],"stream_generation":output["generation"],"producer_eof":self.local_preview&&room.local_preview.as_ref().is_some_and(|p|p.eof()),"preview_tail_sequence":if self.local_preview{room.local_preview.as_ref().and_then(|p|p.tail())}else{None},
+            "transition_remaining_ms":self.transition_remaining,"pipeline_level":output["pipeline_level"],
+            // The standalone pipeline is always L1; the field matches the cast projection.
+            "pipeline_reason":null,"stream_generation":output["generation"],"producer_eof":self.local_preview&&room.local_preview.as_ref().is_some_and(|p|p.eof()),"preview_tail_sequence":if self.local_preview{room.local_preview.as_ref().and_then(|p|p.tail())}else{None},
             "offset_mode":output["offset_mode"],"last_error":self.error.as_deref().map(Value::from).unwrap_or_else(||output["last_error"].clone()),
             "measured_adjust_latency_ms":output["measured_adjust_latency_ms"],"position_source":"sender_estimate",
             "thermal_status":self.thermal_status,"thermal_headroom":self.thermal_headroom,

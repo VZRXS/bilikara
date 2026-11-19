@@ -98,6 +98,15 @@ impl State {
         }
     }
 
+    /// Why casting cannot apply pitch, delay or track edits live: file
+    /// delivery, or a live source L1 refused. None while L1 runs or not casting.
+    pub(crate) fn pipeline_reason(&self) -> Option<&'static str> {
+        (self.owns_playback && !self.l1).then(|| match self.mode {
+            Mode::File => "file_mode",
+            _ => self.l1_refusal.unwrap_or("l1_unavailable"),
+        })
+    }
+
     pub(crate) fn output_projection(&self, host: bool) -> Value {
         json!({"schema_version":1,
             "target":if self.owns_playback {"purek"} else {"local"},
@@ -107,6 +116,7 @@ impl State {
             "busy":self.room_busy || self.pending.is_some() || self.control_busy || self.self_test_owns_output(),
             "desired_playing":self.output_enabled && !self.paused,"position":self.position,"duration":self.duration,
             "transition_remaining_ms":0,"pipeline_level":if self.owns_playback {Some(if self.l1 {"L1"} else {"L0"})} else {None},
+            "pipeline_reason":self.pipeline_reason(),
             "stream_generation":self.generation.max(self.room_generation),"producer_eof":false,"preview_tail_sequence":null,
             "offset_mode":match self.offset_mode {bilikara_rust::output_audio::OffsetMode::Splice=>"splice",bilikara_rust::output_audio::OffsetMode::Gradual=>"gradual"},"last_error":self.output_error(),
             "measured_adjust_latency_ms":null,"position_source":"sender_estimate",

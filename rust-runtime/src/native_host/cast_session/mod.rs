@@ -90,6 +90,9 @@ pub(crate) struct State {
     pub owns_playback: bool,
     /// Actual admitted live L1 pipeline; never inferred from receiver metadata.
     pub l1: bool,
+    /// Why the admitted live stream is raw T3 instead of L1 (`long_gop`,
+    /// `l1_unavailable`); set with `l1` when an output starts.
+    pub l1_refusal: Option<&'static str>,
     // A suspended output retains its worker, renderer and Pure K registration.
     // Existing clients continue to use owns_playback/local_media for playback.
     pub connected: bool,
@@ -654,14 +657,9 @@ pub(crate) fn enqueue(app: &mut crate::app_state::AppState, body: &Value) -> Res
             }
         }
         "next" | "next-track" => Control::Next,
+        // File delivery seeks the receiver over SOAP on the same URI; live
+        // delivery restarts its producer at the target (worker.rs).
         "seek-absolute" | "seek-relative" => {
-            if state.mode == Mode::Live {
-                return Err(ApiError::new(
-                    409,
-                    "cast_seek_unsupported",
-                    "Seeking live delivery is not supported in this version",
-                ));
-            }
             let v = if action == "seek-relative" {
                 body["delta_seconds"].as_f64().map(|d| state.position + d)
             } else {

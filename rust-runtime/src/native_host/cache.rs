@@ -119,15 +119,16 @@ fn tick(
             })?;
         }
     }
-    let (snapshot, cookie, policy, player) = with_app(|app| {
+    let (snapshot, cookie, policy, player, cast_avc) = with_app(|app| {
         Ok((
             app.native_core_snapshot()?,
             app.native().cookie.clone(),
             app.native().cache_policy.clone(),
             app.native().player_media.clone(),
+            app.native().cast.connected,
         ))
     })?;
-    let effective = MediaSelection::new(&policy, &player, context.desktop);
+    let effective = MediaSelection::for_output(&policy, &player, context.desktop, cast_avc);
     let youtube_effective = MediaSelection::for_youtube(&policy, &player, context.desktop);
     let effective_for = |item: &PlaylistItem| {
         if item.media_source.is_bilibili() {
@@ -508,10 +509,11 @@ pub(super) fn supplement(
     cookie: &str,
     page: u32,
 ) -> Result<(), ApiError> {
-    let (policy, player) = with_app(|app| {
+    let (policy, player, cast_avc) = with_app(|app| {
         Ok((
             app.native().cache_policy.clone(),
             app.native().player_media.clone(),
+            app.native().cast.connected,
         ))
     })?;
     if let Some(message) =
@@ -519,7 +521,7 @@ pub(super) fn supplement(
     {
         return Err(ApiError::new(403, "download_login_required", message));
     }
-    let effective = MediaSelection::new(&policy, &player, context.desktop);
+    let effective = MediaSelection::for_output(&policy, &player, context.desktop, cast_avc);
     let mut spec = job(context, item, cookie, &policy, &effective)?;
     spec.supplement_page = Some(page);
     execute_cache_runtime(CacheRuntimeCommand::Retry {
@@ -536,7 +538,7 @@ pub(super) fn retry(
     cookie: &str,
     force: bool,
 ) -> Result<(), ApiError> {
-    let (policy, player) = with_app(|app| {
+    let (policy, player, cast_avc) = with_app(|app| {
         let snapshot = app.native_core_snapshot()?;
         let policy = app.native().cache_policy.clone();
         let items: Vec<_> = snapshot
@@ -559,6 +561,7 @@ pub(super) fn retry(
         Ok((
             app.native().cache_policy.clone(),
             app.native().player_media.clone(),
+            app.native().cast.connected,
         ))
     })?;
     if item.media_source.is_bilibili()
@@ -596,7 +599,7 @@ pub(super) fn retry(
         ));
     }
     let effective = if item.media_source.is_bilibili() {
-        MediaSelection::new(&policy, &player, context.desktop)
+        MediaSelection::for_output(&policy, &player, context.desktop, cast_avc)
     } else {
         MediaSelection::for_youtube(&policy, &player, context.desktop)
     };

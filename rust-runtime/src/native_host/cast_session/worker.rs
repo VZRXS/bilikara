@@ -836,15 +836,26 @@ async fn play_session(
                     app.native().cast.playback_generation,
                 ))
             })?;
+            // An L1 track switch keeps the program. The producer adopts it when
+            // it renders the track (or nothing is streaming: Play rebuilds);
+            // any other cached variant restarts the stream at the position.
+            let mut track_restart = false;
             if out.l1
                 && snap.playback_generation == audio_generation
                 && let Some(item) = snap.current_item.as_ref().filter(|i|
                     i.item_incarnation_id == out.item.item_incarnation_id
                     && i.artifact_set_id == out.item.artifact_set_id) {
-                out.item.selected_audio_variant_id = item.selected_audio_variant_id.clone();
-                out.playback_generation = snap.playback_generation;
+                if out.live.as_ref().is_none_or(|live| live.tracks.contains(&item.selected_audio_variant_id)) {
+                    out.item.selected_audio_variant_id = item.selected_audio_variant_id.clone();
+                    out.playback_generation = snap.playback_generation;
+                } else {
+                    track_restart = true;
+                }
             }
-            if snap.current_item.as_ref().is_none_or(|i| {
+            if track_restart {
+                control = Some(Control::Restart);
+                update(id, |s| s.control_busy = true);
+            } else if snap.current_item.as_ref().is_none_or(|i| {
                 i.item_incarnation_id != out.item.item_incarnation_id
                     || i.artifact_set_id != out.item.artifact_set_id
                     || i.selected_audio_variant_id != out.item.selected_audio_variant_id
@@ -901,7 +912,13 @@ async fn play_session(
                             }
                         }
                     }
-                    Control::Seek(position) => {
+                    // A paused live output has no stream (Pause stopped it):
+                    // keep the target for the rebuild that Play performs.
+                    Control::Seek(position) if mode == Mode::Live && out.paused => {
+                        out.start = position;
+                        update(id, |s| s.position = position);
+                    }
+                    Control::Seek(position) if mode == Mode::File => {
                         match record(
                             trace,
                             connection,
@@ -923,10 +940,14 @@ async fn play_session(
                             }
                         }
                     }
-                    Control::Next | Control::ProgramChanged | Control::Restart | Control::Play | Control::Pause => {
+                    // A playing live seek restarts the producer at the target;
+                    // the new stream reports its actual keyframe origin.
+                    Control::Next | Control::ProgramChanged | Control::Restart | Control::Play | Control::Pause | Control::Seek(_) => {
                         let next = matches!(control, Control::Next | Control::ProgramChanged);
                         let retain_pause = matches!(control, Control::Restart) && out.paused;
-                        let position = if next {
+                        let position = if let Control::Seek(target) = control {
+                            target
+                        } else if next {
                             if matches!(control, Control::Next) { advance(id, out.playback_generation)?; }
                             0.0
                         } else {
@@ -1491,6 +1512,7 @@ async fn start_output_once(
         s.phase = Phase::Active;
         s.owns_playback = true;
         s.l1 = live.as_ref().is_some_and(|live| live.l1);
+        s.l1_refusal = live.as_ref().and_then(|live| live.refusal);
         s.connected = true;
         s.paused = false;
         s.duration = duration;

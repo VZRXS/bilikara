@@ -4,15 +4,17 @@ use super::*;
 use crate::dlna::cast_http::{LiveProducer, LiveStream};
 use crate::experimental_libav::{
     LibavMetadataProbe, ProbeError,
-    cast_mux::{CastPacing, CastStart},
+    cast_mux::{CastPacing, CastStart, CastSummary},
     live_audio::{Control, Event},
 };
 use std::time::Instant;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn generate(
     probe: &LibavMetadataProbe,
     input: &media::Inputs,
     item: &crate::app_state::PlaylistItem,
+    facts: CastSummary,
     position: f64,
     identity: (u64, u64),
     stream: Arc<LiveStream>,
@@ -20,7 +22,7 @@ pub(super) fn generate(
 ) -> Result<(), ApiError> {
     let mut pacing_error = None;
     let result = (|| {
-        let facts = probe.cast_preflight(&input.video, stream.cancellation())?;
+        // `facts` is the preflight that admitted this source to L1.
         let CastPacing::Realtime { burst } = producer.pacing() else {
             unreachable!()
         };
