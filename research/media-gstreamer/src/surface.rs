@@ -65,11 +65,11 @@ impl Surfaces {
             current: 1,
         }
     }
-    pub fn attach(&mut self, sink: &gst::Element, token: &str) -> Option<(i32, i32)> {
+    pub fn attach(&mut self, sink: &gst::Element, token: &str) -> bool {
         let index = match token {
             "host" => 0,
             "audience" => 1,
-            _ => return None,
+            _ => return false,
         };
         unsafe {
             XMapWindow(self.display, self.windows[index]);
@@ -90,11 +90,7 @@ impl Surfaces {
             }
         }
         self.current = index;
-        Some(if index == 1 {
-            (1920, 1080)
-        } else {
-            (1280, 720)
-        })
+        true
     }
     pub fn visible_colors(&self) -> usize {
         let (width, height) = if self.current == 1 {

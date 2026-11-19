@@ -13,21 +13,25 @@ import {validateNativeTail,validateNativeTimeline} from '../tests/media_gstreame
 const args=process.argv.slice(2),value=key=>args[args.indexOf(key)+1];
 for(const key of ['--sdk','--binary','--video','--audio','--output'])assert.ok(args.includes(key),key);
 const diagnosticClock = args.includes('--clock') ? value('--clock') : 'sink';
+const surfaceOnly = args.includes('--surface-only');
 assert.ok(['sink', 'system'].includes(diagnosticClock), 'use --clock sink or system');
 const directory=path.resolve(value('--output'));assert.ok(!directory.startsWith(root+path.sep));mkdirSync(directory,{recursive:true});
 const lab=await virtualOutputs(value('--sdk'),path.join(directory,'virtual-outputs'));
 const flac=path.join(directory,'track-880.flac');
-let child,recording;const events=[];
-try {
+let child,recording,surfaceCapture;const events=[];
+async function validate() {
   const generated=await runNative('ffmpeg',['-hide_banner','-loglevel','error','-y','-f','lavfi','-i','sine=frequency=880:sample_rate=44100:duration=90','-c:a','flac',flac],process.env,30000);assert.equal(generated.status,0,generated.stderr);
   let program={playback_generation:1,item_id:'fixture',item_incarnation_id:'fixture-i1',artifact_set_id:'fixture-a1',selected_audio_variant_id:'aac'};
   const manifest={program,video:path.resolve(value('--video')),audio:[path.resolve(value('--audio')),flac],pulse_server:lab.environment.PULSE_SERVER,pulse_device:'rounda',diagnostic_clock:diagnosticClock,diagnostic_replay_eos:true};
-  const collectionFixture=path.join(directory,'two-audio-tracks.mkv');
-  const muxed=await runNative('ffmpeg',['-hide_banner','-loglevel','error','-y','-i',manifest.video,'-i',manifest.audio[0],'-i',flac,'-map','0:v:0','-map','1:a:0','-map','2:a:0','-c','copy',collectionFixture],process.env,30000);
-  assert.equal(muxed.status,0,muxed.stderr);manifest.collection_fixture=collectionFixture;
-  const coded=await timingFixture(path.join(directory,'playbin-timecode'),60);
-  manifest.timing_video=coded.video;manifest.timing_audio=path.join(directory,'coded.flac');
-  const converted=await runNative('ffmpeg',['-hide_banner','-loglevel','error','-y','-i',coded.audio,'-ar','44100','-c:a','flac',manifest.timing_audio],process.env,30000);assert.equal(converted.status,0,converted.stderr);
+  let coded;
+  if (!surfaceOnly) {
+    const collectionFixture=path.join(directory,'two-audio-tracks.mkv');
+    const muxed=await runNative('ffmpeg',['-hide_banner','-loglevel','error','-y','-i',manifest.video,'-i',manifest.audio[0],'-i',flac,'-map','0:v:0','-map','1:a:0','-map','2:a:0','-c','copy',collectionFixture],process.env,30000);
+    assert.equal(muxed.status,0,muxed.stderr);manifest.collection_fixture=collectionFixture;
+    coded=await timingFixture(path.join(directory,'playbin-timecode'),60);
+    manifest.timing_video=coded.video;manifest.timing_audio=path.join(directory,'coded.flac');
+    const converted=await runNative('ffmpeg',['-hide_banner','-loglevel','error','-y','-i',coded.audio,'-ar','44100','-c:a','flac',manifest.timing_audio],process.env,30000);assert.equal(converted.status,0,converted.stderr);
+  }
   const file=path.join(directory,'manifest.json');writeFileSync(file,JSON.stringify(manifest,null,2));
   async function playbinProbe(){
     const pcmFile=path.join(directory,'playbin3-sink.f32le'),monitor=startPcmMonitor(path.resolve(value('--sdk')),lab.environment,pcmFile),timeline=[];
@@ -71,12 +75,19 @@ try {
     const independentSeek={status:expectedSource.length>=2?'PASS':'FAIL',targetSeconds:12,afterSeek,expectedSourceSeconds:'12..15 (1000..1150Hz)',mapping:timeline.find(e=>e.type==='playbin3-case-result'&&e.case==='independent-coded-restored'),qualification:'SDK-specific auxiliary seek; a FAIL is a candidate blocker, not proof all GStreamer/SDKs lack the capability'};
     writeFileSync(path.join(directory,'playbin3-output-evidence.json'),JSON.stringify({timeline,windows,checks,independentSeek,physical:'DEVICE-UNVERIFIED',continuousTrackSwitch:'NOT QUALIFIED'},null,2));console.log(JSON.stringify({playbin3Investigation:'PASS',independentAuxiliarySeek:independentSeek.status}));return out;
   }
-  await validateNativeTail(path.resolve(value('--binary')),path.resolve(value('--sdk')),lab.environment,
-    path.join(directory,'custom-tail'),diagnosticClock);
-  console.log(JSON.stringify({customTailPcm:'PASS',diagnosticClock}));
-  await playbinProbe();
+  if (!surfaceOnly) {
+    await validateNativeTail(path.resolve(value('--binary')),path.resolve(value('--sdk')),lab.environment,
+      path.join(directory,'custom-tail'),diagnosticClock);
+    console.log(JSON.stringify({customTailPcm:'PASS',diagnosticClock}));
+    await playbinProbe();
+  }
   const pcmFile=path.join(directory,'actual-sink-monitor.f32le');
-  recording=spawn(path.join(path.resolve(value('--sdk')),'usr/bin/parec'),['--device=rounda.monitor','--raw','--format=float32le','--rate=48000','--channels=2'],{env:lab.environment,stdio:['ignore',openSync(pcmFile,'wx'),openSync(path.join(directory,'parec.stderr'),'wx')]});
+  if (surfaceOnly) {
+    surfaceCapture = startPcmMonitor(path.resolve(value('--sdk')), lab.environment, pcmFile);
+    await surfaceCapture.ready;
+  } else {
+    recording=spawn(path.join(path.resolve(value('--sdk')),'usr/bin/parec'),['--device=rounda.monitor','--raw','--format=float32le','--rate=48000','--channels=2'],{env:lab.environment,stdio:['ignore',openSync(pcmFile,'wx'),openSync(path.join(directory,'parec.stderr'),'wx')]});
+  }
   child=spawn(path.resolve(value('--binary')),[file],{env:lab.environment,stdio:['pipe','pipe',openSync(path.join(directory,'renderer.stderr'),'wx')]});
   let pending='';const start=performance.now();
   child.stdout.on('data',b=>{pending+=b;while(pending.includes('\n')){const end=pending.indexOf('\n');const event=JSON.parse(pending.slice(0,end));pending=pending.slice(end+1);events.push({...event,receivedMs:performance.now()-start});}});
@@ -86,13 +97,57 @@ try {
   async function command(action,parameters={},expected=program){const id=++seq;child.stdin.write(JSON.stringify({action,expected_program:expected,seq:id,...parameters})+'\n');const response=await wait(()=>events.find(e=>e.seq===id),'command '+action);actions.push({...response,atMs:performance.now()-start});return response;}
   await wait(()=>events.some(e=>e.type==='sample'&&e.pcm_frames>=48000),'actual startup PCM progression');
   assert.ok(events.some(e=>e.type==='clock'));
-  for(const surfaceToken of ['host','audience']) {
-    const reassigned=await command('surface',{surfaceToken});assert.equal(reassigned.accepted,true);assert.equal(reassigned.clock_preserved,true);
-    // set_window_handle accepts an assignment before a streaming frame arrives.
-    // Confirm actual output rather than treating a fixed sleep as readiness.
-    const deadline=performance.now()+5000;let colors=0;
-    while(colors<=4&&performance.now()<deadline){await command('surfaceProbe');colors=events.filter(e=>e.type==='surface-observation').at(-1).colors;if(colors<=4)await delay(100);}
-    assert.ok(colors>4,'actual native surface pixels');
+  const switches = surfaceOnly ? 8 : 2;
+  const surfaceTransitions = [];
+  for (let index = 0; index < switches; index++) {
+    const surfaceToken = index % 2 === 0 ? 'host' : 'audience';
+    const before = events.findLast(event => event.type === 'sample');
+    const switched = await command('surface', {surfaceToken});
+    assert.equal(switched.accepted, true);
+    assert.equal(switched.clock_preserved, true);
+    if (surfaceOnly) {
+      await wait(() => events.some(event => event.type === 'sample' && event.receivedMs > switched.receivedMs
+        && event.video_rendered > 0 && event.video_position_ns > before.video_position_ns && event.pcm_frames > before.pcm_frames),
+      `${surfaceToken} video and PCM progression`);
+    }
+    // A successful handoff still needs a frame in the new drawable.
+    const deadline = performance.now() + 5000;
+    let picture;
+    while (performance.now() < deadline) {
+      await command('surfaceProbe');
+      picture = events.findLast(event => event.type === 'surface-observation');
+      if (picture.colors > 4) break;
+      await delay(60);
+    }
+    assert.ok(picture?.colors > 4, `${surfaceToken} actual native surface pixels`);
+    surfaceTransitions.push({surfaceToken, requestMs:switched.receivedMs, pictureMs:picture.receivedMs, colors:picture.colors});
+  }
+  if (surfaceOnly) {
+    await delay(350);
+    const {chunks} = await surfaceCapture.stop();
+    surfaceCapture = null;
+    await command('stop');
+    assert.equal((await finished).code, 0);
+    const windowSeconds = .25;
+    const rate = 48000;
+    const windows = pcmWindows(readFileSync(pcmFile), rate, 2, windowSeconds).map(window => {
+      const endFrame = Math.round((window.atSeconds + windowSeconds) * rate);
+      const chunk = chunks.find(observation => observation.endFrame >= endFrame);
+      assert.ok(chunk, 'PCM window has a capture timestamp');
+      const endMs = chunk.atMs - (chunk.endFrame - endFrame) * 1000 / rate - start;
+      return {...window, startMs:endMs - windowSeconds * 1000, endMs};
+    });
+    const from = surfaceTransitions[0].requestMs, to = surfaceTransitions.at(-1).pictureMs;
+    const overlapping = windows.filter(window => window.startMs < to && window.endMs > from);
+    assert.ok(overlapping[0]?.startMs <= from && overlapping.at(-1)?.endMs >= to, 'captured PCM spans the surface switches');
+    assert.ok(overlapping.every(({rms,toneHz}) => rms > .02 && Math.abs(toneHz - 440) < 8), 'continuous tone in PulseAudio output');
+    const decoder = events.find(event => event.type === 'decoders');
+    assert.equal(decoder?.video_decoder_count, 1);
+    assert.deepEqual(events.filter(event => event.type === 'error'), []);
+    const result = {status:'PASS', evidenceClass:'LINUX-VIRTUAL-OUTPUT', diagnosticClock, surfaceTransitions, decoder, windows};
+    writeFileSync(path.join(directory, 'result.json'), JSON.stringify(result, null, 2));
+    console.log(JSON.stringify({status:result.status, diagnosticClock, switches}));
+    return;
   }
   await delay(1500);assert.equal((await command('pause')).accepted,true);
   await wait(()=>events.some(e=>e.type==='sample'&&e.state==='Paused'),'actual pipeline pause settlement');
@@ -173,10 +228,21 @@ try {
     eosToNextObservedMs:bridge.eosToNextObservedMs,continuity:bridge.continuity},null,2));
   console.log(JSON.stringify({status:timeline.status,customFunctional:'PASS',directory,commands:actions.length,monitorSeconds:pcm.length/8/48000}));
   if(timeline.status!=='PASS')process.exitCode=2;
+}
+try {
+  await validate();
 }catch(error){
   writeFileSync(path.join(directory,'failure.txt'),String(error.stack));
   writeFileSync(path.join(directory,'failed-events.json'),JSON.stringify(events,null,2));
   await runNative('ffmpeg',['-hide_banner','-loglevel','error','-f','x11grab','-video_size','1920x1080','-i',lab.environment.DISPLAY,'-frames:v','1','-threads','2',path.join(directory,'failure-surface.png')],lab.environment,10000);
   throw error;
 }
-finally{child?.kill('SIGTERM');recording?.kill('SIGTERM');await lab.close();}
+finally {
+  child?.kill('SIGTERM');
+  recording?.kill('SIGTERM');
+  try {
+    await surfaceCapture?.stop();
+  } finally {
+    await lab.close();
+  }
+}

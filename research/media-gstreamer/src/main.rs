@@ -261,19 +261,10 @@ fn main() -> std::process::ExitCode {
     let vq = element("queue", "video-queue");
     let vc = element("videoconvert", "video-convert");
     let scale = element("videoscale", "audience-scale");
-    let video_caps = element("capsfilter", "surface-format");
-    video_caps.set_property(
-        "caps",
-        gst::Caps::builder("video/x-raw")
-            .field("width", 1920i32)
-            .field("height", 1080i32)
-            .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
-            .build(),
-    );
+    // Let ximagesink negotiate the new drawable with videoscale. Forcing new
+    // caps separately from the window switch can reject frames in flight.
     let mut surfaces = surface::Surfaces::new();
-    surfaces
-        .attach(&vs, "audience")
-        .expect("initial native surface");
+    assert!(surfaces.attach(&vs, "audience"), "initial native surface");
     let sel = element("input-selector", "track-selector");
     sel.set_property("sync-streams", true);
     sel.set_property_from_str("sync-mode", "clock");
@@ -302,7 +293,6 @@ fn main() -> std::process::ExitCode {
         &vq,
         &vc,
         &scale,
-        &video_caps,
         &vs,
         &sel,
         &filter,
@@ -314,7 +304,7 @@ fn main() -> std::process::ExitCode {
         monitor.upcast_ref(),
     ])
     .unwrap();
-    gst::Element::link_many([&vq, &scale, &video_caps, &vc, &vs]).unwrap();
+    gst::Element::link_many([&vq, &scale, &vc, &vs]).unwrap();
     gst::Element::link_many([&sel, &filter, &volume, &tee]).unwrap();
     gst::Element::link_many([&tee, &aq, &audio]).unwrap();
     gst::Element::link_many([&tee, &mq, monitor.upcast_ref()]).unwrap();
@@ -598,20 +588,7 @@ fn main() -> std::process::ExitCode {
                     }
                 }
                 "surface" => {
-                    if let Some((width, height)) =
-                        surfaces.attach(&vs, c["surfaceToken"].as_str().unwrap_or(""))
-                    {
-                        video_caps.set_property(
-                            "caps",
-                            gst::Caps::builder("video/x-raw")
-                                .field("width", width)
-                                .field("height", height)
-                                .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
-                                .build(),
-                        );
-                    } else {
-                        ok = false;
-                    }
+                    ok = surfaces.attach(&vs, c["surfaceToken"].as_str().unwrap_or(""));
                 }
                 "surfaceProbe" => emit(
                     json!({"type":"surface-observation","seq":c["seq"],"colors":if c["timecodeOnly"].as_bool().unwrap_or(false){None}else{Some(surfaces.visible_colors())},"timecode_frame":surfaces.timecode_frame(),"at_ms":start.elapsed().as_millis()}),

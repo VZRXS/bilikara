@@ -79,7 +79,8 @@ must equal the accepted Seek sequence. Once emitted, EOS cannot be emitted
 again until another segment is accepted. See [GStreamer sequence numbers](https://gstreamer.freedesktop.org/documentation/additional/design/seqnums.html).
 The isolated Linux X11
 adapter accepts `host`/`audience` surface tokens, retains the audio clock and
-changes video caps to fit the destination. Native handles stay internal.
+uses [`ximagesink` reverse negotiation](https://gstreamer.freedesktop.org/documentation/ximagesink/index.html)
+with `videoscale` to fit the new drawable. Native handles stay internal.
 `surfaceProbe` inspects visible X11 pixels to distinguish assignment from actual
 frame delivery. This is neither native platform hotplug nor mobile Surface proof.
 A trusted renderer bridge is not a public control API,
@@ -97,7 +98,9 @@ CUDA_VISIBLE_DEVICES='' .tmp/local-build-run.sh node scripts/validate-gstreamer-
   --output /absolute/HDD/evidence/gst-functional
 ```
 
-Use a 90-second H.264 video and 48 kHz AAC 440 Hz tone. The runner creates a
+Use a 90-second H.264 video and 48 kHz AAC 440 Hz tone. Add `--surface-only`
+for eight successive Host/Audience switches with X11 frame verification, one
+video decoder and PCM continuity measured at the PulseAudio monitor. The full runner creates a
 second 44.1 kHz FLAC 880 Hz track and observes actual audio-server PCM, including
 the expected shifted tones. It also checks that a pulse present only in the last
 60 ms of an AAC source reaches the PulseAudio monitor and that each decoder
