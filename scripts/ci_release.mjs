@@ -1,5 +1,10 @@
 // Release tooling, not application policy. Only this run's verified six-target
-// outputs can reach a draft. The unsigned IPA is a direct release asset.
+// outputs, plus the Android APK's corresponding-source kit, can reach a draft.
+// The unsigned IPA is a direct release asset.
+
+// The APK's license notice binds this exact kit filename and SHA-256; it is
+// published unchanged beside the APK (LGPL corresponding source).
+export const ANDROID_SOURCE_KIT = 'bilikara-android-libav-9.0.1-arm64-v8a-source-kit.zip';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {createReadStream} from 'node:fs';
@@ -20,6 +25,7 @@ export function releaseTargets(tag, sha) {
     {name: `bilikara-${tag}-android-arm64.apk`, distribute: true},
     {name: `bilikara-ios-device-arm64-unsigned-${sha}`, distribute: true,
       asset: `bilikara-${tag}-ios-arm64-unsigned.ipa`},
+    {name: ANDROID_SOURCE_KIT, distribute: true},
   ];
 }
 
@@ -48,13 +54,15 @@ export async function collectRelease({tag, sha, runId, artifacts, directory, des
   assert.ok(dryRun || (sourceNames === undefined && applicationVersion === undefined), 'Source overrides require a dry-run');
   const wanted = releaseTargets(tag, sha);
   if (dryRun) {
-    assert.ok(Array.isArray(sourceNames) && sourceNames.length === 6 && new Set(sourceNames).size === 6);
+    assert.ok(Array.isArray(sourceNames) && sourceNames.length === wanted.length
+      && new Set(sourceNames).size === wanted.length);
     assert.ok(sourceNames.every(name => typeof name === 'string' && /^bilikara-[\w.-]+$/.test(name)));
     wanted.forEach((row, index) => {row.asset = row.asset ?? row.name; row.name = sourceNames[index];});
     assert.match(applicationVersion, /^\d+\.\d+\.\d+$/);
   }
   const packages = artifacts.filter(row => row.name?.startsWith('bilikara-'));
-  assert.equal(packages.length, wanted.length, 'All six and only six package artifacts are required');
+  assert.equal(packages.length, wanted.length,
+    'All six packages and the Android source kit, and only those artifacts, are required');
   assert.equal(new Set(packages.map(row => row.name)).size, wanted.length, 'Duplicate package artifacts');
   const files = await filesBelow(directory);
   assert.equal(files.length, wanted.length, 'Download must retain raw artifacts (skip-decompress)');

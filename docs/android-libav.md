@@ -128,7 +128,12 @@ loader can access regular files in `ApplicationInfo.nativeLibraryDir`.
 
 Only the generated `jniLibs` and `assets` subdirectories enter the APK. Publish
 the generated source-kit ZIP **separately beside the corresponding APK at the
-same download location**. The APK's license notice identifies the exact ZIP,
+same download location**. CI uploads it as the unarchived artifact
+`bilikara-android-libav-9.0.1-arm64-v8a-source-kit.zip`, and the release
+collection (`scripts/ci_release.mjs`, `ANDROID_SOURCE_KIT`) publishes it with
+that exact filename beside the APK and lists it in `SHA256SUMS`. Releases up to
+v0.8.0 omitted this asset; their kits must be supplied on request from the
+retained build artifacts. The APK's license notice identifies the exact ZIP,
 upstream source, version, hash, signer and configure string. The ZIP includes
 the original signed archive, licenses, configuration records, companion source,
 xtask sources and lockfile, and `REBUILD-ANDROID.md`. Rebuild from the extracted

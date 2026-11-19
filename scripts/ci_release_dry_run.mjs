@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {collectRelease, mirrorReleaseMetadata} from './ci_release.mjs';
+import {ANDROID_SOURCE_KIT, collectRelease, mirrorReleaseMetadata} from './ci_release.mjs';
 import {verifyReleaseBytes} from './ci_release_verify.mjs';
 import {verifyReleaseMirror} from './verify_release_mirror.mjs';
 import {desktopTargets} from './ci_targets.mjs';
@@ -22,6 +22,7 @@ export async function releaseDryRun({sha, runId, ref, artifacts, directory, outp
     ...desktopTargets.map(row => `bilikara-${row.slug}-${row.arch}-${safeRef}-${sha.slice(0, 12)}.zip`),
     buildMetadata({GITHUB_REF_TYPE: 'branch', GITHUB_REF_NAME: ref, GITHUB_EVENT_NAME: sourceRun.event}).apk,
     `bilikara-ios-device-arm64-unsigned-${sha}`,
+    ANDROID_SOURCE_KIT,
   ];
   await fs.mkdir(output, {recursive: false});
   const destination = path.join(output, 'assets');
@@ -40,7 +41,8 @@ export async function releaseDryRun({sha, runId, ref, artifacts, directory, outp
     if (name !== 'current-github.json') await fs.copyFile(path.join(metadata, name), path.join(readback, 'metadata', name));
   }
   const receipt = await verifyReleaseMirror(metadata, destination, readback);
-  assert.equal(receipt.assets.length, 7);
+  assert.equal(receipt.assets.length, 8);
+  assert.ok(manifest.assets.some(row => row.name === ANDROID_SOURCE_KIT), 'Android corresponding source is distributed');
   assert.ok(mirrored.assets.some(row => row.name.endsWith('-ios-arm64-unsigned.ipa') && row.browser_download_url.includes('?sha256=')));
   // Real-byte negative checks; each must fail closed before any publication.
   const victim = path.join(readback, 'assets', manifest.assets[0].name);
@@ -65,7 +67,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const result = await releaseDryRun({...JSON.parse(await fs.readFile(metadata, 'utf8')), directory, output});
   console.log(JSON.stringify(result, null, 2));
   if (process.env.GITHUB_STEP_SUMMARY) await fs.appendFile(process.env.GITHUB_STEP_SUMMARY,
-    `### Release distribution dry-run\n\nVerified six packages and SHA256SUMS, including the original unsigned IPA.\n\n`
+    `### Release distribution dry-run\n\nVerified six packages, the Android corresponding-source kit and SHA256SUMS, including the original unsigned IPA.\n\n`
     + result.assets.map(row => `- ${row.name}: ${row.size} bytes; ${row.digest}\n`).join('')
     + '\nLocal round-trip and missing/corrupt/wrong-run negatives passed. No publication API was called.\n');
 }

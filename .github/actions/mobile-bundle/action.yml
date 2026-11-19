@@ -239,7 +239,7 @@ runs:
         "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 -v 4 "${apks[0]}"
         cp "${apks[0]}" "$APK_NAME"
         printf '%s\n' 'Android media: six libraries (five media plus the pinned NDK libc++_shared RELRO exception) verified before signature inspection.' \
-          'Corresponding source: bilikara-android-libav-9.0.1-arm64-v8a-source-kit.zip (artifact android-libav-source-kit-arm64-v8a-<sha>), bound by build-info source_kit_sha256; distribute it alongside the APK.' \
+          'Corresponding source: bilikara-android-libav-9.0.1-arm64-v8a-source-kit.zip (unarchived artifact of the same name), bound by build-info source_kit_sha256; releases publish it beside the APK.' \
           'Sample B is required: CI never passes the Gradle sample opt-out.'
 
     - name: Upload APK test artifact
@@ -255,10 +255,11 @@ runs:
       if: inputs.platform == 'Android'
       uses: actions/upload-artifact@v7
       with:
-        # Zipped and not named bilikara-*: release collection accepts exactly
-        # six package artifacts. The kit keeps its exact filename inside.
-        name: android-libav-source-kit-arm64-v8a-${{ github.sha }}
+        # Unarchived, so the artifact is the exact kit file the APK notice binds
+        # by name and SHA-256. Release collection publishes it beside the APK as
+        # the LGPL corresponding source (scripts/ci_release.mjs ANDROID_SOURCE_KIT).
         path: src-tauri/gen/android/app/build/generated/bilikara-media/arm64-v8a/sources/bilikara-android-libav-9.0.1-arm64-v8a-source-kit.zip
+        archive: false
         if-no-files-found: error
         retention-days: 7
 

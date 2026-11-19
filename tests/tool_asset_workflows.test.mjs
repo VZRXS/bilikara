@@ -415,15 +415,18 @@ test('Android media checker, APK gates and separate source kit run before signat
     assert.ok(stage.indexOf(gate) < stage.indexOf('apksigner'), gate);
   }
   assert.equal(packages.split('verify-android-apk').length - 1, 1, 'one APK verifier call, always with --source-kit');
-  // Uploaded after the APK-bound checks, beside the APK, without a bilikara-* artifact name.
+  // Uploaded after the APK-bound checks as the exact, unarchived kit file the APK
+  // notice binds by name and SHA-256, so release collection can publish it.
   const upload = step(packages, 'Upload corresponding Android libav source kit');
-  includes(upload, ['uses: actions/upload-artifact@v7', 'name: android-libav-source-kit-arm64-v8a-${{ github.sha }}',
+  includes(upload, ['uses: actions/upload-artifact@v7', 'archive: false',
     `path: src-tauri/gen/android/app/build/generated/bilikara-media/arm64-v8a/${kitName}`, 'if-no-files-found: error']);
-  excludes(upload, ['archive: false', 'name: bilikara-']);
+  excludes(upload, ['name: android-libav-source-kit-arm64-v8a-']);
   assert.ok(packages.indexOf('- name: Stage and verify APK') < packages.indexOf('- name: Upload corresponding Android libav source kit'));
-  includes(stage, ['Sample B is required: CI never passes the Gradle sample opt-out', 'source_kit_sha256; distribute it alongside the APK']);
-  // Release collection counts bilikara-* artifacts; the kit must stay outside that set.
-  includes(read('scripts/ci_release.mjs'), ["row.name?.startsWith('bilikara-')", 'All six and only six package artifacts are required']);
+  includes(stage, ['Sample B is required: CI never passes the Gradle sample opt-out', 'source_kit_sha256; releases publish it beside the APK']);
+  // Release collection publishes the LGPL corresponding source beside the APK
+  // (issue 4.12); its artifact name is the kit filename.
+  includes(read('scripts/ci_release.mjs'), ["row.name?.startsWith('bilikara-')",
+    `export const ANDROID_SOURCE_KIT = '${path.basename(kitName)}';`, '{name: ANDROID_SOURCE_KIT, distribute: true}']);
 });
 
 // Ported from R2 A7 (bilikara 98329496, fa199fc2): PR-level CI compiles Android cfg code.

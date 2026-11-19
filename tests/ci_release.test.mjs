@@ -8,14 +8,14 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {collectRelease, prepareDraft, publishDraft, verifyPublishedAssets, mirrorReleaseMetadata} from '../scripts/ci_release.mjs';
+import {ANDROID_SOURCE_KIT, collectRelease, prepareDraft, publishDraft, verifyPublishedAssets, mirrorReleaseMetadata} from '../scripts/ci_release.mjs';
 import {verifyReleaseBytes} from '../scripts/ci_release_verify.mjs';
 import {releaseDryRun} from '../scripts/ci_release_dry_run.mjs';
 
 const sha = '0123456789abcdef0123456789abcdef01234567', tag = 'v0.9.0-preview.3', runId = 123;
 const names = ['bilikara-v0.9.0-preview.3-windows-x64.zip', 'bilikara-v0.9.0-preview.3-windows-arm64.zip',
   'bilikara-v0.9.0-preview.3-macos-arm64.zip', 'bilikara-v0.9.0-preview.3-macos-x64.zip',
-  'bilikara-v0.9.0-preview.3-android-arm64.apk', `bilikara-ios-device-arm64-unsigned-${sha}`];
+  'bilikara-v0.9.0-preview.3-android-arm64.apk', `bilikara-ios-device-arm64-unsigned-${sha}`, ANDROID_SOURCE_KIT];
 const ipaName = 'bilikara-v0.9.0-preview.3-ios-arm64-unsigned.ipa';
 const unsignedFixture = options => execFileSync(process.platform === 'win32' ? 'python' : 'python3',
   [fileURLToPath(new URL('./fixtures/ios_unsigned.py', import.meta.url))],
@@ -35,17 +35,18 @@ async function fixture(t) {
   return {tag, sha, runId, artifacts, directory, destination: path.join(root, 'release')};
 }
 
-test('release requires six current-SHA artifacts and distributes the original unsigned IPA directly', async t => {
+test('release requires six current-SHA packages plus the Android source kit and distributes the original unsigned IPA directly', async t => {
   const input = await fixture(t); const manifest = await collectRelease(input);
-  assert.deepEqual(manifest.assets.map(row => row.name), [...names.slice(0, 5), ipaName, 'SHA256SUMS']);
+  assert.deepEqual(manifest.assets.map(row => row.name), [...names.slice(0, 5), ipaName, ANDROID_SOURCE_KIT, 'SHA256SUMS']);
   assert.equal(manifest.assets[5].unsigned, true);
   assert.deepEqual(await fs.readFile(path.join(input.destination, ipaName)), unsignedFixture({direct: true}));
   await verifyReleaseBytes(manifest, input.destination);
-  for (const [index, name] of names.slice(0, 5).entries()) {
+  for (const [index, name] of [...names.slice(0, 5).entries(), [6, ANDROID_SOURCE_KIT]]) {
     assert.deepEqual(await fs.readFile(path.join(input.destination, name)), Buffer.from(`independent target fixture ${index}`));
   }
   const sums = await fs.readFile(path.join(input.destination, 'SHA256SUMS'), 'utf8');
-  assert.equal(sums.trim().split('\n').length, 6);
+  assert.equal(sums.trim().split('\n').length, 7);
+  assert.ok(sums.includes(ANDROID_SOURCE_KIT));
   assert.ok(sums.includes(ipaName));
   const file = path.join(input.destination, names[0]);
   const bytes = await fs.readFile(file); bytes[0] ^= 1; await fs.writeFile(file, bytes);
@@ -74,11 +75,11 @@ test('dry-run source labels never authorize publication or change release produc
   await assert.rejects(collectRelease({...input, destination: input.destination + '-other', sourceNames: names}), /overrides/);
 });
 
-for (const event of ['push','workflow_dispatch']) test(`${event} offline distribution rehearsal includes six original packages, metadata URLs and real-byte failure checks`, async t => {
+for (const event of ['push','workflow_dispatch']) test(`${event} offline distribution rehearsal includes six original packages, the Android source kit, metadata URLs and real-byte failure checks`, async t => {
   const input = await fixture(t), ref = 'work/ci-validation-fixture';
   const sourceNames = ['windows-x64', 'windows-arm64', 'macos-arm64', 'macos-x64']
     .map(target => `bilikara-${target}-work-ci-validation-fixture-${sha.slice(0, 12)}.zip`);
-  sourceNames.push(`bilikara-beta-work-ci-validation-fixture-android-arm64-${event==='push'?'ephemeral-debug':'debug'}.apk`, names[5]);
+  sourceNames.push(`bilikara-beta-work-ci-validation-fixture-android-arm64-${event==='push'?'ephemeral-debug':'debug'}.apk`, names[5], ANDROID_SOURCE_KIT);
   input.artifacts.forEach((row, index) => {row.name = sourceNames[index];});
   const output = input.destination + '-dry-run';
   const sourceRun = {id:runId,head_sha:sha,head_branch:ref,event};
@@ -86,7 +87,8 @@ for (const event of ['push','workflow_dispatch']) test(`${event} offline distrib
   assert.equal(result.source_event,event);
   assert.equal(result.publication_api_calls, 0);
   assert.equal(result.dry_run, true);
-  assert.equal(result.assets.length, 7);
+  assert.equal(result.assets.length, 8);
+  assert.ok(result.assets.some(row => row.name === ANDROID_SOURCE_KIT));
   assert.deepEqual(result.negative_checks, ['missing', 'corrupt', 'wrong-run']);
   const metadata = JSON.parse(await fs.readFile(path.join(output, 'metadata/tag.json'), 'utf8'));
   const ipa = metadata.assets.find(row => row.name.endsWith('.ipa'));
