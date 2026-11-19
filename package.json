@@ -60,7 +60,7 @@
     "test:cast-ui": "node --test tests/cast_browser.test.mjs tests/cast_full_host_browser.test.mjs tests/cast_self_test_browser.test.mjs",
     "test:purek-controller": "node --test tests/purek_controller.test.mjs tests/purek_compatibility.test.mjs",
     "test:dlna": "node --test --test-name-pattern=\"ordinary DLNA\" tests/purek_controller.test.mjs",
-    "test:purek-l1": "node --test tests/purek_l1.test.mjs tests/native_output_browser.test.mjs",
+    "test:purek-l1": "node --test tests/purek_l1.test.mjs tests/native_output_hls.test.mjs tests/native_output_browser.test.mjs",
     "test:native-users": "node --test tests/native_session_users_browser.test.mjs",
     "test:native-transport": "node --test tests/native_transport.test.mjs tests/native_transport_browser.test.mjs",
     "test:native-transport-entry": "node --test tests/native_transport_entry.test.mjs",

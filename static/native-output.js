@@ -24,10 +24,27 @@
   async function attach(video,url,callbacks={}) {
     const kind=decoderKind(video);
     let closed=false,disposed=false,failed=false,hls=null,handlers=callbacks,sourceReady=false,source=url,primed=kind==='native';
+    let bufferedFragment=null;
     const fail=()=>{if(!closed&&!disposed){failed=true;video.dataset.nativeOutputFailure ||= String(video.error?.code||'pipeline');handlers.error?.();}};
     const mediaError=()=>{if(!hls||sourceReady)fail();};
     const complete=()=>{if(primed&&video.ended&&!closed&&!disposed)handlers.ended?.();};
     const play=()=>{if(primed&&!closed&&!disposed&&video.paused)video.play().catch(()=>{});};
+    const bufferedStart=frag=>{
+      if(!frag)return null;
+      const ranges=video.buffered;
+      for(let i=0;i<ranges.length;i++){
+        const start=Math.max(ranges.start(i),frag.start);
+        if(start<ranges.end(i)&&start<frag.end)return start;
+      }
+      return null;
+    };
+    const prime=()=>{
+      if(primed||closed||disposed||!bufferedFragment||bufferedFragment.cc!==handlers.period)return;
+      const start=bufferedStart(bufferedFragment);
+      if(start===null)return;
+      video.currentTime=start;primed=true;
+      video.dataset.nativeOutputPeriod=String(bufferedFragment.cc);play();
+    };
     video.addEventListener('error',mediaError);video.addEventListener('ended',complete);video.addEventListener('canplay',play);
     const release=()=>{
       disposed=true;closed=true;
@@ -37,7 +54,7 @@
       if(hls)hls.destroy();else {video.pause();video.removeAttribute('src');video.load();}
     };
     release.pause=()=>{if(closed||disposed)return;closed=true;hls?.stopLoad();video.pause();};
-    release.resume=()=>{if(disposed)return;if(closed){closed=false;hls?.startLoad(-1);}play();};
+    release.resume=()=>{if(disposed)return;if(closed){closed=false;prime();hls?.startLoad(-1);}play();};
     release.canReuse=()=>!failed&&Boolean(hls||kind==='native');
     release.observation=()=>({decoder:kind,clock:"output_timeline",period:handlers.period??null,primed,closed,paused:video.paused,ended:video.ended,
       ready_state:video.readyState,current_time:video.currentTime,
@@ -46,15 +63,19 @@
     release.source=(next,options={})=>{
       if(disposed)return;
       const unchanged=next===source&&options.period===handlers.period;handlers=options;
-      if(unchanged&&!closed)return;
+      if(unchanged){release.resume();return;}
       video.pause();closed=false;primed=kind==='native';delete video.dataset.nativeOutputFailure;
       // One MediaSource owns all discontinuous run periods in this mode. A
       // pause, seek or track change must not tear down WebKit SourceBuffers.
-      if(next!==source){source=next;sourceReady=false;if(hls)hls.loadSource(next);}
+      if(next!==source){source=next;sourceReady=false;bufferedFragment=null;if(hls)hls.loadSource(next);}
       if(hls){
-        // Explicitly resuming a new Rust generation invalidates the completed
-        // playlist cache, while its MediaSource and SourceBuffers stay owned.
-        for(const level of hls.levels)if(level.details&&!level.details.live)level.details=undefined;
+        // A sink may already have fetched ENDLIST for the incoming period.
+        // Keep that playlist. To reopen an older ENDLIST, make it reloadable
+        // while retaining its sequence/PTS anchors for hls.js playlist merging.
+        for(const {details} of hls.levels){
+          if(details&&!details.live&&details.endCC<handlers.period)details.live=true;
+        }
+        prime();
         hls.startLoad(-1);
       }else video.src=next;play();
     };
@@ -68,14 +89,13 @@
           maxBufferSize:16*1024*1024,backBufferLength:4,liveSyncDurationCount:1,liveMaxLatencyDurationCount:3});
         hls.on(Hls.Events.ERROR,(_event,data)=>{if(data.fatal&&!closed&&!disposed){video.dataset.nativeOutputFailure=/^[a-zA-Z]+$/.test(data.details)?data.details:'hls';fail();}});
         hls.on(Hls.Events.FRAG_BUFFERED,(_event,data)=>{
-          if(primed||closed||disposed||data.frag.cc!==handlers.period)return;
-          const ranges=video.buffered;
-          for(let i=0;i<ranges.length;i++){
-            const start=Math.max(ranges.start(i),data.frag.start);
-            if(start<ranges.end(i)&&start<data.frag.end){
-              video.currentTime=start;primed=true;video.dataset.nativeOutputPeriod=String(data.frag.cc);play();break;
-            }
-          }
+          const {cc,start,end}=data.frag;
+          // A queued SourceBuffer update can finish while loading is paused.
+          // Record it now; prime() waits for the corresponding period to open.
+          if(disposed||cc<handlers.period||(primed&&cc===handlers.period))return;
+          if(bufferedFragment&&cc<bufferedFragment.cc)return;
+          if(cc!==bufferedFragment?.cc||bufferedStart(bufferedFragment)===null)bufferedFragment={cc,start,end};
+          prime();
         });
         hls.on(Hls.Events.MANIFEST_PARSED,()=>{sourceReady=true;play();});hls.attachMedia(video);hls.loadSource(url);
       }
