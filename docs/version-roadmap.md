@@ -2,6 +2,16 @@
 
 This roadmap records current product direction and ownership. It is not a build receipt or a release announcement. Releases require their own artifact and device acceptance; no dates are assigned. User instructions belong in [quick start](quick-start.md) and [upgrading](upgrading.md); implementation commands belong in [native desktop](native-desktop.md).
 
+## v0.9 — native playback engine
+
+v0.9 Preview 1 adds a GStreamer playback engine (`media-engine/`) to the Linux
+x86_64 desktop shell as a user-selectable backend beside Legacy / Compatibility
+Mode. It executes only programs that Rust AppState authorized and never selects
+Next or writes history. It is qualified on virtual output only. Remaining work:
+physical Linux displays and audio devices, PipeWire, Audience-window
+acceptance, gapless preloading, Windows/macOS adapters and DLNA/Pure K receiver
+hardware. See the [release notes](releases/v0.9.0-preview.1.md).
+
 ## v0.8 — convergence and release stabilization
 
 **Stable v0.8.0 has shipped. The Android Host APK remains a beta.** Preserve approved Preview 1 behavior and subsequent fixes. A source commit or an Actions development artifact is not a public release.

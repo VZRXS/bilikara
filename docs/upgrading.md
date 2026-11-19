@@ -8,6 +8,8 @@
 
 开发验证：`npm run test:frontend` 包含首次启动、后续启动、频道选择与忙碌补查的快速回归；`npm run test:app-updates` 另用 Linux Chromium、实际 Rust Host 和实际设置文件读写验证完整重启与端口变化。更新服务响应和原生调用入口使用本地契约夹具，安装接口被禁止；测试环境应仅允许本地出口。它不代表 Windows/macOS/Android 原生 WebView 已实机通过。
 
+**升级到 v0.9 预览版：** v0.9 起不再打包或调用 BBDown。v0.8.x 的 Windows/macOS 软件内更新要求更新包内含 BBDown，因此不能直接安装 v0.9 的包：请按下方步骤下载完整包手动替换（Windows 保留旧版 `runtime`，macOS 保留 `~/Library/Application Support/bilikara/`）。原先选择 BBDown 下载的设置会显示为不可用，请改选 Rust Native 或 DownKyi。Linux 预览版为免安装目录，没有软件内更新；替换程序时保留可执行文件旁的 `runtime`。播放引擎（GStreamer / 兼容模式）的说明见 [v0.9 Preview 1 发布说明](releases/v0.9.0-preview.1.md)。
+
 从 **v0.8.0-preview.2 及更早版本** 升级，请下载完整包；这次过渡不使用旧版本的软件内更新。
 
 1. 关闭旧软件，备份数据。

@@ -638,10 +638,14 @@ links. Its documentation lives in the embedded backend's `Contents/Resources/lic
 The archive exposes that directory through a relative `license/` link and keeps
 `README-macOS.txt` outside the app; it has no separate backend app shortcut.
 The Linux local development layout follows the Windows directory shape,
-without `.exe`; this does not establish a new supported release target.
+without `.exe`. v0.9 Preview 1 distributes this x86_64 layout as a preview
+artifact because it carries the GStreamer engine (see
+[media backend](media-backend.md) and the
+[v0.9 Preview 1 release notes](releases/v0.9.0-preview.1.md)); it is not part of
+the release workflow's asset contract and has no installer or in-app update.
 
 The private `vendor/` is the single third-party resource directory: Signalsmith,
-BBDown, libav and its dependency inventory. macOS keeps signed executable code
+libav and its dependency inventory (BBDown is no longer bundled since v0.9). macOS keeps signed executable code
 in `Frameworks/` and exposes it through safe relative links in that resource
 `vendor/`; there is no second `Frameworks/vendor/` or `static/vendor/`. The
 backend serves only Signalsmith's frontend files from `/vendor/`; native tools

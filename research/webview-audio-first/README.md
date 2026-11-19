@@ -1,5 +1,14 @@
 # Isolated WebView Audio-First renderer
 
+> **Retired (v0.9 Preview 1).** The native GStreamer engine (`media-engine/`,
+> see `docs/media-backend.md`) supersedes this route. It is kept only as a
+> research harness with its recorded Round A results; it failed the strict
+> virtual synchronization gate in several startup/recovery scenarios and must
+> not be enabled. No production HTML, script, setting, native startup or
+> package graph references it (verified by searching `static/`, `src-tauri/`,
+> `rust-runtime/` and `xtask/`), and `static/` is the only packaged frontend
+> tree.
+
 `audio-first.js` is served only by `tests/media_round_a_support.mjs` under explicit
 test-only routes. No production HTML, setting or native startup imports it.
 It has one audio element, the existing captured audio clock and pinned Signalsmith

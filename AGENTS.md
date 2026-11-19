@@ -21,6 +21,7 @@ The architecture consists of the following primary layers:
 - `rust-runtime/`: Typed Rust runtime and application-services crate (`bilikara_runtime`), compiled as both `cdylib` and `rlib`. Owns the process-wide authoritative `AppState`, production native HTTP/SSE Host, Rust Native cache/runtime services and operational I/O such as the independent HTTP media downloader. Its C ABI remains for the legacy Python adapter and tests; native products link Rust directly.
 - `scripts/`, `media-libav/`: Platform recipes, independent verification and retained compatibility tooling. Replaced Python desktop/libav construction references and their dedicated tests are retired; normal native desktop construction uses `xtask` and must not execute Python or import `bilikara` application modules. Shared package validation belongs in the tooling layer.
 - `xtask/`: Independent Rust build and package-verification tool for adjacent desktop development preparation, ordinary release construction/assembly, libav prerequisites/cache and pinned build-time BBDown acquisition (`prepare-bbdown`). `prepare:desktop`, Tauri's development hook and `npm run build` use it; CI uses its shared backend/assembly entries around the existing Tauri build and native checks. Libav shell/MSVC recipes use its C-only cache, library probe, companion and dependency/metadata stages. It must not invoke Python or link the application Runtime. The extracted native package gate uses `verify-native-desktop` with isolated actual Host execution; remaining Python verification drivers stay separate. Native business tests use `npm run test:native-host` with test-only Node transport and actual isolated Rust processes; foreign-platform fixtures do not qualify native Windows/macOS products.
+- `media-engine/`: Native GStreamer playback engine crate (`bilikara_media_engine`), linked by the Linux desktop shell for v0.9 Preview 1. It executes one already-authorized program per pipeline (independent video/audio sources, pitch, signed AV delay, exactly-once EOS) and never selects Next, reorders the queue or writes history. Frames are composited by the shell beneath the WebView; they never cross JavaScript IPC. See `docs/media-backend.md`.
 - `src-tauri/`: Tauri 2 desktop shell providing native windowing, system tray integration, and cross-platform desktop application packaging.
 - `tests/`: Node desktop construction contracts and entry checks run via `npm run test:desktop-build`, using actual xtask and compiled native fixtures with independent expectations. `test:libav-wrapper` checks the real shell helper; required `test:libav-prerequisites` checks actual prepared libraries, shim/sanitizers, collection and cache after CI exports the native prefix. Frontend behavior/source contracts use `test:frontend`; Remote asset-copy checks use `test:remote-sync`, and auxiliary asset/metadata/workflow contracts use `test:auxiliary`. Native HTTP/catalog/SSE orchestration uses Node; `test:native-smoke` covers compiled process fixtures and separate macOS Tauri acceptance. Its locked manifest checks follow native Cargo graph preparation; required GUI checks use isolated extracted native apps. Remaining Python `unittest` covers source Host/legacy/FFI and operational consumers, including native library loading (`BILIKARA_REQUIRE_RUST_LIB=1`). Native package/GUI qualification remains a separate artifact gate.
 
@@ -512,6 +513,16 @@ python -m unittest discover -s tests -v
 # 3. Python Compilation Checks
 python -m compileall -q bilikara
 
+# 3b. Native playback engine (Linux; CPU-only, opt-in live suites need GStreamer
+# and a private PulseAudio server with a null sink)
+cargo fmt --manifest-path media-engine/Cargo.toml --check
+cargo clippy --manifest-path media-engine/Cargo.toml --all-targets --locked -- -D warnings
+cargo test --manifest-path media-engine/Cargo.toml --locked
+BILIKARA_TEST_GSTREAMER_ENGINE=1 BILIKARA_TEST_PULSE_SERVER=unix:/path/to/native \
+cargo test --manifest-path media-engine/Cargo.toml --locked --test live -- --ignored --test-threads=1
+BILIKARA_TEST_GSTREAMER_DESKTOP=1 BILIKARA_TEST_TAURI_EXE=/absolute/dist/bilikara/bilikara-desktop \
+BILIKARA_TEST_PULSE_SERVER=unix:/path/to/native npm run test:native-gstreamer-desktop
+
 # 4. Tauri Shell Checks
 cd src-tauri
 cargo fmt --check
@@ -610,11 +621,20 @@ active.
 | `src/cast_platform.rs` | Platform output/discovery leases and network facts shared by desktop and Android. |
 | `src/ffi.rs` | Temporary C ABI, including the additive schema-v1 AppState request entry used by the Python Host adapter. |
 
+### Native Playback Engine (`media-engine/`)
+| File / Module | Purpose |
+| :--- | :--- |
+| `src/engine.rs` | Engine thread, program identity checks, commands/observations, watchdogs and capability probe. |
+| `src/pipeline.rs` | Per-program GStreamer pipeline, sources, audio sink policy (PulseAudio stream opens at first Play) and output settings. |
+| `src/pitch.rs` | Signalsmith pitch element with priming, tail drain and persistent buffers. |
+| `tests/live.rs` | Opt-in live suites on real GStreamer and PulseAudio. |
+
 ### Tauri Shell Layer (`src-tauri/`)
 | File / Module | Purpose |
 | :--- | :--- |
 | `src/main.rs` | Tauri application entry point and windowing initialization. |
 | `tauri.conf.json` | Tauri desktop app configuration, permissions, and build targets. |
+| `src/native_media.rs` | Linux GStreamer engine hosting, engine preference, frame compositing beneath the WebView and Tauri media commands. |
 
 ### Frontend Layer (`static/`)
 | File / Module | Purpose |

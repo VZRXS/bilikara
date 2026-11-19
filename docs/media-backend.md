@@ -3,8 +3,10 @@
 Rust AppState remains the business authority. A media backend executes one
 authorized program; it never owns a playlist, selects Next, admits artifacts,
 changes history, or substitutes a renderer clock for a business generation.
-The default backend is the existing WebView split player. Experimental renderers
-under `research/` are not imported by Host, Remote or native product packages.
+The WebView split player remains available as Legacy / Compatibility Mode. The
+Linux desktop preview adds the native GStreamer engine (see below). Experimental
+renderers under `research/` are not imported by Host, Remote or native product
+packages.
 
 ## Current ownership
 
@@ -75,33 +77,94 @@ playback `error`, phase changes and drained `eos` are distinct observations.
 EOS is not acknowledged by the facade; the existing Host remains responsible for
 generation validation, history and exactly-once advancement.
 
-## Experimental admission and rollback (MEDIA-ARCH-03..06)
+## Playback engine selection (v0.9 Preview 1)
 
-The Audio-First route exists only in an explicit test harness. It keeps Host audio
-and DSP, publishes an audio-output timeline and attaches a video follower only
-when a surface needs video. It does not patch or pause production Host video.
-Its contract is deliberately narrower than product qualification. Signed-delay
-openings retain both streams from zero: positive offset uses actual audio
-silence/delay and negative offset holds frame zero. Flushed output segments
-rebase on the element's `playing` transition, preserving DSP latency and output
-tails. Cross-process experimental clocks are calibrated against a monotonic
-clock; the shipping presentation protocol is unchanged. Precise PCM-aligned
-seek/track recovery, uninterrupted output, OS interruptions and physical hotplug
-still require their own acceptance evidence.
+Runtime settings → *Playback engine* offers **GStreamer** and **Legacy /
+Compatibility Mode**.
+The preference is persisted by the desktop shell in `media-engine-v1.json`
+beside the Host UI preferences; Remote and Audience never change it. The row
+shows the configured preference and, separately, the engine that currently runs
+the program (`data-configured-engine` / `data-active-engine`) plus any fallback.
+An engine the build or device cannot run is shown disabled with its reason
+(`not-qualified-on-platform`, `runtime-plugins-missing` or
+`webview-renderer-unsupported`) and never selected.
 
-The isolated GStreamer executable has a trusted test stdin bridge and no native
-Host API, Next algorithm or persistent business state. A real playback-service
-adapter and platform surface/audio-session integration remain separate work.
-Its Linux virtual audio/window tests cannot qualify Windows, macOS, iOS, Android,
-AirPlay, DLNA or packaged plugin/license compatibility.
+| Platform | GStreamer | Default |
+| --- | --- | --- |
+| Linux x86_64 desktop (new preview artifact) | Available when the system GStreamer 1.20+ runtime and base/good/libav plugins are present and WebKitGTK runs its default DMA-BUF renderer | GStreamer |
+| Windows, macOS, Android, iOS | Not included in this preview; reported `not-qualified-on-platform` | Legacy |
 
-Rollback consists of retaining the original default WebView path. Neither
-prototype is selected by production settings, startup or capability detection.
-GStreamer must not become a packaged/default backend without functional timing,
-single-decoder surface and cross-platform packaging gates in the requirements.
-See [the experimental runner](../research/media-gstreamer/README.md) and
-[measurement rules](playback-performance.md).
+### Architecture
 
-Review outcome and explicit remaining synchronization/EOS gates are recorded in
-[Round A validation](round-a-validation.md). Functional tests do not qualify
-physical playback; both prototypes remain isolated and the Legacy path default.
+- `media-engine/` is a standalone Rust crate. It runs one pipeline per
+  authorized program: independent `uridecodebin` video and audio branches, a
+  Signalsmith pitch element with priming and tail drain, signed AV delay through
+  sink `ts-offset`, and an appsink that hands BGRx frames to a frame sink.
+  Hardware decoders are ranked out by default. The shell runs the pipeline on
+  the monotonic system clock; the audio sink keeps its default skew slaving.
+- A PulseAudio sink opens its stream only when the program first plays: the
+  program prerolls on video while the sink's input is held. libpulse
+  15.99–16.x reports a stream that was created corked as having played since
+  its creation (fixed in PulseAudio 17), which otherwise delays the first
+  samples by the whole paused preroll — the Host countdown — and leaves the
+  sound behind the picture. Loopback HTTP media never uses a proxy from the
+  environment.
+- Every command and observation carries the complete program identity. The
+  engine rejects stale identities (`stale-program`) and reports `eos` exactly
+  once per program segment (seek sequence numbers and a drain token), so a
+  superseded segment or a retired pipeline can never complete the current
+  program. Watchdogs bound preroll (20 s), stalls (5 s) and EOS drain (2.5 s).
+- `src-tauri/src/native_media.rs` hosts the engine inside the shell process,
+  which owns the windows and the audio device. Tauri commands
+  (`media_engine_command`, `get_media_engine_status`, `get_media_engine_snapshot`,
+  `set_media_engine_preference`, `set_media_engine_surface`) are granted only to
+  the main window, except the controller's surface registration. Observations are
+  emitted to the main window as `media-engine://observation`.
+- Frames never cross JavaScript IPC. The shell paints the latest frame beneath
+  the transparent WebView in its GTK draw handler (`CAIRO_OPERATOR_DEST_OVER`,
+  contain-fit with black letterbox). Only WebKitGTK's DMA-BUF renderer clears
+  pixels that become transparent; with `WEBKIT_DISABLE_DMABUF_RENDERER` or
+  `WEBKIT_DISABLE_COMPOSITING_MODE` set, stale page pixels would cover the
+  video, so the engine reports `webview-renderer-unsupported` instead. The page only reports the stage rectangle
+  and punches a transparent hole into its own stage background, so DOM controls
+  and overlays stay above the video. Moving the video between the Host stage and
+  the Audience window changes only the paint target; it never creates another
+  decoder.
+- `static/native-playback.js` exposes media-element-shaped facades over one
+  native controller, so existing status reports, presentation publication and
+  Remote progress read `currentTime`/`duration`/`paused` unchanged, while writes
+  are routed to the engine for that exact program.
+
+### Ownership
+
+Rust AppState remains the only business authority. The Host page claims the
+program exactly as for Legacy and binds the claimed program to the engine. The
+engine executes it; `eos` is only an observation that enters the existing
+generation-checked `handleLocalPlaybackEnded` transition. The engine never
+selects Next, reorders the queue, writes history or admits media. Network output
+(DLNA/Pure K) keeps its own authority: while a receiver owns playback the Host
+uses the existing Legacy preview path.
+
+### Switching and fallback
+
+Changing the preference is a deliberate reload: the current execution retires
+and the same claimed program remounts on the selected engine at its preserved
+logical position, play/pause intent, volume, mute, selected audio variant, key
+shift and AV delay. Program ownership is retained, so AppState refuses to
+re-admit a generation this client retired and no Next or history entry is
+produced. Observations from the retired engine are dropped by identity.
+
+A fatal engine error, a failed load or a second stall within one program falls
+back once to Legacy for the same claimed program at the preserved position. The
+fallback stays in effect, and is shown in Settings, until the user explicitly
+selects GStreamer again; there is no retry loop and no application restart.
+
+### Rollback
+
+Selecting Legacy / Compatibility Mode restores the WebView split player; the
+Legacy path itself is unchanged. The Audio-First test harness from Round A
+remains research-only and is not a product path. Physical display, audio device,
+hot-plug and long-session acceptance on real hardware are separate from the
+virtual-output tests (see the platform qualification in the
+[v0.9 Preview 1 release notes](releases/v0.9.0-preview.1.md)). [Round A validation](round-a-validation.md) records the earlier
+prototype results that this engine replaces.
