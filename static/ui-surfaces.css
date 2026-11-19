@@ -334,6 +334,15 @@ html[data-host-layout="portrait"] .developer-mode .request-workspace-head { disp
   overflow-y: auto;
   overscroll-behavior: contain;
   padding-right: 4px;
+  /* Rows keep their content height inside the capped scroller. Implicit auto
+     rows sized from the 44px coarse-pointer minimum stopped growing once the
+     list reached its cap (WebKit), so a two-line row overflowed its card. */
+  grid-auto-rows: max-content;
+}
+/* The two pool sections are sized by content as well, never squeezed into
+   overlapping rows by the shrinkable source list. */
+:root:is([data-host-platform="android"], [data-host-platform="ios"]) .selection-modal-grid.pool-config-source-list {
+  grid-auto-rows: max-content;
 }
 :root:is([data-host-platform="android"], [data-host-platform="ios"], [data-ui-client="remote"]) .pool-config-option {
   border-radius: 18px;

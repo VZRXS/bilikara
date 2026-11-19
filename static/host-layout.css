@@ -1138,14 +1138,24 @@ html[data-host-layout="portrait"] #stage-control-tray {
   scroll-padding-bottom: calc(var(--mobile-content-trailing-inset) + 14px);
 }
 html[data-host-layout="portrait"] :is(.queue-card, .history-card) :is(.playlist, .history-list) {
-  padding-bottom: 14px;
+  padding-bottom: 0;
   scroll-padding-bottom: 14px;
+}
+/* The 14px trailing space is an in-flow spacer, not end padding: WebKit leaves
+   a flex/grid scroller's end padding out of its scrollable overflow, so on iOS
+   the last item stopped at (or under) the dock. Every engine counts this block.
+   It is a pseudo-element, never a list child for JS counts or FLIP. */
+html[data-host-layout="portrait"] :is(:is(.queue-card, .history-card) :is(.playlist, .history-list), .android-my-scroll, .settings-workspace-body)::after {
+  content: "";
+  display: block;
+  flex: 0 0 auto;
+  height: 14px;
 }
 /* My/Settings keep full-width scroll owners, including during page motion.
    The content gutters belong inside them, away from the system indicator. */
 html[data-host-layout="portrait"][data-host-page="my"] .shell-body { padding-inline: 0; }
 html[data-host-layout="portrait"] .android-my-scroll {
-  padding: 0 14px 14px;
+  padding: 0 14px;
 }
 html[data-host-layout="portrait"] .app-shell .host-workspace-region .session-users-panel { padding: 0; }
 html[data-host-layout="portrait"] :is(.queue-current, .song-item, .history-item) { padding-block: 8px; min-height: 0; }
@@ -1155,7 +1165,7 @@ html[data-host-layout="portrait"] :is(.queue-current-side, .song-badge-column) {
 html[data-host-layout="portrait"] .android-host-dock { grid-column: 1; }
 
 html[data-host-layout="portrait"] .settings-workspace-body {
-  padding: 0 14px 14px;
+  padding: 0 14px;
 }
 html[data-host-layout="portrait"] :is(.android-my-scroll, .settings-workspace-body) {
   scroll-padding-bottom: 14px;

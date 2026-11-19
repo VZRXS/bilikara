@@ -459,10 +459,15 @@
     navigate(target, {openSettings: target === "my"});
   }
 
+  const inPagePlayerFullscreen = () => Boolean(document.body?.classList.contains("is-tauri-fullscreen-active"));
   function updateOrientation() {
     // This is a layout choice, not a physical orientation lock. Window width
     // handles tablets, folding and split windows without treating IME height
     // changes as rotation. The shared desktop shell adapts to remaining height.
+    // In-page player fullscreen (iOS, desktop) may rotate a phone to landscape
+    // (V7). Keep the current shell underneath until it ends: rebuilding the
+    // landscape shell there left its rail column beside the iOS player.
+    if (root.dataset.hostLayout && inPagePlayerFullscreen()) return;
     const width = document.documentElement.clientWidth || window.innerWidth;
     const next = window.BilikaraLayoutPolicy.resolveLayout(preferences.layout, width) === "phone";
     if (next !== portrait) finishSettingsTransition?.({restoreFocus: false});
@@ -737,6 +742,13 @@
     else { page = route.page; settings = Boolean(route.settings); }
   });
   window.screen?.orientation?.addEventListener("change", updateOrientation);
+  // Re-evaluate the deferred layout once in-page player fullscreen ends.
+  let playerFullscreen = inPagePlayerFullscreen();
+  if (typeof MutationObserver === "function" && document.body) new MutationObserver(() => {
+    const active = inPagePlayerFullscreen();
+    if (playerFullscreen && !active) updateOrientation();
+    playerFullscreen = active;
+  }).observe(document.body, {attributes: true, attributeFilter: ["class"]});
   for (const id of ["av-offset-input", "key-shift-input"]) {
     byId(id).addEventListener("input", syncPlayerFieldWidths);
   }
