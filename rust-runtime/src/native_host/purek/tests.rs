@@ -279,6 +279,8 @@ fn node_receiver_live_output_integration() {
             .join(
                 if std::env::var_os("BILIKARA_TEST_PUREK_MONITOR").is_some() {
                     "tests/purek_monitor_receiver.mjs"
+                } else if std::env::var_os("BILIKARA_TEST_PUREK_COMPOSITED").is_some() {
+                    "tests/cast_l2_receiver.mjs"
                 } else if std::env::var_os("BILIKARA_TEST_PUREK_COMPATIBILITY").is_some() {
                     "tests/purek_compatibility_receiver.mjs"
                 } else if std::env::var_os("BILIKARA_TEST_PUREK_CONTROLLER").is_some() {

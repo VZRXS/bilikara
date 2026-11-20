@@ -849,6 +849,8 @@ fn verify_exports(tc: &Path, directory: &Path, log: &Path, signalsmith: bool) ->
         "bm_remux_release_v1",
         "bm_live_ts_v1",
         "bm_live_l1_v1",
+        "bm_l2_info_v1",
+        "bm_live_l2_v1",
         "bm_cast_info_v1",
         "bm_cast_preflight_v1",
         "bm_cast_mux_v1",

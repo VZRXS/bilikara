@@ -220,5 +220,5 @@ uint32_t bm_live_l1_v1(const BmL1Request *q,BmLiveResult *r) {
     BmLiveInfo info;
     if(!q||!r||!q->render||!q->tracks||q->tracks>2) return BM_INVALID_REQUEST;
     if(bm_l1_info_v1(sizeof(info),&info)) return BM_UNAVAILABLE;
-    return live_mux(&q->live,q,r);
+    return live_mux(&q->live,q,NULL,NULL,r);
 }

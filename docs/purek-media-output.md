@@ -259,7 +259,8 @@ Host 收到 `410 purek_retired`，Remote 仍为 403。静态 Host、本地 Remot
 | `POST /api/cast/output` | `{"enabled":bool}`，只切换输出、保留连接和登记 |
 | `POST /api/cast/probe` | `{}`，对已连接设备重新查询 GetProtocolInfo；不接受客户端提供的地址 |
 | `POST /api/cast/preferences` | `{"auto_discovery":bool}` |
-| `POST /api/cast/command` | 投屏中的播放控制（带 `item_id`、`playback_generation`，下一首另带 `expected_queue_version`），与本地播放命令一样允许已登记的 Remote；`cast.set_device_mode`／`cast.set_device_learning` 仅 Host |
+| `POST /api/cast/command` | 投屏中的播放控制（带 `item_id`、`playback_generation`，下一首另带 `expected_queue_version`），与本地播放命令一样允许已登记的 Remote；`cast.set_device_mode`／`cast.set_device_learning`／`cast.set_device_picture` 仅 Host |
+| `POST /api/cast/overlay` | 仅 Host：合成画面的覆盖层视图模型，见“合成投屏（L2）” |
 | `GET /api/cast/capabilities` | `pipeline_available`：companion 是否具备投屏合流 |
 | `GET /api/cast/report` | 当前投屏会话的脱敏报告 |
 | `/api/cast/self-test/{start,answer,cancel,handoff,report,download}` | 门店自检 |
@@ -296,6 +297,8 @@ Windows 桌面为 `runtime/data/cast-devices.json`）。规则：
 - 首次替换前保留 `cast-devices.v1.backup.json`；损坏的原文件不覆盖、不阻止 Host 启动，按无偏好处理。
 - 桌面导入工具不转换、不校验、不合并它：复制原生数据目录时它作为普通文件原样随行，旧版记录转换不会生成它。
 - `auto` 在自检学到“直播”时使用直播，否则使用文件模式。
+- 电视画面 `picture`：`pure`（默认，纯媒体）或 `composited`（合成，见“合成投屏（L2）”）。合成总是直播交付，
+  交付方式的选择仍保存，切回纯媒体后生效。`pure` 不写入文件，旧版本仍能读取。
 
 ## 交付模式与拉流
 
@@ -416,11 +419,51 @@ T3 没有此限制）时走 T3 合流；这两种直播情况仍可跳转，但�
 
 | 状态 | 值 |
 | --- | --- |
+| 已启动并拥有播放的合成投屏（L2），或其暂停状态 | `"L2"` |
 | 已启动并拥有播放的直播 L1，或其暂停状态；可由 L1 重新生成的文件输出 | `"L1"` |
 | 片源或 companion 不能走 L1 的直播或文件输出 | `"L0"` |
 | 本地播放、仅连接、输出已暂停、失败后回到本地、断开后 | `null` |
 
 只有实际启动成功才标记 L1；准备新管线时的过渡快照可能暂报 `L0`，不能据此开放 L1 控件。
+
+## 合成投屏（L2）
+
+电视画面选“合成”时，接收端收到的视频叠加了 Audience 窗口的提示：新点歌提示（左上）和操作反馈卡片
+（右侧：音量、静音、延迟、变调、播放、暂停、跳转、下一首、重新开始）。这是模拟镜像：内容和位置与
+Audience 窗口一致，像素和动画不追求一致。换歌间隙的转场画面属于纯媒体管线，L2 目前不画。
+
+- **管线**：L1 的音频处理、控制和 T4 节奏保持不变，只把拷贝的源视频换成“解码 → 叠加 → 重新编码”的视频。
+  companion 新增独立协商的 `bm_l2_info_v1`／`bm_live_l2_v1`（`media-libav/composite.c`），视频来源二选一：
+  - **平台编码器**（外部单元）：Android 用 MediaCodec 解码到 SurfaceTexture，OpenGL ES 画视频和覆盖层到
+    H.264 编码器的输入 Surface，MediaCodec 硬件编码；画面不经过 CPU。Rust 经 JNI 逐个取出编码单元
+    （`HostCastCompositor`、`src-tauri/src/android_compositor.rs`、`rust-runtime/src/cast_compositor.rs`）。
+    输出不放大，最大 1920×1080，按比例缩放加黑边；B 帧关闭，每个关键帧前带 SPS/PPS。
+  - **companion 转码**：Windows 的 FFmpeg 构建开启 Media Foundation，用系统 H.264 编码器 `h264_mf`
+    （先硬件 MFT，再软件 MFT）；其他桌面没有随包的 H.264 编码器，用 FFmpeg 自带的软件 MPEG-2 编码器。
+    输出保持源尺寸（构建不含缩放器），所以只接受不超过 1080p 的偶数尺寸片源。
+- **帧率与码率**：上限 30 fps，源帧率高时按时间槽丢帧（60 → 30）。码率按像素：1080p 8 Mbps，720p 5 Mbps，
+  480p 2.5 Mbps，更小 1.2 Mbps；MPEG-2 再乘 1.5。时间戳仍是源时间，A/V 同步、跳转和续播语义与直播 L1 相同。
+- **覆盖层**：Host 页面在合成投屏期间把与 Audience 窗口相同的视图模型（已本地化的文字和到期时间）
+  `POST /api/cast/overlay`，只在内容变化时发送；Remote 调用为 403。字段：
+  `toast`（`key`、`label`、`title`、`expires_at`）和最多两项 `feedback`（`key`、`label`、`value`、`expires_at`），
+  时间为纪元毫秒，最多比当前晚 60 秒；含控制字符或超长时 400。Rust 用思源黑体（Android 用系统字体）
+  在输出尺寸上绘制预乘 RGBA，只在可见内容变化（含到期）时重画。覆盖层按生成时刻生效，所以电视上会比
+  Host 晚“生成领先量（约 1.9 秒）加接收端缓冲”出现，显示时长不变。
+- **回退**：片源或平台不能合成时（`composite_unavailable`、`composite_source_size`、`l1_unavailable`）
+  照常以 L1/L0 直播输出，并在 `composite_reason` 报告原因。合成重新编码视频，所以关键帧间隔超过 4 秒的
+  片源也能走 L2。
+- **状态**：`media_output` 新增 `picture`、`composite_encoder`（`android_mediacodec`、`companion_h264`、
+  `companion_mpeg2`）和 `composite_reason`；`pipeline_level` 为 `"L2"`。`cast` 快照新增 `picture`、
+  设备表的 `picture` 和 `compositing`（已安装的平台编码器名称）。L2 的 DSP 控件与直播 L1 相同。
+
+| 平台 | 合成路径 | 验证 |
+| --- | --- | --- |
+| Android | MediaCodec 解码 → GLES → MediaCodec 编码 | 模拟器功能验证；硬件编码器、发热和耗电需真机 |
+| Windows | `h264_mf`（硬件 MFT 优先） | 需要 Windows 机器或 CI；本机只能确认构建配置 |
+| Linux、macOS | 软件 MPEG-2（macOS 的 VideoToolbox 尚未接入构建） | 本机端到端测试（模拟接收端） |
+
+L2 的模拟接收端测试和本机 MPEG-2 结果不能当作电视兼容性证据：电视是否接受 MPEG-2 TS、硬件编码器的码率
+控制和中途参数是否稳定，都需要真机验证。
 
 ## Android
 
@@ -640,6 +683,7 @@ HTTP 端点、会话、自检和诊断以 R1 为准；界面合同、Remote 协�
 | `test:purek-output`（`purek_output`、`purek_monitor`） | 不因来源与描述地址不同而拒绝（公网来源仍 403）、不 409（第五个 GET 关闭最旧的）、停读 3／10 秒可继续、15 秒无进展才断开；文件模式 HEAD 长度、Range 206/416；直播忽略 Range、从关键帧加入；监测改为 R1 规则（UPnP 错误不断开，真实断线 8 秒静默 + 4 秒恢复）；完整运行 T4 的真实 companion 用例 |
 | `test:purek-controller`（`purek_controller`、`purek_compatibility`） | R1 的起播、文件模式 Pause／Play／Seek 保持 URI、下一首、自然结束、断开恢复；14 种能力声明逐项实际试播，查询结果不阻止试播，`qualified`／`supports_*` 仍为 false；SetURI 被拒时清理会话并恢复本地 |
 | `test:purek-l1`（`purek_l1`、`native_output_browser`） | 独立 L1 原样保留；另经 T4 直播供流（`cast_l1_receiver.mjs`），断言调整不换 URI、换轨推进播放代次、频率和增益实际变化、迟加入读者从关键帧开始 |
+| `test:purek-l1` 的合成用例（`cast_l2_receiver.mjs`） | 新增：切到合成后为 L2、编码器名称、调整不换 URI、Remote 不能发覆盖层、覆盖层像素出现在接收端解码的画面里而其余区域仍是视频、变调在合成流中生效、切回纯媒体 |
 | `test:media-output`、`ios_output_ui_browser` | 原样通过；投影层保证字段合同 |
 | `test:cast-ui`（`cast_browser`、`cast_full_host_browser`、`cast_self_test_browser`，也在 `test:host-experience` 中） | 新增：Manage 设备行、偏好冲突、发现 busy、几何与三语、自检弹窗、`retain_room` 顺序、链路检查行、DSP 禁用原因 |
 | `test:android-libav`（`android_libav`、`android_cast_samples`）、`android_media_check` | 新增或扩展：真实 NDK 构建、六库 ELF、外部源码包、样片哈希与 Gradle 开关 |

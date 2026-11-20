@@ -12,6 +12,21 @@ pub enum Mode {
     Live,
 }
 
+/// What the receiver shows. `Composited` re-encodes the video with the
+/// Audience overlays (a simulated mirror) and always uses live delivery.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Picture {
+    #[default]
+    Pure,
+    Composited,
+}
+impl Picture {
+    pub fn is_pure(&self) -> bool {
+        *self == Self::Pure
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LearnedMode {
@@ -46,10 +61,16 @@ pub struct Device {
     pub learned_variant: Option<Variant>,
     pub learned_at: Option<String>,
     pub self_test_report_version: Option<u32>,
+    /// Omitted while pure so files stay readable by versions without it.
+    #[serde(skip_serializing_if = "Picture::is_pure")]
+    pub picture: Picture,
 }
 #[cfg(feature = "native-host")]
 impl Device {
     pub fn effective_mode(&self) -> Mode {
+        if self.picture == Picture::Composited {
+            return Mode::Live;
+        }
         match self.mode {
             Mode::Auto => match self.learned_mode {
                 Some(LearnedMode::Live) => Mode::Live,
@@ -227,6 +248,27 @@ mod tests {
         assert_eq!(restored.effective_mode(), Mode::File);
     }
 
+    #[test]
+    fn composited_picture_forces_live_and_pure_stays_out_of_the_file() {
+        let pure = serde_json::to_value(Device::default()).unwrap();
+        assert!(
+            pure.get("picture").is_none(),
+            "older readers deny unknown fields"
+        );
+        let device = Device {
+            mode: Mode::File,
+            learned_mode: Some(LearnedMode::File),
+            picture: Picture::Composited,
+            ..Default::default()
+        };
+        let value = serde_json::to_value(&device).unwrap();
+        assert_eq!(value["picture"], "composited");
+        let restored: Device = serde_json::from_value(value).unwrap();
+        assert_eq!(restored, device);
+        #[cfg(feature = "native-host")]
+        assert_eq!(restored.effective_mode(), Mode::Live);
+    }
+
     fn seed() -> AppStateSeed {
         serde_json::from_value(
             json!({"session_started_at":1,"session_played_file":"old.json","updated_at":1}),
@@ -288,6 +330,7 @@ mod tests {
             learned_variant: Some(Variant::Original),
             learned_at: Some("2026-11-15T00:00:00Z".into()),
             self_test_report_version: Some(1),
+            picture: Picture::Pure,
         };
         app.cast_set_device(key, revision, device.clone()).unwrap();
         assert_eq!(

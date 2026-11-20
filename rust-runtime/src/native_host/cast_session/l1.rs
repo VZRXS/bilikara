@@ -109,7 +109,7 @@ pub(super) fn generate(
     finished.map_err(|_| ApiError::new(409, "cast_prepare_failed", "L1 stream terminated"))
 }
 
-fn pacing_due(time_us: i64, lead: Duration) -> Result<Duration, ApiError> {
+pub(super) fn pacing_due(time_us: i64, lead: Duration) -> Result<Duration, ApiError> {
     // Validate before waiting: casting a negative DTS to u64 would keep the
     // worker asleep indefinitely, before the ring can reject the event.
     let time_us = u64::try_from(time_us)
@@ -117,7 +117,7 @@ fn pacing_due(time_us: i64, lead: Duration) -> Result<Duration, ApiError> {
     Ok(Duration::from_micros(time_us).saturating_sub(lead))
 }
 
-fn read_control(
+pub(super) fn read_control(
     app: &mut crate::app_state::AppState,
     input: &media::Inputs,
     item: &crate::app_state::PlaylistItem,

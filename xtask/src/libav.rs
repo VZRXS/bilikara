@@ -202,6 +202,7 @@ pub fn stage(config: &Config, prefix: &Path, layout: &files::Layout) -> Result<(
         "pcm.c",
         "live_ts.c",
         "live_audio.c",
+        "composite.c",
         "cast_mux.c",
         "cast_audio.c",
         "CAST_MUX.md",

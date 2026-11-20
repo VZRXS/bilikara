@@ -135,7 +135,11 @@ static int live_write(void *opaque, const uint8_t *bytes, int size) {
 }
 
 static uint32_t l1_audio_open(LiveInput *,const BmL1Request *,int64_t,int64_t);
-static uint32_t live_mux(const BmLiveRequest *q, const BmL1Request *l1, BmLiveResult *r) {
+static uint32_t l2_video_open(LiveInput *, const BmL2Request *, BmL2Result *);
+/* l2 (with its result counters) replaces the copied source video with the
+ * composited stream; everything after the first video packet is shared. */
+static uint32_t live_mux(const BmLiveRequest *q, const BmL1Request *l1,
+                         const BmL2Request *l2, BmL2Result *counters, BmLiveResult *r) {
     if (!r) return BM_INVALID_REQUEST;
     memset(r, 0, sizeof(*r));
     if (!q || !q->visit || !q->video.cancelled || !q->audio.cancelled ||
@@ -152,9 +156,10 @@ static uint32_t live_mux(const BmLiveRequest *q, const BmL1Request *l1, BmLiveRe
     uint32_t status = BM_OK;
     int ret = 0;
     if (!filtered) { status = BM_BACKEND_FAILURE; goto done; }
-    status = live_open(&inputs[0], &q->video, AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_H264,"mov");
+    status = l2 ? l2_video_open(&inputs[0], l2, counters)
+                : live_open(&inputs[0], &q->video, AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_H264,"mov");
     if (status) goto done;
-    if (q->start_us > 0) {
+    if (!l2 && q->start_us > 0) {
         int64_t target = av_rescale_q(q->start_us, AV_TIME_BASE_Q, inputs[0].format->streams[0]->time_base);
         ret = av_seek_frame(inputs[0].format, 0, target, AVSEEK_FLAG_BACKWARD);
         if (ret < 0) goto failed;
@@ -187,13 +192,16 @@ static uint32_t live_mux(const BmLiveRequest *q, const BmL1Request *l1, BmLiveRe
     if(l1) origin=FFMIN(origin,live_time(&inputs[1],inputs[1].packet->dts));
     int64_t last_dts[2] = {INT64_MIN, INT64_MIN};
     int64_t last_key = 0;
-    ret = av_bsf_alloc(av_bsf_get_by_name("h264_mp4toannexb"), &filter);
-    if (ret < 0) goto failed;
-    ret = avcodec_parameters_copy(filter->par_in, inputs[0].format->streams[0]->codecpar);
-    if (ret < 0) goto failed;
-    filter->time_base_in = inputs[0].format->streams[0]->time_base;
-    ret = av_bsf_init(filter);
-    if (ret < 0) goto failed;
+    /* Composited video is already Annex B (or not H.264 at all). */
+    if (!l2) {
+        ret = av_bsf_alloc(av_bsf_get_by_name("h264_mp4toannexb"), &filter);
+        if (ret < 0) goto failed;
+        ret = avcodec_parameters_copy(filter->par_in, inputs[0].format->streams[0]->codecpar);
+        if (ret < 0) goto failed;
+        filter->time_base_in = inputs[0].format->streams[0]->time_base;
+        ret = av_bsf_init(filter);
+        if (ret < 0) goto failed;
+    }
     ret = avformat_alloc_output_context2(&out, NULL, "mpegts", NULL);
     if (ret < 0 || !out) goto failed;
     out->max_delay = 500000; /* decode lead for CBR PCR, not a source A/V shift */
@@ -203,7 +211,8 @@ static uint32_t live_mux(const BmLiveRequest *q, const BmL1Request *l1, BmLiveRe
     for (int i = 0; i < 2; ++i) {
         AVStream *stream = avformat_new_stream(out, NULL);
         if (!stream) { status = BM_BACKEND_FAILURE; goto done; }
-        ret = avcodec_parameters_copy(stream->codecpar, i ? inputs[1].format->streams[0]->codecpar : filter->par_out);
+        ret = avcodec_parameters_copy(stream->codecpar, i ? inputs[1].format->streams[0]->codecpar :
+                                      filter ? filter->par_out : inputs[0].format->streams[0]->codecpar);
         if (ret < 0) goto failed;
         stream->codecpar->codec_tag = 0;
         stream->time_base = (AVRational){1, 90000};
@@ -241,7 +250,7 @@ static uint32_t live_mux(const BmLiveRequest *q, const BmL1Request *l1, BmLiveRe
         writer.key = !index && (p->flags & AV_PKT_FLAG_KEY) ? 1 : 0;
         if (writer.key) last_key = dts;
         if (!index && dts - last_key > 4000000) { status = BM_UNSUPPORTED_LAYOUT; goto done; }
-        if (!index) {
+        if (!index && filter) {
             ret = av_bsf_send_packet(filter, p);
             if (ret < 0) goto failed;
             ret = av_bsf_receive_packet(filter, filtered);
@@ -280,7 +289,7 @@ done:
     r->status = status;
     return BM_OK;
 }
-uint32_t bm_live_ts_v1(const BmLiveRequest *q,BmLiveResult *r) { return live_mux(q,NULL,r); }
+uint32_t bm_live_ts_v1(const BmLiveRequest *q,BmLiveResult *r) { return live_mux(q,NULL,NULL,NULL,r); }
 
 uint32_t bm_live_check_v1(const BmRequest *q, uint32_t size, BmLiveCheck *r) {
     if (!q || !q->cancelled || !r || size!=sizeof(*r)) return BM_INVALID_REQUEST;

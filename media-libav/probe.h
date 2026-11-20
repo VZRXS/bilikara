@@ -197,6 +197,46 @@ typedef struct {
 } BmL1Request;
 BM_EXPORT uint32_t bm_l1_info_v1(uint32_t size, BmLiveInfo *info);
 BM_EXPORT uint32_t bm_live_l1_v1(const BmL1Request *request, BmLiveResult *result);
+/* L2, the composited cast: L1 audio plus a re-encoded video stream, negotiated
+ * independently of L1. EXTERNAL takes caller-encoded H.264 access units (a
+ * platform hardware pipeline); H264/MPEG2 transcode l1.live.video here:
+ * decode, blend the caller's overlay, encode on a constant frame grid whose
+ * times are source microseconds. Overlay images are premultiplied RGBA at the
+ * output size; read() leaves *generation unchanged when nothing changed. */
+#define BM_L2_EXTERNAL 1u
+#define BM_L2_H264 2u
+#define BM_L2_MPEG2 4u
+#define BM_L2_ENCODER_EXTERNAL 0u
+#define BM_L2_ENCODER_MPEG2 1u
+#define BM_L2_ENCODER_MF_HARDWARE 2u
+#define BM_L2_ENCODER_MF_SOFTWARE 3u
+#define BM_L2_ENCODER_VIDEOTOOLBOX 4u
+typedef struct { uint32_t schema, request_size, result_size, kinds; } BmL2Info;
+typedef struct {
+    const uint8_t *data; /* Annex B; SPS/PPS precede every key unit */
+    uint32_t size, key;  /* size 0: end of stream */
+    int64_t pts_us, dts_us;
+} BmVideoUnit;
+typedef int32_t (*BmVideoNext)(void *opaque, BmVideoUnit *unit);
+typedef int32_t (*BmOverlayRead)(void *opaque, uint64_t *generation, uint8_t *rgba,
+                                 uint32_t width, uint32_t height);
+typedef struct {
+    BmL1Request l1;
+    uint32_t kind;                /* exactly one BM_L2_* */
+    uint32_t width, height;       /* output; transcode: the source size */
+    uint32_t fps_num, fps_den;    /* frame rate cap; source rate is halved to fit */
+    uint32_t bit_rate;            /* video bps */
+    int64_t end_us;               /* source program end, bounds L1 audio */
+    BmVideoNext next; void *video;                /* EXTERNAL */
+    BmOverlayRead overlay; void *overlay_opaque;  /* transcode, optional */
+} BmL2Request;
+typedef struct {
+    BmLiveResult live;
+    uint32_t encoder, reserved;
+    uint64_t frames, video_packets, overlays;
+} BmL2Result;
+BM_EXPORT uint32_t bm_l2_info_v1(uint32_t size, BmL2Info *info);
+BM_EXPORT uint32_t bm_live_l2_v1(const BmL2Request *request, BmL2Result *result);
 /* Native Signalsmith voice, never Web Audio/WASM. All calls on owning thread. */
 BM_EXPORT void *bm_stretch_new_v1(void);
 BM_EXPORT void bm_stretch_free_v1(void *);

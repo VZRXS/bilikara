@@ -152,6 +152,10 @@ impl NativeHost {
 // Installed before starting the listener; this is an immutable asset location,
 // not a second application state. It is scoped to this executable invocation.
 static FONT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+/// The bundled CJK font, once a desktop Host has started.
+pub(crate) fn font_path() -> Option<PathBuf> {
+    FONT.get().cloned()
+}
 fn desktop_font_path() -> Result<PathBuf, String> {
     FONT.get()
         .cloned()

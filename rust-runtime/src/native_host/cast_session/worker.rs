@@ -307,6 +307,7 @@ fn suspend_failed_output(id: u64, failure: ApiError, stage: &'static str) -> Res
         s.output_enabled = false;
         s.owns_playback = false;
         s.l1 = false;
+        s.composited = None;
         s.phase = Phase::Active;
         s.control = None;
         s.control_busy = false;
@@ -630,6 +631,7 @@ async fn play_session(
             }
         };
         let mode = device.effective_mode();
+        let picture = device.picture;
         if let Some(key) = &key {
             device.last_used = chrono::Utc::now().timestamp_millis().max(0) as u64;
             let revision = app.native_core_snapshot()?.revision;
@@ -656,6 +658,7 @@ async fn play_session(
             state.renderers.push(renderer.clone());
         }
         state.mode = mode;
+        state.picture = picture;
         state.resume = None;
         Ok(mode)
     })?;
@@ -782,6 +785,7 @@ async fn play_session(
                         let s = &mut app.native().cast;
                         s.owns_playback = false;
                         s.l1 = false;
+                        s.composited = None;
                         s.control = None;
                         s.control_busy = false;
                         s.resume = Some(json!({"playback_generation":snap.playback_generation,
@@ -792,7 +796,7 @@ async fn play_session(
                         Ok(())
                     })?;
                 }
-                update(id, |s| {s.phase = Phase::Active; s.owns_playback = false; s.l1 = false; s.control_busy = false;});
+                update(id, |s| {s.phase = Phase::Active; s.owns_playback = false; s.l1 = false; s.composited = None; s.control_busy = false;});
                 // Keep the connection/room lease, but do not monitor the receiver
                 // while output is off. Restart detects a receiver that went away.
                 tokio::time::sleep(Duration::from_millis(30)).await;
@@ -1416,6 +1420,7 @@ async fn start_output_once(
     let generation = update(id, |s| {
         s.generation += 1;
         s.l1 = false;
+        s.composited = None;
         s.delivered = false;
         s.published_resume = None;
         s.playback_generation = snap.playback_generation;
@@ -1463,6 +1468,11 @@ async fn start_output_once(
             position,
             (id, generation),
             cancel,
+            with_app(|app| {
+                let s = &app.native().cast;
+                Ok((s.picture == crate::app_state::cast::Picture::Composited)
+                    .then(|| s.overlay.clone()))
+            })?,
         )
         .await?;
         origin = producer.stream.snapshot().start.unwrap().source_start_us as f64 / 1_000_000.0;
@@ -1593,6 +1603,8 @@ async fn start_output_once(
             .as_ref()
             .and_then(|live| live.refusal)
             .or_else(|| file_profile.as_ref().and_then(|(_, refusal)| *refusal));
+        s.composited = live.as_ref().and_then(|live| live.composited);
+        s.composite_refusal = live.as_ref().and_then(|live| live.composite_refusal);
         s.connected = true;
         s.paused = false;
         s.duration = duration;

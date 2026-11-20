@@ -106,6 +106,19 @@ impl State {
         self.l1 && self.mode == Mode::Live
     }
 
+    /// L2 composited, L1 (DSP audio with copied video), L0 (raw T3).
+    fn pipeline_level(&self) -> Option<&'static str> {
+        self.owns_playback.then(|| {
+            if self.composited.is_some() {
+                "L2"
+            } else if self.l1 {
+                "L1"
+            } else {
+                "L0"
+            }
+        })
+    }
+
     pub(crate) fn pipeline_reason(&self) -> Option<&'static str> {
         (self.owns_playback && !self.l1).then(|| {
             self.l1_refusal.unwrap_or(match self.mode {
@@ -123,8 +136,10 @@ impl State {
             "authorized":self.connected,"can_manage":host,"experimental":true,"qualified":false,
             "busy":self.room_busy || self.pending.is_some() || self.control_busy || self.self_test_owns_output(),
             "desired_playing":self.output_enabled && !self.paused,"position":self.position,"duration":self.duration,
-            "transition_remaining_ms":0,"pipeline_level":if self.owns_playback {Some(if self.l1 {"L1"} else {"L0"})} else {None},
+            "transition_remaining_ms":0,"pipeline_level":self.pipeline_level(),
             "pipeline_reason":self.pipeline_reason(),
+            "picture":self.picture,"composite_encoder":self.composited,
+            "composite_reason":if self.owns_playback {self.composite_refusal} else {None},
             "stream_generation":self.generation.max(self.room_generation),"producer_eof":false,"preview_tail_sequence":null,
             "offset_mode":match self.offset_mode {bilikara_rust::output_audio::OffsetMode::Splice=>"splice",bilikara_rust::output_audio::OffsetMode::Gradual=>"gradual"},"last_error":self.output_error(),
             "measured_adjust_latency_ms":null,"position_source":"sender_estimate",
@@ -271,7 +286,7 @@ impl State {
                     "supports_live_stream":self.live_l1(),"supports_midstream_param_change":self.live_l1(),
                     "supports_runtime_av_offset":self.live_l1(),"supports_track_switch":self.live_l1(),"supports_pitch_shift":self.live_l1(),
                     "sink_formats":self.sink_formats()},
-                "pipeline_level":if self.owns_playback {Some(if self.l1 {"L1"} else {"L0"})} else {None},
+                "pipeline_level":self.pipeline_level(),
                 "offset_mode":match self.offset_mode {bilikara_rust::output_audio::OffsetMode::Splice=>"splice",bilikara_rust::output_audio::OffsetMode::Gradual=>"gradual"},"last_error":self.output_error(),
                 "measured_adjust_latency_ms":null}})
     }

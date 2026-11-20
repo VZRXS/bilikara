@@ -1,12 +1,14 @@
 //! One joined worker owns network resources; all observable state lives in AppState.
 use super::*;
-use crate::app_state::cast::{LearnedMode, Mode, Variant};
+use crate::app_state::cast::{LearnedMode, Mode, Picture, Variant};
 use crate::app_state::native_session::text;
 use crate::dlna::{CancellationToken, Renderer, diagnostics::SessionTrace};
 use std::sync::Arc;
 
 mod l1;
+mod l2;
 mod media;
+pub(crate) mod overlay;
 pub(super) mod pipeline;
 mod projection;
 pub(super) mod self_test;
@@ -93,6 +95,11 @@ pub(crate) struct State {
     /// Why the admitted live stream is raw T3 instead of L1 (`long_gop`,
     /// `l1_unavailable`); set with `l1` when an output starts.
     pub l1_refusal: Option<&'static str>,
+    /// Encoder of the admitted composited (L2) video; None when not composited.
+    pub composited: Option<&'static str>,
+    /// Why a composited picture fell back (`composite_unavailable`,
+    /// `composite_source_size`, `l1_unavailable`).
+    pub composite_refusal: Option<&'static str>,
     // A suspended output retains its worker, renderer and Pure K registration.
     // Existing clients continue to use owns_playback/local_media for playback.
     pub connected: bool,
@@ -113,6 +120,10 @@ pub(crate) struct State {
     pub error_code: Option<String>,
     pub resume: Option<Value>,
     pub mode: Mode,
+    /// Picture of the connected device's output (`composited` implies live).
+    pub picture: Picture,
+    /// Overlay view-model the Host publishes for composited output.
+    pub overlay: Arc<overlay::Hub>,
     pub pending: Option<Request>,
     pub control: Option<Control>,
     pub control_busy: bool,
@@ -149,10 +160,11 @@ impl State {
             "pipeline_running":self.pipeline_running,"pipeline_result":self.pipeline_result,
             "operation_id":self.operation,"generation":self.generation,
             "renderers":self.renderers.iter().map(|r| json!({"device_key":renderer_key(r),"preferences_persisted":preference_key(r).is_some(),"label":r.description.name.chars().take(100).collect::<String>()})).collect::<Vec<_>>(),
-            "devices":preferences.devices.iter().chain(self.session_devices.iter()).map(|(key,d)|(key.clone(),json!({"mode":d.mode,"learned_mode":d.learned_mode}))).collect::<serde_json::Map<_,_>>(),
+            "devices":preferences.devices.iter().chain(self.session_devices.iter()).map(|(key,d)|(key.clone(),json!({"mode":d.mode,"learned_mode":d.learned_mode,"picture":d.picture}))).collect::<serde_json::Map<_,_>>(),
             "selected":self.selected,"receiver_state":self.receiver_state,"position":self.position,
             "duration":self.duration,"is_paused":self.paused,"error_code":self.error_code,"resume":self.resume,
             "mode":preference.mode,"learned_mode":preference.learned_mode,"effective_mode":self.mode,
+            "picture":preference.picture,"compositing":crate::cast_compositor::capability(),
             "busy":self.control_busy || self.pending.is_some() || self.pipeline_running,"local_media":if self.owns_playback {"retain_paused_muted"} else {"host"}})
     }
     fn replace(&mut self, request: Request, phase: Phase) {
@@ -266,6 +278,16 @@ pub(super) fn route(
     if path.starts_with("/api/cast/self-test/") {
         return self_test::route(context, identity, method, path, body);
     }
+    // The Host page publishes the Audience view-model for composited output.
+    // Accepted in any phase; producers read the latest at frame time.
+    if path == "/api/cast/overlay" && method == Method::POST {
+        return with_app(|app| {
+            app.native_authorize(identity, true)?;
+            let model = overlay::Model::parse(body, overlay::now_ms())?;
+            app.native().cast.overlay.set(model);
+            Ok(json!({"accepted":true}))
+        });
+    }
     if path == "/api/cast/capabilities" && method == Method::GET {
         with_app(|app| app.native_authorize(identity, true))?;
         return Ok(
@@ -304,7 +326,9 @@ pub(super) fn route(
         if path == "/api/cast/command"
             && matches!(
                 body["command"].as_str(),
-                Some("cast.set_device_mode" | "cast.set_device_learning")
+                Some(
+                    "cast.set_device_mode" | "cast.set_device_learning" | "cast.set_device_picture"
+                )
             )
         {
             app.native_authorize(identity, true)?;
@@ -346,6 +370,9 @@ pub(super) fn route(
             if body["command"] == "cast.set_device_mode" {
                 device.mode = serde_json::from_value(body["mode"].clone())
                     .map_err(|_| ApiError::invalid("Invalid mode"))?;
+            } else if body["command"] == "cast.set_device_picture" {
+                device.picture = serde_json::from_value(body["picture"].clone())
+                    .map_err(|_| ApiError::invalid("Invalid picture"))?;
             } else {
                 device.learned_mode =
                     serde_json::from_value::<Option<LearnedMode>>(body["learned_mode"].clone())
@@ -359,6 +386,7 @@ pub(super) fn route(
             }
             device.last_used = chrono::Utc::now().timestamp_millis().max(0) as u64;
             let effective = device.effective_mode();
+            let picture = device.picture;
             if app.native().cast.owns_playback
                 && app.native().cast.selected.as_deref() == Some(&key)
                 && app.native().cast.control_busy
@@ -377,9 +405,10 @@ pub(super) fn route(
             let state = &mut app.native().cast;
             if (state.connected || state.owns_playback)
                 && state.selected.as_deref() == Some(&key)
-                && state.mode != effective
+                && (state.mode != effective || state.picture != picture)
             {
                 state.mode = effective;
+                state.picture = picture;
                 if state.owns_playback {
                     state.control = Some(Control::Restart);
                     state.control_busy = true;

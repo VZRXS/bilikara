@@ -4,7 +4,11 @@ use super::{LibavMetadataProbe, ProbeError};
 use bilikara_rust::output_audio::OffsetMode;
 use std::{path::Path, sync::atomic::AtomicBool};
 
+pub mod composite;
 mod events;
+pub use composite::{
+    Composite, CompositeReport, CompositeVideo, EncodedUnit, Encoder, OverlaySource, TranscodeCodec,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Start {
@@ -190,6 +194,225 @@ mod tests {
             }
         }
     }
+
+    /// The source's own H.264 as caller-encoded L2 units: Annex B, SPS/PPS on
+    /// every sync sample, source microseconds.
+    fn passthrough_units(path: &Path) -> (u32, u32, Vec<EncodedUnit>) {
+        let file = std::fs::File::open(path).unwrap();
+        let size = file.metadata().unwrap().len();
+        let mut reader = mp4::Mp4Reader::read_header(std::io::BufReader::new(file), size).unwrap();
+        let (id, track) = reader
+            .tracks()
+            .iter()
+            .find(|(_, t)| t.track_type().ok() == Some(mp4::TrackType::Video))
+            .map(|(id, t)| (*id, t))
+            .unwrap();
+        let scale = i64::from(track.timescale());
+        let (width, height) = (u32::from(track.width()), u32::from(track.height()));
+        let mut config = Vec::new();
+        for set in [
+            track.sequence_parameter_set().unwrap(),
+            track.picture_parameter_set().unwrap(),
+        ] {
+            config.extend_from_slice(&[0, 0, 0, 1]);
+            config.extend_from_slice(set);
+        }
+        let mut units = Vec::new();
+        for n in 1..=reader.sample_count(id).unwrap() {
+            let sample = reader.read_sample(id, n).unwrap().unwrap();
+            let mut data = if sample.is_sync {
+                config.clone()
+            } else {
+                Vec::new()
+            };
+            let mut rest = &sample.bytes[..];
+            while rest.len() >= 4 {
+                let len = u32::from_be_bytes(rest[..4].try_into().unwrap()) as usize;
+                data.extend_from_slice(&[0, 0, 0, 1]);
+                data.extend_from_slice(&rest[4..4 + len]);
+                rest = &rest[4 + len..];
+            }
+            let dts = sample.start_time as i64;
+            units.push(EncodedUnit {
+                data,
+                key: sample.is_sync,
+                pts_us: (dts + i64::from(sample.rendering_offset)) * 1_000_000 / scale,
+                dts_us: dts * 1_000_000 / scale,
+            });
+        }
+        (width, height, units)
+    }
+
+    struct Square(std::cell::Cell<u32>);
+    impl OverlaySource for Square {
+        fn read(
+            &self,
+            generation: &mut u64,
+            rgba: &mut [u8],
+            width: u32,
+            _: u32,
+        ) -> Result<(), ProbeError> {
+            self.0.set(self.0.get() + 1);
+            if *generation == 1 {
+                return Ok(());
+            }
+            *generation = 1;
+            rgba.fill(0);
+            // Opaque red 32x32 at (8, 8).
+            for y in 8..40 {
+                for x in 8..40 {
+                    let i = (y * width as usize + x) * 4;
+                    rgba[i..i + 4].copy_from_slice(&[255, 0, 0, 255]);
+                }
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    #[ignore = "requires an L2 companion; BILIKARA_TEST_L1_OUTPUT receives the streams"]
+    fn real_l2_transcodes_with_the_overlay_and_muxes_external_units() {
+        let companion =
+            std::env::var_os("BILIKARA_TEST_LIBAV_COMPANION").expect("L2 companion required");
+        let probe = unsafe { LibavMetadataProbe::load(Path::new(&companion)) }.unwrap();
+        let kinds = probe.composite_kinds();
+        assert_ne!(kinds & composite::KIND_EXTERNAL, 0);
+        // A decodable 160x90 30 fps source (the bbdown fixtures are timing-only).
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/native_host/cast_session/fixtures");
+        let video = fixture.join("keyframes-30s.mp4");
+        let audio = fixture.join("audio-30s.m4a");
+        let directory = std::path::PathBuf::from(
+            std::env::var_os("BILIKARA_TEST_L1_OUTPUT").expect("owned output directory"),
+        );
+        std::fs::create_dir_all(&directory).unwrap();
+        let control = || {
+            Ok(Control {
+                offset_ms: 0,
+                key_shift: 0,
+                volume_percent: 100,
+                muted: false,
+                track: 0,
+                mode: OffsetMode::Splice,
+            })
+        };
+        let run = |composite: Composite<'_>, name: &str| {
+            let mut bytes = Vec::new();
+            let mut starts = Vec::new();
+            let report = probe
+                .render_composited_ts_with_events(
+                    &video,
+                    &[&audio],
+                    0,
+                    &AtomicBool::new(false),
+                    &mut |event| {
+                        match event {
+                            Event::Start(start) => starts.push(start),
+                            Event::Data { bytes: chunk, .. } => bytes.extend_from_slice(chunk),
+                        }
+                        true
+                    },
+                    &mut control.clone(),
+                    composite,
+                )
+                .unwrap();
+            assert_eq!(starts.len(), 1);
+            assert_eq!(bytes.len() % 188, 0);
+            std::fs::write(directory.join(name), &bytes).unwrap();
+            (report, starts[0])
+        };
+        // In-companion transcode (the software encoder every desktop build has).
+        assert_ne!(kinds & composite::KIND_MPEG2, 0);
+        let square = Square(std::cell::Cell::new(0));
+        let (report, start) = run(
+            Composite {
+                video: CompositeVideo::Transcode {
+                    codec: TranscodeCodec::Mpeg2,
+                    width: 160,
+                    height: 90,
+                },
+                fps: (30, 1),
+                bit_rate: 2_000_000,
+                end_us: 2_000_000,
+                overlay: Some(&square),
+            },
+            "composited-mpeg2.ts",
+        );
+        assert_eq!(report.encoder, Encoder::Mpeg2);
+        assert_eq!(report.frames, 60, "{report:?}");
+        assert_eq!(report.video_packets, 60);
+        assert_eq!(report.overlays, 1);
+        assert_eq!(square.0.get(), 60, "one overlay check per frame");
+        assert_eq!(start.source_start_us, 0);
+        // The 30 fps source at a 15 fps cap keeps every other frame.
+        let (report, _) = run(
+            Composite {
+                video: CompositeVideo::Transcode {
+                    codec: TranscodeCodec::Mpeg2,
+                    width: 160,
+                    height: 90,
+                },
+                fps: (15, 1),
+                bit_rate: 2_000_000,
+                end_us: 2_000_000,
+                overlay: None,
+            },
+            "composited-mpeg2-half.ts",
+        );
+        assert_eq!(report.frames, 30, "{report:?}");
+        // Caller-encoded units: the source's own H.264 passes through L2.
+        let (width, height, units) = passthrough_units(&video);
+        let mut units = units.into_iter().filter(|u| u.dts_us < 2_000_000);
+        let mut next = || Ok(units.next());
+        let (report, _) = run(
+            Composite {
+                video: CompositeVideo::External {
+                    width,
+                    height,
+                    next: &mut next,
+                },
+                fps: (30, 1),
+                bit_rate: 2_000_000,
+                end_us: 2_000_000,
+                overlay: None,
+            },
+            "composited-external.ts",
+        );
+        assert_eq!(report.encoder, Encoder::External);
+        assert_eq!(report.video_packets, 60);
+        let facts =
+            super::super::live_ts::inspect(&probe, &directory.join("composited-external.ts"));
+        assert_eq!(facts.status, 0, "{facts:?}");
+        assert_eq!(facts.packets[0], 60);
+        assert!(
+            (facts.max_pts[0] - facts.max_pts[1]).abs() < 100_000,
+            "{facts:?}"
+        );
+        // A failing unit source stops the stream with its own error.
+        let mut failing = || Err(ProbeError::BackendFailure("encoder lost".into()));
+        let error = probe
+            .render_composited_ts_with_events(
+                &video,
+                &[&audio],
+                0,
+                &AtomicBool::new(false),
+                &mut |_| true,
+                &mut control.clone(),
+                Composite {
+                    video: CompositeVideo::External {
+                        width,
+                        height,
+                        next: &mut failing,
+                    },
+                    fps: (30, 1),
+                    bit_rate: 2_000_000,
+                    end_us: 2_000_000,
+                    overlay: None,
+                },
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("encoder lost"), "{error}");
+    }
 }
 
 impl LibavMetadataProbe {
@@ -245,6 +468,55 @@ impl LibavMetadataProbe {
         }
     }
 
+    /// L2 kinds the loaded companion negotiates (`composite::KIND_*`); 0 when
+    /// the companion predates the composited cast.
+    pub fn composite_kinds(&self) -> u32 {
+        #[cfg(any(
+            target_os = "android",
+            target_os = "linux",
+            target_os = "windows",
+            target_os = "macos"
+        ))]
+        {
+            native::l2::Composited::load(&self._library).map_or(0, |c| c.kinds)
+        }
+        #[cfg(not(any(
+            target_os = "android",
+            target_os = "linux",
+            target_os = "windows",
+            target_os = "macos"
+        )))]
+        {
+            0
+        }
+    }
+
+    /// The composited cast (L2): the same events, DSP and controls as
+    /// `render_live_ts_with_events`, with the copied source video replaced by
+    /// a decoded, overlaid and re-encoded stream.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_composited_ts_with_events(
+        &self,
+        video: &Path,
+        audio: &[&Path],
+        start_us: i64,
+        stop: &AtomicBool,
+        visit: &mut dyn FnMut(Event<'_>) -> bool,
+        controls: &mut dyn FnMut() -> Result<Control, ProbeError>,
+        composite: Composite<'_>,
+    ) -> Result<CompositeReport, ProbeError> {
+        self.events_run(
+            video,
+            audio,
+            start_us,
+            stop,
+            visit,
+            controls,
+            Some(composite),
+        )
+        .map(|report| report.unwrap_or_default())
+    }
+
     /// T4 event adapter for the existing descriptor-only L1 ABI. The native
     /// source origin and first video PES establish Start before any Data;
     /// initial AAC priming belongs to the first keyframe group. Standalone
@@ -258,6 +530,21 @@ impl LibavMetadataProbe {
         visit: &mut dyn FnMut(Event<'_>) -> bool,
         controls: &mut dyn FnMut() -> Result<Control, ProbeError>,
     ) -> Result<(), ProbeError> {
+        self.events_run(video, audio, start_us, stop, visit, controls, None)
+            .map(|_| ())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn events_run(
+        &self,
+        video: &Path,
+        audio: &[&Path],
+        start_us: i64,
+        stop: &AtomicBool,
+        visit: &mut dyn FnMut(Event<'_>) -> bool,
+        controls: &mut dyn FnMut() -> Result<Control, ProbeError>,
+        composite: Option<Composite<'_>>,
+    ) -> Result<Option<CompositeReport>, ProbeError> {
         #[cfg(any(
             target_os = "android",
             target_os = "linux",
@@ -268,7 +555,7 @@ impl LibavMetadataProbe {
             let source = std::cell::Cell::new(None);
             let mut adapter = events::Events::default();
             let mut error = None;
-            let result = native::run(
+            let result = native::run_with(
                 self,
                 video,
                 audio,
@@ -290,12 +577,14 @@ impl LibavMetadataProbe {
                     source.set(Some(start));
                     controls()
                 },
+                composite,
             );
             if let Some(error) = error {
                 return Err(error);
             }
-            result?;
-            adapter.finish()
+            let report = result?;
+            adapter.finish()?;
+            Ok(report)
         }
         #[cfg(not(any(
             target_os = "android",
@@ -304,7 +593,7 @@ impl LibavMetadataProbe {
             target_os = "macos"
         )))]
         {
-            let _ = (video, audio, start_us, stop, visit, controls);
+            let _ = (video, audio, start_us, stop, visit, controls, composite);
             Err(ProbeError::Unavailable("L1 platform not packaged".into()))
         }
     }
@@ -870,6 +1159,7 @@ mod native {
             }
         }
     }
+    pub(super) mod l2;
     pub(super) fn run(
         probe: &LibavMetadataProbe,
         video: &Path,
@@ -879,10 +1169,27 @@ mod native {
         visit: &mut dyn FnMut(&[u8], i64, bool) -> bool,
         controls: &mut dyn FnMut(i64) -> Result<Control, ProbeError>,
     ) -> Result<(), ProbeError> {
+        run_with(probe, video, audio, start, stop, visit, controls, None).map(|_| ())
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn run_with(
+        probe: &LibavMetadataProbe,
+        video: &Path,
+        audio: &[&Path],
+        start: i64,
+        stop: &AtomicBool,
+        visit: &mut dyn FnMut(&[u8], i64, bool) -> bool,
+        controls: &mut dyn FnMut(i64) -> Result<Control, ProbeError>,
+        composite: Option<Composite<'_>>,
+    ) -> Result<Option<CompositeReport>, ProbeError> {
         if audio.is_empty() || audio.len() > 2 || !(0..=21_600_000_000).contains(&start) {
             return Err(backend_error("invalid L1 sources"));
         }
         let cap = Capability::load(&probe._library)?;
+        let composited = match composite {
+            Some(_) => Some(l2::Composited::load(&probe._library)?),
+            None => None,
+        };
         let video = open_input(video)?;
         let files = audio
             .iter()
@@ -932,10 +1239,36 @@ mod native {
             render,
             opaque,
         };
-        let mut result = ResultData::default();
-        // SAFETY: all descriptors, callbacks, voices and library survive cleanup.
-        let status = unsafe { (cap.run)(&request, &mut result) };
-        if let Some(e) = context.error {
+        let (status, result, report, video_error) = match (composite, composited) {
+            (Some(composite), Some(composited)) => {
+                let mut video = l2::VideoState::new(composite.video, &cancellation.failed);
+                let overlay = composite.overlay.map(l2::OverlayState::new);
+                let request = l2::request(
+                    request,
+                    &mut video,
+                    overlay.as_ref(),
+                    composite.fps,
+                    composite.bit_rate,
+                    composite.end_us,
+                )?;
+                let mut result = l2::ResultData::default();
+                // SAFETY: as for L1; the video/overlay states outlive the call.
+                let status = unsafe { (composited.run)(&request, &mut result) };
+                let report = result.report();
+                let error = video
+                    .error
+                    .take()
+                    .or_else(|| overlay.and_then(|o| o.error.into_inner()));
+                (status, result.live(), Some(report), error)
+            }
+            _ => {
+                let mut result = ResultData::default();
+                // SAFETY: all descriptors, callbacks, voices and library survive cleanup.
+                let status = unsafe { (cap.run)(&request, &mut result) };
+                (status, result, None, None)
+            }
+        };
+        if let Some(e) = context.error.or(video_error) {
             return Err(e);
         }
         if stop.load(Ordering::Acquire) {
@@ -950,6 +1283,6 @@ mod native {
         if result.complete != 1 || result.packets == 0 || result.bytes == 0 {
             return Err(backend_error("incomplete L1 TS output"));
         }
-        Ok(())
+        Ok(report)
     }
 }

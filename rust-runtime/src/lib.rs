@@ -6,6 +6,8 @@ mod bilibili_service;
 mod cache_application;
 mod cache_runtime;
 #[cfg(feature = "native-host")]
+pub mod cast_compositor;
+#[cfg(feature = "native-host")]
 pub mod cast_platform;
 #[cfg(feature = "native-host")]
 pub mod cast_samples;
