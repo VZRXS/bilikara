@@ -45,10 +45,14 @@ else
   cd "$work/ffmpeg-${version}"
   # Preserve the accepted codec/demuxer corpus; no --disable-everything pruning.
   # /MD is required: fd protocol and companion must share the UCRT fd table.
+  # Media Foundation gives the composited cast (L2) the system's H.264
+  # encoder (h264_mf, hardware MFT first); FFmpeg loads mfplat.dll from
+  # System32 at run time, and no codec ships with the package.
   ./configure --prefix="$prefix" --toolchain=msvc --arch="$ffmpeg_arch" --target-os=win64 \
     --extra-cflags=-MD --extra-cxxflags=-MD --disable-autodetect --disable-debug \
     --disable-doc --disable-programs --disable-static --enable-shared "$asm_flag" \
     --disable-avdevice --disable-swscale --enable-swresample --disable-network \
+    --enable-mediafoundation \
     2>&1 | tee "$prefix/records/configure.log"
   make -j4 2>&1 | tee "$prefix/records/build.log"
   make install 2>&1 | tee "$prefix/records/install.log"
