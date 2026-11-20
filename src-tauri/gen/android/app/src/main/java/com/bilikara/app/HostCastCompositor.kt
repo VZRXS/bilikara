@@ -34,22 +34,30 @@ import kotlin.math.roundToInt
  * SurfaceTexture, GLES draws the frame and Rust's overlay into the H.264
  * encoder's input Surface, MediaCodec encodes. Pixels never reach the CPU.
  * Rust pulls encoded units through JNI and muxes them with the L1 audio.
- * Times are source microseconds; frames keep their source timestamps.
+ * Times are source microseconds; played frames keep their source timestamps.
+ * A held stream repeats the frame at the start, a blank one draws only the
+ * overlay on black; both run on the capped frame grid (pause and cards of a
+ * continuous cast).
  */
 @Keep
 object HostCastCompositor {
   private val sessions = ConcurrentHashMap<Long, Session>()
   private val ids = AtomicLong(1)
 
+  const val SOURCE_PLAY = 0
+  const val SOURCE_HOLD = 1
+  const val SOURCE_BLANK = 2
+
   @JvmStatic @Keep
   fun open(
-    path: String, startUs: Long, endUs: Long, width: Int, height: Int,
+    path: String, source: Int, startUs: Long, endUs: Long, width: Int, height: Int,
     fpsNum: Int, fpsDen: Int, bitRate: Int,
   ): Long {
     require(width in 16..4096 && height in 16..4096 && width % 2 == 0 && height % 2 == 0)
     require(fpsNum > 0 && fpsDen > 0 && bitRate > 0 && endUs > startUs)
+    require(source in SOURCE_PLAY..SOURCE_BLANK && (source == SOURCE_BLANK || path.isNotEmpty()))
     val id = ids.getAndIncrement()
-    val session = Session(path, startUs, endUs, width, height, fpsNum, fpsDen, bitRate)
+    val session = Session(path, source, startUs, endUs, width, height, fpsNum, fpsDen, bitRate)
     sessions[id] = session
     session.start()
     return id
@@ -80,12 +88,13 @@ object HostCastCompositor {
 
   private class Session(
     private val path: String,
+    private val source: Int,
     private val startUs: Long,
     private val endUs: Long,
     private val width: Int,
     private val height: Int,
-    fpsNum: Int,
-    fpsDen: Int,
+    private val fpsNum: Int,
+    private val fpsDen: Int,
     private val bitRate: Int,
   ) {
     private val queue = ArrayBlockingQueue<ByteArray>(24)
@@ -129,6 +138,17 @@ object HostCastCompositor {
       var decoderSurface: Surface? = null
       var frames: HandlerThread? = null
       try {
+        encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+        encoderName = encoder.name
+        configure(encoder)
+        val encoderSurface = encoder.createInputSurface()
+        encoder.start()
+        gl = Gl(encoderSurface, width, height)
+        if (source == SOURCE_BLANK) {
+          still(encoder, gl, startUs, null)
+          return
+        }
+
         extractor = MediaExtractor().apply { setDataSource(path) }
         val track = (0 until extractor.trackCount).firstOrNull {
           extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
@@ -137,13 +157,6 @@ object HostCastCompositor {
         val input = extractor.getTrackFormat(track)
         val mime = input.getString(MediaFormat.KEY_MIME)!!
         extractor.seekTo(startUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
-
-        encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-        encoderName = encoder.name
-        configure(encoder)
-        val encoderSurface = encoder.createInputSurface()
-        encoder.start()
-        gl = Gl(encoderSurface, width, height)
 
         val ready = Semaphore(0)
         frames = HandlerThread("cast-compositor-frames").also { it.start() }
@@ -164,6 +177,11 @@ object HostCastCompositor {
         var nextSlot = Long.MIN_VALUE
         var lastPts = Long.MIN_VALUE
         var config: ByteArray? = null
+        if (source == SOURCE_HOLD) {
+          val held = holdFirst(extractor, decoder, ready, texture, matrix, info) ?: return
+          still(encoder, gl, held, Pair(matrix, Pair(sourceWidth, sourceHeight)))
+          return
+        }
         while (!closed) {
           if (!inputDone) {
             val index = decoder.dequeueInputBuffer(2_000)
@@ -222,6 +240,77 @@ object HostCastCompositor {
         runCatching { gl?.release() }
         runCatching { frames?.quitSafely() }
         runCatching { extractor?.release() }
+      }
+    }
+
+    /**
+     * Decodes up to the first frame at or after [startUs] into the texture and
+     * stops the decoder there. Returns that frame's time, null once closed.
+     */
+    private fun holdFirst(
+      extractor: MediaExtractor, decoder: MediaCodec, ready: Semaphore, texture: SurfaceTexture,
+      matrix: FloatArray, info: MediaCodec.BufferInfo,
+    ): Long? {
+      var inputDone = false
+      while (!closed) {
+        if (!inputDone) {
+          val index = decoder.dequeueInputBuffer(2_000)
+          if (index >= 0) {
+            val buffer = decoder.getInputBuffer(index)!!
+            val size = extractor.readSampleData(buffer, 0)
+            if (size < 0) {
+              decoder.queueInputBuffer(index, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+              inputDone = true
+            } else {
+              decoder.queueInputBuffer(index, 0, size, extractor.sampleTime, 0)
+              extractor.advance()
+            }
+          }
+        }
+        val index = decoder.dequeueOutputBuffer(info, 2_000)
+        if (index < 0) continue
+        if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0 && info.size == 0) {
+          decoder.releaseOutputBuffer(index, false)
+          error("no frame at the hold position")
+        }
+        val pts = info.presentationTimeUs
+        val keep = info.size > 0 && pts >= startUs
+        decoder.releaseOutputBuffer(index, keep)
+        if (!keep) continue
+        if (!ready.tryAcquire(2_500, TimeUnit.MILLISECONDS)) error("decoder frame timeout")
+        texture.updateTexImage()
+        texture.getTransformMatrix(matrix)
+        return pts
+      }
+      return null
+    }
+
+    /**
+     * Encodes one picture on the frame grid from [originUs] until [endUs]:
+     * the held texture ([video]: transform and source size) or black.
+     */
+    private fun still(
+      encoder: MediaCodec, gl: Gl, originUs: Long, video: Pair<FloatArray, Pair<Int, Int>>?,
+    ) {
+      val info = MediaCodec.BufferInfo()
+      var config: ByteArray? = null
+      var frame = 0L
+      while (!closed) {
+        // Exact grid times (no accumulated rounding of the slot).
+        val pts = originUs + frame * 1_000_000L * fpsDen / fpsNum
+        if (pts >= endUs) {
+          encoder.signalEndOfInputStream()
+          while (true) {
+            val drained = drain(encoder, info, config, 10_000) ?: return
+            config = drained.config
+            if (drained.ended) return
+          }
+        }
+        config = (drain(encoder, info, config, 0) ?: return).config
+        pendingOverlay?.let { gl.overlay(it); pendingOverlay = null }
+        if (video != null) gl.draw(video.first, video.second.first, video.second.second) else gl.drawBlank()
+        gl.present(pts * 1_000)
+        frame++
       }
     }
 
@@ -422,6 +511,10 @@ object HostCastCompositor {
       GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, videoTexture)
       GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(videoProgram, "transform"), 1, false, transform, 0)
       quad(videoProgram)
+      drawOverlay()
+    }
+
+    private fun drawOverlay() {
       if (!hasOverlay) return
       GLES20.glViewport(0, 0, width, height)
       GLES20.glEnable(GLES20.GL_BLEND)
@@ -429,6 +522,14 @@ object HostCastCompositor {
       GLES20.glUseProgram(overlayProgram)
       GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, overlayTexture)
       quad(overlayProgram)
+    }
+
+    fun drawBlank() {
+      GLES20.glDisable(GLES20.GL_BLEND)
+      GLES20.glViewport(0, 0, width, height)
+      GLES20.glClearColor(0f, 0f, 0f, 1f)
+      GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+      drawOverlay()
     }
 
     fun present(nanos: Long) {

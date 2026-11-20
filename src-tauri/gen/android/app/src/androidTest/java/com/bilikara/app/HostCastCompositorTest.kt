@@ -19,8 +19,9 @@ import java.nio.ByteBuffer
  *
  * Asset `compositor-source.mp4`: 320x180 blue, a white 40x40 box at (260,120),
  * 30 fps, 90 frames, H.264 Main, GOP 30 (FFmpeg lavfi + libx264, test-only).
- * The encoded stream is left in the app's external files directory as
- * `compositor-output.h264` for an outside decoder to check the pixels.
+ * The encoded streams are left in the app's external files directory as
+ * `compositor-output.h264`, `compositor-hold.h264` and `compositor-blank.h264`
+ * for an outside decoder to check the pixels.
  */
 @RunWith(AndroidJUnit4::class)
 class HostCastCompositorTest {
@@ -57,7 +58,8 @@ class HostCastCompositorTest {
 
   @Test fun decodesOverlaysAndEncodesOnSurfaces() {
     // Two seconds from the start of a three-second source at a 30 fps cap.
-    val id = HostCastCompositor.open(source().path, 0, 2_000_000, width, height, 30, 1, 1_000_000)
+    val id = HostCastCompositor.open(
+      source().path, HostCastCompositor.SOURCE_PLAY, 0, 2_000_000, width, height, 30, 1, 1_000_000)
     val overlay = ByteArray(width * height * 4)
     for (y in 10 until 50) for (x in 10 until 50) {
       val i = (y * width + x) * 4
@@ -97,9 +99,49 @@ class HostCastCompositorTest {
     File(directory, "compositor-output.h264").writeBytes(stream.toByteArray())
   }
 
+  /** Every unit until the end flag; checks the grid and parameter sets. */
+  private fun drain(id: Long, name: String, expectedStart: Long, fps: Long): Int {
+    val stream = ByteArrayOutputStream()
+    val deadline = System.nanoTime() + 60_000_000_000
+    var units = 0
+    while (true) {
+      val unit = next(id, deadline)
+      if (unit.flags and 2 != 0) break
+      if (units == 0) assertTrue("first unit is a key frame", unit.flags and 1 != 0)
+      if (unit.flags and 1 != 0) assertTrue("SPS before every key frame", nal(unit.data, 7))
+      assertEquals("frame grid", expectedStart + units * 1_000_000L / fps, unit.pts)
+      stream.write(unit.data)
+      units++
+    }
+    HostCastCompositor.close(id)
+    val directory = InstrumentationRegistry.getInstrumentation().targetContext.getExternalFilesDir(null)
+    File(directory, name).writeBytes(stream.toByteArray())
+    return units
+  }
+
+  @Test fun holdsAndBlanksOnTheFrameGrid() {
+    // Pause: the first frame at or after 1.5 s (1.5 s exactly at 30 fps),
+    // repeated for half a second on the 30 fps grid.
+    val hold = HostCastCompositor.open(
+      source().path, HostCastCompositor.SOURCE_HOLD, 1_500_000, 2_000_000, width, height, 30, 1, 1_000_000)
+    assertEquals(15, drain(hold, "compositor-hold.h264", 1_500_000, 30))
+    // A card: black with an opaque green overlay quarter, no source at all.
+    val blank = HostCastCompositor.open(
+      "", HostCastCompositor.SOURCE_BLANK, 0, 1_000_000, width, height, 25, 1, 500_000)
+    val overlay = ByteArray(width * height * 4)
+    for (y in 0 until height / 2) for (x in 0 until width / 2) {
+      val i = (y * width + x) * 4
+      overlay[i + 1] = 255.toByte()
+      overlay[i + 3] = 255.toByte()
+    }
+    HostCastCompositor.setOverlay(blank, overlay)
+    assertEquals(25, drain(blank, "compositor-blank.h264", 0, 25))
+  }
+
   @Test fun frameRateCapAndCloseMidStream() {
     // A 15 fps cap keeps every other source frame.
-    val id = HostCastCompositor.open(source().path, 1_000_000, 3_000_000, width, height, 15, 1, 500_000)
+    val id = HostCastCompositor.open(
+      source().path, HostCastCompositor.SOURCE_PLAY, 1_000_000, 3_000_000, width, height, 15, 1, 500_000)
     val deadline = System.nanoTime() + 60_000_000_000
     val first = next(id, deadline)
     assertTrue(first.flags and 1 != 0)

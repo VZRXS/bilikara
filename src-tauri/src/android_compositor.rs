@@ -53,19 +53,19 @@ impl Compositor for AndroidCompositor {
         "android_mediacodec"
     }
     fn open(&self, request: &Request) -> Result<Box<dyn Stream>, String> {
-        let path = request
-            .video
-            .to_str()
-            .ok_or("non-UTF-8 media path")?
-            .to_owned();
+        let path = match &request.video {
+            Some(video) => video.to_str().ok_or("non-UTF-8 media path")?.to_owned(),
+            None => String::new(),
+        };
         let id = self.0.call(|env, class| {
             let path = env.new_string(&path)?;
             env.call_static_method(
                 class,
                 "open",
-                "(Ljava/lang/String;JJIIIII)J",
+                "(Ljava/lang/String;IJJIIIII)J",
                 &[
                     JValue::Object(&path),
+                    JValue::Int(request.source.code()),
                     JValue::Long(request.start_us),
                     JValue::Long(request.end_us),
                     JValue::Int(request.width as i32),
