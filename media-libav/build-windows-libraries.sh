@@ -47,12 +47,14 @@ else
   # /MD is required: fd protocol and companion must share the UCRT fd table.
   # Media Foundation gives the composited cast (L2) the system's H.264
   # encoder (h264_mf, hardware MFT first); FFmpeg loads mfplat.dll from
-  # System32 at run time, and no codec ships with the package.
+  # System32 at run time, and no codec ships with the package. FFmpeg 9's
+  # mfenc.c uses D3D11 types unconditionally, so it needs d3d11va as well
+  # (d3d11.dll/dxgi.dll are also loaded at run time, never packaged).
   ./configure --prefix="$prefix" --toolchain=msvc --arch="$ffmpeg_arch" --target-os=win64 \
     --extra-cflags=-MD --extra-cxxflags=-MD --disable-autodetect --disable-debug \
     --disable-doc --disable-programs --disable-static --enable-shared "$asm_flag" \
     --disable-avdevice --disable-swscale --enable-swresample --disable-network \
-    --enable-mediafoundation \
+    --enable-mediafoundation --enable-d3d11va \
     2>&1 | tee "$prefix/records/configure.log"
   make -j4 2>&1 | tee "$prefix/records/build.log"
   make install 2>&1 | tee "$prefix/records/install.log"
