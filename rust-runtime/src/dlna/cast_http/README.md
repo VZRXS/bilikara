@@ -14,6 +14,19 @@ worker thread. This uses T3's own realtime pacing before the internal callback;
 its clock starts immediately before delivering Start to the ring.
 Do not cancel production when an individual reader disconnects.
 
+### Growing files (file-mode L1 renders)
+
+`publish_growing_file(generation, file, growth, ts_mime)` publishes a TS whose
+final length (`file.summary.bytes`, a whole number of packets) is declared
+before rendering finishes; T3's `CastSession::growing_ts` creates and charges
+it. HEAD, Content-Length and Range use the declared length. A read waits at
+the rendered edge reported by `Growth::advance` and continues as bytes arrive;
+`Growth::complete` follows the null-packet padding to the declared length and
+`Growth::fail` ends readers early (`producer_failed`). Fifteen seconds without
+render progress ends a waiting read (`write_stall`). Replacing, clearing or
+shutting down the generation sets `Growth::abandoned`, which the renderer polls
+to stop. The file is otherwise served exactly like a finalized file.
+
 ### External producers (next L1 integration boundary)
 
 `LiveStream::external(options)` returns `(Arc<LiveStream>, LiveProducer)`.

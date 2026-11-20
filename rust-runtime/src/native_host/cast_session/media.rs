@@ -1,10 +1,10 @@
 use super::*;
 use crate::app_state::PlaylistItem;
-use crate::dlna::cast_http::{LiveOptions, LiveStream};
+use crate::dlna::cast_http::{Growth, LiveOptions, LiveStream};
 use crate::experimental_libav::{
     LibavMetadataProbe, ProbeError,
-    cast_mux::{CastFile, CastFormat, CastInputs, CastSession, CastSummary},
-    live_audio::Control,
+    cast_mux::{CastFile, CastFormat, CastInputs, CastSession, CastSummary, GrowingTs},
+    live_audio::{Control, Event},
 };
 use std::path::Component;
 
@@ -223,6 +223,11 @@ pub(super) struct Prepared {
     /// Why later DSP edits cannot be rendered for this source (None: an edit
     /// regenerates the file through L1).
     pub refusal: Option<&'static str>,
+    /// An L1 render still in progress behind the file's declared length.
+    pub growth: Option<Arc<Growth>>,
+    /// Source seconds where the file starts: 0 for T3 copies (the receiver
+    /// seeks), the keyframe before the requested position for L1 renders.
+    pub origin: f64,
 }
 
 /// File delivery always starts at 0 and the receiver seeks over SOAP, so a
@@ -232,6 +237,7 @@ pub(super) fn file(
     session: Arc<CastSession>,
     item: PlaylistItem,
     wanted: Baked,
+    position: f64,
     stop: Arc<AtomicBool>,
 ) -> tokio::task::JoinHandle<Result<Prepared, ApiError>> {
     tokio::task::spawn_blocking(move || {
@@ -258,6 +264,8 @@ pub(super) fn file(
                 file,
                 baked: Baked::neutral(&item),
                 refusal,
+                growth: None,
+                origin: 0.0,
             });
         }
         let facts = probe
@@ -269,8 +277,63 @@ pub(super) fn file(
                 file: t3(&input)?,
                 baked: Baked::neutral(&item),
                 refusal: Some(refusal),
+                growth: None,
+                origin: 0.0,
             });
         }
+        // The companion handle is thread-affine (Windows): the renderer
+        // thread loads its own and keeps the input leases until it ends.
+        drop(probe);
+        let (ready, declared) = std::sync::mpsc::sync_channel(1);
+        std::thread::Builder::new()
+            .name("cast-file-l1".into())
+            .spawn(move || render_growing(session, input, facts, wanted, position, stop, ready))
+            .map_err(|_| ApiError::new(409, "cast_prepare_failed", "Cannot start cast render"))?;
+        let (file, growth, origin, baked) = declared
+            .recv()
+            .map_err(|_| ApiError::new(409, "cast_prepare_failed", "Cast render ended"))??;
+        Ok(Prepared {
+            file,
+            baked: Baked {
+                track: item.selected_audio_variant_id.clone(),
+                ..baked
+            },
+            refusal: None,
+            growth: Some(growth),
+            origin,
+        })
+    })
+}
+
+/// Seconds of measured bytes added to a growing file's declared length, so a
+/// render that runs slightly long is padded rather than truncated.
+const DECLARE_MARGIN_S: f64 = 2.0;
+
+type Declared = Result<(CastFile, Arc<Growth>, f64, Baked), ApiError>;
+
+/// File delivery with pitch, delay or track edits (B): one L1 render at full
+/// speed from the keyframe before `position`, with a fixed control snapshot
+/// and the selected track. Its CBR rate is measured from the first rendered
+/// seconds; the file is then published at a declared length (`ready`) while
+/// rendering continues, and finally padded with null packets to that length.
+/// A render that would exceed it is cut at the declared length.
+fn render_growing(
+    session: Arc<CastSession>,
+    input: Inputs,
+    facts: CastSummary,
+    wanted: Baked,
+    position: f64,
+    stop: Arc<AtomicBool>,
+    ready: std::sync::mpsc::SyncSender<Declared>,
+) {
+    let growth = Growth::new();
+    let mut ready = Some(ready);
+    let mut declared: Option<u64> = None;
+    let mut truncated = false;
+    let result = (|| -> Result<(), ApiError> {
+        let failed = |e| prepare_error(e, "Cannot render cast media");
+        let probe = probe()?;
+        let mut growing = session.growing_ts().map_err(failed)?;
         let control = Control {
             offset_ms: wanted.offset_ms,
             key_shift: wanted.key_shift,
@@ -279,34 +342,122 @@ pub(super) fn file(
             track: 0,
             mode: bilikara_rust::output_audio::OffsetMode::Splice,
         };
-        let summary = CastSummary {
-            packets: 0,
-            bytes: 0,
-            audio_transcoded: true,
-            ..facts
+        let end_us = facts.source_start_us.saturating_add(facts.duration_us);
+        let mut origin_us = facts.source_start_us;
+        let mut mark: Option<(i64, u64)> = None;
+        let mut error = None;
+        let mut declare = |growing: &mut GrowingTs, length: u64, origin_us: i64| {
+            let summary = CastSummary {
+                packets: 0,
+                bytes: 0,
+                audio_transcoded: true,
+                source_start_us: origin_us,
+                duration_us: end_us.saturating_sub(origin_us).max(1),
+                ..facts.clone()
+            };
+            let file = growing.declare(length, summary)?;
+            growth.advance(growing.written());
+            if let Some(ready) = ready.take() {
+                let _ = ready.send(Ok((
+                    file,
+                    growth.clone(),
+                    origin_us as f64 / 1_000_000.0,
+                    wanted.clone(),
+                )));
+            }
+            Ok::<u64, ProbeError>(length)
         };
-        let file = session
-            .write_ts(&stop, summary, |write| {
-                // Full speed, one fixed control snapshot, the selected track.
-                probe.render_live_ts(
-                    &input.video,
-                    &[input.audio.as_path()],
-                    0,
-                    &stop,
-                    &mut |bytes, _, _| write(bytes),
-                    &mut || Ok(control),
-                )
-            })
-            .map_err(|e| prepare_error(e, "Cannot render cast media"))?;
-        Ok(Prepared {
-            file,
-            baked: Baked {
-                track: item.selected_audio_variant_id.clone(),
-                ..wanted
+        let rendered = probe.render_live_ts_with_events(
+            &input.video,
+            &[input.audio.as_path()],
+            (position * 1_000_000.0) as i64,
+            &stop,
+            &mut |event| match event {
+                Event::Start(start) => {
+                    origin_us = start.source_start_us;
+                    true
+                }
+                Event::Data { bytes, time_us, .. } => {
+                    if growth.abandoned() {
+                        return false;
+                    }
+                    let room = declared.map_or(u64::MAX, |length| length - growing.written());
+                    let take = if (bytes.len() as u64) <= room {
+                        bytes.len()
+                    } else {
+                        (room - room % 188) as usize
+                    };
+                    if let Err(e) = growing.write(&bytes[..take]) {
+                        error = Some(e);
+                        return false;
+                    }
+                    if take < bytes.len() {
+                        truncated = true;
+                        growth.advance(growing.written());
+                        return false;
+                    }
+                    if declared.is_some() {
+                        growth.advance(growing.written());
+                        return true;
+                    }
+                    // Measure the constant mux rate over two rendered seconds.
+                    match mark {
+                        None if time_us >= 1_000_000 => mark = Some((time_us, growing.written())),
+                        Some((at, bytes_at)) if time_us >= at + 2_000_000 => {
+                            let rate = (growing.written() - bytes_at) as f64
+                                / ((time_us - at) as f64 / 1_000_000.0);
+                            let left = (end_us - origin_us - time_us).max(0) as f64 / 1_000_000.0;
+                            let length = growing.written() as f64
+                                + rate * (left + DECLARE_MARGIN_S)
+                                + 64.0 * 1024.0;
+                            match declare(
+                                &mut growing,
+                                (length as u64).div_ceil(188) * 188,
+                                origin_us,
+                            ) {
+                                Ok(length) => declared = Some(length),
+                                Err(e) => {
+                                    error = Some(e);
+                                    return false;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    true
+                }
             },
-            refusal: None,
-        })
-    })
+            &mut || Ok(control),
+        );
+        if let Some(e) = error {
+            return Err(failed(e));
+        }
+        if !truncated {
+            rendered.map_err(failed)?;
+        }
+        if growth.abandoned() {
+            return Ok(());
+        }
+        // Shorter than the measuring window: publish the exact length.
+        if declared.is_none() {
+            let length = growing.written();
+            declared = Some(declare(&mut growing, length, origin_us).map_err(failed)?);
+        }
+        growing.finish().map_err(failed)?;
+        growth.complete(growing.written());
+        if truncated {
+            eprintln!("[cast] file render exceeded its declared length and was cut");
+        }
+        Ok(())
+    })();
+    if let Err(e) = result {
+        match ready.take() {
+            Some(ready) => {
+                let _ = ready.send(Err(e));
+            }
+            None => growth.fail(),
+        }
+    }
 }
 pub(super) struct Live {
     pub stream: Arc<LiveStream>,

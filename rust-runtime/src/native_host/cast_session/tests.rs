@@ -1116,6 +1116,17 @@ fn file_mode_regenerates_dsp_edits_once_and_defers_them_while_paused() {
     });
     assert_eq!(set_count(&receiver), sets + 1, "one settled regeneration");
     assert_eq!(snap["media_output"]["pipeline_level"], "L1");
+    // The growing render starts at the keyframe before the position: the
+    // receiver is not seeked into it.
+    assert!(
+        !receiver
+            .state
+            .lock()
+            .unwrap()
+            .actions
+            .iter()
+            .any(|a| a == "Seek")
+    );
     // Paused: the edit waits for Play instead of replaying the receiver.
     host.command("pause");
     let paused = host.snapshot()["cast"]["generation"].as_u64().unwrap();

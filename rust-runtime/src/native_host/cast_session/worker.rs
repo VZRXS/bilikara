@@ -956,12 +956,14 @@ async fn play_session(
                         out.start = position;
                         update(id, |s| s.position = position);
                     }
-                    Control::Seek(position) if mode == Mode::File => {
+                    // A growing L1 file starts at its keyframe origin: seek the
+                    // receiver within it; an earlier target rebuilds (below).
+                    Control::Seek(position) if mode == Mode::File && position >= out.receiver_origin => {
                         match record(
                             trace,
                             connection,
                             Some(out.id),
-                            soap(client.seek(Duration::from_secs_f64(position), cancel)).await,
+                            soap(client.seek(Duration::from_secs_f64(position - out.receiver_origin), cancel)).await,
                         ) {
                             Ok(()) => {
                                 last_response = Instant::now();
@@ -982,7 +984,7 @@ async fn play_session(
                     // the new stream reports its actual keyframe origin.
                     Control::Next | Control::ProgramChanged | Control::Restart | Control::Play | Control::Pause | Control::Seek(_) => {
                         let next = matches!(control, Control::Next | Control::ProgramChanged);
-                        let retain_pause = matches!(control, Control::Restart) && out.paused;
+                        let retain_pause = matches!(control, Control::Restart | Control::Seek(_)) && out.paused;
                         let position = if let Control::Seek(target) = control {
                             target
                         } else if next {
@@ -1051,7 +1053,7 @@ async fn play_session(
                     pre_stop.clone(),
                     // Next songs usually start with neutral settings; a
                     // mismatch is rendered on demand when the song starts.
-                    media::file(context.clone(), files.clone(), item.clone(), media::Baked::neutral(item), pre_stop),
+                    media::file(context.clone(), files.clone(), item.clone(), media::Baked::neutral(item), 0.0, pre_stop),
                 ));
             }
             if Instant::now() >= next_poll {
@@ -1102,7 +1104,7 @@ async fn play_session(
                             match op.result {
                                 Ok(info) => {
                                     if let Some(d) = info.duration.filter(|d| !d.is_zero()) {
-                                        let duration = d.as_secs_f64() + if mode == Mode::Live { out.receiver_origin } else { 0.0 };
+                                        let duration = d.as_secs_f64() + out.receiver_origin;
                                         update(id, |s| s.duration = duration);
                                     }
                                     let position = info.position.map(|p| p.as_secs_f64());
@@ -1113,7 +1115,7 @@ async fn play_session(
                                     out.last_position = position;
                                     out.position_usable = usable;
                                     if usable {
-                                        let p = position.unwrap() + if mode == Mode::Live { out.receiver_origin } else { 0.0 };
+                                        let p = position.unwrap() + out.receiver_origin;
                                         // STOPPED often resets RelTime to zero: retain the
                                         // last credible position for recovery, never fake EOF.
                                         if p > 0.0 || !matches!(sample.state, Some(TransportState::Stopped | TransportState::NoMedia)) {
@@ -1447,6 +1449,11 @@ async fn start_output_once(
     // File delivery: what the published file renders, and why later DSP
     // edits cannot be rendered for this source.
     let mut file_profile: Option<(media::Baked, Option<&'static str>)> = None;
+    // File delivery: source seconds where the published file starts (0 for a
+    // T3 copy, which the receiver then seeks; the keyframe before `position`
+    // for a growing L1 render).
+    let mut file_origin = 0.0;
+    let mut growing_file = false;
     let duration;
     let mut origin = position;
     let published = if mode == Mode::Live {
@@ -1480,16 +1487,30 @@ async fn start_output_once(
             *key == media_key(&item) && position == 0.0 && prepared.baked == wanted
         }) {
             Some((_, prepared)) => prepared,
-            None => media::file(context.clone(), files, item.clone(), wanted, stop.clone())
-                .await
-                .map_err(|_| error("cast_prepare_failed"))??,
+            None => media::file(
+                context.clone(),
+                files,
+                item.clone(),
+                wanted,
+                position,
+                stop.clone(),
+            )
+            .await
+            .map_err(|_| error("cast_prepare_failed"))??,
         };
         duration = prepared.file.summary.duration_us as f64 / 1_000_000.0
             + prepared.file.summary.source_start_us as f64 / 1_000_000.0;
         file_profile = Some((prepared.baked, prepared.refusal));
-        endpoint
-            .publish_file(generation, prepared.file, TsMime::Mp2t)
-            .map_err(|_| error("cast_publish_failed"))?
+        file_origin = prepared.origin;
+        match prepared.growth {
+            Some(growth) => {
+                growing_file = true;
+                origin = file_origin;
+                endpoint.publish_growing_file(generation, prepared.file, growth, TsMime::Mp2t)
+            }
+            None => endpoint.publish_file(generation, prepared.file, TsMime::Mp2t),
+        }
+        .map_err(|_| error("cast_publish_failed"))?
     };
     let sinks = query_capabilities(client, id, trace, connection, Some(output_id), cancel).await;
     let mut started = record(
@@ -1503,7 +1524,7 @@ async fn start_output_once(
                     title: &item.display_title,
                     file: published.length.map(|size| FileMetadata {
                         size,
-                        duration: Duration::from_secs_f64(duration.max(0.0)),
+                        duration: Duration::from_secs_f64((duration - file_origin).max(0.0)),
                     }),
                     capabilities: CapabilityQuery::Known(sinks),
                 },
@@ -1513,6 +1534,7 @@ async fn start_output_once(
     );
     if started.is_ok()
         && mode == Mode::File
+        && !growing_file
         && position > 0.0
         && let Err(e) = record(
             trace,
@@ -1592,7 +1614,13 @@ async fn start_output_once(
         regenerate: None,
         began: Instant::now(),
         start: origin,
-        receiver_origin: origin,
+        // Receiver-relative times map to source time from here: the live
+        // stream's or growing file's start, 0 for a T3 file copy.
+        receiver_origin: if mode == Mode::Live {
+            origin
+        } else {
+            file_origin
+        },
         duration,
         paused: false,
         seen_playing: false,

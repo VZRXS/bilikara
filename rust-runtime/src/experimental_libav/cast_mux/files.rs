@@ -202,6 +202,89 @@ impl CastFile {
         &self.path
     }
 }
+/// See `CastSession::growing_ts`.
+pub struct GrowingTs {
+    path: PathBuf,
+    file: File,
+    written: u64,
+    declared: Option<u64>,
+    directory: Arc<Directory>,
+    used: Arc<AtomicU64>,
+    limit: u64,
+}
+/// One MPEG-TS null packet (PID 0x1FFF, payload only); receivers discard it.
+const NULL_PACKET: [u8; 188] = {
+    let mut packet = [0xff; 188];
+    packet[0] = 0x47;
+    packet[1] = 0x1f;
+    packet[2] = 0xff;
+    packet[3] = 0x10;
+    packet
+};
+impl GrowingTs {
+    pub fn written(&self) -> u64 {
+        self.written
+    }
+    /// Append rendered TS. After `declare`, bytes beyond the declared length
+    /// are refused so a mispredicted render can never exceed what HTTP sent.
+    pub fn write(&mut self, bytes: &[u8]) -> Result<(), ProbeError> {
+        let end = self.written.saturating_add(bytes.len() as u64);
+        if self.declared.is_some_and(|declared| end > declared) {
+            return Err(io_error("rendered TS exceeds its declared length"));
+        }
+        self.file.write_all(bytes).map_err(io_error)?;
+        self.written = end;
+        Ok(())
+    }
+    /// Fix the final length (a whole number of packets, at least what is
+    /// already written), charge it to the session quota and return the lease
+    /// that HTTP publishes; `summary.bytes`/`packets` describe that length.
+    pub fn declare(
+        &mut self,
+        length: u64,
+        mut summary: CastSummary,
+    ) -> Result<CastFile, ProbeError> {
+        if self.declared.is_some()
+            || length == 0
+            || !length.is_multiple_of(188)
+            || length < self.written
+            || length > self.limit.saturating_sub(self.used.load(Ordering::Acquire))
+        {
+            return Err(io_error("invalid declared TS length"));
+        }
+        self.used.fetch_add(length, Ordering::AcqRel);
+        self.declared = Some(length);
+        summary.bytes = length;
+        summary.packets = length / 188;
+        Ok(CastFile {
+            path: self.path.clone(),
+            summary,
+            _directory: self.directory.clone(),
+            used: self.used.clone(),
+            charged: length,
+        })
+    }
+    /// Pad to the declared length with null packets and sync. The rendered
+    /// part must be whole packets.
+    pub fn finish(&mut self) -> Result<(), ProbeError> {
+        let declared = self.declared.ok_or_else(|| io_error("undeclared TS"))?;
+        if !self.written.is_multiple_of(188) {
+            return Err(io_error("rendered TS is not packet aligned"));
+        }
+        while self.written < declared {
+            self.write(&NULL_PACKET)?;
+        }
+        self.file.sync_all().map_err(io_error)
+    }
+}
+impl Drop for GrowingTs {
+    fn drop(&mut self) {
+        // A declared file belongs to its published CastFile lease.
+        if self.declared.is_none() {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
 impl Drop for CastFile {
     fn drop(&mut self) {
         // On Windows a reader must retain this lease until its file handle closes.
@@ -379,43 +462,31 @@ impl CastSession {
             }
         })
     }
-    /// Publish a TS produced by the caller (an L1 render with a fixed DSP
-    /// snapshot) through the same staging, quota and lease boundary as T3.
-    /// `summary` describes the source; its byte and packet counts are set
-    /// from what was actually written.
-    pub fn write_ts(
-        &self,
-        stop: &AtomicBool,
-        mut summary: CastSummary,
-        produce: impl FnOnce(&mut dyn FnMut(&[u8]) -> bool) -> Result<(), ProbeError>,
-    ) -> Result<CastFile, ProbeError> {
-        self.generate(CastFormat::Ts, stop, |file, _, remaining| {
-            let file = file.ok_or_else(|| io_error("TS staging file missing"))?;
-            let mut written = 0_u64;
-            let mut write_error = None;
-            produce(&mut |bytes| {
-                written = written.saturating_add(bytes.len() as u64);
-                if written > remaining {
-                    write_error = Some(io_error("session quota exhausted"));
-                    return false;
-                }
-                match file.write_all(bytes) {
-                    Ok(()) => true,
-                    Err(e) => {
-                        write_error = Some(io_error(e));
-                        false
-                    }
-                }
-            })?;
-            if let Some(e) = write_error {
-                return Err(e);
-            }
-            if written == 0 || !written.is_multiple_of(188) {
-                return Err(io_error("invalid rendered TS"));
-            }
-            summary.bytes = written;
-            summary.packets = written / 188;
-            Ok(summary)
+    /// A TS that HTTP serves while it is still being written (file-mode L1
+    /// regeneration). It is created at its final name, so readers can open it
+    /// before rendering finishes; `declare` fixes and charges its final length
+    /// and returns the lease to publish, and `finish` pads the rendered bytes
+    /// to exactly that length with null packets. Dropping it undeclared
+    /// removes the file. It does not take the generator lock: a long render
+    /// must not hold back the next song's T3 prefetch.
+    pub fn growing_ts(&self) -> Result<GrowingTs, ProbeError> {
+        let mut nonce = [0u8; 16];
+        getrandom::fill(&mut nonce).map_err(io_error)?;
+        let name = nonce.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let path = self.directory.path.join(format!("{name}.ts"));
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(io_error)?;
+        Ok(GrowingTs {
+            path,
+            file,
+            written: 0,
+            declared: None,
+            directory: self.directory.clone(),
+            used: self.used.clone(),
+            limit: self.limit,
         })
     }
     /// Shared staging: a unique `.part` file in the private session directory,
@@ -511,6 +582,63 @@ impl CastSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn growing_ts_declares_charges_pads_and_cleans_up() {
+        let root = root();
+        let summary = CastSummary {
+            packets: 0,
+            bytes: 0,
+            profile: 100,
+            level: 40,
+            width: 1920,
+            height: 1080,
+            has_b_frames: false,
+            audio_transcoded: true,
+            source_start_us: 0,
+            duration_us: 1,
+            gop_us: None,
+        };
+        let session = CastSession::new(&root, 188 * 8).unwrap();
+        let packet = NULL_PACKET;
+        // Undeclared: dropping removes the file and charges nothing.
+        let abandoned = session.growing_ts().unwrap();
+        let path = abandoned.path.clone();
+        assert!(path.exists());
+        drop(abandoned);
+        assert!(!path.exists());
+        let mut growing = session.growing_ts().unwrap();
+        growing.write(&packet).unwrap();
+        growing.write(&packet).unwrap();
+        // Shorter than written, unaligned or over quota are refused.
+        for length in [188, 188 * 3 + 1, 188 * 9] {
+            assert!(
+                growing.declare(length, summary.clone()).is_err(),
+                "{length}"
+            );
+        }
+        let file = growing.declare(188 * 5, summary.clone()).unwrap();
+        assert_eq!((file.summary.bytes, file.summary.packets), (188 * 5, 5));
+        assert_eq!(session.used.load(Ordering::Acquire), 188 * 5);
+        assert!(growing.declare(188 * 5, summary.clone()).is_err());
+        growing.write(&packet).unwrap();
+        growing.finish().unwrap();
+        // The cap holds after padding: nothing beyond the declared length.
+        assert!(growing.write(&packet).is_err());
+        let bytes = fs::read(file.path()).unwrap();
+        assert_eq!(bytes.len(), 188 * 5);
+        assert!(bytes.chunks_exact(188).all(|p| p == packet));
+        drop(growing);
+        assert!(
+            file.path().exists(),
+            "the published lease owns a declared file"
+        );
+        let published = file.path().to_owned();
+        drop(file);
+        assert!(!published.exists());
+        assert_eq!(session.used.load(Ordering::Acquire), 0);
+        drop(session);
+        fs::remove_dir_all(&root).unwrap();
+    }
     #[cfg(feature = "native-host")]
     #[test]
     fn retained_ts_is_verified_charged_leased_and_released() {

@@ -84,11 +84,152 @@ fn fixture_file(
                 length: std::fs::metadata(path).unwrap().len(),
                 mp4,
                 converted,
+                growth: None,
                 _lease: None,
             }),
             TsMime::Mp2t,
         )
         .unwrap()
+}
+
+/// A TS published at its declared length while `growth` reports progress.
+fn growing_file(
+    endpoint: &CastEndpoint,
+    id: u64,
+    path: &Path,
+    length: u64,
+) -> (PublishedMedia, Arc<Growth>) {
+    let growth = Growth::new();
+    growth.advance(std::fs::metadata(path).unwrap().len());
+    let media = endpoint
+        .publish(
+            id,
+            Body::File(FileBody {
+                path: path.into(),
+                length,
+                mp4: false,
+                converted: true,
+                growth: Some(growth.clone()),
+                _lease: None,
+            }),
+            TsMime::Mp2t,
+        )
+        .unwrap();
+    (media, growth)
+}
+
+#[test]
+fn growing_file_declares_its_length_and_reads_wait_at_the_rendered_edge() {
+    run(async {
+        let temp = Temp::new();
+        let path = temp.file("growing.ts", b"0123");
+        let endpoint = endpoint().await;
+        let (media, growth) = growing_file(&endpoint, 1, &path, 10);
+        let head = request(&endpoint, "HEAD", &media.uri, "").await;
+        assert_eq!(head.status, 200);
+        assert_eq!(head.headers["content-length"], "10");
+        // A range beyond the rendered prefix waits, then reads the new bytes.
+        let pending = tokio::spawn({
+            let uri = media.uri.clone();
+            let endpoint = endpoint.local_addr();
+            async move {
+                let mut socket = TcpStream::connect(endpoint).await.unwrap();
+                socket
+                    .write_all(
+                        format!(
+                            "GET {} HTTP/1.1\r\nHost: fixture\r\nRange: bytes=6-8\r\n\r\n",
+                            target(&uri)
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                let reply = reply(socket).await;
+                (
+                    reply.status,
+                    reply.headers["content-range"].clone(),
+                    reply.body().await,
+                )
+            }
+        });
+        let full = tokio::spawn({
+            let uri = media.uri.clone();
+            let endpoint = endpoint.local_addr();
+            async move {
+                let mut socket = TcpStream::connect(endpoint).await.unwrap();
+                socket
+                    .write_all(
+                        format!("GET {} HTTP/1.1\r\nHost: fixture\r\n\r\n", target(&uri))
+                            .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                reply(socket).await.body().await
+            }
+        });
+        sleep(Duration::from_millis(200)).await;
+        assert!(!pending.is_finished(), "unrendered bytes are awaited");
+        use std::io::Write as _;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(b"4567").unwrap();
+        growth.advance(8);
+        file.write_all(b"89").unwrap();
+        growth.complete(10);
+        let (status, range, body) = timeout(Duration::from_secs(3), pending)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (status, range.as_str(), body.as_slice()),
+            (206, "bytes 6-8/10", &b"678"[..])
+        );
+        assert_eq!(
+            timeout(Duration::from_secs(3), full)
+                .await
+                .unwrap()
+                .unwrap(),
+            b"0123456789"
+        );
+        // A failed render ends readers at the rendered edge, short of the length.
+        let path = temp.file("failed.ts", b"01");
+        let (failed, growth) = growing_file(&endpoint, 2, &path, 10);
+        let reader = tokio::spawn({
+            let endpoint = endpoint.local_addr();
+            async move {
+                let mut socket = TcpStream::connect(endpoint).await.unwrap();
+                socket
+                    .write_all(
+                        format!(
+                            "GET {} HTTP/1.1\r\nHost: fixture\r\n\r\n",
+                            target(&failed.uri)
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                reply(socket).await.body().await
+            }
+        });
+        sleep(Duration::from_millis(200)).await;
+        growth.fail();
+        assert_eq!(
+            timeout(Duration::from_secs(3), reader)
+                .await
+                .unwrap()
+                .unwrap(),
+            b"01"
+        );
+        // A newer generation abandons the render of the older one.
+        let path = temp.file("next.ts", b"0");
+        let (_next, next_growth) = growing_file(&endpoint, 3, &path, 1);
+        assert!(growth.abandoned());
+        assert!(!next_growth.abandoned());
+        endpoint.shutdown().await;
+        assert!(next_growth.abandoned());
+    });
 }
 
 fn target(uri: &str) -> &str {

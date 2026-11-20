@@ -182,8 +182,50 @@ struct FileBody {
     length: u64,
     mp4: bool,
     converted: bool,
+    /// Present while the file is still being rendered behind its declared length.
+    growth: Option<Arc<Growth>>,
     // File handles must close before the final T3 lease is dropped (Windows).
     _lease: Option<CastFile>,
+}
+
+/// Render progress of a file-mode TS published before it is complete
+/// (`CastEndpoint::publish_growing_file`). Its length is declared up front;
+/// readers wait at the rendered edge, then read on. The renderer reports
+/// progress here and stops once the generation is abandoned.
+#[derive(Default)]
+pub struct Growth {
+    written: AtomicU64,
+    // 0 rendering, 1 complete (padded to the declared length), 2 failed.
+    state: AtomicU8,
+    abandoned: AtomicBool,
+    wake: tokio::sync::Notify,
+}
+impl Growth {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+    /// Bytes now readable from the start of the file (monotonic).
+    pub fn advance(&self, written: u64) {
+        self.written.fetch_max(written, Ordering::AcqRel);
+        self.wake.notify_waiters();
+    }
+    pub fn complete(&self, written: u64) {
+        self.written.fetch_max(written, Ordering::AcqRel);
+        self.state.store(1, Ordering::Release);
+        self.wake.notify_waiters();
+    }
+    pub fn fail(&self) {
+        self.state.store(2, Ordering::Release);
+        self.wake.notify_waiters();
+    }
+    /// The generation was replaced, cleared or shut down: stop rendering.
+    pub fn abandoned(&self) -> bool {
+        self.abandoned.load(Ordering::Acquire)
+    }
+    fn abandon(&self) {
+        self.abandoned.store(true, Ordering::Release);
+        self.wake.notify_waiters();
+    }
 }
 enum Body {
     File(FileBody),
@@ -206,8 +248,13 @@ impl Generation {
     }
     fn cancel(&self) {
         self.cancel.cancel();
-        if let Body::Live(stream) = &self.body {
-            stream.cancel();
+        match &self.body {
+            Body::Live(stream) => stream.cancel(),
+            Body::File(FileBody {
+                growth: Some(growth),
+                ..
+            }) => growth.abandon(),
+            Body::File(_) => {}
         }
     }
 }
@@ -448,6 +495,36 @@ impl CastEndpoint {
             length,
             mp4,
             converted: file.summary.audio_transcoded,
+            growth: None,
+            _lease: Some(file),
+        };
+        self.publish(generation, Body::File(body), mime)
+    }
+
+    /// Publish a TS file whose final length is declared (`file.summary.bytes`)
+    /// while it is still being rendered; `growth` reports the readable
+    /// prefix. HTTP semantics are those of a file: Content-Length, Range and
+    /// HEAD use the declared length, and reads wait at the rendered edge.
+    pub fn publish_growing_file(
+        &self,
+        generation: u64,
+        file: CastFile,
+        growth: Arc<Growth>,
+        mime: TsMime,
+    ) -> Result<PublishedMedia, EndpointError> {
+        let length = file.summary.bytes;
+        if length == 0
+            || !length.is_multiple_of(188)
+            || file.path().extension().and_then(|s| s.to_str()) != Some("ts")
+        {
+            return Err(EndpointError::InvalidFile);
+        }
+        let body = FileBody {
+            path: file.path().to_owned(),
+            length,
+            mp4: false,
+            converted: file.summary.audio_transcoded,
+            growth: Some(growth),
             _lease: Some(file),
         };
         self.publish(generation, Body::File(body), mime)
@@ -732,7 +809,11 @@ async fn serve_file(
             .wait(input.metadata())
             .await?
             .map_err(|_| Reason::ReadError)?;
-        if !metadata.is_file() || metadata.len() != file.length {
+        let growing = file.growth.as_deref();
+        if !metadata.is_file()
+            || metadata.len() > file.length
+            || (growing.is_none() && metadata.len() != file.length)
+        {
             return Err(Reason::FileChanged);
         }
         writer
@@ -740,8 +821,13 @@ async fn serve_file(
             .await?
             .map_err(|_| Reason::ReadError)?;
         let mut block = [0; 64 * 1024];
+        let mut position = offset;
         while remaining != 0 {
-            let size = remaining.min(block.len() as u64) as usize;
+            let readable = match growing {
+                Some(growth) => rendered(writer, growth, position).await? - position,
+                None => remaining,
+            };
+            let size = remaining.min(readable).min(block.len() as u64) as usize;
             let count = writer
                 .wait(input.read(&mut block[..size]))
                 .await?
@@ -751,6 +837,7 @@ async fn serve_file(
             }
             writer.send(&block[..count], true).await?;
             remaining -= count as u64;
+            position += count as u64;
         }
         Ok(())
     }
@@ -759,6 +846,37 @@ async fn serve_file(
     // that bounded local read before closing, then release the T3 lease.
     drop(input.into_std().await);
     result
+}
+
+/// Wait until bytes past `position` are rendered; return the readable end.
+/// A render that makes no progress for the write-stall period ends the read.
+async fn rendered(writer: &Writer<'_>, growth: &Growth, position: u64) -> Result<u64, Reason> {
+    let mut deadline = tokio::time::Instant::now() + WRITE_STALL;
+    loop {
+        // Register before inspecting progress: no wakeup can be lost.
+        let notified = growth.wake.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        let written = growth.written.load(Ordering::Acquire);
+        match growth.state.load(Ordering::Acquire) {
+            2 => return Err(Reason::ProducerFailed),
+            _ if written > position => return Ok(written),
+            // Complete files are padded to their declared length.
+            1 => return Err(Reason::FileChanged),
+            _ => {}
+        }
+        match writer
+            .wait(tokio::time::timeout_at(deadline, notified))
+            .await?
+        {
+            Ok(()) => {
+                if growth.written.load(Ordering::Acquire) > written {
+                    deadline = tokio::time::Instant::now() + WRITE_STALL;
+                }
+            }
+            Err(_) => return Err(Reason::WriteStall),
+        }
+    }
 }
 
 async fn serve_live(writer: &mut Writer<'_>, stream: &LiveStream) -> Result<(), Reason> {
