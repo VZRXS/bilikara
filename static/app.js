@@ -1031,6 +1031,44 @@ function maybeShowIncomingRequestToast(previousData, nextData) {
   };
   if (isAudiencePlayerSurface()) fullscreenRequestNotice().show(state.presentationIncomingRequest);
   publishPresentationOutputState();
+  publishCastOverlay();
+}
+
+// A composited cast re-encodes the receiver's video under the same notices
+// the Audience window shows. Rust rasterizes this display-ready model and
+// expires entries itself; only content changes are posted.
+function castCompositedActive() {
+  const output = state.data?.media_output;
+  return output?.picture === "composited" && output.target === "purek";
+}
+function castOverlayText(value, max) {
+  return String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, max);
+}
+function publishCastOverlay() {
+  if (!castCompositedActive()) {
+    state.castOverlayPosted = "";
+    return;
+  }
+  const now = Date.now();
+  const toast = state.presentationIncomingRequest;
+  const entries = state.presentationActionFeedback?.entries || [];
+  const body = JSON.stringify({
+    toast: toast && toast.expiresAt > now ? {
+      key: castOverlayText(toast.key, 200), label: castOverlayText(t("toast.incomingRequest"), 40),
+      title: castOverlayText(toast.title, 300), expires_at: Math.round(toast.expiresAt),
+    } : null,
+    feedback: entries.filter(entry => entry.expiresAt > now).slice(-2).map(entry => ({
+      key: castOverlayText(entry.key, 200),
+      label: castOverlayText(t(`presentation.feedback.${entry.kind}`), 40),
+      value: castOverlayText(entry.kind === "muted" ? "" : entry.kind === "delay-lock"
+        ? t(`presentation.feedback.${entry.value}`) : entry.value, 40),
+      expires_at: Math.round(entry.expiresAt),
+    })),
+  });
+  if (body === state.castOverlayPosted) return;
+  state.castOverlayPosted = body;
+  void apiPost("/api/cast/overlay", JSON.parse(body), { timeoutMs: 5000 })
+    .catch(() => { state.castOverlayPosted = ""; });
 }
 
 function renderPresentationFeedback() {
@@ -1047,7 +1085,7 @@ function renderPresentationFeedback() {
     state.presentationFeedbackView.hide();
     state.presentationActionFeedback = null;
   }
-  if (!isAudiencePlayerSurface() && !dualScreen) {
+  if (!isAudiencePlayerSurface() && !dualScreen && !castCompositedActive()) {
     state.presentationFeedbackView.hide();
     state.presentationActionFeedback = null;
     return;
@@ -1063,7 +1101,8 @@ function showPresentationOperationFeedback(changes) {
   const feedback = window.BilikaraPresentationFeedback;
   const dualScreen = state.presentationSession?.mode === "localDualScreen"
     && ["activating", "active"].includes(state.presentationSession.phase);
-  if (!feedback || !elements.presentationFeedback || (!isAudiencePlayerSurface() && !dualScreen)) return;
+  if (!feedback || !elements.presentationFeedback
+    || (!isAudiencePlayerSurface() && !dualScreen && !castCompositedActive())) return;
   const notices = (Array.isArray(changes) ? changes : [changes]).map(change => ({
     ...change,
     key: `${state.presentationOutputSenderId}:${state.presentationFeedbackSequence = (state.presentationFeedbackSequence || 0) + 1}`,
@@ -1073,6 +1112,7 @@ function showPresentationOperationFeedback(changes) {
   if (!state.presentationFeedbackView) state.presentationFeedbackView = feedback.create(elements.presentationFeedback, t);
   if (isAudiencePlayerSurface()) state.presentationFeedbackView.show(state.presentationActionFeedback);
   publishPresentationOutputState();
+  publishCastOverlay();
 }
 
 function confirmPresentationPlaybackFeedback(session) {

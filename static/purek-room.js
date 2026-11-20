@@ -74,8 +74,8 @@
     await waitUntil(()=>snapshot?.state_epoch!==epoch||!castWorking()&&Number(cast().operation_id)>=accepted.operation_id);
     if(operation==="disconnect")await networkPresentation(false);
   }
-  async function setDeviceMode(device_key,mode){
-    const post=()=>request("/api/cast/command",{command:"cast.set_device_mode",device_key,mode,revision:state.data.revision});
+  async function setDeviceMode(device_key,mode,command="cast.set_device_mode",field="mode"){
+    const post=()=>request("/api/cast/command",{command,device_key,[field]:mode,revision:state.data.revision});
     let value;
     try{value=await post();}catch(error){
       if(error?.code!=="cast_revision_conflict")throw error;
@@ -109,9 +109,10 @@
       let row=rows.get(device.device_key);
       if(!row){
         row=document.createElement("section");row.className="purek-device";row.dataset.castDevice=device.device_key;
-        row.innerHTML='<div class="purek-room-line"><h4></h4><button type="button" class="toolbar-button purek-action" data-cast-connect></button></div><p class="cast-mode-label"></p><div class="request-subview-tabs cast-modes" role="group"></div><button type="button" class="toolbar-button purek-action" data-cast-compatibility-test hidden></button>';
+        row.innerHTML='<div class="purek-room-line"><h4></h4><button type="button" class="toolbar-button purek-action" data-cast-connect></button></div><p class="cast-mode-label"></p><div class="request-subview-tabs cast-modes" role="group"></div><p class="cast-mode-label cast-picture-label"></p><div class="request-subview-tabs cast-pictures" role="group"></div><button type="button" class="toolbar-button purek-action" data-cast-compatibility-test hidden></button>';
         row.querySelector("[data-cast-connect]").dataset.castConnect=device.device_key;
         for(const mode of ["auto","file","live"]){const button=document.createElement("button");button.type="button";button.dataset.castMode=mode;row.querySelector(".cast-modes").append(button);}
+        for(const picture of ["pure","composited"]){const button=document.createElement("button");button.type="button";button.dataset.castPicture=picture;row.querySelector(".cast-pictures").append(button);}
         rows.set(device.device_key,row);byId("cast-devices").append(row);
       }
       text(row.querySelector("h4"),device.label);
@@ -120,9 +121,18 @@
       text(connect,t(actions.has(connect)?"purek.working":selected?"purek.connected":"purek.connectShort"));
       const label=t(device.preferences_persisted===false?"cast.deliveryThisRun":"cast.delivery");
       text(row.querySelector("p"),label);row.querySelector("[role=group]").setAttribute("aria-label",label);
+      // A composited picture is always delivered live; the delivery choice
+      // stays stored for when the picture returns to pure media.
+      const picture=value.devices?.[device.device_key]?.picture||"pure";
       for(const button of row.querySelectorAll("[data-cast-mode]")){
-        button.disabled=Boolean(blocked);button.setAttribute("aria-pressed",String((value.devices?.[device.device_key]?.mode||"auto")===button.dataset.castMode));
+        button.disabled=Boolean(blocked||picture==="composited");button.setAttribute("aria-pressed",String((value.devices?.[device.device_key]?.mode||"auto")===button.dataset.castMode));
         text(button,t(actions.has(button)?"purek.working":`cast.mode.${button.dataset.castMode}`));
+      }
+      const pictureLabel=t("cast.picture");
+      text(row.querySelector(".cast-picture-label"),pictureLabel);row.querySelector(".cast-pictures").setAttribute("aria-label",pictureLabel);
+      for(const button of row.querySelectorAll("[data-cast-picture]")){
+        button.disabled=Boolean(blocked);button.setAttribute("aria-pressed",String(picture===button.dataset.castPicture));
+        text(button,t(actions.has(button)?"purek.working":`cast.picture.${button.dataset.castPicture}`));
       }
     }
     byId("cast-empty").hidden=devices.length>0;text(byId("cast-empty"),t("cast.empty"));
@@ -350,7 +360,9 @@
     const button=event.target.closest("button"),row=button?.closest("[data-cast-device]");
     if(!row||button.disabled)return;
     if(button.hasAttribute("data-cast-compatibility-test")){selfTest?.open(button,row.dataset.castDevice);return;}
-    void action(button,()=>button.dataset.castMode?setDeviceMode(row.dataset.castDevice,button.dataset.castMode):castAction("connect",{device_key:row.dataset.castDevice}));
+    void action(button,()=>button.dataset.castMode?setDeviceMode(row.dataset.castDevice,button.dataset.castMode)
+      :button.dataset.castPicture?setDeviceMode(row.dataset.castDevice,button.dataset.castPicture,"cast.set_device_picture","picture")
+      :castAction("connect",{device_key:row.dataset.castDevice}));
   });
   document.addEventListener("keydown",event=>{
     if(!opened)return;

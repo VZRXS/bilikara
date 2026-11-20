@@ -5165,6 +5165,7 @@ window.BilikaraPresentationFeedback = {
 };
 isAudiencePlayerSurface = () => true;
 global.publishPresentationOutputState = () => {};
+global.publishCastOverlay = () => {};
 const video = new FakeMedia(10), audio = new FakeMedia(9.8);
 mountedVideo = video; mountedAudio = audio;
 const session = state.hostPlaybackSession;
