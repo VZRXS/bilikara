@@ -2034,40 +2034,11 @@ html:not([data-host-layout="portrait"]) .current-title-text {
 }
 
 /* Only a desktop exit runs the cache cleanup; Android and iOS end the app
-   without it, so they offer a manual clear in place of the promise. */
+   without it, so they offer a manual clear (the compact data-reset tool) in
+   place of the promise. */
 :root:is([data-host-platform="android"], [data-host-platform="ios"]) .cache-auto-clear-hint,
-:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .cache-clear-badge {
+:root:not(:is([data-host-platform="android"], [data-host-platform="ios"])) .cache-clear-button {
   display: none;
-}
-
-/* Same pill as the Bilibili login badge beside it. */
-.cache-clear-badge {
-  display: inline-grid;
-  place-items: center;
-  min-width: 52px;
-  border: none;
-  cursor: pointer;
-  border-radius: 999px;
-  padding: 3px 8px;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1.2;
-  background: rgba(109, 98, 88, 0.12);
-  color: var(--muted);
-  transition:
-    background 180ms ease,
-    color 180ms ease;
-}
-
-.cache-clear-badge:focus-visible,
-.cache-clear-badge:active {
-  background: var(--status-failed-bg, rgba(177, 69, 69, 0.14));
-  color: var(--red);
-}
-
-.cache-clear-badge:disabled {
-  cursor: default;
-  opacity: 0.55;
 }
 
 .cache-slider-block {
