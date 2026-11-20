@@ -22,7 +22,19 @@ export function androidVersion(tag) {
   return { name: tag.slice(1), code };
 }
 
-export function buildMetadata(env) {
+// The committed application version (tauri.conf.json), never a run input.
+export function sourceVersion() {
+  return JSON.parse(fs.readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8")).version;
+}
+
+// Non-tag APKs (the separate .alpha package) are dev builds of the source
+// version: "0.9.0-dev" in the app, ordered just below that version's previews.
+export function devVersion(source) {
+  if (!/^\d+\.\d+\.\d+$/.test(String(source))) throw new Error("The source version must be MAJOR.MINOR.PATCH");
+  return { name: `${source}-dev`, code: androidVersion(`v${source}-preview.0`).code };
+}
+
+export function buildMetadata(env, source = sourceVersion()) {
   const release = env.GITHUB_REF_TYPE === "tag";
   if (release) {
     const version = androidVersion(env.GITHUB_REF_NAME);
@@ -31,7 +43,7 @@ export function buildMetadata(env) {
   const ref = String(env.GITHUB_REF_NAME || "local").replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 80);
   const signing = env.GITHUB_EVENT_NAME === "workflow_dispatch" ? "beta" : "ephemeral";
   const suffix = signing === "beta" ? "debug" : "ephemeral-debug";
-  return { release: false, signing, version: androidVersion("v0.8.0-preview.0"), apk: `bilikara-beta-${ref}-android-arm64-${suffix}.apk` };
+  return { release: false, signing, version: devVersion(source), apk: `bilikara-beta-${ref}-android-arm64-${suffix}.apk` };
 }
 
 export function prepareBetaSigning(env, expectedCertificate = betaCertificateSha256) {

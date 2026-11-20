@@ -8,7 +8,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { androidVersion, buildMetadata, prepareBetaSigning, verifyBetaSigner } from "../scripts/android_release.mjs";
+import { androidVersion, buildMetadata, devVersion, prepareBetaSigning, sourceVersion, verifyBetaSigner } from "../scripts/android_release.mjs";
 
 test("Android preview/stable versionCodes increase without colliding with prior Alpha", () => {
   const tags = ["v0.8.0-preview.0", "v0.8.0-preview.12", "v0.8.0", "v0.8.1-preview.0", "v0.8.1", "v0.9.0", "v1.0.0"];
@@ -30,6 +30,22 @@ test("manual Bundle uses automatic naming and never accepts an embedded-version 
   assert.equal(original.apk, 'bilikara-beta-feature-ios-android-arm64-debug.apk');
   assert.deepEqual(buildMetadata({...env, BILIKARA_BUNDLE_VERSION: 'v99.0.0'}), original);
   assert.equal(original.release, false);
+});
+test("non-tag APKs show the committed source version as a dev build", () => {
+  const source = JSON.parse(fs.readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8")).version;
+  assert.equal(sourceVersion(), source);
+  for (const event of ["workflow_dispatch", "pull_request"]) {
+    const meta = buildMetadata({ GITHUB_REF_TYPE: "branch", GITHUB_REF_NAME: "next", GITHUB_EVENT_NAME: event });
+    assert.deepEqual(meta.version, devVersion(source));
+  }
+  assert.deepEqual(devVersion("0.9.0"), { name: "0.9.0-dev", code: 9000000 });
+  // Ordered after the former fixed beta code, below the version's previews.
+  assert.ok(devVersion("0.9.0").code > androidVersion("v0.8.0-preview.0").code);
+  assert.ok(devVersion("0.9.0").code < androidVersion("v0.9.0-preview.1").code);
+  assert.ok(devVersion("0.9.1").code > androidVersion("v0.9.0").code);
+  for (const bad of ["0.9.0-dev", "v0.9.0", "0.9", ""]) assert.throws(() => devVersion(bad), /MAJOR\.MINOR\.PATCH/);
+  // A tag keeps its own version even if the source differs.
+  assert.equal(buildMetadata({ GITHUB_REF_TYPE: "tag", GITHUB_REF_NAME: "v0.9.0-preview.1" }, "0.9.0").version.name, "0.9.0-preview.1");
 });
 test("Android SDK bootstrap excludes the unavailable legacy tools package", () => {
   const workflow = mobileWorkflow;
