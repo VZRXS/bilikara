@@ -29,7 +29,7 @@
   }
   const owners = 'button,input,textarea,select,a,summary,audio,video,[role="button"],[role="tab"],[role="tablist"],'
     + '[contenteditable="true"],[draggable="true"],[role="slider"],[role="combobox"],[role="textbox"],'
-    + '[hidden],[inert],.result-page-viewport,.result-pager,.source-editor-tools,'
+    + '[hidden],[inert],.result-page-viewport,.result-pager,.source-frame-footer,'
     + '.android-host-dock,.work-rail,[data-subtab-swipe-owner]';
   // Result viewports own swipes over their cards, but the blank space below a
   // partly filled page is not result content (result-pagination.js leaves it

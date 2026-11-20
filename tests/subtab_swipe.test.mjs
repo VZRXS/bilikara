@@ -104,7 +104,7 @@ for (const family of ['touch', 'pointer']) {
       ['fixed tab', f => f.child(['[role="tab"]'], f.nestedFixed)],
       ...['button', 'input', 'textarea', 'select', 'a', 'summary', 'audio', 'video', '[role="button"]',
         '[role="tablist"]', '[role="slider"]', '[contenteditable="true"]', '[draggable="true"]',
-        '.result-page-viewport', '.result-pager', '.source-editor-tools'].map(selector => [selector, f => f.child([], f.child([selector]))]),
+        '.result-page-viewport', '.result-pager', '.source-frame-footer'].map(selector => [selector, f => f.child([], f.child([selector]))]),
       ['overflow strip', f => { const node = f.child([]); node.scrollWidth = 600; node.overflowX = 'auto'; return f.child([], node); }],
       ['outside active content', f => f.child([], f.root)],
     ];

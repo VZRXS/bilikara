@@ -9,6 +9,16 @@
 /* The 52px trash slot leaves 4px below its 44px control; the pager adds its own
    4px top inset. No extra gap is needed for the existing 8px control clearance. */
 .source-frame-footer { display: flex; flex-direction: column; flex: 0 0 auto; min-width: 0; gap: 0; }
+/* Portrait phones: the tools row overlaps the last card row by 28px (the 8px
+   list gap plus 28px), so one more complete row fits above the pager. Only its
+   controls take input; its blank part passes taps and drags to the cards. The
+   pager never overlaps cards, and hidden tools take no overlap. */
+html[data-host-layout="portrait"] .source-frame-footer > .source-tools {
+  position: relative;
+  z-index: 1;
+  margin-top: -36px;
+  pointer-events: none;
+}
 .source-frame-footer[hidden] { display: none; }
 .source-tools {
   flex: 0 0 52px;

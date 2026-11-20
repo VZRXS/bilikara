@@ -621,7 +621,7 @@ for(const engine of [chromium,webkit])for(const [client,nativeDock] of [['androi
               const q=s=>rect(n.querySelector(s)),grid=n.querySelector('.follow-up-grid'),style=getComputedStyle(grid),panelStyle=getComputedStyle(n);
               const dock=document.getElementById('android-host-dock'),dockBox=dock?.getBoundingClientRect();
               const hasDock=Boolean(dock?.getClientRects().length&&dockBox.width>0&&dockBox.height>0);
-              return {panel:rect(n),panelInnerBottom:n.getBoundingClientRect().bottom-(parseFloat(panelStyle.paddingBottom)||0)-(parseFloat(panelStyle.borderBottomWidth)||0),
+              return {portrait:document.documentElement.dataset.hostLayout==='portrait',panel:rect(n),panelInnerBottom:n.getBoundingClientRect().bottom-(parseFloat(panelStyle.paddingBottom)||0)-(parseFloat(panelStyle.borderBottomWidth)||0),
                 scroll:q('.source-browse-scroll'),viewport:q('.result-page-viewport'),grid:rect(grid),footer:q('.source-frame-footer'),tools:q('.source-tools'),pager:q('.host-result-pager'),dock:hasDock?rect(dock):null,
                 cards:[...grid.children].map(rect),fitHeight:n.querySelector('.source-browse-scroll').clientHeight,columns:style.gridTemplateColumns.split(' ').length,gap:parseFloat(style.rowGap),padding:parseFloat(style.paddingTop)+parseFloat(style.paddingBottom),pageSize:Number(n.querySelector('.host-result-pager').dataset.pageSize),
                 targets:[...n.querySelectorAll('.source-tools button,.source-trash-slot,.host-result-pager button')].filter(n=>n.getClientRects().length).map(rect)};
@@ -646,7 +646,11 @@ for(const engine of [chromium,webkit])for(const [client,nativeDock] of [['androi
             assert.ok(sample.targets.every(r=>r.height>=44&&r.right<=sample.panel.right+.5&&r.left>=sample.panel.left-.5),'full tool and pager targets retain their bounds');
             assert.equal(sample.tools.height,52,'the approved trash slot is preserved');
             assert.equal(sample.pager.top-sample.tools.bottom,0,'the two inner insets replace the old footer gap');
-            assert.equal(sample.footer.height,104,'52px tools and 52px pager have no extra gap');
+            if(sample.portrait){
+              // Portrait phones: the tools row overlaps the last card row by 28px.
+              assert.ok(Math.abs(sample.scroll.bottom-28-sample.tools.top)<=1,'the tools row overlaps the cards by 28px');
+              assert.equal(sample.footer.height,68,'52px tools minus the 36px overlap, plus the 52px pager');
+            }else assert.equal(sample.footer.height,104,'52px tools and 52px pager have no extra gap');
             await pagerTargets(pager);
             if(sample.columns===3&&sample.scroll.height>=sample.cards[0].height*5+sample.gap*4+sample.padding)assert.ok(sample.pageSize>=15,'five fitting rows require at least 15 records per page');
             if(evidence&&font===16&&width===393)await page.screenshot({path:path.join(evidence,`sources-${engine.name()}-${client}-${nativeDock?'native':'web'}-${mode}-${height}.png`)});

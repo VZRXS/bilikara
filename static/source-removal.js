@@ -393,6 +393,9 @@
       const box = this.trashSlot.getBoundingClientRect();
       pointer.overTrash = event.clientX >= box.left && event.clientX <= box.right && event.clientY >= box.top && event.clientY <= box.bottom;
       this.remove.classList.toggle('drag-over',pointer.overTrash);
+      // On portrait phones the trash slot overlaps the last card row: there a
+      // drop removes, never inserts between the covered cards or auto-scrolls.
+      if (pointer.overTrash) { pointer.valid = false; this.clearIndicators(); return; }
       const owner = this.scrollOwner();
       const bounds = this.grid.getBoundingClientRect(), scroll = owner.getBoundingClientRect();
       pointer.valid = event.clientX >= bounds.left && event.clientX <= bounds.right
