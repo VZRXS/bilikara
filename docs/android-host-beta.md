@@ -53,7 +53,11 @@ The APK bundles the shared libav/Signalsmith companion, built with NDK
 27.0.12077973 for the selected 64-bit ABI. Startup admits only the installed
 `ApplicationInfo.nativeLibraryDir` companion and validates L0/L1 capability
 before starting Host workers; missing or incompatible libraries fail explicitly.
-Local playback continues in WebView. Native libraries, licenses and the complete
+Local playback continues in WebView. A composited cast (TV picture
+*Composited*) decodes, overlays and encodes on the GPU and the platform H.264
+encoder (`HostCastCompositor`, MediaCodec with GLES surfaces); the companion
+only muxes the encoded video with the L1 audio. See
+[composited casting](purek-media-output.md). Native libraries, licenses and the complete
 rebuild kit are assembled by `app/media.gradle.kts`; see the
 [media rebuild contract](../media-libav/REBUILD.md#android). This establishes
 software availability, not physical receiver qualification.
