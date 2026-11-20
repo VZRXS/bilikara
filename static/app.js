@@ -1022,7 +1022,12 @@ function showFullscreenRequestToast(title) {
 
 function maybeShowIncomingRequestToast(previousData, nextData) {
   const item = window.BilikaraIncomingRequest?.newestAddition(previousData, nextData);
-  if (!item) return;
+  if (!item) {
+    // A composited cast also needs its card labels once it starts; the
+    // overlay post is deduplicated.
+    publishCastOverlay();
+    return;
+  }
   const title = item.display_title || item.title || t("toast.incomingRequest");
   state.presentationIncomingRequest = {
     key: `${nextData.state_revision}:${item.id}`,
@@ -1064,6 +1069,9 @@ function publishCastOverlay() {
         ? t(`presentation.feedback.${entry.value}`) : entry.value, 40),
       expires_at: Math.round(entry.expiresAt),
     })),
+    // Text of the TV's own cards (next song, waiting, paused) in this UI's language.
+    labels: Object.fromEntries(["next", "later", "requester", "countdown", "waiting", "caching", "paused", "failed", "finished"]
+      .map(key => [key, castOverlayText(t(`cast.tv.${key}`), 40)])),
   });
   if (body === state.castOverlayPosted) return;
   state.castOverlayPosted = body;
@@ -15767,7 +15775,8 @@ function renderVolumeControls(playbackMode) {
 
 function networkDspUnavailable() {
   const output = state.data?.media_output;
-  return output?.target === "purek" && output.pipeline_level !== "L1";
+  // L1 and the composited L2 both render pitch, delay and track live.
+  return output?.target === "purek" && !["L1", "L2"].includes(output.pipeline_level);
 }
 
 function renderNetworkDspHelp(panel, helpId) {

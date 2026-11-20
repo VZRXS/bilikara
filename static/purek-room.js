@@ -109,7 +109,7 @@
       let row=rows.get(device.device_key);
       if(!row){
         row=document.createElement("section");row.className="purek-device";row.dataset.castDevice=device.device_key;
-        row.innerHTML='<div class="purek-room-line"><h4></h4><button type="button" class="toolbar-button purek-action" data-cast-connect></button></div><p class="cast-mode-label"></p><div class="request-subview-tabs cast-modes" role="group"></div><p class="cast-mode-label cast-picture-label"></p><div class="request-subview-tabs cast-pictures" role="group"></div><button type="button" class="toolbar-button purek-action" data-cast-compatibility-test hidden></button>';
+        row.innerHTML='<div class="purek-room-line"><h4></h4><button type="button" class="toolbar-button purek-action" data-cast-connect></button></div><p class="cast-mode-label"></p><div class="request-subview-tabs cast-modes" role="group"></div><p class="cast-mode-label cast-picture-label"></p><div class="request-subview-tabs cast-pictures" role="group"></div><p class="cast-mode-label cast-picture-hint" hidden></p><button type="button" class="toolbar-button purek-action" data-cast-compatibility-test hidden></button>';
         row.querySelector("[data-cast-connect]").dataset.castConnect=device.device_key;
         for(const mode of ["auto","file","live"]){const button=document.createElement("button");button.type="button";button.dataset.castMode=mode;row.querySelector(".cast-modes").append(button);}
         for(const picture of ["pure","composited"]){const button=document.createElement("button");button.type="button";button.dataset.castPicture=picture;row.querySelector(".cast-pictures").append(button);}
@@ -134,6 +134,13 @@
         button.disabled=Boolean(blocked);button.setAttribute("aria-pressed",String(picture===button.dataset.castPicture));
         text(button,t(actions.has(button)?"purek.working":`cast.picture.${button.dataset.castPicture}`));
       }
+      // The connected receiver: why a composited picture fell back, or what
+      // it did not declare that a composited picture needs.
+      const output=state.data?.media_output,hint=row.querySelector(".cast-picture-hint");
+      const lacking=selected?output?.receiver_capabilities?.missing?.composited||[]:[];
+      const refused=selected&&output?.composite_reason?t(`cast.compositeRefused.${output.composite_reason}`):"";
+      const hintText=refused||(lacking.length?t("cast.capability.missingComposited").replace("{list}",lacking.map(key=>t(`cast.capability.${key}`)).join(" / ")):"");
+      text(hint,hintText);hint.hidden=!hintText;
     }
     byId("cast-empty").hidden=devices.length>0;text(byId("cast-empty"),t("cast.empty"));
     selfTest?.render();wake();

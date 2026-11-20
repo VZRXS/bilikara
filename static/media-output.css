@@ -20,6 +20,7 @@
 .media-output-details p+p {margin-top:8px;}
 .media-output-note {color:var(--muted);}
 .media-output-error {color:var(--danger-btn-color, var(--red));}
+.media-output-capabilities {display:block;margin-top:6px;white-space:pre-line;color:var(--muted);}
 .media-output-targets {min-height:44px;flex:none;margin-inline-start:auto;}
 .media-output-targets:is(:has(input:disabled), :where([data-legacy-has~="r28"])) {cursor:default;opacity:.55;}
 .media-output-card button:not(.media-output-help):not(.settings-tool-button) {

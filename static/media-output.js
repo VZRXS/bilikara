@@ -24,7 +24,10 @@
     help.innerHTML = `<button type="button" class="media-output-help ${options.host?"cache-advanced-info-button":"remote-info-button"}" aria-expanded="false" aria-describedby="${helpId}"><span class="contextual-info-glyph" aria-hidden="true">i</span></button><span class="media-output-details ${options.host?"cache-advanced-tooltip":"remote-tooltip-bubble"}" id="${helpId}" role="tooltip"></span>`;
     nodes.help = help.querySelector("button");
     const details = help.querySelector("[role=tooltip]");
-    details.append(nodes.note,nodes.error);
+    // Receiver capabilities and a composited fallback, below the note.
+    nodes.capabilities=document.createElement("span");nodes.capabilities.className="media-output-capabilities";
+    nodes.capabilities.hidden=true;
+    details.append(nodes.note,nodes.capabilities,nodes.error);
     nodes.error.removeAttribute("role");
     const title = document.createElement("div");title.className="media-output-title";
     nodes.experimental = document.createElement("span");nodes.experimental.className="experimental-label";
@@ -36,7 +39,7 @@
         const intro=document.createElement("span");intro.dataset.i18n=sharedHelp.dataset.i18n;intro.textContent=sharedHelp.textContent;
         sharedHelp.removeAttribute("data-i18n");sharedHelp.replaceChildren(intro);
       }
-      sharedHelp.append(nodes.note,nodes.error);
+      sharedHelp.append(nodes.note,nodes.capabilities,nodes.error);
       nodes.help=sharedHelp.parentElement.querySelector("button");
       title.append(nodes.heading,nodes.experimental,nodes.status);
     }else title.append(nodes.heading,help,nodes.experimental,nodes.status);
@@ -109,6 +112,24 @@
       act(nodes.pipeline,()=>start("native"));
     });
     nodes.select.addEventListener("change", () => {const mode=nodes.select.value;act(nodes.select, () => post({offset_mode:mode}));});
+    // "TV capabilities · MPEG-TS ✓ · H.264 ?", what the picture lacks, and
+    // why a composited picture fell back to pure media.
+    function renderCapabilities(output, network, t) {
+      const caps = network ? output.receiver_capabilities : null, lines = [];
+      if (caps?.declared) {
+        const mark = value => value === "yes" ? "✓" : value === "no" ? "✗" : "?";
+        const names = ["ts","h264","mpeg2","mp4","live"];
+        lines.push([t("cast.capability.title"), ...names.map(key => `${t(`cast.capability.${key}`)} ${mark(caps.declared[key])}`)].join(" · "));
+        const missing = caps.missing?.[output.picture === "composited" ? "composited" : "pure"] || [];
+        if (missing.length) lines.push(t("cast.capability.missing").replace("{list}", missing.map(key => t(`cast.capability.${key}`)).join(" / ")));
+      }
+      if (network && output.composite_reason) {
+        const key = `cast.compositeRefused.${output.composite_reason}`, message = t(key);
+        lines.push(message === key ? output.composite_reason : message);
+      }
+      nodes.capabilities.hidden = !lines.length;
+      text(nodes.capabilities, lines.join("\n"));
+    }
     function render(data) {
       if(errorKey&&errorContext!==context(data))clearError();
       current = data;
@@ -126,6 +147,7 @@
       nodes.help.setAttribute("aria-label",t("common.moreInfo"));
       text(nodes.status, t(`mediaOutput.status.${["local","notConnected","authorized","probing","unverified","ready","unsupported","starting","streaming","paused","pausing","stopping","waiting","error","stopped"].includes(phase)?phase:"stopped"}`));
       text(nodes.note, t(output.target==="native" ? "mediaOutput.standaloneHint" : network ? (Number.isFinite(output.measured_adjust_latency_ms)?"mediaOutput.experimentalHintMeasured":"mediaOutput.experimentalHint") : !output.available ? "mediaOutput.backendUnavailable" : noDevice ? (canDecode()?"purek.help":"mediaOutput.decoderUnavailable") : phase==="unverified" ? "purek.output.unverified" : "mediaOutput.chooseHint"));
+      renderCapabilities(output, network, t);
       nodes.pipeline.hidden=!canTestPipeline();
       nodes.pipeline.disabled=pending||output.busy;
       nodes.pipeline.title=t("mediaOutput.standaloneHint");

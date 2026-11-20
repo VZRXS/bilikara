@@ -17,20 +17,20 @@ function fixture() {
     click(){if(!this.disabled)this.listeners.click?.();}
     getClientRects(){return this.hidden||this.parentElement?.hidden?[]:[{}];}
   }
-  const root=new Node(),page=new Node(),errors=[],observers=new Set(),scanButton=new Node(),scanTool=new Node(),scans=[];
+  const root=new Node(),page=new Node(),errors=[],observers=new Set(),scanButton=new Node(),scanTool=new Node(),scans=[],created=[];
   root.parentElement=page;root.dataset.mediaOutput='settings';
   // The real #purek-open already owns local camera / Remote invitation /
   // authorization and connected management. The output component must reuse it.
   scanButton.closest=selector=>selector==='.purek-scan-tool'?scanTool:null;
   scanButton.addEventListener('click',()=>scans.push('existing-scan-flow'));
   root.querySelector('select').options=[new Node(),new Node()];root.querySelector('.media-output-mode').firstElementChild=new Node();
-  const context={BilikaraNativeOutput:{decoderKind:()=> 'mse'},document:{querySelectorAll:selector=>selector==='[data-media-output]'?[root]:[],getElementById:id=>id==='purek-open'?scanButton:null,createElement:()=>new Node()},getComputedStyle:()=>({visibility:'visible'}),
+  const context={BilikaraNativeOutput:{decoderKind:()=> 'mse'},document:{querySelectorAll:selector=>selector==='[data-media-output]'?[root]:[],getElementById:id=>id==='purek-open'?scanButton:null,createElement:()=>{const node=new Node();created.push(node);return node;}},getComputedStyle:()=>({visibility:'visible'}),
     MutationObserver:class{constructor(fn){this.fn=fn;}observe(){observers.add(this);}disconnect(){observers.delete(this);}}};
   context.window=context;vm.runInNewContext(readFileSync(new URL('../static/media-output.js',import.meta.url),'utf8'),context);
   const options={host:true,t:key=>key,onError:key=>errors.push(key),request:async()=>{throw Error('request failed');}};
   let data={media_output:{target:'local',requested_target:'local',status:'authorized',authorized:true,available:true,can_manage:true,offset_mode:'splice',busy:false}};
   const sync=patch=>{data={...data,...patch};context.BilikaraMediaOutput.sync(data,options);};sync();
-  return {root,page,options,errors,sync,scanButton,scans,setDecoder:kind=>{context.BilikaraNativeOutput=kind?{decoderKind:()=>kind}:undefined;},output:patch=>sync({media_output:{...data.media_output,...patch}}),
+  return {root,page,options,errors,sync,scanButton,scans,created,setDecoder:kind=>{context.BilikaraNativeOutput=kind?{decoderKind:()=>kind}:undefined;},output:patch=>sync({media_output:{...data.media_output,...patch}}),
     node:key=>root.querySelector(key),status:()=>root.querySelector('.media-output-status').textContent,
     fail:async()=>{await root.querySelector('.media-output-toggle').listeners.change();await new Promise(resolve=>setImmediate(resolve));},
     visibility:()=>{for(const observer of [...observers])observer.fn();}};
@@ -173,4 +173,22 @@ test('standalone action has an explicit three-language test label',()=>{
   for(const [language,label] of [['zh','管线测试'],['en','Test pipeline'],['ja','パイプラインテスト']]){
     assert.equal(languages[language]['mediaOutput.pipelineTest'],label);
   }
+});
+
+test('the info tip lists receiver capabilities, what the picture lacks and a composited fallback',()=>{
+  const f=fixture(),caps=()=>f.created.find(node=>node.className==='media-output-capabilities');
+  assert.equal(caps().hidden,true,'nothing while local');
+  f.output({target:'purek',status:'streaming',picture:'composited',composite_reason:'receiver_live_unsupported',
+    receiver_capabilities:{declared:{ts:'yes',h264:'unknown',mpeg2:'no',mp4:'no',live:'yes'},composited_codec:'mpeg2',missing:{pure:[],composited:['mpeg2']}}});
+  const [line,missing,reason]=caps().textContent.split('\n');
+  assert.equal(line,'cast.capability.title · cast.capability.ts ✓ · cast.capability.h264 ? · cast.capability.mpeg2 ✗ · cast.capability.mp4 ✗ · cast.capability.live ✓');
+  assert.equal(missing,'cast.capability.missing');
+  assert.equal(reason,'receiver_live_unsupported','an untranslated reason stays readable');
+  assert.equal(caps().hidden,false);
+  f.options.t=key=>({'cast.capability.missing':'Missing: {list}','cast.capability.mpeg2':'MPEG-2','cast.compositeRefused.receiver_live_unsupported':'Fell back'})[key]??key;
+  f.output({picture:'pure'});
+  assert.deepEqual(caps().textContent.split('\n').slice(1),['Fell back'],'pure media lacks nothing here');
+  f.output({picture:'composited',composite_reason:null});
+  assert.equal(caps().textContent.split('\n')[1],'Missing: MPEG-2');
+  f.output({target:'local'});assert.equal(caps().hidden,true);
 });
