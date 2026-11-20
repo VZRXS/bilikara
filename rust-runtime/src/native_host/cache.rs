@@ -381,6 +381,41 @@ fn project_problem(item: &PlaylistItem, message: &str, failed: bool) -> Result<(
     })
 }
 
+/// The Host's "clear cache": every cached song except the current one is
+/// evicted through the authoritative cache event (as when its files vanish),
+/// then whatever nothing references any more is deleted. The pump caches the
+/// upcoming window again when it needs it. Returns the evicted songs.
+pub(super) fn clear(context: &HostContext) -> Result<usize, ApiError> {
+    let cleared = with_app(|app| {
+        let snapshot = app.native_core_snapshot()?;
+        let mut cleared = 0;
+        for item in snapshot
+            .playlist
+            .iter()
+            .filter(|i| i.cache_status == "ready")
+        {
+            let reservation = app
+                .reserve_runtime_attempt(&item.id, &item.item_incarnation_id)
+                .map_err(|e| ApiError::new(409, &e.kind, e.message))?;
+            app.native_execute(crate::app_state::AppStateRequest::ApplyCacheEvent {
+                schema_version: 1,
+                item_id: item.id.clone(),
+                cache_attempt_token: reservation.cache_attempt_token,
+                event: crate::app_state::CacheEvent::Evicted {
+                    message: "等待缓存".into(),
+                },
+                now: now(),
+            })?;
+            app.settle_artifact_reservation(&reservation);
+            cleared += 1;
+        }
+        Ok(cleared)
+    })?;
+    super::maintenance::collect(&context.cache_root, false)
+        .map_err(|e| ApiError::io("cache_storage", "无法清理缓存", e))?;
+    Ok(cleared)
+}
+
 // Song logs stay for the whole Host run, including songs that already left the
 // queue, so failed or slow downloads can still be diagnosed. Only shutdown
 // clears them.
@@ -620,12 +655,9 @@ pub(super) fn retry(
 #[cfg(test)]
 mod log_tests {
     use super::*;
-    #[test]
-    fn native_pump_retains_three_ready_items_self_heals_and_reports_unavailable_source() {
+    /// A Host with `count` cached songs (song0 is current), files on disk.
+    fn ready_fixture(count: usize) -> HostContext {
         use crate::app_state::{AppStateRequest, CacheEvent};
-        let _guard = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK
-            .lock()
-            .unwrap();
         let directory =
             std::env::temp_dir().join(format!("bilikara-cache-regression-{}", token().unwrap()));
         let context = HostContext {
@@ -653,7 +685,7 @@ mod log_tests {
             let seed = serde_json::from_value(json!({"session_users":["Alice"],"session_started_at":1,"session_played_file":"test.json","updated_at":1})).unwrap();
             app.native_execute(AppStateRequest::Initialize {schema_version:1,state:Box::new(seed)})?;
             app.open_artifact_lifetime(&context.cache_root).unwrap();
-            for index in 0..5 {
+            for index in 0..count {
                 let id = format!("song{index}");
                 let item = serde_json::from_value(json!({"id":id,"original_url":"https://example.test/song","resolved_url":"https://example.test/song","bvid":"BV1xx411c7mD","aid":1,"cid":index+1,"title":"Song","part_title":"P1","display_title":"Song","cover_url":"","embed_url":"","selected_pages":[1],"selected_cids":[index+1],"selected_durations":[120],"selected_parts":["P1"],"available_pages":[1],"available_cids":[index+1],"available_durations":[120],"available_parts":["P1"]})).unwrap();
                 app.native_execute(AppStateRequest::AddItem { requester_user_id: None,
@@ -668,9 +700,83 @@ schema_version:1,item,position:"tail".into(),requester_name:"Alice".into(),reset
                 let event: CacheEvent = serde_json::from_value(json!({"kind":"ready","message":"ready","video_relative_path":format!("{relative}/video.mp4"),"video_media_url":format!("/media/{relative}/video.mp4"),"audio_variants":[{"id":"p1_p1","label":"P1","page":1,"audio_url":format!("/media/{relative}/audio.m4a")}],"selected_audio_variant_id":"p1_p1","item_incarnation_id":reservation.item_incarnation_id,"artifact_set_id":reservation.artifact_set_id,"artifact_relative_directory":relative})).unwrap();
                 app.native_execute(AppStateRequest::ApplyCacheEvent {schema_version:1,item_id:id,cache_attempt_token:reservation.cache_attempt_token,event,now:3.0})?;
             }
-            app.native().cache_policy.max_cache_items = 1;
             Ok(())
         }).unwrap();
+        context
+    }
+
+    #[test]
+    fn clearing_evicts_every_cached_song_but_the_current_one_and_deletes_its_files() {
+        use crate::app_state::AppStateRequest;
+        let _guard = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK
+            .lock()
+            .unwrap();
+        let context = ready_fixture(3);
+        let snapshot = with_app(|app| app.native_core_snapshot()).unwrap();
+        let current = snapshot.current_item.unwrap();
+        let evicted = snapshot.playlist.clone();
+        assert!(evicted.iter().all(|i| i.cache_status == "ready"));
+        assert_eq!(clear(&context).unwrap(), 2);
+        let after = with_app(|app| app.native_core_snapshot()).unwrap();
+        assert_eq!(after.current_item.as_ref().unwrap().cache_status, "ready");
+        assert_eq!(
+            after.current_item.unwrap().artifact_set_id,
+            current.artifact_set_id
+        );
+        for item in &after.playlist {
+            assert_ne!(item.cache_status, "ready", "{}", item.id);
+            assert!(item.artifact_set_id.is_empty());
+        }
+        // The evicted songs' files are gone; the current song still plays.
+        for item in &evicted {
+            assert!(
+                !context.cache_root.join(&item.video_relative_path).exists(),
+                "{}",
+                item.id
+            );
+        }
+        assert!(
+            context
+                .cache_root
+                .join(&current.video_relative_path)
+                .is_file()
+        );
+        // Nothing left to clear.
+        assert_eq!(clear(&context).unwrap(), 0);
+        // Retire the current song's media as the Host does when it stops.
+        with_app(|app| {
+            app.native_retire_cache();
+            Ok(())
+        })
+        .unwrap();
+        super::super::maintenance::collect(&context.cache_root, false).unwrap();
+        assert!(
+            !context
+                .cache_root
+                .join(&current.video_relative_path)
+                .exists()
+        );
+        with_app(|app| {
+            app.execute(AppStateRequest::Shutdown { schema_version: 1 });
+            Ok(())
+        })
+        .unwrap();
+        std::fs::remove_dir_all(&context.directory).unwrap();
+    }
+
+    #[test]
+    fn native_pump_retains_three_ready_items_self_heals_and_reports_unavailable_source() {
+        use crate::app_state::AppStateRequest;
+        let _guard = crate::app_state::native_session::GLOBAL_APP_TEST_LOCK
+            .lock()
+            .unwrap();
+        let context = ready_fixture(5);
+        let directory = context.directory.clone();
+        with_app(|app| {
+            app.native().cache_policy.max_cache_items = 1;
+            Ok(())
+        })
+        .unwrap();
         execute_cache_runtime(CacheRuntimeCommand::Start {}).unwrap();
         let mut fingerprint = String::new();
         let mut selections = HashMap::new();

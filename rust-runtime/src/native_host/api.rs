@@ -386,6 +386,11 @@ pub(super) fn dispatch(
         }
         return with_app(|app| app.native_snapshot(host));
     }
+    if path == "/api/cache/clear" {
+        with_app(|app| app.native_authorize(identity, true).map(|_| ()))?;
+        cache::clear(context)?;
+        return with_app(|app| app.native_snapshot(host));
+    }
     if path == "/api/cache/retry" {
         let (item, cookie) = with_app(|app| {
             app.native_authorize(identity, false)?;

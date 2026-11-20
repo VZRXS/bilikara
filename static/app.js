@@ -610,6 +610,7 @@ const elements = {
   cacheHiresCheckbox: document.getElementById("cache-hires-checkbox"),
   resetOffsetCheckbox: document.getElementById("reset-offset-checkbox"),
   dataResetButton: document.getElementById("data-reset-button"),
+  cacheClearButton: document.getElementById("cache-clear-button"),
   currentCacheRetryButton: document.getElementById("current-cache-retry-button"),
   playerResetButton: document.getElementById("player-reset-button"),
   updatePreviewCheckbox: document.getElementById("update-preview-checkbox"),
@@ -20924,6 +20925,21 @@ async function downloadDiagnosticsPackage() {
   }
 }
 
+// Mobile hosts end without the desktop exit cleanup: clear on request.
+async function clearMediaCache() {
+  try {
+    await apiPostStateSnapshot("/api/cache/clear", {}, {
+      onAccepted: () => {
+        closeConfirm();
+        setAppMessage(t("service.cacheCleared"));
+        render();
+      },
+    });
+  } catch (error) {
+    setAppMessage(error.message, true);
+  }
+}
+
 async function resetRuntimeData() {
   try {
     await apiPostStateSnapshot("/api/data/reset", {}, {
@@ -22966,6 +22982,16 @@ elements.themeSwitch?.addEventListener("click", (event) => {
   applyTheme(button.dataset.theme);
 });
 
+elements.cacheClearButton?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  const point = anchorPointForEvent(event, elements.cacheClearButton);
+  openConfirm({
+    type: "clear-cache",
+    message: t("service.clearCacheConfirm"),
+    ...point,
+  });
+});
+
 elements.dataResetButton?.addEventListener("click", (event) => {
   event.stopPropagation();
   const point = anchorPointForEvent(event, elements.dataResetButton);
@@ -23506,6 +23532,10 @@ elements.confirmOk.addEventListener("click", async () => {
     }
     if (intent.type === "reset-data") {
       await resetRuntimeData();
+      return;
+    }
+    if (intent.type === "clear-cache") {
+      await clearMediaCache();
       return;
     }
     if (intent.type === "reset-player") {
