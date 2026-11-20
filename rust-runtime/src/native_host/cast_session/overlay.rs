@@ -3,7 +3,9 @@
 //! latest one and rasterizes what is visible at production time into
 //! premultiplied RGBA at the output size. Only content changes re-render.
 //! A simulated mirror: same content and placement as the Audience window,
-//! not its pixels or animations.
+//! not its pixels or animations. A continuous cast also draws full-frame
+//! cards (next song, waiting, paused, failed) chosen by its producer, with
+//! labels the Host localizes.
 use crate::experimental_libav::{ProbeError, live_audio::OverlaySource};
 use crate::native_host::ApiError;
 use cosmic_text::{
@@ -33,6 +35,66 @@ pub(crate) struct Feedback {
 pub(crate) struct Model {
     pub toast: Option<Toast>,
     pub feedback: Vec<Feedback>,
+    /// Card labels in the Host's language; absent keeps the previous ones.
+    pub labels: Option<Labels>,
+}
+
+/// Localized card text. `{n}` and `{name}` are replaced when drawn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Labels {
+    pub next: String,
+    pub later: String,
+    pub requester: String,
+    pub countdown: String,
+    pub waiting: String,
+    pub caching: String,
+    pub paused: String,
+    pub failed: String,
+    pub finished: String,
+}
+impl Default for Labels {
+    fn default() -> Self {
+        Self {
+            next: "下一首".into(),
+            later: "之后".into(),
+            requester: "点歌：{name}".into(),
+            countdown: "{n} 秒后开始".into(),
+            waiting: "等待点歌".into(),
+            caching: "正在缓存".into(),
+            paused: "已暂停".into(),
+            failed: "无法播放".into(),
+            finished: "队列已播完".into(),
+        }
+    }
+}
+const LABEL_KEYS: [&str; 9] = [
+    "next",
+    "later",
+    "requester",
+    "countdown",
+    "waiting",
+    "caching",
+    "paused",
+    "failed",
+    "finished",
+];
+
+/// A full-frame (or, for `Paused`, centered) card of a continuous cast.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Card {
+    /// Between songs: the next program and the whole seconds left.
+    Next {
+        title: Option<String>,
+        requester: String,
+        seconds: u32,
+        later: Vec<String>,
+    },
+    /// Nothing playable: `caching` names the current song and its percent.
+    Waiting { caching: Option<(String, u32)> },
+    /// Drawn over the held frame.
+    Paused,
+    /// The song could not be played; the cast moves on.
+    Failed { title: String },
 }
 
 fn bounded(value: &Value, field: &str, max: usize) -> Result<String, ApiError> {
@@ -57,8 +119,36 @@ impl Model {
     pub(crate) fn parse(body: &Value, now_ms: u64) -> Result<Self, ApiError> {
         let object = body
             .as_object()
-            .filter(|o| o.keys().all(|k| k == "toast" || k == "feedback"))
+            .filter(|o| {
+                o.keys()
+                    .all(|k| k == "toast" || k == "feedback" || k == "labels")
+            })
             .ok_or_else(|| ApiError::invalid("Invalid cast overlay"))?;
+        let labels = match object.get("labels") {
+            None | Some(Value::Null) => None,
+            Some(value) => {
+                let entries = value
+                    .as_object()
+                    .filter(|o| o.keys().all(|k| LABEL_KEYS.contains(&k.as_str())))
+                    .ok_or_else(|| ApiError::invalid("Invalid cast overlay labels"))?;
+                let mut labels = Labels::default();
+                for (key, _) in entries {
+                    let text = bounded(value, key, 40)?;
+                    *match key.as_str() {
+                        "next" => &mut labels.next,
+                        "later" => &mut labels.later,
+                        "requester" => &mut labels.requester,
+                        "countdown" => &mut labels.countdown,
+                        "waiting" => &mut labels.waiting,
+                        "caching" => &mut labels.caching,
+                        "paused" => &mut labels.paused,
+                        "failed" => &mut labels.failed,
+                        _ => &mut labels.finished,
+                    } = text;
+                }
+                Some(labels)
+            }
+        };
         let toast = match object.get("toast") {
             None | Some(Value::Null) => None,
             Some(t) => Some(Toast {
@@ -83,10 +173,15 @@ impl Model {
                 .collect::<Result<_, ApiError>>()?,
             _ => return Err(ApiError::invalid("Invalid cast overlay")),
         };
-        Ok(Self { toast, feedback })
+        Ok(Self {
+            toast,
+            feedback,
+            labels,
+        })
     }
     fn visible(&self, now_ms: u64) -> Model {
         Model {
+            labels: None,
             toast: self.toast.clone().filter(|t| t.expires_at_ms > now_ms),
             feedback: self
                 .feedback
@@ -102,14 +197,32 @@ impl Model {
 #[derive(Default)]
 pub(crate) struct Hub {
     model: Mutex<Model>,
+    labels: Mutex<Labels>,
 }
 impl Hub {
-    pub(crate) fn set(&self, model: Model) {
+    pub(crate) fn set(&self, mut model: Model) {
+        if let Some(labels) = model.labels.take() {
+            *self.labels.lock().unwrap_or_else(|e| e.into_inner()) = labels;
+        }
         *self.model.lock().unwrap_or_else(|e| e.into_inner()) = model;
     }
     fn get(&self) -> Model {
         self.model.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
+    fn labels(&self) -> Labels {
+        self.labels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+}
+
+/// Everything one rendered image depends on.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Frame {
+    model: Model,
+    card: Option<Card>,
+    labels: Labels,
 }
 
 pub(crate) fn now_ms() -> u64 {
@@ -124,10 +237,11 @@ pub(crate) struct View {
     width: u32,
     height: u32,
     clock: Box<dyn Fn() -> u64 + Send + Sync>,
+    card: Mutex<Option<Card>>,
     state: Mutex<ViewState>,
 }
 struct ViewState {
-    shown: Option<Model>,
+    shown: Option<Frame>,
     generation: u64,
     rgba: Vec<u8>,
 }
@@ -142,27 +256,46 @@ impl View {
         clock: Box<dyn Fn() -> u64 + Send + Sync>,
     ) -> Self {
         Self {
-            hub,
+            hub: hub.clone(),
             width,
             height,
             clock,
+            card: Mutex::new(None),
             // Generation 0 is the empty overlay both sides start with.
             state: Mutex::new(ViewState {
-                shown: Some(Model::default()),
+                shown: Some(Frame {
+                    labels: hub.labels(),
+                    ..Frame::default()
+                }),
                 generation: 0,
                 rgba: vec![0; width as usize * height as usize * 4],
             }),
         }
     }
-    /// The current image when it changed since `known`: (generation, RGBA).
-    pub(crate) fn refresh(&self, known: u64) -> Result<Option<(u64, Vec<u8>)>, String> {
-        let visible = self.hub.get().visible((self.clock)());
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state.shown.as_ref() != Some(&visible) {
-            state.rgba = render(&visible, self.width, self.height)?;
-            state.shown = Some(visible);
+    /// Replaces the producer's card; drawn under the Host's notices.
+    pub(crate) fn set_card(&self, card: Option<Card>) {
+        *self.card.lock().unwrap_or_else(|e| e.into_inner()) = card;
+    }
+    fn frame(&self) -> Frame {
+        Frame {
+            model: self.hub.get().visible((self.clock)()),
+            card: self.card.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            labels: self.hub.labels(),
+        }
+    }
+    fn update(&self, state: &mut ViewState) -> Result<(), String> {
+        let frame = self.frame();
+        if state.shown.as_ref() != Some(&frame) {
+            state.rgba = render(&frame, self.width, self.height)?;
+            state.shown = Some(frame);
             state.generation += 1;
         }
+        Ok(())
+    }
+    /// The current image when it changed since `known`: (generation, RGBA).
+    pub(crate) fn refresh(&self, known: u64) -> Result<Option<(u64, Vec<u8>)>, String> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        self.update(&mut state)?;
         Ok((state.generation != known).then(|| (state.generation, state.rgba.clone())))
     }
 }
@@ -177,13 +310,9 @@ impl OverlaySource for View {
         if (width, height) != (self.width, self.height) {
             return Err(ProbeError::BackendFailure("overlay size mismatch".into()));
         }
-        let visible = self.hub.get().visible((self.clock)());
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state.shown.as_ref() != Some(&visible) {
-            state.rgba = render(&visible, width, height).map_err(ProbeError::BackendFailure)?;
-            state.shown = Some(visible);
-            state.generation += 1;
-        }
+        self.update(&mut state)
+            .map_err(ProbeError::BackendFailure)?;
         if *generation != state.generation {
             rgba.copy_from_slice(&state.rgba);
             *generation = state.generation;
@@ -359,19 +488,167 @@ const VALUE: [u8; 3] = [124, 196, 255];
 const WHITE: [u8; 3] = [255, 255, 255];
 const MUTED: [u8; 3] = [200, 204, 214];
 
+const BACKDROP: [u8; 3] = [12, 12, 18];
+
+fn fill(canvas: &mut Canvas, rgb: [u8; 3]) {
+    for p in canvas.rgba.chunks_exact_mut(4) {
+        p.copy_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+    }
+}
+
+/// Full-frame cards at 1080p coordinates, scaled by `s`.
+fn draw_card(fonts: &mut Fonts, canvas: &mut Canvas, card: &Card, labels: &Labels, s: f32) {
+    let width = canvas.width as f32;
+    let height = canvas.height as f32;
+    let margin = 120. * s;
+    let line = width - margin * 2.;
+    let centered =
+        |fonts: &mut Fonts, canvas: &mut Canvas, value: &str, size: f32, weight, y: f32, rgb| {
+            let t = text(fonts, value, size, weight, line);
+            draw(fonts, canvas, &t, (width - t.width) / 2., y, rgb);
+        };
+    match card {
+        Card::Paused => {
+            let label = text(fonts, &labels.paused, 44. * s, 800, width / 2.);
+            let (w, h) = (label.width + 64. * s, label.height + 28. * s);
+            let (x, y) = ((width - w) / 2., (height - h) / 2.);
+            canvas.rounded([x, y, w, h], h / 2., PANEL, 0.82);
+            draw(fonts, canvas, &label, x + 32. * s, y + 14. * s, WHITE);
+        }
+        Card::Next {
+            title,
+            requester,
+            seconds,
+            later,
+        } => {
+            fill(canvas, BACKDROP);
+            let Some(title) = title else {
+                centered(
+                    fonts,
+                    canvas,
+                    &labels.finished,
+                    64. * s,
+                    800,
+                    height / 2. - 60. * s,
+                    WHITE,
+                );
+                return;
+            };
+            let pill = text(fonts, &labels.next, 30. * s, 700, line);
+            let (pill_w, pill_h) = (pill.width + 36. * s, pill.height + 10. * s);
+            canvas.rounded([margin, 200. * s, pill_w, pill_h], pill_h / 2., ACCENT, 1.);
+            draw(fonts, canvas, &pill, margin + 18. * s, 205. * s, WHITE);
+            let big = text(fonts, title, 76. * s, 800, line);
+            draw(fonts, canvas, &big, margin, 290. * s, WHITE);
+            if !requester.is_empty() {
+                let who = text(
+                    fonts,
+                    &labels.requester.replace("{name}", requester),
+                    36. * s,
+                    600,
+                    line,
+                );
+                draw(fonts, canvas, &who, margin, 400. * s, MUTED);
+            }
+            let count = text(
+                fonts,
+                &labels.countdown.replace("{n}", &seconds.to_string()),
+                40. * s,
+                700,
+                line,
+            );
+            draw(fonts, canvas, &count, margin, 480. * s, VALUE);
+            if !later.is_empty() {
+                let head = text(fonts, &labels.later, 30. * s, 600, line);
+                draw(fonts, canvas, &head, margin, 640. * s, MUTED);
+                for (n, title) in later.iter().take(3).enumerate() {
+                    let entry = text(fonts, title, 36. * s, 600, line);
+                    draw(
+                        fonts,
+                        canvas,
+                        &entry,
+                        margin,
+                        700. * s + n as f32 * 64. * s,
+                        WHITE,
+                    );
+                }
+            }
+        }
+        Card::Waiting { caching } => {
+            fill(canvas, BACKDROP);
+            match caching {
+                None => centered(
+                    fonts,
+                    canvas,
+                    &labels.waiting,
+                    64. * s,
+                    800,
+                    height / 2. - 60. * s,
+                    WHITE,
+                ),
+                Some((title, percent)) => {
+                    centered(
+                        fonts,
+                        canvas,
+                        &format!("{} {percent}%", labels.caching),
+                        44. * s,
+                        700,
+                        height / 2. - 110. * s,
+                        VALUE,
+                    );
+                    centered(
+                        fonts,
+                        canvas,
+                        title,
+                        56. * s,
+                        800,
+                        height / 2. - 20. * s,
+                        WHITE,
+                    );
+                }
+            }
+        }
+        Card::Failed { title } => {
+            fill(canvas, BACKDROP);
+            centered(
+                fonts,
+                canvas,
+                &labels.failed,
+                44. * s,
+                700,
+                height / 2. - 110. * s,
+                ACCENT,
+            );
+            centered(
+                fonts,
+                canvas,
+                title,
+                56. * s,
+                800,
+                height / 2. - 20. * s,
+                WHITE,
+            );
+        }
+    }
+}
+
 /// Premultiplied RGBA; the layout follows the Audience window at 1080p,
-/// scaled to the output height.
-pub(crate) fn render(model: &Model, width: u32, height: u32) -> Result<Vec<u8>, String> {
+/// scaled to the output height. Cards lie under the Host's notices.
+fn render(frame: &Frame, width: u32, height: u32) -> Result<Vec<u8>, String> {
+    let model = &frame.model;
     let mut canvas = Canvas {
         width: width as i32,
         height: height as i32,
         rgba: vec![0; width as usize * height as usize * 4],
     };
-    if model.toast.is_none() && model.feedback.is_empty() {
+    if model.toast.is_none() && model.feedback.is_empty() && frame.card.is_none() {
         return Ok(canvas.rgba);
     }
     let mut fonts = fonts()?.lock().unwrap_or_else(|e| e.into_inner());
     let s = height as f32 / 1080.;
+    if let Some(card) = &frame.card {
+        draw_card(&mut fonts, &mut canvas, card, &frame.labels, s);
+    }
     if let Some(toast) = &model.toast {
         // Top-left request toast: accent label pill, then the title.
         let label = text(&mut fonts, &toast.label, 22. * s, 700, 300. * s);
@@ -471,6 +748,67 @@ mod tests {
     }
 
     #[test]
+    fn labels_are_bounded_and_cards_cover_the_frame_under_notices() {
+        let now = 1_000_000;
+        let model = Model::parse(
+            &json!({"labels":{"next":"Up next","countdown":"Starts in {n} s"}}),
+            now,
+        )
+        .unwrap();
+        let labels = model.labels.clone().unwrap();
+        assert_eq!(labels.next, "Up next");
+        assert_eq!(
+            labels.paused,
+            Labels::default().paused,
+            "unset keys keep defaults"
+        );
+        for bad in [
+            json!({"labels":{"other":"x"}}),
+            json!({"labels":{"next":"x".repeat(41)}}),
+            json!({"labels":"x"}),
+        ] {
+            assert!(Model::parse(&bad, now).is_err(), "{bad}");
+        }
+        let hub = Arc::new(Hub::default());
+        hub.set(model);
+        let view = View::with_clock(hub.clone(), 320, 180, Box::new(move || now));
+        view.set_card(Some(Card::Next {
+            title: Some("夜に駆ける".into()),
+            requester: "A".into(),
+            seconds: 5,
+            later: vec!["群青".into()],
+        }));
+        let (first, card) = view.refresh(0).unwrap().unwrap();
+        assert!(
+            card.chunks_exact(4).all(|p| p[3] == 255),
+            "opaque full frame"
+        );
+        assert!(
+            card.chunks_exact(4)
+                .any(|p| p[0] > 240 && p[1] > 240 && p[2] > 240),
+            "title glyphs"
+        );
+        // A new countdown second re-renders; the same card does not.
+        assert!(view.refresh(first).unwrap().is_none());
+        view.set_card(Some(Card::Next {
+            title: Some("夜に駆ける".into()),
+            requester: "A".into(),
+            seconds: 4,
+            later: vec!["群青".into()],
+        }));
+        let (second, _) = view.refresh(first).unwrap().unwrap();
+        assert!(second > first);
+        // The pause badge leaves the held picture visible around it.
+        view.set_card(Some(Card::Paused));
+        let (_, paused) = view.refresh(second).unwrap().unwrap();
+        assert!(alpha(&paused, 320, 160, 90) > 150);
+        assert_eq!(alpha(&paused, 320, 10, 10), 0);
+        // Labels published later replace the earlier ones.
+        hub.set(Model::parse(&json!({"labels":{"paused":"Pause"}}), now).unwrap());
+        assert!(view.refresh(0).unwrap().is_some());
+    }
+
+    #[test]
     fn views_render_visible_content_and_expire_it() {
         let hub = Arc::new(Hub::default());
         let now = Arc::new(std::sync::atomic::AtomicU64::new(10_000));
@@ -499,6 +837,7 @@ mod tests {
                 value: "+2".into(),
                 expires_at_ms: 12_000,
             }],
+            labels: None,
         });
         let (second, shown) = view.refresh(first).unwrap().unwrap();
         // Toast card at the top-left, feedback card at the right edge.

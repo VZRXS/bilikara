@@ -6,12 +6,13 @@ use crate::dlna::{CancellationToken, Renderer, diagnostics::SessionTrace};
 use std::sync::Arc;
 
 mod l1;
-mod l2;
 mod media;
 pub(crate) mod overlay;
 pub(super) mod pipeline;
 mod projection;
 pub(super) mod self_test;
+mod show;
+mod splice;
 mod worker;
 pub(crate) use projection::output_command;
 
@@ -120,6 +121,11 @@ pub(crate) struct State {
     pub error_code: Option<String>,
     pub resume: Option<Value>,
     pub mode: Mode,
+    /// The delivery the device uses when its picture is pure media; the
+    /// fallback when a composited cast is refused.
+    pub pure_mode: Mode,
+    /// The device's self-test result: live streams play (or not).
+    pub learned_live: Option<bool>,
     /// Picture of the connected device's output (`composited` implies live).
     pub picture: Picture,
     /// Overlay view-model the Host publishes for composited output.
@@ -386,6 +392,7 @@ pub(super) fn route(
             }
             device.last_used = chrono::Utc::now().timestamp_millis().max(0) as u64;
             let effective = device.effective_mode();
+            let pure_mode = device.pure_mode();
             let picture = device.picture;
             if app.native().cast.owns_playback
                 && app.native().cast.selected.as_deref() == Some(&key)
@@ -407,7 +414,12 @@ pub(super) fn route(
                 && state.selected.as_deref() == Some(&key)
                 && (state.mode != effective || state.picture != picture)
             {
+                // A new picture choice retries composited output.
+                if state.picture != picture {
+                    state.composite_refusal = None;
+                }
                 state.mode = effective;
+                state.pure_mode = pure_mode;
                 state.picture = picture;
                 if state.owns_playback {
                     state.control = Some(Control::Restart);

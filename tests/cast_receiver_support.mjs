@@ -20,13 +20,13 @@ export async function loopbackAlias(address,purpose){
   console.log(`skipped ${reason}`);return false;
 }
 
-export async function transfer(uri,{method='GET',headers={},localAddress,headersOnly=false,received}={}){
+export async function transfer(uri,{method='GET',headers={},localAddress,headersOnly=false,received,maxBytes=8*1024*1024}={}){
   return new Promise((resolve,reject)=>{
     const q=http.request(uri,{method,headers,localAddress,timeout:8000},r=>{
       if(headersOnly)resolve({status:r.statusCode,headers:r.headers});
       let size=0;const chunks=[];
       // `received` exposes the bytes delivered so far while the GET is open.
-      r.on('data',b=>{size+=b.length;if(size>8*1024*1024)r.destroy(new Error('fixture media bound'));else{chunks.push(b);received?.push(b);}});
+      r.on('data',b=>{size+=b.length;if(size>maxBytes)r.destroy(new Error('fixture media bound'));else{chunks.push(b);received?.push(b);}});
       r.on('error',e=>{e.message=`response ${method} ${headers.Range??'full'} ${localAddress??'default peer'}: ${e.message}`;reject(e);});r.on('end',()=>resolve({status:r.statusCode,headers:r.headers,bytes:Buffer.concat(chunks)}));
     });q.on('timeout',()=>q.destroy(new Error('fixture transfer deadline')));q.on('error',e=>{e.message=`${method} ${headers.Range??'full'} ${localAddress??'default peer'}: ${e.message}`;reject(e);});q.end();
   });
@@ -74,7 +74,7 @@ export async function fixture(options={}){
       if(action==='Play'){
         if(options.playGate)await options.playGate;
         f.transport='PLAYING';res.end(soap(action));
-        if(options.pull!==false){const uri=f.uri,received=[];f.received.set(uri,received);f.pulls.push(transfer(uri,{received}).then(r=>{assert.equal(r.status,200);f.media.push({...r,uri});}).catch(e=>f.errors.push(e)));}return;
+        if(options.pull!==false){const uri=f.uri,received=[];f.received.set(uri,received);f.pulls.push(transfer(uri,{received,maxBytes:options.maxMediaBytes}).then(r=>{assert.equal(r.status,200);f.media.push({...r,uri});}).catch(e=>f.errors.push(e)));}return;
       }
       if(action==='Pause'){f.transport='PAUSED_PLAYBACK';return res.end(soap(action));}
       if(action==='Seek'){

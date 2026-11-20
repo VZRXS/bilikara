@@ -96,6 +96,13 @@ pub(crate) struct NativeCastInput {
     pub playback_generation: u64,
 }
 
+/// What a continuous composited cast shows between songs.
+pub(crate) struct NativeCastQueue {
+    /// Up to `limit` upcoming items after the current one, in order.
+    pub upcoming: Vec<PlaylistItem>,
+    pub advance_delay_seconds: i32,
+}
+
 impl std::fmt::Debug for NativeSession {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -710,6 +717,17 @@ impl AppState {
             current_item: data.current_item.clone(),
             next_item: data.playlist.first().cloned(),
             playback_generation: data.playback_generation,
+        })
+    }
+
+    pub(crate) fn native_cast_queue(&self, limit: usize) -> Result<NativeCastQueue, ApiError> {
+        let data = self
+            .data
+            .as_ref()
+            .ok_or_else(|| ApiError::new(503, "state_unavailable", "Host is not initialized"))?;
+        Ok(NativeCastQueue {
+            upcoming: data.playlist.iter().take(limit).cloned().collect(),
+            advance_delay_seconds: data.player_settings.song_advance_delay_seconds,
         })
     }
 

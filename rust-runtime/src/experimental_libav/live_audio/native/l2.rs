@@ -1,7 +1,7 @@
 //! FFI for `bm_live_l2_v1`: the L1 request plus the composited video source.
 use super::super::composite::{
-    CompositeReport, CompositeVideo, EncodedUnit, Encoder, KIND_EXTERNAL, KIND_H264, KIND_MPEG2,
-    OverlaySource, TranscodeCodec,
+    CompositeReport, CompositeSource, CompositeVideo, EncodedUnit, Encoder, KIND_EXTERNAL,
+    KIND_H264, KIND_MPEG2, OverlaySource, TranscodeCodec,
 };
 use super::*;
 use std::cell::RefCell;
@@ -32,6 +32,8 @@ pub(crate) struct L2Request {
     fps_num: u32,
     fps_den: u32,
     bit_rate: u32,
+    source: u32,
+    reserved: u32,
     end_us: i64,
     next: Option<Next>,
     video: *mut c_void,
@@ -245,6 +247,7 @@ pub(super) fn request(
     overlay: Option<&OverlayState<'_>>,
     fps: (u32, u32),
     bit_rate: u32,
+    source: CompositeSource,
     end_us: i64,
 ) -> Result<L2Request, ProbeError> {
     if fps.0 == 0 || fps.1 == 0 || bit_rate == 0 || !(1..=21_600_000_000).contains(&end_us) {
@@ -259,6 +262,12 @@ pub(super) fn request(
         fps_num: fps.0,
         fps_den: fps.1,
         bit_rate,
+        source: match source {
+            CompositeSource::Play => 0,
+            CompositeSource::Hold => 1,
+            CompositeSource::Blank => 2,
+        },
+        reserved: 0,
         end_us,
         next: external.then_some(video_next as Next),
         video: (video as *mut VideoState<'_, '_>).cast(),

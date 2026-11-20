@@ -260,7 +260,7 @@ Host 收到 `410 purek_retired`，Remote 仍为 403。静态 Host、本地 Remot
 | `POST /api/cast/probe` | `{}`，对已连接设备重新查询 GetProtocolInfo；不接受客户端提供的地址 |
 | `POST /api/cast/preferences` | `{"auto_discovery":bool}` |
 | `POST /api/cast/command` | 投屏中的播放控制（带 `item_id`、`playback_generation`，下一首另带 `expected_queue_version`），与本地播放命令一样允许已登记的 Remote；`cast.set_device_mode`／`cast.set_device_learning`／`cast.set_device_picture` 仅 Host |
-| `POST /api/cast/overlay` | 仅 Host：合成画面的覆盖层视图模型，见“合成投屏（L2）” |
+| `POST /api/cast/overlay` | 仅 Host：合成画面的覆盖层视图模型和卡片文字，见“合成投屏（L2，连续流）” |
 | `GET /api/cast/capabilities` | `pipeline_available`：companion 是否具备投屏合流 |
 | `GET /api/cast/report` | 当前投屏会话的脱敏报告 |
 | `/api/cast/self-test/{start,answer,cancel,handoff,report,download}` | 门店自检 |
@@ -297,7 +297,7 @@ Windows 桌面为 `runtime/data/cast-devices.json`）。规则：
 - 首次替换前保留 `cast-devices.v1.backup.json`；损坏的原文件不覆盖、不阻止 Host 启动，按无偏好处理。
 - 桌面导入工具不转换、不校验、不合并它：复制原生数据目录时它作为普通文件原样随行，旧版记录转换不会生成它。
 - `auto` 在自检学到“直播”时使用直播，否则使用文件模式。
-- 电视画面 `picture`：`pure`（默认，纯媒体）或 `composited`（合成，见“合成投屏（L2）”）。合成总是直播交付，
+- 电视画面 `picture`：`pure`（默认，纯媒体）或 `composited`（合成，见“合成投屏（L2，连续流）”）。合成总是直播交付，
   交付方式的选择仍保存，切回纯媒体后生效。`pure` 不写入文件，旧版本仍能读取。
 
 ## 交付模式与拉流
@@ -419,51 +419,90 @@ T3 没有此限制）时走 T3 合流；这两种直播情况仍可跳转，但�
 
 | 状态 | 值 |
 | --- | --- |
-| 已启动并拥有播放的合成投屏（L2），或其暂停状态 | `"L2"` |
+| 拥有播放的合成连续流（L2），含暂停定格和卡片 | `"L2"` |
 | 已启动并拥有播放的直播 L1，或其暂停状态；可由 L1 重新生成的文件输出 | `"L1"` |
 | 片源或 companion 不能走 L1 的直播或文件输出 | `"L0"` |
 | 本地播放、仅连接、输出已暂停、失败后回到本地、断开后 | `null` |
 
 只有实际启动成功才标记 L1；准备新管线时的过渡快照可能暂报 `L0`，不能据此开放 L1 控件。
 
-## 合成投屏（L2）
+## 合成投屏（L2，连续流）
 
-电视画面选“合成”时，接收端收到的视频叠加了 Audience 窗口的提示：新点歌提示（左上）和操作反馈卡片
-（右侧：音量、静音、延迟、变调、播放、暂停、跳转、下一首、重新开始）。这是模拟镜像：内容和位置与
-Audience 窗口一致，像素和动画不追求一致。换歌间隙的转场画面属于纯媒体管线，L2 目前不画。
+电视画面选“合成”时，接收端整场只收到**一个**直播地址（一次 `SetAVTransportURI` + `Play`），之后不再收到
+任何控制命令。歌曲、暂停画面和换歌卡片都由发送端生成，拼成一条连续的 MPEG-TS：这是模拟镜像，电视看到的
+就是“播放器”此刻的画面，Host 的操作在“生成领先量（2.5 秒）加电视缓冲”之后出现在电视上。
 
-- **管线**：L1 的音频处理、控制和 T4 节奏保持不变，只把拷贝的源视频换成“解码 → 叠加 → 重新编码”的视频。
-  companion 新增独立协商的 `bm_l2_info_v1`／`bm_live_l2_v1`（`media-libav/composite.c`），视频来源二选一：
+- **画面内容**：
+  - 歌曲：视频按比例缩放进固定的会话画面（加黑边），叠加 Audience 窗口的提示：新点歌提示（左上）和操作反馈
+    卡片（右侧）。内容和位置与 Audience 窗口一致，像素和动画不追求一致。
+  - 暂停：定格在暂停处的那一帧，中央显示“已暂停”，声音静音；继续播放从定格处接着放，不跳也不重复。
+  - 换歌：歌曲自然结束后显示整屏“下一首”卡片（标题、点歌人、倒计时、之后的最多三首），时长等于 Host 的
+    换歌间隔设置；为 0 时直接切歌。卡片结束时由投屏端执行“下一首”。
+  - 等待：没有当前歌曲时显示“等待点歌”，当前歌曲还在缓存时显示缓存进度；歌曲就绪后自动开始。
+  - 播放失败：一首歌无法生成时显示 3 秒“无法播放”卡片，然后切到下一首；连续三个片段失败则停止输出并
+    回到本地播放（与其他本地管线失败相同）。
+  - 卡片文字由 Host 页面按界面语言随覆盖层一起下发（`labels`），未下发时用中文默认值。
+- **Host 操作**：暂停、继续、跳转、下一首、变调、延迟、音量和换音轨都只改变生成内容，不向电视发送 Pause、
+  Seek 或新的地址。电视遥控器上的暂停会让 Host 也暂停（随后发送端让电视继续读取定格画面）。
+- **拼接**：每个片段（歌曲、定格、卡片）是一次 L2 生成，复用 L1 的音频处理和控制；片段的 PCR/PTS/DTS
+  整体平移到会话时钟上（`cast_session/splice.rs`），下一个片段从上一个片段最后的数据之后 50 毫秒开始，
+  每个片段以带 PAT/PMT 和 SPS/PPS（MPEG-2 为序列头）的关键帧开头。连续计数器由每个 HTTP 读者重写。
+  片段切换只发生在包之间，已发出的数据不会被截断；被取消片段中尚在复用器缓冲的音频（约 0.2 秒）会丢弃，
+  新片段的音频有短暂淡入。
+- **编码**：会话画面在整场内固定，接收端解码器不会遇到尺寸变化。
   - **平台编码器**（外部单元）：Android 用 MediaCodec 解码到 SurfaceTexture，OpenGL ES 画视频和覆盖层到
-    H.264 编码器的输入 Surface，MediaCodec 硬件编码；画面不经过 CPU。Rust 经 JNI 逐个取出编码单元
-    （`HostCastCompositor`、`src-tauri/src/android_compositor.rs`、`rust-runtime/src/cast_compositor.rs`）。
-    输出不放大，最大 1920×1080，按比例缩放加黑边；B 帧关闭，每个关键帧前带 SPS/PPS。
-  - **companion 转码**：Windows 的 FFmpeg 构建开启 Media Foundation，用系统 H.264 编码器 `h264_mf`
-    （先硬件 MFT，再软件 MFT）；其他桌面没有随包的 H.264 编码器，用 FFmpeg 自带的软件 MPEG-2 编码器。
-    输出保持源尺寸（构建不含缩放器），所以只接受不超过 1080p 的偶数尺寸片源。
-- **帧率与码率**：上限 30 fps，源帧率高时按时间槽丢帧（60 → 30）。码率按像素：1080p 8 Mbps，720p 5 Mbps，
-  480p 2.5 Mbps，更小 1.2 Mbps；MPEG-2 再乘 1.5。时间戳仍是源时间，A/V 同步、跳转和续播语义与直播 L1 相同。
-- **覆盖层**：Host 页面在合成投屏期间把与 Audience 窗口相同的视图模型（已本地化的文字和到期时间）
-  `POST /api/cast/overlay`，只在内容变化时发送；Remote 调用为 403。字段：
-  `toast`（`key`、`label`、`title`、`expires_at`）和最多两项 `feedback`（`key`、`label`、`value`、`expires_at`），
-  时间为纪元毫秒，最多比当前晚 60 秒；含控制字符或超长时 400。Rust 用思源黑体（Android 用系统字体）
-  在输出尺寸上绘制预乘 RGBA，只在可见内容变化（含到期）时重画。覆盖层按生成时刻生效，所以电视上会比
-  Host 晚“生成领先量（约 1.9 秒）加接收端缓冲”出现，显示时长不变。
-- **回退**：片源或平台不能合成时（`composite_unavailable`、`composite_source_size`、`l1_unavailable`）
-  照常以 L1/L0 直播输出，并在 `composite_reason` 报告原因。合成重新编码视频，所以关键帧间隔超过 4 秒的
-  片源也能走 L2。
-- **状态**：`media_output` 新增 `picture`、`composite_encoder`（`android_mediacodec`、`companion_h264`、
-  `companion_mpeg2`）和 `composite_reason`；`pipeline_level` 为 `"L2"`。`cast` 快照新增 `picture`、
-  设备表的 `picture` 和 `compositing`（已安装的平台编码器名称）。L2 的 DSP 控件与直播 L1 相同。
+    H.264 编码器的输入 Surface，MediaCodec 硬件编码；画面不经过 CPU。定格和卡片也走同一条 GPU 管线
+    （`HostCastCompositor` 的 `SOURCE_HOLD`／`SOURCE_BLANK`）。1920×1080，8 Mbps。
+  - **companion 转码**（`media-libav/composite.c`）：Windows 的 FFmpeg 构建开启 Media Foundation，用系统
+    H.264 编码器 `h264_mf`（先硬件 MFT，再软件 MFT），1920×1080，8 Mbps；其他桌面没有随包的 H.264
+    编码器，用软件 MPEG-2，1280×720，7.5 Mbps。companion 自带双线性缩放和全范围到有限范围的转换
+    （构建不含 swscale），源最大 4096×2304。`BmL2Request.source` 选择 `PLAY`／`HOLD`／`BLANK`；
+    `HOLD`、`BLANK` 可以没有音轨，由 Rust 渲染静音。
+  - 帧率上限 30 fps：歌曲按源帧率（高于 30 时减半），定格和卡片为 30 fps。
+- **覆盖层接口**：Host 页面在合成投屏期间 `POST /api/cast/overlay`，只在内容变化时发送；Remote 调用为 403。
+  字段：`toast`（`key`、`label`、`title`、`expires_at`）、最多两项 `feedback`（`key`、`label`、`value`、
+  `expires_at`）和可选的 `labels`（`next`、`later`、`requester`、`countdown`、`waiting`、`caching`、`paused`、
+  `failed`、`finished`，各不超过 40 字；`{name}`、`{n}` 为占位符）。时间为纪元毫秒，最多比当前晚 60 秒；
+  含控制字符或超长时 400。Rust 用思源黑体（Android 用系统字体）在会话画面尺寸上绘制预乘 RGBA，只在可见
+  内容变化（含到期、倒计时秒数）时重画。
+- **自动兼容与回退**：以下情况自动改用纯媒体（按设备的交付模式），原因写入 `composite_reason`，Host 的 i 提示
+  和设备行显示说明；重新选择电视画面会再次尝试合成：
+  - `composite_unavailable`：本机没有可用的视频编码器；`l1_unavailable`：缺少 L1 音频处理；
+  - `receiver_rejected`：电视拒绝了直播地址（`SetAVTransportURI`／`Play` 失败）；
+  - `receiver_live_unsupported`：20 秒内电视既未进入播放也未读取数据，或在播放前连续报告停止。
+  已播放后电视连续三次报告停止时，发送端重新下发一次同一地址；仍失败则按接收端不可达处理。
+- **切换**：纯媒体与合成可在连接中随时切换（设备行的“电视画面”），保持同一个接收端连接和纯 K 注册：
+  切到合成时结束当前单曲输出、发布连续流；切回纯媒体时结束连续流、从当前位置重新发布单曲输出。关闭输出
+  或断开时与纯媒体相同，回到本地播放（含双屏的 Audience 窗口）并恢复位置。
+- **状态**：`media_output` 的 `picture`、`composite_encoder`（`android_mediacodec`、`media_foundation_hardware`、
+  `media_foundation_software`、`mpeg2_software`；生成第一个片段前为计划值 `companion_h264`／`companion_mpeg2`）、
+  `composite_reason` 和 `receiver_capabilities`（见下）；`pipeline_level` 为 `"L2"`。Host 位置按“会话时钟减去
+  生成领先量和约 1 秒接收端缓冲”换算到电视正在显示的歌曲位置；歌曲时长取自片源。
+
+### 接收端能力
+
+连接后 `media_output.receiver_capabilities` 汇总电视在 `GetProtocolInfo` 中声明的格式和门店自检的结论：
+
+| 键 | 含义 |
+| --- | --- |
+| `declared.ts` | 声明了 MPEG-TS（`video/mp2t`、`video/vnd.dlna.mpeg-tts`、无档次的 `video/mpeg`，或 `MPEG_TS*`／`AVC_TS*` 档次）；`MPEG_PS*` 不算 |
+| `declared.h264`、`declared.mpeg2` | TS 中的 H.264（`AVC_TS*` 或无档次）、MPEG-2（`MPEG_TS*` 或无档次） |
+| `declared.mp4` | 声明了 `video/mp4` |
+| `declared.live` | 自检学到直播可用（`yes`）、只能文件（`no`）或未自检（`unknown`） |
+| `composited_codec` | 本机合成会发送的编码：有平台编码器或 Windows 为 `h264`，否则 `mpeg2` |
+| `missing.pure`、`missing.composited` | 当前声明为 `no` 的必需项（纯媒体需要 `ts`；合成需要 `ts`、`composited_codec` 和 `live`） |
+
+值为 `yes`、`no` 或 `unknown`；电视未返回协议列表或含通配符时为 `unknown`，不算缺少。Host 的投屏 i 提示
+显示“电视能力”一行和当前画面缺少的项，设备行在合成画面缺项或被回退时显示说明。
 
 | 平台 | 合成路径 | 验证 |
 | --- | --- | --- |
-| Android | MediaCodec 解码 → GLES → MediaCodec 编码 | 模拟器功能验证；硬件编码器、发热和耗电需真机 |
+| Android | MediaCodec 解码 → GLES → MediaCodec 编码（含定格和卡片） | 模拟器设备测试；硬件编码器、发热和耗电需真机 |
 | Windows | `h264_mf`（硬件 MFT 优先） | 需要 Windows 机器或 CI；本机只能确认构建配置 |
-| Linux、macOS | 软件 MPEG-2（macOS 的 VideoToolbox 尚未接入构建） | 本机端到端测试（模拟接收端） |
+| Linux、macOS | 软件 MPEG-2 720p（macOS 的 VideoToolbox 尚未接入构建） | 本机端到端测试（模拟接收端） |
 
-L2 的模拟接收端测试和本机 MPEG-2 结果不能当作电视兼容性证据：电视是否接受 MPEG-2 TS、硬件编码器的码率
-控制和中途参数是否稳定，都需要真机验证。
+模拟接收端测试和本机 MPEG-2 结果不能当作电视兼容性证据：电视是否接受 MPEG-2 TS、长时间连续流和片段边界
+的时间戳跳变、硬件编码器的码率控制，都需要真机验证。
 
 ## Android
 
@@ -683,7 +722,7 @@ HTTP 端点、会话、自检和诊断以 R1 为准；界面合同、Remote 协�
 | `test:purek-output`（`purek_output`、`purek_monitor`） | 不因来源与描述地址不同而拒绝（公网来源仍 403）、不 409（第五个 GET 关闭最旧的）、停读 3／10 秒可继续、15 秒无进展才断开；文件模式 HEAD 长度、Range 206/416；直播忽略 Range、从关键帧加入；监测改为 R1 规则（UPnP 错误不断开，真实断线 8 秒静默 + 4 秒恢复）；完整运行 T4 的真实 companion 用例 |
 | `test:purek-controller`（`purek_controller`、`purek_compatibility`） | R1 的起播、文件模式 Pause／Play／Seek 保持 URI、下一首、自然结束、断开恢复；14 种能力声明逐项实际试播，查询结果不阻止试播，`qualified`／`supports_*` 仍为 false；SetURI 被拒时清理会话并恢复本地 |
 | `test:purek-l1`（`purek_l1`、`native_output_browser`） | 独立 L1 原样保留；另经 T4 直播供流（`cast_l1_receiver.mjs`），断言调整不换 URI、换轨推进播放代次、频率和增益实际变化、迟加入读者从关键帧开始 |
-| `test:purek-l1` 的合成用例（`cast_l2_receiver.mjs`） | 新增：切到合成后为 L2、编码器名称、调整不换 URI、Remote 不能发覆盖层、覆盖层像素出现在接收端解码的画面里而其余区域仍是视频、变调在合成流中生效、切回纯媒体 |
+| `test:purek-l1` 的合成用例（`cast_l2_receiver.mjs`） | 连续流：切到合成后整场只有一次 `SetAVTransportURI`、暂停/跳转不发给电视、画面依次为视频→定格→视频→3 秒卡片→下一首、帧时间单调且无空洞、定格和卡片静音、变调生效、下一首恢复原调、覆盖层出现在视频上、缩放加黑边、切回纯媒体；Remote 不能发覆盖层 |
 | `test:media-output`、`ios_output_ui_browser` | 原样通过；投影层保证字段合同 |
 | `test:cast-ui`（`cast_browser`、`cast_full_host_browser`、`cast_self_test_browser`，也在 `test:host-experience` 中） | 新增：Manage 设备行、偏好冲突、发现 busy、几何与三语、自检弹窗、`retain_room` 顺序、链路检查行、DSP 禁用原因 |
 | `test:android-libav`（`android_libav`、`android_cast_samples`）、`android_media_check` | 新增或扩展：真实 NDK 构建、六库 ELF、外部源码包、样片哈希与 Gradle 开关 |

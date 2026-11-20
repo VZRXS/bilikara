@@ -139,7 +139,8 @@ impl State {
             "transition_remaining_ms":0,"pipeline_level":self.pipeline_level(),
             "pipeline_reason":self.pipeline_reason(),
             "picture":self.picture,"composite_encoder":self.composited,
-            "composite_reason":if self.owns_playback {self.composite_refusal} else {None},
+            "composite_reason":if self.connected {self.composite_refusal} else {None},
+            "receiver_capabilities":if self.connected {self.receiver_capabilities()} else {Value::Null},
             "stream_generation":self.generation.max(self.room_generation),"producer_eof":false,"preview_tail_sequence":null,
             "offset_mode":match self.offset_mode {bilikara_rust::output_audio::OffsetMode::Splice=>"splice",bilikara_rust::output_audio::OffsetMode::Gradual=>"gradual"},"last_error":self.output_error(),
             "measured_adjust_latency_ms":null,"position_source":"sender_estimate",
@@ -207,6 +208,62 @@ impl State {
             ),
             _ => self.room_error_projection().map(|(code, _)| code),
         }
+    }
+
+    /// What the receiver declared in GetProtocolInfo and learned in its
+    /// self-test, and what the current picture needs that it lacks.
+    /// "unknown" when the receiver did not say (no list, or wildcards).
+    pub(crate) fn receiver_capabilities(&self) -> Value {
+        let reported =
+            self.protocol_state == Some(crate::dlna::diagnostics::ProtocolState::Reported);
+        let formats = self.sink_formats();
+        let (mut ts, mut h264, mut mpeg2, mut mp4, mut wildcard) =
+            (false, false, false, false, false);
+        for format in &formats {
+            let mime = format["mime"].as_str().unwrap_or("");
+            let profile = format["profile"].as_str().unwrap_or("");
+            let ts_profile = profile.starts_with("MPEG_TS") || profile.starts_with("AVC_TS");
+            // video/mpeg is also MPEG-PS: only its unprofiled or TS entries count.
+            let ts_entry = ts_profile
+                || matches!(
+                    mime,
+                    "video/mp2t" | "video/vnd.dlna.mpeg-tts" | "video/x-mpegts"
+                )
+                || (mime == "video/mpeg" && profile.is_empty());
+            wildcard |= matches!(mime, "*" | "*/*" | "video/*");
+            mp4 |= mime == "video/mp4";
+            if ts_entry {
+                ts = true;
+                // A TS type without a profile accepts any TS codec.
+                h264 |= profile.is_empty() || profile.starts_with("AVC_TS");
+                mpeg2 |= profile.is_empty() || profile.starts_with("MPEG_TS");
+            }
+        }
+        let tri = |yes: bool| {
+            if !reported || (!yes && wildcard) {
+                "unknown"
+            } else if yes {
+                "yes"
+            } else {
+                "no"
+            }
+        };
+        let live = match self.learned_live {
+            Some(true) => "yes",
+            Some(false) => "no",
+            None => "unknown",
+        };
+        let codec = super::show::expected_codec();
+        let declared =
+            json!({"ts":tri(ts),"h264":tri(h264),"mpeg2":tri(mpeg2),"mp4":tri(mp4),"live":live});
+        let lacking = |keys: &[&str]| {
+            keys.iter()
+                .filter(|k| declared[**k] == "no")
+                .map(|k| (*k).to_owned())
+                .collect::<Vec<_>>()
+        };
+        json!({"declared":declared,"composited_codec":codec,
+            "missing":{"pure":lacking(&["ts"]),"composited":lacking(&["ts",codec,"live"])}})
     }
 
     fn sink_formats(&self) -> Vec<Value> {
@@ -466,6 +523,57 @@ pub(crate) fn resume_local(app: &mut crate::app_state::AppState) -> Result<(), A
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn receiver_capabilities_follow_declared_profiles_and_the_self_test() {
+        let mut state = State {
+            connected: true,
+            ..Default::default()
+        };
+        let declared = |state: &State| state.receiver_capabilities()["declared"].clone();
+        // Nothing reported: every entry is unknown, nothing is missing.
+        assert_eq!(declared(&state)["ts"], "unknown");
+        assert_eq!(
+            state.receiver_capabilities()["missing"]["composited"],
+            json!([])
+        );
+        state.protocol_state = Some(crate::dlna::diagnostics::ProtocolState::Reported);
+        state.sink_protocols = vec![
+            "http-get:*:video/mpeg:DLNA.ORG_PN=MPEG_PS_PAL".into(),
+            "http-get:*:video/vnd.dlna.mpeg-tts:DLNA.ORG_PN=AVC_TS_HD_50_AC3_T".into(),
+            "http-get:*:audio/mpeg:*".into(),
+        ];
+        state.learned_live = Some(false);
+        let caps = state.receiver_capabilities();
+        assert_eq!(caps["declared"]["ts"], "yes");
+        assert_eq!(caps["declared"]["h264"], "yes");
+        assert_eq!(caps["declared"]["mpeg2"], "no", "MPEG-PS is not TS");
+        assert_eq!(caps["declared"]["mp4"], "no");
+        assert_eq!(caps["declared"]["live"], "no");
+        assert_eq!(caps["missing"]["pure"], json!([]));
+        let codec = caps["composited_codec"].as_str().unwrap().to_owned();
+        let mut wanted = vec!["live".to_owned()];
+        if codec == "mpeg2" {
+            wanted.insert(0, "mpeg2".into());
+        }
+        assert_eq!(caps["missing"]["composited"], json!(wanted));
+        // An unprofiled TS type accepts either codec; wildcards stay unknown.
+        state.sink_protocols = vec!["http-get:*:video/mpeg:*".into(), "http-get:*:*:*".into()];
+        state.learned_live = Some(true);
+        let caps = state.receiver_capabilities();
+        assert_eq!(caps["declared"]["mpeg2"], "yes");
+        assert_eq!(caps["declared"]["mp4"], "unknown");
+        assert_eq!(caps["missing"]["composited"], json!([]));
+        state.sink_protocols = vec!["http-get:*:video/mp4:*".into()];
+        assert_eq!(
+            state.receiver_capabilities()["missing"]["pure"],
+            json!(["ts"])
+        );
+        assert_eq!(
+            state.output_projection(true)["receiver_capabilities"]["declared"]["mp4"],
+            "yes"
+        );
+    }
 
     #[test]
     fn advisory_and_unsupported_snapshots_preserve_next_status_contract() {

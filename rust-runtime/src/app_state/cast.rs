@@ -71,6 +71,10 @@ impl Device {
         if self.picture == Picture::Composited {
             return Mode::Live;
         }
+        self.pure_mode()
+    }
+    /// The delivery of pure media (also after a composited cast is refused).
+    pub fn pure_mode(&self) -> Mode {
         match self.mode {
             Mode::Auto => match self.learned_mode {
                 Some(LearnedMode::Live) => Mode::Live,

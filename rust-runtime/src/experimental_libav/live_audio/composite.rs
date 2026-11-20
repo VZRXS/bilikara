@@ -19,7 +19,7 @@ pub enum CompositeVideo<'a> {
         /// Blocks until the next unit; `None` ends the stream.
         next: &'a mut dyn FnMut() -> Result<Option<EncodedUnit>, ProbeError>,
     },
-    /// The output keeps the source size, which must match `width`/`height`.
+    /// The source is contain-fitted (black bars) into `width`x`height`.
     Transcode {
         codec: TranscodeCodec,
         width: u32,
@@ -55,12 +55,26 @@ pub trait OverlaySource {
     ) -> Result<(), ProbeError>;
 }
 
+/// What the video shows. `Hold` and `Blank` carry silence and need no audio
+/// track; `Blank` needs no video file either (a full-frame overlay card).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CompositeSource {
+    /// The program from the start position.
+    #[default]
+    Play,
+    /// The program's frame at the start position, repeated.
+    Hold,
+    /// Black frames.
+    Blank,
+}
+
 pub struct Composite<'a> {
     pub video: CompositeVideo<'a>,
+    pub source: CompositeSource,
     /// Frame-rate cap; the source rate is halved until it fits.
     pub fps: (u32, u32),
     pub bit_rate: u32,
-    /// Source program end, which bounds the L1 audio.
+    /// Program end (source microseconds), which bounds the output.
     pub end_us: i64,
     pub overlay: Option<&'a dyn OverlaySource>,
 }

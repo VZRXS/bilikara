@@ -7,7 +7,8 @@ use std::{path::Path, sync::atomic::AtomicBool};
 pub mod composite;
 mod events;
 pub use composite::{
-    Composite, CompositeReport, CompositeVideo, EncodedUnit, Encoder, OverlaySource, TranscodeCodec,
+    Composite, CompositeReport, CompositeSource, CompositeVideo, EncodedUnit, Encoder,
+    OverlaySource, TranscodeCodec,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -296,14 +297,18 @@ mod tests {
                 mode: OffsetMode::Splice,
             })
         };
-        let run = |composite: Composite<'_>, name: &str| {
+        let run_from = |video: Option<&Path>,
+                        audio: &[&Path],
+                        start_us: i64,
+                        composite: Composite<'_>,
+                        name: &str| {
             let mut bytes = Vec::new();
             let mut starts = Vec::new();
             let report = probe
                 .render_composited_ts_with_events(
-                    &video,
-                    &[&audio],
-                    0,
+                    video,
+                    audio,
+                    start_us,
                     &AtomicBool::new(false),
                     &mut |event| {
                         match event {
@@ -321,6 +326,9 @@ mod tests {
             std::fs::write(directory.join(name), &bytes).unwrap();
             (report, starts[0])
         };
+        let run = |composite: Composite<'_>, name: &str| {
+            run_from(Some(&video), &[&audio], 0, composite, name)
+        };
         // In-companion transcode (the software encoder every desktop build has).
         assert_ne!(kinds & composite::KIND_MPEG2, 0);
         let square = Square(std::cell::Cell::new(0));
@@ -331,6 +339,7 @@ mod tests {
                     width: 160,
                     height: 90,
                 },
+                source: CompositeSource::Play,
                 fps: (30, 1),
                 bit_rate: 2_000_000,
                 end_us: 2_000_000,
@@ -352,6 +361,7 @@ mod tests {
                     width: 160,
                     height: 90,
                 },
+                source: CompositeSource::Play,
                 fps: (15, 1),
                 bit_rate: 2_000_000,
                 end_us: 2_000_000,
@@ -360,6 +370,70 @@ mod tests {
             "composited-mpeg2-half.ts",
         );
         assert_eq!(report.frames, 30, "{report:?}");
+        // A continuous cast's fixed picture: the 16:9 source contain-fitted
+        // into 4:3 (black bars), with the overlay at output coordinates.
+        let square = Square(std::cell::Cell::new(0));
+        let (report, _) = run(
+            Composite {
+                video: CompositeVideo::Transcode {
+                    codec: TranscodeCodec::Mpeg2,
+                    width: 320,
+                    height: 240,
+                },
+                source: CompositeSource::Play,
+                fps: (30, 1),
+                bit_rate: 2_000_000,
+                end_us: 1_000_000,
+                overlay: Some(&square),
+            },
+            "composited-fitted.ts",
+        );
+        assert_eq!(report.frames, 30, "{report:?}");
+        // Pause: the frame at 1 s held for one second, with silence and no
+        // audio track.
+        let (report, start) = run_from(
+            Some(&video),
+            &[],
+            1_000_000,
+            Composite {
+                video: CompositeVideo::Transcode {
+                    codec: TranscodeCodec::Mpeg2,
+                    width: 320,
+                    height: 180,
+                },
+                source: CompositeSource::Hold,
+                fps: (30, 1),
+                bit_rate: 2_000_000,
+                end_us: 2_000_000,
+                overlay: None,
+            },
+            "composited-hold.ts",
+        );
+        assert_eq!(report.frames, 30, "{report:?}");
+        assert_eq!(start.source_start_us, 1_000_000);
+        // A card: black frames under a full overlay, no media at all.
+        let square = Square(std::cell::Cell::new(0));
+        let (report, start) = run_from(
+            None,
+            &[],
+            0,
+            Composite {
+                video: CompositeVideo::Transcode {
+                    codec: TranscodeCodec::Mpeg2,
+                    width: 320,
+                    height: 180,
+                },
+                source: CompositeSource::Blank,
+                fps: (25, 1),
+                bit_rate: 2_000_000,
+                end_us: 1_000_000,
+                overlay: Some(&square),
+            },
+            "composited-blank.ts",
+        );
+        assert_eq!(report.frames, 25, "{report:?}");
+        assert_eq!(report.overlays, 1);
+        assert_eq!(start.source_start_us, 0);
         // Caller-encoded units: the source's own H.264 passes through L2.
         let (width, height, units) = passthrough_units(&video);
         let mut units = units.into_iter().filter(|u| u.dts_us < 2_000_000);
@@ -371,6 +445,7 @@ mod tests {
                     height,
                     next: &mut next,
                 },
+                source: CompositeSource::Play,
                 fps: (30, 1),
                 bit_rate: 2_000_000,
                 end_us: 2_000_000,
@@ -392,7 +467,7 @@ mod tests {
         let mut failing = || Err(ProbeError::BackendFailure("encoder lost".into()));
         let error = probe
             .render_composited_ts_with_events(
-                &video,
+                Some(&video),
                 &[&audio],
                 0,
                 &AtomicBool::new(false),
@@ -404,6 +479,7 @@ mod tests {
                         height,
                         next: &mut failing,
                     },
+                    source: CompositeSource::Play,
                     fps: (30, 1),
                     bit_rate: 2_000_000,
                     end_us: 2_000_000,
@@ -493,11 +569,12 @@ impl LibavMetadataProbe {
 
     /// The composited cast (L2): the same events, DSP and controls as
     /// `render_live_ts_with_events`, with the copied source video replaced by
-    /// a decoded, overlaid and re-encoded stream.
+    /// a decoded, overlaid and re-encoded stream. `video` may be `None` only
+    /// for a `Blank` source; `Hold` and `Blank` take no audio tracks.
     #[allow(clippy::too_many_arguments)]
     pub fn render_composited_ts_with_events(
         &self,
-        video: &Path,
+        video: Option<&Path>,
         audio: &[&Path],
         start_us: i64,
         stop: &AtomicBool,
@@ -530,14 +607,14 @@ impl LibavMetadataProbe {
         visit: &mut dyn FnMut(Event<'_>) -> bool,
         controls: &mut dyn FnMut() -> Result<Control, ProbeError>,
     ) -> Result<(), ProbeError> {
-        self.events_run(video, audio, start_us, stop, visit, controls, None)
+        self.events_run(Some(video), audio, start_us, stop, visit, controls, None)
             .map(|_| ())
     }
 
     #[allow(clippy::too_many_arguments)]
     fn events_run(
         &self,
-        video: &Path,
+        video: Option<&Path>,
         audio: &[&Path],
         start_us: i64,
         stop: &AtomicBool,
@@ -1066,6 +1143,8 @@ mod native {
         processor: Processor,
         error: Option<ProbeError>,
         tracks: usize,
+        /// Composited stills: silence, the controls only fix the origin.
+        silent: bool,
     }
     extern "C" fn cancelled(opaque: *mut c_void) -> i32 {
         // Separate context: PCM reads re-enter C and may poll cancellation
@@ -1133,10 +1212,14 @@ mod native {
                 return Err(backend_error("invalid L1 render request"));
             }
             let control = (c.controls)(source_us)?;
+            let out = unsafe { std::slice::from_raw_parts_mut(out, frames as usize * 2) };
+            if c.silent {
+                out.fill(0.0);
+                return Ok(());
+            }
             if control.track >= c.tracks {
                 return Err(backend_error("uncached L1 audio track"));
             }
-            let out = unsafe { std::slice::from_raw_parts_mut(out, frames as usize * 2) };
             c.processor.render(
                 Source {
                     read,
@@ -1169,12 +1252,22 @@ mod native {
         visit: &mut dyn FnMut(&[u8], i64, bool) -> bool,
         controls: &mut dyn FnMut(i64) -> Result<Control, ProbeError>,
     ) -> Result<(), ProbeError> {
-        run_with(probe, video, audio, start, stop, visit, controls, None).map(|_| ())
+        run_with(
+            probe,
+            Some(video),
+            audio,
+            start,
+            stop,
+            visit,
+            controls,
+            None,
+        )
+        .map(|_| ())
     }
     #[allow(clippy::too_many_arguments)]
     pub(super) fn run_with(
         probe: &LibavMetadataProbe,
-        video: &Path,
+        video: Option<&Path>,
         audio: &[&Path],
         start: i64,
         stop: &AtomicBool,
@@ -1182,7 +1275,18 @@ mod native {
         controls: &mut dyn FnMut(i64) -> Result<Control, ProbeError>,
         composite: Option<Composite<'_>>,
     ) -> Result<Option<CompositeReport>, ProbeError> {
-        if audio.is_empty() || audio.len() > 2 || !(0..=21_600_000_000).contains(&start) {
+        // Composited stills (hold, blank) render silence from no tracks.
+        let silent = composite
+            .as_ref()
+            .is_some_and(|c| c.source != CompositeSource::Play);
+        if (audio.is_empty() && !silent)
+            || audio.len() > 2
+            || (video.is_none()
+                && !composite
+                    .as_ref()
+                    .is_some_and(|c| c.source == CompositeSource::Blank))
+            || !(0..=21_600_000_000).contains(&start)
+        {
             return Err(backend_error("invalid L1 sources"));
         }
         let cap = Capability::load(&probe._library)?;
@@ -1190,12 +1294,15 @@ mod native {
             Some(_) => Some(l2::Composited::load(&probe._library)?),
             None => None,
         };
-        let video = open_input(video)?;
+        let video = video.map(open_input).transpose()?;
         let files = audio
             .iter()
             .map(|p| open_input(p))
             .collect::<Result<Vec<_>, _>>()?;
-        let vd = probe._library.descriptor(&video)?;
+        let vd = video
+            .as_ref()
+            .map(|video| probe._library.descriptor(video))
+            .transpose()?;
         let ad = files
             .iter()
             .map(|f| probe._library.descriptor(f))
@@ -1219,6 +1326,7 @@ mod native {
             },
             error: None,
             tracks: audio.len(),
+            silent,
         };
         let opaque = (&mut context as *mut Context<'_>).cast();
         let input = |fd| wire::Request {
@@ -1228,13 +1336,16 @@ mod native {
         };
         let request = Request {
             live: Live {
-                video: input(vd.fd),
-                audio: input(ad[0].fd),
+                video: input(vd.as_ref().map_or(-1, |d| d.fd)),
+                audio: input(ad.first().map_or(-1, |d| d.fd)),
                 start_us: start,
                 visit: ts_visit,
                 opaque,
             },
-            audio: [input(ad[0].fd), input(ad.get(1).map_or(-1, |d| d.fd))],
+            audio: [
+                input(ad.first().map_or(-1, |d| d.fd)),
+                input(ad.get(1).map_or(-1, |d| d.fd)),
+            ],
             tracks: audio.len() as u32,
             render,
             opaque,
@@ -1249,6 +1360,7 @@ mod native {
                     overlay.as_ref(),
                     composite.fps,
                     composite.bit_rate,
+                    composite.source,
                     composite.end_us,
                 )?;
                 let mut result = l2::ResultData::default();

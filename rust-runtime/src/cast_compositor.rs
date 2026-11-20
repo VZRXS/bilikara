@@ -19,10 +19,34 @@ pub struct Unit {
     pub dts_us: i64,
 }
 
+/// What a stream shows; mirrors the companion's L2 sources.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Source {
+    /// The video from `start_us`, on the capped frame grid.
+    #[default]
+    Play,
+    /// The frame at `start_us`, repeated on the frame grid until `end_us`.
+    Hold,
+    /// Black frames (under a full-frame overlay); `video` is unused.
+    Blank,
+}
+impl Source {
+    /// Wire value for the platform bridge.
+    pub fn code(self) -> i32 {
+        match self {
+            Self::Play => 0,
+            Self::Hold => 1,
+            Self::Blank => 2,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Request {
-    /// Cached source video (any codec the platform decodes).
-    pub video: PathBuf,
+    /// Cached source video (any codec the platform decodes); `None` only for
+    /// a blank stream.
+    pub video: Option<PathBuf>,
+    pub source: Source,
     /// Output starts at the first frame at or after this source time.
     pub start_us: i64,
     /// Output ends before this source time.

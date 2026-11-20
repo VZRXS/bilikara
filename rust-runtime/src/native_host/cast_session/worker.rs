@@ -631,6 +631,10 @@ async fn play_session(
             }
         };
         let mode = device.effective_mode();
+        let pure_mode = device.pure_mode();
+        let learned_live = device
+            .learned_mode
+            .map(|m| m == crate::app_state::cast::LearnedMode::Live);
         let picture = device.picture;
         if let Some(key) = &key {
             device.last_used = chrono::Utc::now().timestamp_millis().max(0) as u64;
@@ -658,7 +662,10 @@ async fn play_session(
             state.renderers.push(renderer.clone());
         }
         state.mode = mode;
+        state.pure_mode = pure_mode;
+        state.learned_live = learned_live;
         state.picture = picture;
+        state.composite_refusal = None;
         state.resume = None;
         Ok(mode)
     })?;
@@ -700,6 +707,36 @@ async fn play_session(
     let mut attempted_output = false;
     let result = loop {
         let mut failure_stage = "media_preparation";
+        // The continuous composited cast runs its own loop; it returns here
+        // when the picture is pure again or composited output was refused.
+        if wants_show(id) {
+            match play_show(
+                context,
+                id,
+                &client,
+                &endpoint,
+                trace,
+                connection,
+                cancel,
+                room,
+                &mut events,
+                &mut output_ids,
+                &mut attempted_output,
+            )
+            .await
+            {
+                Ok(_) => continue,
+                Err(e) if !cancel.is_cancelled() && is_local_pipeline_failure(&e) => {
+                    attempted_output = false;
+                    if let Err(error) = suspend_failed_output(id, e, "media_pipeline") {
+                        break Err(error);
+                    }
+                    continue;
+                }
+                Err(e) => break Err(e),
+            }
+        }
+        let mut switch = false;
         let result = async {
         let position = with_app(|app| Ok(app.native().cast.position))?;
         if with_app(|app|Ok(app.native().cast.output_enabled && app.native_cast_input()?.current_item.is_some()))? {
@@ -736,31 +773,23 @@ async fn play_session(
             if cancel.is_cancelled() {
                 break;
             }
-            if let Some(room) = room.as_mut() {
-                room.record_delivery(endpoint.diagnostics().bytes_written);
-                if Instant::now() >= health_at {
-                    if let Some(stage) = room.renew_announcement(cancel).await {
-                        trace.purek(connection, &stage);
+            room_health(room, &endpoint, trace, connection, id, cancel, &mut health_at).await?;
+            // The device switched to the composited picture: retire this
+            // output and hand the receiver to the continuous cast.
+            if wants_show(id) {
+                if let Some(mut previous) = output.take() {
+                    if let Some(live) = previous.live.take() {
+                        live.stop().await;
                     }
-                    let health = room.poll_health(cancel).await;
-                    trace.record_purek_operation(connection, &health);
-                    health_at = Instant::now() + room.health_interval();
-                    if !matches!(
-                        health.result,
-                        Ok(purek::HealthState::Online | purek::HealthState::Suspect)
-                    ) {
-                        record_room_failure(id, &health);
-                        update(id, |s| {
-                            let code = if matches!(health.result, Ok(purek::HealthState::IdentityChanged)) {
-                                "purek_identity_changed".into()
-                            } else {
-                                s.room_failure.take().map(|f| f.0).unwrap_or_else(|| "purek_unavailable".into())
-                            };
-                            s.room_failure = Some((code, "health_check"));
-                        });
-                        return Err(error("cast_purek_unavailable"));
-                    }
+                    endpoint.clear_generation();
+                    trace.complete_output(previous.id, Default::default());
                 }
+                if let Some((_, stopping, _)) = &prefetched {
+                    stopping.store(true, Ordering::Release);
+                }
+                let _ = take_prefetch(&mut prefetched, cancel).await;
+                switch = true;
+                return Ok(());
             }
             let probe=with_app(|app|{
                 let s=&mut app.native().cast;
@@ -1239,6 +1268,9 @@ async fn play_session(
         Ok(())
     }
     .await;
+        if switch && result.is_ok() {
+            continue;
+        }
         // Decision 7 / A5: a local mux/companion failure stops only output. Retire
         // its producer, prefetch and HTTP generation, then keep this same worker
         // maintaining the room lease and accepting probe/output/disconnect actions.
@@ -1317,6 +1349,467 @@ async fn play_session(
     result
 }
 
+/// How the continuous composited loop handed the session back.
+enum ShowExit {
+    /// The device's picture is pure media again.
+    Pure,
+    /// Composited output cannot run here: fall back to pure media, reason.
+    Refused(&'static str),
+}
+
+/// Keeps a Pure K room's lease and health; shared by both playback loops.
+async fn room_health(
+    room: &mut Option<purek::Session>,
+    endpoint: &CastEndpoint,
+    trace: &SessionTrace,
+    connection: u64,
+    id: u64,
+    cancel: &CancellationToken,
+    health_at: &mut Instant,
+) -> Result<(), ApiError> {
+    let Some(room) = room.as_mut() else {
+        return Ok(());
+    };
+    room.record_delivery(endpoint.diagnostics().bytes_written);
+    if Instant::now() < *health_at {
+        return Ok(());
+    }
+    if let Some(stage) = room.renew_announcement(cancel).await {
+        trace.purek(connection, &stage);
+    }
+    let health = room.poll_health(cancel).await;
+    trace.record_purek_operation(connection, &health);
+    *health_at = Instant::now() + room.health_interval();
+    if !matches!(
+        health.result,
+        Ok(purek::HealthState::Online | purek::HealthState::Suspect)
+    ) {
+        record_room_failure(id, &health);
+        update(id, |s| {
+            let code = if matches!(health.result, Ok(purek::HealthState::IdentityChanged)) {
+                "purek_identity_changed".into()
+            } else {
+                s.room_failure
+                    .take()
+                    .map(|f| f.0)
+                    .unwrap_or_else(|| "purek_unavailable".into())
+            };
+            s.room_failure = Some((code, "health_check"));
+        });
+        return Err(error("cast_purek_unavailable"));
+    }
+    Ok(())
+}
+
+fn wants_show(id: u64) -> bool {
+    with_app(|app| {
+        let s = &app.native().cast;
+        Ok(s.operation == id
+            && s.picture == crate::app_state::cast::Picture::Composited
+            && s.composite_refusal.is_none())
+    })
+    .unwrap_or(false)
+}
+
+/// Seconds of the current song the receiver shows from the show's clock.
+fn item_duration(item: &PlaylistItem) -> f64 {
+    item.selected_durations.first().copied().unwrap_or(0).max(0) as f64
+}
+
+/// The continuous composited cast: the receiver plays one live URI for the
+/// whole connection; songs, pauses and cards are the generator's business.
+#[allow(clippy::too_many_arguments)]
+async fn play_show(
+    context: &Arc<HostContext>,
+    id: u64,
+    client: &ControlClient,
+    endpoint: &CastEndpoint,
+    trace: &SessionTrace,
+    connection: u64,
+    cancel: &CancellationToken,
+    room: &mut Option<purek::Session>,
+    events: &mut tokio::sync::broadcast::Receiver<HttpStageResult>,
+    output_ids: &mut std::collections::BTreeMap<u64, u64>,
+    attempted_output: &mut bool,
+) -> Result<ShowExit, ApiError> {
+    struct Running {
+        show: show::Show,
+        output: u64,
+        generation: u64,
+        began: Instant,
+        seen_playing: bool,
+        restarted: bool,
+        /// Endpoint bytes before this show's URI went out.
+        bytes_before: u64,
+    }
+    let mut running: Option<Running> = None;
+    let mut monitor = TransportMonitor::default();
+    let mut poll_failures = 0u8;
+    let mut last_response = Instant::now();
+    let mut next_poll = Instant::now();
+    let mut next_observation = Instant::now();
+    let mut recovery: Option<Instant> = None;
+    let mut stopped = 0u8;
+    let mut health_at = Instant::now();
+    let teardown = |running: Option<Running>| async move {
+        if let Some(r) = running {
+            r.show.stop().await;
+            trace.complete_output(r.output, Default::default());
+        }
+    };
+    let result = async {
+        loop {
+            if cancel.is_cancelled() {
+                return Err(error("cancelled"));
+            }
+            room_health(room, endpoint, trace, connection, id, cancel, &mut health_at).await?;
+            let (enabled, picture, refused) = with_app(|app| {
+                let s = &app.native().cast;
+                Ok((s.output_enabled, s.picture, s.composite_refusal))
+            })?;
+            if picture != crate::app_state::cast::Picture::Composited || refused.is_some() {
+                return Ok(ShowExit::Pure);
+            }
+            if !enabled {
+                if let Some(r) = running.take() {
+                    let _ = record(trace, connection, Some(r.output), soap(client.stop(cancel)).await);
+                    endpoint.clear_generation();
+                    teardown(Some(r)).await;
+                    with_app(|app| {
+                        let snap = app.native_cast_input()?;
+                        let s = &mut app.native().cast;
+                        s.owns_playback = false;
+                        s.l1 = false;
+                        s.composited = None;
+                        s.control = None;
+                        s.control_busy = false;
+                        s.resume = Some(json!({"playback_generation":snap.playback_generation,
+                            "item_id":snap.current_item.as_ref().map(|i|&i.id),"position":s.position,
+                            "is_paused":s.paused,"operation_id":id}));
+                        projection::resume_local(app)?;
+                        app.native().revision += 1;
+                        Ok(())
+                    })?;
+                }
+                update(id, |s| {
+                    s.phase = Phase::Active;
+                    s.owns_playback = false;
+                    s.l1 = false;
+                    s.composited = None;
+                    s.control_busy = false;
+                });
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                continue;
+            }
+            if running.is_none() {
+                // Take over from the Host's player where it stands.
+                let generation = with_app(|app| {
+                    let snap = app.native_snapshot(true)?;
+                    let input = app.native_cast_input()?;
+                    let s = &mut app.native().cast;
+                    s.owns_playback = true;
+                    s.resume = None;
+                    s.paused = super::local_paused(s, &snap);
+                    if snap["current_item"].is_object() {
+                        s.position = snap["player_status"]["current_time"].as_f64().unwrap_or(0.0);
+                    }
+                    s.generation += 1;
+                    s.l1 = false;
+                    s.composited = None;
+                    s.delivered = false;
+                    s.published_resume = None;
+                    s.playback_generation = input.playback_generation;
+                    s.phase = Phase::Connecting;
+                    app.native().revision += 1;
+                    Ok(app.native().cast.generation)
+                })?;
+                *attempted_output = true;
+                let output = trace.begin_output(
+                    &client.renderer().context,
+                    OutputConfig {
+                        cell: None,
+                        mode: diagnostics::Mode::Live,
+                        mime: diagnostics::Mime::Ts,
+                        preflight: Default::default(),
+                    },
+                );
+                output_ids.insert(generation, output);
+                let hub = with_app(|app| Ok(app.native().cast.overlay.clone()))?;
+                let show = match show::start(context.clone(), (id, generation), hub, cancel).await {
+                    Ok(show) => show,
+                    Err(e) if cancel.is_cancelled() => return Err(e),
+                    Err(e) => {
+                        trace.complete_output(output, Default::default());
+                        // The companion cannot composite here (no encoder or
+                        // no L1): pure media still works.
+                        let reason = match e.message.as_str() {
+                            "composite_unavailable" => "composite_unavailable",
+                            "l1_unavailable" => "l1_unavailable",
+                            _ => return Err(e),
+                        };
+                        return Ok(ShowExit::Refused(reason));
+                    }
+                };
+                let published = match endpoint.publish_live(generation, show.stream.clone(), TsMime::Mp2t) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        teardown(Some(Running { show, output, generation, began: Instant::now(), seen_playing: false, restarted: false, bytes_before: 0 })).await;
+                        return Err(error("cast_publish_failed"));
+                    }
+                };
+                let sinks = query_capabilities(client, id, trace, connection, Some(output), cancel).await;
+                let bytes_before = endpoint.diagnostics().bytes_written;
+                let started = record(
+                    trace,
+                    connection,
+                    Some(output),
+                    client
+                        .start(
+                            StartRequest {
+                                uri: &published.uri,
+                                title: "bilikara",
+                                file: None,
+                                capabilities: CapabilityQuery::Known(sinks),
+                            },
+                            cancel,
+                        )
+                        .await,
+                );
+                let encoder = show.encoder;
+                running = Some(Running { show, output, generation, began: Instant::now(), seen_playing: false, restarted: false, bytes_before });
+                if let Err(e) = started {
+                    endpoint.clear_generation();
+                    teardown(running.take()).await;
+                    if cancel.is_cancelled() {
+                        return Err(e);
+                    }
+                    // The receiver refused a live MPEG-TS URI: pure media
+                    // (file delivery) may still work.
+                    return Ok(ShowExit::Refused("receiver_rejected"));
+                }
+                update(id, |s| {
+                    s.phase = Phase::Active;
+                    s.owns_playback = true;
+                    s.l1 = true;
+                    s.l1_refusal = None;
+                    s.composited = Some(encoder);
+                    s.connected = true;
+                    s.receiver_state = Some("playing");
+                    s.error_code = None;
+                });
+                monitor = TransportMonitor::default();
+                poll_failures = 0;
+                last_response = Instant::now();
+                stopped = 0;
+                recovery = None;
+            }
+            let r = running.as_mut().expect("running show");
+            r.show.check().await?;
+            drain_http(trace, events, output_ids, None);
+            let delivered = endpoint.diagnostics().bytes_written > r.bytes_before;
+            // Host controls retarget the generator; the receiver keeps playing.
+            let control = with_app(|app| Ok(app.native().cast.control.take()))?;
+            if let Some(control) = control {
+                match control {
+                    Control::Probe => {
+                        query_capabilities(client, id, trace, connection, Some(r.output), cancel).await;
+                    }
+                    Control::Pause => {
+                        update(id, |s| s.paused = true);
+                        r.show.shared.retarget();
+                    }
+                    Control::Play => {
+                        update(id, |s| s.paused = false);
+                        r.show.shared.retarget();
+                    }
+                    Control::Seek(position) => {
+                        update(id, |s| s.position = position);
+                        r.show.shared.seek(position);
+                    }
+                    Control::Next => {
+                        let generation = with_app(|app| Ok(app.native_cast_input()?.playback_generation))?;
+                        let _ = advance(id, generation);
+                    }
+                    Control::Restart => r.show.shared.retarget(),
+                    Control::ProgramChanged => {}
+                }
+                update(id, |s| s.control_busy = s.control.is_some());
+            }
+            // The Host's position follows what the receiver shows.
+            if Instant::now() >= next_observation {
+                next_observation = Instant::now() + Duration::from_millis(500);
+                let snap = with_app(|app| app.native_cast_input())?;
+                update(id, |s| s.delivered |= delivered);
+                if let Some(item) = &snap.current_item {
+                    let shown = r.show.shared.on_air(&item.id);
+                    let duration = r.show.shared.duration(&item.id);
+                    update(id, |s| {
+                        s.duration = duration.unwrap_or_else(|| item_duration(item));
+                        s.playback_generation = snap.playback_generation;
+                        if let Some(position) = shown {
+                            s.position = bounded_position(position, s.duration);
+                        }
+                        if let Some(encoder) = r.show.shared.encoder() {
+                            s.composited = Some(match encoder.as_str() {
+                                "media_foundation_hardware" => "media_foundation_hardware",
+                                "media_foundation_software" => "media_foundation_software",
+                                "videotoolbox" => "videotoolbox",
+                                "mpeg2_software" => "mpeg2_software",
+                                _ => r.show.encoder,
+                            });
+                        }
+                    });
+                    if shown.is_some()
+                        && let Err(error) = with_app(|app| app.native_cast_observation(id, snap.playback_generation))
+                        && !matches!(error.code.as_str(), "stale_player" | "cast_no_media")
+                    {
+                        return Err(error);
+                    }
+                }
+            }
+            if Instant::now() >= next_poll {
+                next_poll = Instant::now() + Duration::from_secs(2);
+                let sample = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return Err(error("cancelled")),
+                    _ = command_pending(id) => { next_poll = Instant::now(); continue; },
+                    result = tokio::time::timeout(MONITOR_TIMEOUT, monitor.poll(client, cancel)) =>
+                        result.unwrap_or(MonitorSample { decision: MonitorDecision::TransientFailure, state: None, operation: None }),
+                };
+                if let Some(op) = &sample.operation {
+                    trace.record_operation(Some(connection), Some(r.output), op);
+                }
+                let transport_failed = matches!(sample.decision, MonitorDecision::TransientFailure | MonitorDecision::Disconnected);
+                if transport_failed {
+                    poll_failures = poll_failures.saturating_add(1);
+                } else {
+                    poll_failures = 0;
+                    if sample.operation.is_some() {
+                        last_response = Instant::now();
+                    }
+                }
+                if let Some(state) = sample.state {
+                    trace.transport(r.output, state, None);
+                    update(id, |s| {
+                        s.receiver_state = Some(match state {
+                            TransportState::Playing => "playing",
+                            TransportState::Paused => "paused",
+                            TransportState::Stopped => "stopped",
+                            TransportState::NoMedia => "no_media",
+                            TransportState::Transitioning => "transitioning",
+                            TransportState::Unknown => "unknown",
+                        })
+                    });
+                    match state {
+                        TransportState::Playing => {
+                            r.seen_playing = true;
+                            stopped = 0;
+                        }
+                        // A pause on the TV remote pauses the Host; the TV
+                        // keeps reading the stream, which now holds the frame.
+                        TransportState::Paused => {
+                            update(id, |s| s.paused = true);
+                            r.show.shared.retarget();
+                            let _ = record(trace, connection, Some(r.output), soap(client.play(cancel)).await);
+                        }
+                        TransportState::Stopped | TransportState::NoMedia => {
+                            stopped = stopped.saturating_add(1);
+                        }
+                        _ => {}
+                    }
+                }
+                // The receiver never played the live stream: pure media.
+                if !r.seen_playing
+                    && r.began.elapsed() > Duration::from_secs(20)
+                    && !delivered
+                {
+                    return Ok(ShowExit::Refused("receiver_live_unsupported"));
+                }
+                if stopped >= 3 {
+                    if !r.seen_playing {
+                        return Ok(ShowExit::Refused("receiver_live_unsupported"));
+                    }
+                    // A receiver that dropped the stream once gets it again.
+                    if !r.restarted {
+                        r.restarted = true;
+                        stopped = 0;
+                        let uri = endpoint.publish_live(r.generation, r.show.stream.clone(), TsMime::Mp2t);
+                        let started = match uri {
+                            Ok(published) => record(
+                                trace,
+                                connection,
+                                Some(r.output),
+                                client
+                                    .start(
+                                        StartRequest {
+                                            uri: &published.uri,
+                                            title: "bilikara",
+                                            file: None,
+                                            capabilities: CapabilityQuery::Skip,
+                                        },
+                                        cancel,
+                                    )
+                                    .await,
+                            ),
+                            Err(_) => Err(error("cast_publish_failed")),
+                        };
+                        if started.is_ok() {
+                            continue;
+                        }
+                    }
+                    return Err(error("cast_receiver_unreachable"));
+                }
+            }
+            if receiver_silent(last_response, poll_failures, Instant::now()) {
+                let since = recovery.get_or_insert(last_response + RECEIVER_SILENCE);
+                update(id, |s| {
+                    s.phase = Phase::Recovering;
+                    s.error_code = Some("cast_receiver_unreachable".into());
+                });
+                if since.elapsed() >= RECOVERY_WINDOW {
+                    return Err(error("cast_receiver_unreachable"));
+                }
+            } else if recovery.take().is_some() {
+                update(id, |s| {
+                    s.phase = Phase::Active;
+                    s.error_code = None;
+                });
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    }
+    .await;
+    // Leaving the show (switch, refusal or failure) retires its stream.
+    if let Some(r) = running.take() {
+        if matches!(result, Ok(ShowExit::Refused(_)) | Ok(ShowExit::Pure)) {
+            let _ = record(
+                trace,
+                connection,
+                Some(r.output),
+                soap(client.stop(cancel)).await,
+            );
+        }
+        endpoint.clear_generation();
+        teardown(Some(r)).await;
+    }
+    drain_http(trace, events, output_ids, None);
+    if let Ok(ShowExit::Refused(reason)) = &result {
+        eprintln!("[cast] composited cast refused: {reason}; using pure media");
+        let reason = *reason;
+        update(id, |s| {
+            s.composite_refusal = Some(reason);
+            s.composited = None;
+            s.mode = s.pure_mode;
+        });
+    }
+    if matches!(result, Ok(ShowExit::Pure)) {
+        update(id, |s| {
+            s.composited = None;
+        });
+    }
+    result
+}
+
 async fn take_prefetch(
     prefetch: &mut Option<Prefetch>,
     cancel: &CancellationToken,
@@ -1332,7 +1825,7 @@ async fn take_prefetch(
     };
     result.ok()?.ok().map(|file| (key, file))
 }
-fn advance(id: u64, generation: u64) -> Result<(), ApiError> {
+pub(super) fn advance(id: u64, generation: u64) -> Result<(), ApiError> {
     with_app(|app| {
         if app.native().cast.operation != id {
             return Err(error("cancelled"));
@@ -1468,11 +1961,6 @@ async fn start_output_once(
             position,
             (id, generation),
             cancel,
-            with_app(|app| {
-                let s = &app.native().cast;
-                Ok((s.picture == crate::app_state::cast::Picture::Composited)
-                    .then(|| s.overlay.clone()))
-            })?,
         )
         .await?;
         origin = producer.stream.snapshot().start.unwrap().source_start_us as f64 / 1_000_000.0;
@@ -1603,8 +2091,7 @@ async fn start_output_once(
             .as_ref()
             .and_then(|live| live.refusal)
             .or_else(|| file_profile.as_ref().and_then(|(_, refusal)| *refusal));
-        s.composited = live.as_ref().and_then(|live| live.composited);
-        s.composite_refusal = live.as_ref().and_then(|live| live.composite_refusal);
+        s.composited = None;
         s.connected = true;
         s.paused = false;
         s.duration = duration;

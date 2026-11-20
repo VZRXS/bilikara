@@ -211,6 +211,13 @@ BM_EXPORT uint32_t bm_live_l1_v1(const BmL1Request *request, BmLiveResult *resul
 #define BM_L2_ENCODER_MF_HARDWARE 2u
 #define BM_L2_ENCODER_MF_SOFTWARE 3u
 #define BM_L2_ENCODER_VIDEOTOOLBOX 4u
+/* Video source of one request. PLAY shows the program from start_us; HOLD
+ * repeats its first frame at or after start_us; BLANK needs no video input
+ * (black frames for a full-frame overlay). HOLD and BLANK accept zero audio
+ * tracks: the renderer then supplies the audio (normally silence). */
+#define BM_L2_SOURCE_PLAY 0u
+#define BM_L2_SOURCE_HOLD 1u
+#define BM_L2_SOURCE_BLANK 2u
 typedef struct { uint32_t schema, request_size, result_size, kinds; } BmL2Info;
 typedef struct {
     const uint8_t *data; /* Annex B; SPS/PPS precede every key unit */
@@ -223,10 +230,11 @@ typedef int32_t (*BmOverlayRead)(void *opaque, uint64_t *generation, uint8_t *rg
 typedef struct {
     BmL1Request l1;
     uint32_t kind;                /* exactly one BM_L2_* */
-    uint32_t width, height;       /* output; transcode: the source size */
+    uint32_t width, height;       /* output; transcodes contain-fit the source */
     uint32_t fps_num, fps_den;    /* frame rate cap; source rate is halved to fit */
     uint32_t bit_rate;            /* video bps */
-    int64_t end_us;               /* source program end, bounds L1 audio */
+    uint32_t source, reserved;    /* BM_L2_SOURCE_*; reserved is 0 */
+    int64_t end_us;               /* program end, bounds L1 audio */
     BmVideoNext next; void *video;                /* EXTERNAL */
     BmOverlayRead overlay; void *overlay_opaque;  /* transcode, optional */
 } BmL2Request;

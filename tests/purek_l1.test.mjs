@@ -13,10 +13,10 @@ import {inspectTs} from './purek_ts_observer.mjs';
 
 // Decode only in the outer test process. The isolated Host and its receiver
 // retain their executable-denying PATH and cannot depend on a media CLI.
-async function decodeTone(directory,name){
+async function decodeTone(directory,name,filters=[]){
   const ts=path.join(directory,`${name}.ts`),pcm=path.join(directory,`${name}.f32`);
   const decoded=await runNative(process.env.BILIKARA_TEST_FIXTURE_FFMPEG||'ffmpeg',[
-    '-hide_banner','-loglevel','error','-y','-i',ts,'-map','0:a:0','-ac','1','-ar','48000','-f','f32le',pcm,
+    '-hide_banner','-loglevel','error','-y','-i',ts,'-map','0:a:0',...filters,'-ac','1','-ar','48000','-f','f32le',pcm,
   ],process.env,30000);
   assert.equal(decoded.status,0,decoded.stderr);
   const samples=readFileSync(pcm);
@@ -138,7 +138,7 @@ test('P2 native Signalsmith, AAC/FLAC L1, independent TS and live Host edits',{t
 // under the Host's overlay. Linux packages no H.264 encoder, so this is the
 // companion's software MPEG-2 transcode; platform hardware encoders share
 // the muxer, overlay and session contract but need their own devices.
-test('composited cast (L2): transcoded video carries the overlay, DSP edits stay live',{timeout:240000},async t=>{
+test('continuous composited cast (L2): one stream through pause, seek, a card and the next song',{timeout:300000},async t=>{
   const companion=process.env.BILIKARA_TEST_LIBAV_COMPANION;
   assert.ok(companion&&path.isAbsolute(companion)&&existsSync(companion),'actual L2 companion is required');
   const home=mkdtempSync(path.join(tmpdir(),'bilikara-purek-l2-'));t.after(()=>rmSync(home,{recursive:true,force:true}));
@@ -147,6 +147,15 @@ test('composited cast (L2): transcoded video carries the overlay, DSP edits stay
   env.BILIKARA_TEST_L1_OUTPUT=path.join(home,'ts');
   const unit=await runNative(binary,['--exact','experimental_libav::live_audio::tests::real_l2_transcodes_with_the_overlay_and_muxes_external_units','--ignored','--nocapture'],env,60000,root);
   assert.equal(unit.status,0,unit.stdout+unit.stderr);assert.match(unit.stdout,/1 passed; 0 failed; 0 ignored/);
+  // The fitted picture: the 160x90 source sits in 320x240 with black bars.
+  {
+    const fitted=path.join(env.BILIKARA_TEST_L1_OUTPUT,'composited-fitted.ts'),raw=path.join(home,'fitted.rgb');
+    const frames=await runNative(process.env.BILIKARA_TEST_FIXTURE_FFMPEG||'ffmpeg',['-hide_banner','-loglevel','error','-y','-i',fitted,'-frames:v','1','-f','rawvideo','-pix_fmt','rgb24',raw],process.env,30000);
+    assert.equal(frames.status,0,frames.stderr);
+    const p=readFileSync(raw),at=(x,y)=>[...p.subarray((y*320+x)*3,(y*320+x)*3+3)];
+    assert.deepEqual(p.length,320*240*3);
+    for(const [x,y] of [[160,10],[160,229]])assert.ok(at(x,y).every(v=>v<8),`letterbox bar at ${x},${y}: ${at(x,y)}`);
+  }
   env.BILIKARA_TEST_PUREK_VIDEO=await makeVideo(home,'l2-video.mp4',240);
   for(const [key,name,frequency,codec] of [
     ['BILIKARA_TEST_PUREK_AUDIO','tone.m4a',440,['-c:a','aac']],
@@ -159,41 +168,71 @@ test('composited cast (L2): transcoded video carries the overlay, DSP edits stay
     ],process.env,30000);
     assert.equal(audio.status,0,audio.stderr);
   }
-  env.BILIKARA_TEST_PUREK_L1='1';env.BILIKARA_TEST_PUREK_COMPOSITED='1';
+  env.BILIKARA_TEST_PUREK_L1='1';env.BILIKARA_TEST_PUREK_COMPOSITED='1';env.BILIKARA_TEST_CAST_SHOW_SIZE='320x180';
   env.BILIKARA_TEST_PUREK_HOME=path.join(home,'cast-data');mkdirSync(env.BILIKARA_TEST_PUREK_HOME);
   env.BILIKARA_TEST_NODE=process.execPath;env.BILIKARA_CF_API_URL='';env.BILIKARA_CATALOG_SHEETS_URL='';
-  const cast=await runNative(binary,['--exact','native_host::purek::tests::node_receiver_live_output_integration','--ignored','--nocapture'],env,120000,root);
+  const cast=await runNative(binary,['--exact','native_host::purek::tests::node_receiver_live_output_integration','--ignored','--nocapture'],env,180000,root);
   assert.equal(cast.status,0,cast.stdout+cast.stderr);assert.match(cast.stdout,/1 passed; 0 failed; 0 ignored/);
   const ts=path.join(env.BILIKARA_TEST_PUREK_HOME,'composited.ts');
-  const probe=await runNative(process.env.BILIKARA_TEST_FIXTURE_FFPROBE||'ffprobe',['-v','error','-show_entries','stream=codec_name,width,height','-of','json',ts],process.env,30000);
+  const probe=await runNative(process.env.BILIKARA_TEST_FIXTURE_FFPROBE||'ffprobe',['-v','error','-show_entries','stream=codec_name,width,height,start_time','-of','json',ts],process.env,30000);
   assert.equal(probe.status,0,probe.stderr);
   const streams=JSON.parse(probe.stdout).streams;
   assert.deepEqual(streams.map(s=>s.codec_name).sort(),['aac','mpeg2video']);
   assert.deepEqual(streams.filter(s=>s.width).map(s=>[s.width,s.height]),[[320,180]]);
+  // One decodable stream: frame times only increase, without holes.
+  const times=await runNative(process.env.BILIKARA_TEST_FIXTURE_FFPROBE||'ffprobe',['-v','error','-select_streams','v:0','-show_entries','frame=best_effort_timestamp_time','-of','csv=p=0',ts],process.env,60000);
+  assert.equal(times.status,0,times.stderr);
+  const pts=times.stdout.split('\n').filter(line=>line.trim()).map(Number);
+  for(let i=1;i<pts.length;i++){
+    assert.ok(pts[i]>pts[i-1],`frame ${i} time ${pts[i]} after ${pts[i-1]}`);
+    assert.ok(pts[i]-pts[i-1]<0.2,`no hole at frame ${i}: ${pts[i-1]} -> ${pts[i]}`);
+  }
   const rgb=path.join(home,'composited.rgb');
-  const frames=await runNative(process.env.BILIKARA_TEST_FIXTURE_FFMPEG||'ffmpeg',['-hide_banner','-loglevel','error','-y','-i',ts,'-map','0:v:0','-f','rawvideo','-pix_fmt','rgb24',rgb],process.env,30000);
+  const frames=await runNative(process.env.BILIKARA_TEST_FIXTURE_FFMPEG||'ffmpeg',['-hide_banner','-loglevel','error','-y','-i',ts,'-map','0:v:0','-vsync','passthrough','-f','rawvideo','-pix_fmt','rgb24',rgb],process.env,60000);
   assert.equal(frames.status,0,frames.stderr);
   const pixels=readFileSync(rgb),size=320*180*3,count=pixels.length/size;
-  assert.ok(Number.isInteger(count)&&count>48,`decoded frames: ${count}`);
-  // Share of a region that is no longer the source's blue: the overlay panels
-  // are dark, with a pink label and white/blue text inside.
-  const covered=(frame,[x0,y0,x1,y1])=>{
-    let hidden=0;
-    for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++){const i=frame*size+(y*320+x)*3;if(pixels[i+2]<150||pixels[i]>100)hidden++;}
-    return hidden/((x1-x0)*(y1-y0));
+  assert.equal(count,pts.length,'every frame decodes');
+  // Share of a region that is the source's blue.
+  const blue=(frame,[x0,y0,x1,y1])=>{
+    let shown=0;
+    for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++){const i=frame*size+(y*320+x)*3;if(pixels[i+2]>150&&pixels[i]<100)shown++;}
+    return shown/((x1-x0)*(y1-y0));
   };
-  const toast=[6,8,60,16],card=[293,80,314,100],video=[120,120,200,170];
-  // The first frames precede the Host's overlay post; the last second follows it.
-  for(const region of [toast,card,video])assert.ok(covered(0,region)<0.05,`clean opening frame: ${region} ${covered(0,region)}`);
-  const late=count-12;
-  assert.ok(covered(late,toast)>0.8,`request toast: ${covered(late,toast)}`);
-  assert.ok(covered(late,card)>0.8,`operation card: ${covered(late,card)}`);
-  assert.ok(covered(late,video)<0.05,`video stays visible elsewhere: ${covered(late,video)}`);
-  // The final second carries the +2 semitone edit of the 440 Hz track.
-  const tone=await decodeTone(env.BILIKARA_TEST_PUREK_HOME,'composited');
-  const seconds=readFileSync(path.join(env.BILIKARA_TEST_PUREK_HOME,'composited.f32')).length/4/48000;
-  const tail=tone(seconds-1.2,seconds-0.7);
-  assert.ok(Math.abs(tail.frequency-440*2**(2/12))<4,`composited +2 semitones: ${JSON.stringify(tail)}`);
+  const corner=[8,150,40,172],center=[140,82,180,98],toast=[6,8,60,16];
+  const kind=frame=>blue(frame,corner)<0.1?'card':blue(frame,center)<0.5?'paused':'video';
+  const runs=[];
+  for(let i=0;i<count;i++){const k=kind(i);if(runs.at(-1)?.kind===k)runs.at(-1).end=i;else runs.push({kind:k,start:i,end:i});}
+  const seconds=run=>pts[run.end]-pts[run.start]+(pts[run.end+1]??pts[run.end]+1/30)-pts[run.end];
+  assert.deepEqual(runs.map(r=>r.kind),['video','paused','video','card','video'],JSON.stringify(runs.map(r=>[r.kind,seconds(r).toFixed(2)])));
+  const [opening,held,resumed,card,next]=runs;
+  assert.ok(seconds(held)>1.8&&seconds(held)<3.6,`held picture ${seconds(held)}`);
+  assert.ok(Math.abs(seconds(card)-3)<0.4,`3 s card ${seconds(card)}`);
+  assert.ok(seconds(next)>2,`next song ${seconds(next)}`);
+  // The seek skipped ahead: the resumed song ends at 10 s well before 7 s of
+  // playing time could have elapsed since the pause.
+  assert.ok(seconds(resumed)<6,`seeked song ${seconds(resumed)}`);
+  // Host notices ride on the video, also after the next song began.
+  assert.ok(blue(opening.end,toast)<0.2&&blue(next.end,toast)<0.2,'request toast');
+  assert.ok(blue(next.end,[120,120,200,170])>0.95,'video elsewhere');
+  // Audio on the same clock: 440 Hz, then +2 semitones, silence while held
+  // and on the card, and the next song.
+  // Silence fills the short audio gaps at segment boundaries, so PCM time
+  // is packet time from the first audio packet.
+  const audioStart=Number(streams.find(s=>s.codec_name==='aac').start_time);
+  const tone=await decodeTone(env.BILIKARA_TEST_PUREK_HOME,'composited',['-af','aresample=async=1:min_hard_comp=0.01']);
+  const at=(frame,offset,length)=>{const start=pts[frame]+offset-audioStart;assert.ok(start>=0,'audio window inside the capture');return tone(start,start+length);};
+  const begin=at(opening.start,0.6,0.4);
+  assert.ok(Math.abs(begin.frequency-440)<4,`opening 440 Hz ${JSON.stringify(begin)}`);
+  // Each new segment fades its audio in over a few hundred milliseconds.
+  const shifted=at(resumed.start,0.8,0.5);
+  assert.ok(Math.abs(shifted.frequency-440*2**(2/12))<4,`+2 semitones after the pause ${JSON.stringify(shifted)}`);
+  for(const [name,run] of [['held',held],['card',card]]){
+    const quiet=at(run.start,0.3,Math.max(0.2,seconds(run)-0.6));
+    assert.ok(quiet.rms<0.01,`${name} silence ${JSON.stringify(quiet)}`);
+  }
+  const later=at(next.start,0.8,0.5);
+  // The next song starts at its own (neutral) key.
+  assert.ok(later.rms>0.05&&Math.abs(later.frequency-440)<4,`next song audio ${JSON.stringify(later)}`);
 });
 
 test('L1 rejects actual decoded PCM timestamp holes instead of concealing them',{timeout:240000},async t=>{

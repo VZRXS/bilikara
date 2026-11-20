@@ -98,7 +98,11 @@ pub(super) fn prepare_error(error: ProbeError, message: &'static str) -> ApiErro
         _ => ApiError::new(409, "cast_prepare_failed", message),
     }
 }
-fn inputs_for(context: &HostContext, item: &PlaylistItem, l1: bool) -> Result<Inputs, ApiError> {
+pub(super) fn inputs_for(
+    context: &HostContext,
+    item: &PlaylistItem,
+    l1: bool,
+) -> Result<Inputs, ApiError> {
     let audio = item
         .audio_variants
         .iter()
@@ -466,10 +470,6 @@ pub(super) struct Live {
     pub tracks: Vec<String>,
     /// Why this live stream is raw T3 instead of L1.
     pub refusal: Option<&'static str>,
-    /// Encoder of the composited (L2) video, when composited.
-    pub composited: Option<&'static str>,
-    /// Why a requested composited output fell back to L1/T3.
-    pub composite_refusal: Option<&'static str>,
     task: Option<tokio::task::JoinHandle<Result<(), ApiError>>>,
 }
 impl Live {
@@ -496,7 +496,6 @@ pub(super) async fn live(
     position: f64,
     identity: (u64, u64),
     cancel: &CancellationToken,
-    composited: Option<Arc<super::overlay::Hub>>,
 ) -> Result<Live, ApiError> {
     // Fail before publishing a URI when the selected input or companion is absent.
     let (stream, producer) = LiveStream::external(LiveOptions::default())
@@ -514,28 +513,15 @@ pub(super) async fn live(
                 .cast_preflight(&base.video, producing.cancellation())
                 .map_err(|e| prepare_error(e, "Cannot inspect live media"))?;
             let refusal = l1_refusal(probe.live_l1_available(), &facts);
-            // Composited output re-encodes the video, so a long source GOP
-            // does not matter; it still needs the L1 audio renderer.
-            let plan = composited.as_ref().map(|_| {
-                if probe.live_l1_available() {
-                    super::l2::plan(
-                        probe.composite_kinds(),
-                        crate::cast_compositor::installed(),
-                        &facts,
-                    )
-                } else {
-                    Err("l1_unavailable")
-                }
-            });
             // Keep the base leases until the L1 set holds its own pins.
-            let input = if refusal.is_none() || matches!(plan, Some(Ok(_))) {
+            let input = if refusal.is_none() {
                 inputs_for(&context, &item, true)?
             } else {
                 base
             };
-            Ok((input, probe, facts, refusal, plan))
+            Ok((input, probe, facts, refusal))
         })();
-        let (input, probe, facts, refusal, plan) = match prepared {
+        let (input, probe, facts, refusal) = match prepared {
             Ok(prepared) => prepared,
             Err(e) => {
                 let _ = ready.send(Err(e));
@@ -544,21 +530,9 @@ pub(super) async fn live(
             }
         };
         let tracks = input.tracks.iter().map(|(id, _)| id.clone()).collect();
-        let composite = match &plan {
-            Some(Ok(plan)) => Ok(plan.encoder()),
-            Some(Err(reason)) => Err(Some(*reason)),
-            None => Err(None),
-        };
-        if ready.send(Ok((refusal, tracks, composite))).is_err() {
+        if ready.send(Ok((refusal, tracks))).is_err() {
             producing.cancel();
             return Ok(());
-        }
-        if let Some(Ok(plan)) = plan {
-            let hub = composited.expect("composited plan");
-            return super::l2::generate(
-                &probe, &input, &item, facts, plan, hub, position, identity, producing, producer,
-            )
-            .map(|_| ());
         }
         if refusal.is_none() {
             return super::l1::generate(
@@ -585,7 +559,7 @@ pub(super) async fn live(
             "Live producer failed",
         ))
     });
-    let (refusal, tracks, composite) = match initialized {
+    let (refusal, tracks) = match initialized {
         Ok(prepared) => prepared,
         Err(e) => {
             stream.cancel();
@@ -593,15 +567,11 @@ pub(super) async fn live(
             return Err(e);
         }
     };
-    let composited = composite.ok();
     let mut live = Live {
         stream,
-        // Composited output always carries the L1 audio renderer.
-        l1: refusal.is_none() || composited.is_some(),
+        l1: refusal.is_none(),
         tracks,
-        refusal: if composited.is_some() { None } else { refusal },
-        composited,
-        composite_refusal: composite.err().flatten(),
+        refusal,
         task: Some(task),
     };
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
