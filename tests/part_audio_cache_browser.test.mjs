@@ -85,6 +85,15 @@ for(const engine of [chromium,webkit])for(const [platform,width] of [['desktop',
   assert.equal(await page.evaluate(()=>state.data.current_item.selected_audio_variant_id),'p1_main');
   assert.equal(await page.evaluate(()=>state.data.playlist.length),0);
   assert.equal(await page.evaluate(()=>document.getElementById('media')===savedMedia),true);
+  for (const mode of ['file_required', 'pending', 'remux']) {
+    await page.evaluate(mode=>{
+      state.data.media_output={target:'purek',audio_track_switch:mode};
+      render();
+    },mode);
+    assert.equal(await button.isEnabled(),mode==='remux',`track availability follows ${mode}`);
+    assert.equal(await button.getAttribute('aria-description'),mode==='remux'?'cast.trackRemux':`cast.error.cast_track_${mode}`);
+    assert.equal(await page.evaluate(()=>state.data.current_item.selected_audio_variant_id),'p1_main');
+  }
   await page.locator('#popover [data-page="2"]').click();
   await page.waitForFunction(()=>state.data.current_item.selected_audio_variant_id==='p2_extra');
   assert.equal(await page.evaluate(()=>requests.filter(r=>r.url==='/api/player/audio-variant').length),1);

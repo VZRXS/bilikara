@@ -13,10 +13,12 @@ struct ReceiverState {
     http_error_on: Option<&'static str>,
     hang_on: Option<&'static str>,
     no_pull: bool,
+    skip_next_pull: bool,
     clients: usize,
     different_peer: bool,
     synchronize_pulls: bool,
     reject_files: bool,
+    reject_next_sets: usize,
     file_uri: bool,
     state: &'static str,
     position: u64,
@@ -60,10 +62,12 @@ impl Receiver {
             http_error_on: None,
             hang_on: None,
             no_pull: false,
+            skip_next_pull: false,
             clients: 1,
             different_peer: false,
             synchronize_pulls: false,
             reject_files: false,
+            reject_next_sets: 0,
             file_uri: false,
             state: "PLAYING",
             position: 12,
@@ -154,7 +158,11 @@ impl Receiver {
                             state.uri = uri;
                         }
                     }
-                    if state.fault_on == Some(action.as_str())
+                    let reject_set = action == "SetAVTransportURI" && state.reject_next_sets > 0;
+                    if reject_set {
+                        state.reject_next_sets -= 1;
+                    }
+                    if reject_set || state.fault_on == Some(action.as_str())
                         && !(action == "SetDeviceAuthorization"
                             && field(&raw, "Enable") == Some("0"))
                         || (action == "SetAVTransportURI" && state.reject_files && state.file_uri)
@@ -192,7 +200,8 @@ impl Receiver {
                         }
                         "Play" => {
                             state.state = "PLAYING";
-                            if let Some(uri) = state.uri.clone().filter(|_| !state.no_pull) {
+                            let skip = std::mem::take(&mut state.skip_next_pull);
+                            if let Some(uri) = state.uri.clone().filter(|_| !state.no_pull && !skip) {
                                 let client = reqwest::blocking::Client::builder()
                                     .no_proxy()
                                     .local_address(state.different_peer.then_some(
@@ -399,12 +408,12 @@ impl Host {
         Self::with_duration(120)
     }
     fn with_duration(duration: u64) -> Self {
-        Self::with_initial_storage(duration, None)
+        Self::with_initial_storage(duration, None, false)
     }
     fn with_storage(duration: u64, corrupt: bool) -> Self {
-        Self::with_initial_storage(duration, Some(corrupt))
+        Self::with_initial_storage(duration, Some(corrupt), false)
     }
-    fn with_initial_storage(duration: u64, storage: Option<bool>) -> Self {
+    fn with_initial_storage(duration: u64, storage: Option<bool>, alternate: bool) -> Self {
         crate::execute_app_state(AppStateRequest::Shutdown { schema_version: 1 });
         let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -466,11 +475,14 @@ impl Host {
             },
         };
         for id in ["song-one", "song-two", "song-three"] {
-            host.song(id, duration);
+            host.song_with_audio(id, duration, alternate);
         }
         host
     }
     fn song(&self, id: &str, duration: u64) {
+        self.song_with_audio(id, duration, false);
+    }
+    fn song_with_audio(&self, id: &str, duration: u64, alternate: bool) {
         let item=serde_json::from_value(json!({"id":id,"original_url":"https://example.test/video","resolved_url":"https://example.test/video","bvid":id,"aid":1,"cid":2,"page":1,"title":id,"part_title":"P1","display_title":id,"cover_url":"","embed_url":"","selected_pages":[1],"selected_cids":[2],"selected_durations":[duration],"selected_parts":["P1"],"available_pages":[1],"available_cids":[2],"available_durations":[duration],"available_parts":["P1"]})).unwrap();
         assert!(
             crate::execute_app_state(AppStateRequest::AddItem {
@@ -513,7 +525,15 @@ impl Host {
             .unwrap();
         }
         let relative = &r.artifact_relative_directory;
-        let event=serde_json::from_value(json!({"kind":"ready","message":"ready","video_relative_path":format!("{relative}/video.mp4"),"video_media_url":format!("/media/{relative}/video.mp4"),"audio_variants":[{"id":"p1","page":1,"label":"P1","audio_url":format!("/media/{relative}/audio.m4a")}],"selected_audio_variant_id":"p1","item_incarnation_id":r.item_incarnation_id,"artifact_set_id":r.artifact_set_id,"artifact_relative_directory":relative})).unwrap();
+        let mut variants = vec![json!({"id":"p1","page":1,"label":"P1","audio_url":format!("/media/{relative}/audio.m4a")})];
+        if alternate {
+            std::fs::copy(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/bbdown/audio.m4a"),
+                dir.join("alternate.m4a"),
+            ).unwrap();
+            variants.push(json!({"id":"alternate","page":2,"label":"Alternate","audio_url":format!("/media/{relative}/alternate.m4a")}));
+        }
+        let event=serde_json::from_value(json!({"kind":"ready","message":"ready","video_relative_path":format!("{relative}/video.mp4"),"video_media_url":format!("/media/{relative}/video.mp4"),"audio_variants":variants,"selected_audio_variant_id":"p1","item_incarnation_id":r.item_incarnation_id,"artifact_set_id":r.artifact_set_id,"artifact_relative_directory":relative})).unwrap();
         assert!(
             crate::execute_app_state(AppStateRequest::ApplyCacheEvent {
                 schema_version: 1,
@@ -744,6 +764,12 @@ fn receiver_lifecycle_pause_seek_next_natural_end_disconnect_and_cancellation() 
     assert_eq!(third["current_item"]["id"], "song-three");
     receiver.state.lock().unwrap().position = 37;
     host.wait(|s| s["cast"]["position"] == 37.0);
+    let active_report = api::dispatch(
+        &host.context, &host.identity, true, &Method::GET, "/api/cast/report", "", json!({}),
+    ).unwrap();
+    assert_eq!(active_report["delivery"]["generation"], third["cast"]["generation"]);
+    assert!(matches!(active_report["delivery"]["pipeline_level"].as_str(), Some("L0" | "L1")));
+    assert_eq!(active_report["delivery"]["first_get_written"], true);
     let began = Instant::now();
     host.post("/api/cast/disconnect", json!({})).unwrap();
     let state = host.wait(|s| s["cast"]["phase"] == "idle" && s["cast"]["busy"] == false);
@@ -769,6 +795,9 @@ fn receiver_lifecycle_pause_seek_next_natural_end_disconnect_and_cancellation() 
     )
     .unwrap();
     assert!(!report.to_string().contains("127.0.0.1"));
+    assert_eq!(report["delivery"]["pipeline_level"], Value::Null);
+    assert_eq!(report["delivery"]["generation"], Value::Null);
+    assert_eq!(report["delivery"]["first_get_written"], false);
 }
 
 #[test]
@@ -1009,7 +1038,7 @@ fn learned_live_mode_pause_resume_mode_switch_and_connect_cancellation() {
 
 #[test]
 #[ignore = "requires trusted BILIKARA_TEST_CAST_COMPANION; actual live producer and HTTP endpoint"]
-fn long_gop_live_keeps_raw_t3_reports_why_and_still_seeks() {
+fn long_gop_live_keeps_l1_dsp_and_keyframe_seeks() {
     let _serial = GLOBAL_APP_TEST_LOCK
         .lock()
         .unwrap_or_else(|p| p.into_inner());
@@ -1028,20 +1057,18 @@ fn long_gop_live_keeps_raw_t3_reports_why_and_still_seeks() {
     host.wait(|_| receiver.state.lock().unwrap().bytes > 0);
     let snap = host.snapshot();
     assert_eq!(snap["cast"]["effective_mode"], "live");
-    // L1 refuses a packet more than 4 s after its keyframe; the raw T3
-    // stream plays instead and says why its DSP is unavailable.
-    assert_eq!(snap["media_output"]["pipeline_level"], "L0");
-    assert_eq!(snap["media_output"]["pipeline_reason"], "long_gop");
-    assert_eq!(
-        host.post("/api/player/key-shift", json!({"key_shift":2}))
-            .unwrap_err()
-            .code,
-        "cast_setting_unavailable"
-    );
+    assert_eq!(snap["media_output"]["pipeline_level"], "L1");
+    assert_eq!(snap["media_output"]["pipeline_reason"], Value::Null);
+    let uri = receiver.state.lock().unwrap().uri.clone();
+    host.post("/api/player/key-shift", json!({"key_shift":2})).unwrap();
+    // Playback must remain in the same generation beyond the old cutoff at
+    // four media seconds. The producer leads the receiver by at most 1.9 s.
+    thread::sleep(Duration::from_secs(5));
+    assert_eq!(host.snapshot()["media_output"]["pipeline_level"], "L1");
+    assert_eq!(receiver.state.lock().unwrap().uri, uri);
     // Live Seek restarts the producer (a new generation and URI) from the
     // keyframe before the target, never with a receiver SOAP Seek.
     let generation = snap["cast"]["generation"].as_u64().unwrap();
-    let uri = receiver.state.lock().unwrap().uri.clone();
     let playback = snap["playback_generation"].clone();
     host.post(
         "/api/cast/command",
@@ -1068,7 +1095,8 @@ fn long_gop_live_keeps_raw_t3_reports_why_and_still_seeks() {
         (10.0..=12.0).contains(&position),
         "keyframe origin: {position}"
     );
-    assert_eq!(snap["media_output"]["pipeline_reason"], "long_gop");
+    assert_eq!(snap["media_output"]["pipeline_level"], "L1");
+    assert_eq!(snap["media_output"]["pipeline_reason"], Value::Null);
 }
 
 fn set_count(receiver: &Receiver) -> usize {
@@ -1090,7 +1118,7 @@ fn file_mode_regenerates_dsp_edits_once_and_defers_them_while_paused() {
         .unwrap_or_else(|p| p.into_inner());
     let receiver = Receiver::new();
     let host = Host::new();
-    host.use_long_media();
+    host.use_video("long-gop-12s.mp4");
     let renderer = receiver.renderer();
     with_app(|app| {
         app.native().cast.renderers.push(renderer.clone());
@@ -1100,7 +1128,7 @@ fn file_mode_regenerates_dsp_edits_once_and_defers_them_while_paused() {
     host.connect(renderer);
     let snap = host.wait(|s| s["media_output"]["status"] == "streaming");
     assert_eq!(snap["cast"]["effective_mode"], "file");
-    // A 2-second GOP source: edits are rendered into a regenerated file.
+    // The ten-second GOP stays eligible for regeneration with DSP.
     assert_eq!(snap["media_output"]["pipeline_level"], "L1");
     assert_eq!(snap["media_output"]["pipeline_reason"], Value::Null);
     let generation = snap["cast"]["generation"].as_u64().unwrap();
@@ -1116,6 +1144,7 @@ fn file_mode_regenerates_dsp_edits_once_and_defers_them_while_paused() {
     });
     assert_eq!(set_count(&receiver), sets + 1, "one settled regeneration");
     assert_eq!(snap["media_output"]["pipeline_level"], "L1");
+    assert_eq!(snap["media_output"]["pipeline_reason"], Value::Null);
     // The growing render starts at the keyframe before the position: the
     // receiver is not seeked into it.
     assert!(
@@ -1148,12 +1177,30 @@ fn file_mode_regenerates_dsp_edits_once_and_defers_them_while_paused() {
     assert_eq!(set_count(&receiver), sets + 1);
 }
 
+// Hold the global AppState test lock while using this fixture. The native T3
+// producer and receiver remain real; only the L1 capability result is replaced.
+struct WithoutL1;
+
+impl WithoutL1 {
+    fn new() -> Self {
+        assert!(!media::TEST_L1_UNAVAILABLE.swap(true, Ordering::AcqRel));
+        Self
+    }
+}
+
+impl Drop for WithoutL1 {
+    fn drop(&mut self) {
+        media::TEST_L1_UNAVAILABLE.store(false, Ordering::Release);
+    }
+}
+
 #[test]
 #[ignore = "requires trusted BILIKARA_TEST_CAST_COMPANION; actual file mux and HTTP endpoint"]
-fn long_gop_file_mode_keeps_the_t3_copy_and_rejects_dsp_edits() {
+fn file_mode_without_l1_keeps_t3_and_rejects_dsp_edits() {
     let _serial = GLOBAL_APP_TEST_LOCK
         .lock()
         .unwrap_or_else(|p| p.into_inner());
+    let _without_l1 = WithoutL1::new();
     let receiver = Receiver::new();
     let host = Host::new();
     host.use_video("long-gop-12s.mp4");
@@ -1167,13 +1214,100 @@ fn long_gop_file_mode_keeps_the_t3_copy_and_rejects_dsp_edits() {
     let snap = host.wait(|s| s["media_output"]["status"] == "streaming");
     assert_eq!(snap["cast"]["effective_mode"], "file");
     assert_eq!(snap["media_output"]["pipeline_level"], "L0");
-    assert_eq!(snap["media_output"]["pipeline_reason"], "long_gop");
+    assert_eq!(snap["media_output"]["pipeline_reason"], "l1_unavailable");
     assert_eq!(
         host.post("/api/player/key-shift", json!({"key_shift":2}))
             .unwrap_err()
             .code,
         "cast_setting_unavailable"
     );
+}
+
+#[test]
+#[ignore = "requires trusted BILIKARA_TEST_CAST_COMPANION; actual file mux and HTTP endpoint"]
+fn l0_file_track_commit_requires_receiver_delivery_and_rejected_uri_restores_old_track() {
+    let _serial = GLOBAL_APP_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _without_l1 = WithoutL1::new();
+    let receiver = Receiver::new();
+    let host = Host::with_initial_storage(30, None, true);
+    host.use_video("long-gop-12s.mp4");
+    let renderer = receiver.renderer();
+    with_app(|app| { app.native().cast.renderers.push(renderer.clone()); Ok(()) }).unwrap();
+    host.connect(renderer);
+    let before = host.wait(|s| s["media_output"]["audio_track_switch"] == "remux");
+    let receiver_uri = || receiver.state.lock().unwrap().uri.clone().unwrap();
+    let client = reqwest::blocking::Client::builder().no_proxy().timeout(Duration::from_secs(4)).build().unwrap();
+    let read_file = |uri: &str| client.get(uri).send().unwrap().error_for_status().unwrap().bytes().unwrap();
+    let original = receiver_uri();
+    let original_bytes = read_file(&original);
+    let item = &before["current_item"];
+    let select = |variant| host.post("/api/player/audio-variant", json!({
+        "item_id":item["id"], "expected_item_incarnation_id":item["item_incarnation_id"], "variant_id":variant,
+    }));
+    assert_eq!(select("missing").unwrap_err().code, "cast_track_not_cached");
+    assert_eq!(host.snapshot()["playback_generation"], before["playback_generation"]);
+    receiver.state.lock().unwrap().reject_next_sets = 2;
+    select("alternate").unwrap();
+    let rolled_back = host.wait(|s| s["cast"]["error_code"] == "cast_track_rejected" && s["cast"]["busy"] == false);
+    assert_eq!(rolled_back["current_item"]["selected_audio_variant_id"], "p1");
+    assert_eq!(rolled_back["playback_generation"], before["playback_generation"]);
+    assert_eq!(rolled_back["media_output"]["last_error"], "cast_track_rejected");
+    assert_ne!(receiver_uri(), original);
+    assert_eq!(read_file(&receiver_uri()), original_bytes);
+    assert!(receiver.state.lock().unwrap().actions.iter().any(|a| a == "Seek"));
+    host.command("pause");
+    host.wait(|s| s["media_output"]["status"] == "paused" && s["media_output"]["audio_track_switch"] == "remux");
+    receiver.state.lock().unwrap().skip_next_pull = true;
+    select("alternate").unwrap();
+    host.wait(|s| s["cast"]["busy"] == true);
+    assert_eq!(select("alternate").unwrap_err().code, "cast_track_pending");
+    let restored = host.wait(|s| s["media_output"]["last_error"] == "cast_track_no_delivery" && s["cast"]["busy"] == false);
+    assert_eq!(restored["media_output"]["status"], "paused");
+    assert_eq!(restored["current_item"]["selected_audio_variant_id"], "p1");
+    assert_eq!(restored["playback_generation"], before["playback_generation"]);
+    assert_eq!(read_file(&receiver_uri()), original_bytes);
+    assert_eq!(receiver.state.lock().unwrap().state, "PAUSED_PLAYBACK");
+    select("alternate").unwrap();
+    let after = host.wait(|s| s["current_item"]["selected_audio_variant_id"] == "alternate" && s["cast"]["busy"] == false);
+    assert_eq!(after["current_item"]["id"], item["id"]);
+    assert_eq!(after["playback_generation"].as_u64().unwrap(), before["playback_generation"].as_u64().unwrap() + 1);
+    assert_eq!(after["media_output"]["pipeline_level"], "L0");
+    assert_eq!(after["media_output"]["status"], "paused");
+    assert_eq!(receiver.state.lock().unwrap().state, "PAUSED_PLAYBACK");
+    assert_ne!(read_file(&receiver_uri()), original_bytes);
+    assert_eq!(after["playlist"], before["playlist"]);
+    assert_eq!(after["queue_version"], before["queue_version"]);
+}
+
+#[test]
+#[ignore = "requires trusted BILIKARA_TEST_CAST_COMPANION; real T3 and a held SOAP query"]
+fn l0_file_track_does_not_publish_after_current_is_replaced_during_capability_query() {
+    let _serial = GLOBAL_APP_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _without_l1 = WithoutL1::new();
+    let host = Host::with_initial_storage(30, None, true);
+    let receiver = Receiver::new();
+    let renderer = receiver.renderer();
+    with_app(|app| { app.native().cast.renderers.push(renderer.clone()); Ok(()) }).unwrap();
+    host.connect(renderer);
+    let before = host.wait(|s| s["media_output"]["audio_track_switch"] == "remux");
+    let sets = set_count(&receiver);
+    receiver.query_hold.store(true, Ordering::Release);
+    host.post("/api/player/audio-variant", json!({
+        "item_id":before["current_item"]["id"],
+        "expected_item_incarnation_id":before["current_item"]["item_incarnation_id"],
+        "variant_id":"alternate",
+    })).unwrap();
+    let negotiating = host.wait(|_| with_app(|app| Ok(app.native().cast.capability_probe_running)).unwrap());
+    assert_eq!(negotiating["cast"]["generation"], before["cast"]["generation"], "the original file is still published");
+    host.post("/api/playlist/remove", json!({"item_id":before["current_item"]["id"]})).unwrap();
+    receiver.query_hold.store(false, Ordering::Release);
+    let next = host.wait(|s| {
+        s["current_item"]["id"] == "song-two"
+            && s["media_output"]["audio_track_switch"] == "remux"
+    });
+    assert_eq!(set_count(&receiver), sets + 1, "only the new song was sent");
+    assert_eq!(next["cast"]["generation"].as_u64().unwrap(), before["cast"]["generation"].as_u64().unwrap() + 1);
+    assert_eq!(next["playback_generation"].as_u64().unwrap(), before["playback_generation"].as_u64().unwrap() + 1);
 }
 
 #[path = "platform_tests.rs"]

@@ -165,14 +165,14 @@ pub(super) fn run(context: Arc<HostContext>) {
                     }
                 }
                 Request::Connect {
-                    output: _output,
+                    output,
                     renderer,
                     qr,
                     confirmed,
                     location,
                     assisted,
                 } => {
-                    let result = connect(
+                    let connection = connect(
                         ConnectContext {
                             context: &context,
                             id,
@@ -184,8 +184,32 @@ pub(super) fn run(context: Arc<HostContext>) {
                         qr,
                         confirmed,
                         location,
-                    )
-                    .await;
+                    );
+                    tokio::pin!(connection);
+                    let mut resource_tick = tokio::time::interval(Duration::from_millis(250));
+                    resource_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    let mut retained = true;
+                    let mut resource_failure = None;
+                    let result = loop {
+                        tokio::select! {
+                            result = &mut connection => break result,
+                            _ = resource_tick.tick(), if resource_failure.is_none() => {
+                                let next = with_app(|app| {
+                                    let cast = &app.native().cast;
+                                    Ok((cast.operation == id && cast.platform_output_id == Some(output.id()))
+                                        .then_some(!(cast.owns_playback && cast.output_enabled && !cast.paused)))
+                                }).ok().flatten();
+                                if let Some(next) = next.filter(|next| *next != retained) {
+                                    if let Err(error) = output.set_paused(next) {
+                                        resource_failure = Some(ApiError::new(409, error.code(), error.code()));
+                                        cancel.cancel();
+                                    }
+                                    retained = next;
+                                }
+                            }
+                        }
+                    };
+                    let result = resource_failure.map_or(result, Err);
                     if let Some(grant) = &assisted {
                         let _ = with_app(|app| {
                             if super::super::purek::assistance::check_current(
@@ -465,6 +489,7 @@ struct Output {
     item: PlaylistItem,
     playback_generation: u64,
     live: Option<media::Live>,
+    complete_file: Option<Arc<crate::experimental_libav::cast_mux::CastFile>>,
     l1: bool,
     /// File delivery: the settings rendered into the published file, and a
     /// differing Host setting with the time it was first seen (debounce).
@@ -936,6 +961,15 @@ async fn play_session(
             }
             if let Some(control) = control {
                 match control {
+                    Control::FileTrack { playback_generation, variant } => {
+                        failure_stage = "control";
+                        replace_file_track(
+                            &OutputContext { context, id, client: &client, endpoint: &endpoint,
+                                files: files.clone(), trace, connection, cancel, stop },
+                            out, playback_generation, &variant,
+                        ).await?;
+                        last_response = Instant::now();
+                    }
                     Control::Probe => { query_capabilities(&client,id,trace,connection,Some(out.id),cancel).await; }
                     Control::Pause if out.paused => {}
                     Control::Play if !out.paused => {}
@@ -1632,6 +1666,9 @@ async fn play_show(
                     }
                     Control::Restart => r.show.shared.retarget(),
                     Control::ProgramChanged => {}
+                    Control::FileTrack { .. } => {
+                        update(id, |s| s.error_code = Some("cast_track_pending".into()));
+                    }
                 }
                 update(id, |s| s.control_busy = s.control.is_some());
             }
@@ -1915,6 +1952,7 @@ async fn start_output_once(
         s.l1 = false;
         s.composited = None;
         s.delivered = false;
+        s.track_error = None;
         s.published_resume = None;
         s.playback_generation = snap.playback_generation;
         s.phase = Phase::Connecting;
@@ -1952,6 +1990,7 @@ async fn start_output_once(
     // for a growing L1 render).
     let mut file_origin = 0.0;
     let mut growing_file = false;
+    let mut complete_file = None;
     let duration;
     let mut origin = position;
     let published = if mode == Mode::Live {
@@ -2006,7 +2045,12 @@ async fn start_output_once(
                 origin = file_origin;
                 endpoint.publish_growing_file(generation, prepared.file, growth, TsMime::Mp2t)
             }
-            None => endpoint.publish_file(generation, prepared.file, TsMime::Mp2t),
+            None => {
+                let file = Arc::new(prepared.file);
+                let published = endpoint.publish_shared_file(generation, file.clone(), TsMime::Mp2t);
+                complete_file = Some(file);
+                published
+            }
         }
         .map_err(|_| error("cast_publish_failed"))?
     };
@@ -2109,6 +2153,7 @@ async fn start_output_once(
                 .as_ref()
                 .is_some_and(|(_, refusal)| refusal.is_none()),
         live,
+        complete_file,
         baked: file_profile.map(|(baked, _)| baked),
         regenerate: None,
         began: Instant::now(),
@@ -2130,6 +2175,203 @@ async fn start_output_once(
         clock_running: true,
         intentional_stop: false,
     })
+}
+
+/// Replacing a completed T3 file leaves Rust's selected track alone until the
+/// receiver accepts the new URI, reads it and restores position/play intent.
+async fn replace_file_track(
+    resources: &OutputContext<'_>,
+    out: &mut Output,
+    playback_generation: u64,
+    variant: &str,
+) -> Result<(), ApiError> {
+    let id = resources.id;
+    let Some(previous) = out.complete_file.clone() else {
+        update(id, |state| state.track_error = Some("cast_track_file_required"));
+        return Ok(());
+    };
+    if out.l1 || out.playback_generation != playback_generation {
+        update(id, |state| state.track_error = Some("stale_player"));
+        return Ok(());
+    }
+    let candidate = || {
+        with_app(|app| {
+            let state = &app.native().cast;
+            if state.operation != id || state.cancel.is_cancelled() {
+                return Err(error("cancelled"));
+            }
+            app.native_cast_file_candidate(&out.item.id, &out.item.item_incarnation_id, variant, playback_generation)
+        })
+    };
+    let Ok(item) = candidate() else {
+        return Ok(());
+    };
+    let baked = media::Baked::neutral(&item);
+    let prepared = media::file(
+        resources.context.clone(),
+        resources.files.clone(),
+        item.clone(),
+        baked,
+        0.0,
+        resources.stop.clone(),
+    ).await;
+    let Ok(Ok(prepared)) = prepared else {
+        update(id, |state| state.track_error = Some("cast_track_prepare_failed"));
+        return Ok(());
+    };
+    match candidate() {
+        Ok(current) if current.artifact_set_id == item.artifact_set_id => {}
+        Err(error) if error.code == "cancelled" => return Ok(()),
+        _ => {
+            update(id, |state| state.track_error = Some("cast_track_prepare_failed"));
+            return Ok(());
+        }
+    }
+    let position = bounded_position(out.start + if out.clock_running { out.began.elapsed().as_secs_f64() } else { 0.0 }, out.duration);
+    let file = Arc::new(prepared.file);
+    let changed = play_replacement_file(resources, out, file.clone(), position, playback_generation).await;
+    let committed = match changed {
+        Ok(()) => with_app(|app| {
+            let current = app.native_cast_file_candidate(&item.id, &item.item_incarnation_id, variant, playback_generation)?;
+            let state = &mut app.native().cast;
+            if state.operation != id || state.cancel.is_cancelled() || current.artifact_set_id != item.artifact_set_id {
+                return Err(error("stale_player"));
+            }
+            state.worker_mutation = true;
+            let result = app.native_execute(AppStateRequest::SetAudioVariant {
+                schema_version: 1,
+                item_id: out.item.id.clone(),
+                expected_item_incarnation_id: out.item.item_incarnation_id.clone(),
+                variant_id: variant.to_owned(),
+                now: now(),
+            });
+            app.native().cast.worker_mutation = false;
+            if result?["found"] != true {
+                return Err(error("cast_track_not_cached"));
+            }
+            Ok(app.native_cast_input()?.playback_generation)
+        }),
+        Err(error) => Err(error),
+    };
+    match committed {
+        Ok(generation) => {
+            out.playback_generation = generation;
+            out.item = item;
+            out.complete_file = Some(file);
+            out.baked = Some(prepared.baked);
+            update(id, |state| {
+                state.playback_generation = generation;
+                state.track_error = None;
+            });
+        }
+        Err(_) if resources.cancel.is_cancelled() => return Err(error("cancelled")),
+        Err(failure) => {
+            let generation = with_app(|app| Ok(app.native_cast_input()?.playback_generation))?;
+            if generation != playback_generation {
+                // A different program now owns the receiver. The main loop will
+                // publish it; never restart an obsolete song during rollback.
+                resources.endpoint.clear_generation();
+                return Ok(());
+            }
+            match play_replacement_file(resources, out, previous, position, playback_generation).await {
+                Ok(()) => {
+                    let code = if failure.code == "cast_track_no_delivery" {
+                        "cast_track_no_delivery"
+                    } else {
+                        "cast_track_rejected"
+                    };
+                    update(id, |state| state.track_error = Some(code));
+                }
+                Err(e) if e.code == "stale_player" => resources.endpoint.clear_generation(),
+                Err(e) if e.code == "cancelled" => return Err(e),
+                Err(_) => return Err(error("cast_track_restore_failed")),
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn play_replacement_file(
+    resources: &OutputContext<'_>,
+    out: &mut Output,
+    file: Arc<crate::experimental_libav::cast_mux::CastFile>,
+    position: f64,
+    playback_generation: u64,
+) -> Result<(), ApiError> {
+    let known = query_capabilities(resources.client, resources.id, resources.trace, resources.connection, Some(out.id), resources.cancel).await;
+    let (generation, media) = with_app(|app| {
+        // Capability negotiation awaits the receiver. The original program
+        // must still own this operation when its replacement URI is published.
+        let current = app.native_cast_program_matches(playback_generation);
+        let state = &mut app.native().cast;
+        if state.operation != resources.id || state.cancel.is_cancelled() {
+            return Err(error("cancelled"));
+        }
+        if !current {
+            return Err(error("stale_player"));
+        }
+        let generation = state.generation + 1;
+        let media = resources.endpoint.publish_shared_file(generation, file, TsMime::Mp2t)
+            .map_err(|_| error("cast_publish_failed"))?;
+        state.generation = generation;
+        state.delivered = false;
+        app.native().revision += 1;
+        Ok((generation, media))
+    })?;
+    tokio::select! {
+        biased;
+        _ = resources.cancel.cancelled() => return Err(error("cancelled")),
+        _ = file_track_superseded(playback_generation) => return Err(error("stale_player")),
+        result = async {
+            record(resources.trace, resources.connection, Some(out.id), resources.client.start(StartRequest {
+                uri: &media.uri,
+                title: &out.item.display_title,
+                file: media.length.map(|size| FileMetadata { size, duration: Duration::from_secs_f64(out.duration.max(0.0)) }),
+                capabilities: CapabilityQuery::Known(known),
+            }, resources.cancel).await)?;
+            if position > 0.0 {
+                record(resources.trace, resources.connection, Some(out.id), soap(resources.client.seek(Duration::from_secs_f64(position), resources.cancel)).await)?;
+            }
+            let received = tokio::time::timeout(Duration::from_secs(7), async {
+                loop {
+                    let delivery = resources.endpoint.diagnostics();
+                    if delivery.generation == Some(generation) && delivery.first_get_written {
+                        return Ok(());
+                    }
+                    tokio::select! {
+                        _ = resources.cancel.cancelled() => return Err(error("cancelled")),
+                        _ = tokio::time::sleep(Duration::from_millis(60)) => {}
+                    }
+                }
+            }).await.map_err(|_| error("cast_track_no_delivery"))?;
+            received?;
+            if out.paused {
+                record(resources.trace, resources.connection, Some(out.id), soap(resources.client.pause(resources.cancel)).await)?;
+            }
+            Ok::<(), ApiError>(())
+        } => result?,
+    }
+    out.generation = generation;
+    out.start = position;
+    out.began = Instant::now();
+    out.last_position = None;
+    out.position_usable = false;
+    out.position_advanced = out.began;
+    out.seek_settles = out.began + Duration::from_secs(4);
+    out.receiver_origin = 0.0;
+    update(resources.id, |state| {
+        state.position = position;
+        state.delivered = true;
+    });
+    Ok(())
+}
+
+async fn file_track_superseded(playback_generation: u64) {
+    while with_app(|app| Ok(app.native_cast_program_matches(playback_generation)))
+        .unwrap_or(false)
+    {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 fn bounded_position(position: f64, duration: f64) -> f64 {

@@ -157,7 +157,9 @@
       nodes.toggle.setAttribute("aria-label",t("mediaOutput.dlna")+(!network&&noDevice?` · ${t("mediaOutput.status.notConnected")}`:""));
       nodes.toggle.disabled=pending||output.busy||(!network&&noDevice);
       nodes.targets.title=t(nodes.toggle.hasAttribute("aria-busy")?"mediaOutput.working":network?"mediaOutput.local":noDevice?"mediaOutput.status.notConnected":!output.available?"mediaOutput.backendUnavailable":"mediaOutput.dlna");
-      nodes.retry.hidden=!host||!network||!output.last_error;
+      const trackError = ["cast_track_prepare_failed", "cast_track_rejected", "cast_track_no_delivery", "cast_track_restore_failed"].includes(output.last_error)
+        ? `cast.error.${output.last_error}` : null;
+      nodes.retry.hidden=!host||!network||!output.last_error||Boolean(trackError && phase!=="error");
       text(nodes.retry,t(nodes.retry.hasAttribute("aria-busy")?"mediaOutput.working":"mediaOutput.retry"));
       nodes.retry.disabled=pending||output.busy;
       nodes.mode.hidden = !network || root.dataset.mediaOutput === "console";
@@ -168,9 +170,9 @@
       const serverError = output.status==="error" || output.status==="unsupported";
       const specific = {purek_output_backend_unavailable:"mediaOutput.backendUnavailable",purek_output_codec:"mediaOutput.codec",purek_output_foreground_required:"mediaOutput.foreground",purek_output_thermal:"mediaOutput.thermal",purek_output_notification_stop:"mediaOutput.notificationStop",purek_output_no_av_transport:"purek.output.noAvTransport",purek_output_no_video_format:"purek.output.noVideoFormat",purek_output_not_requested:"purek.output.notRequested",purek_output_request_rejected:"purek.output.requestRejected",purek_output_no_delivery:"purek.output.noDelivery"}[output.last_error];
       // Host-only stable stage and code for reports; Remote never receives them.
-      const failure=!errorKey&&options.host&&output.failure?.code===output.last_error&&["media_preparation","media_pipeline","control","before_play","starting","not_requested","request_rejected_or_interrupted","transport_stopped","delivered_unverified"].includes(output.failure?.stage)?output.failure:null;
-      nodes.error.hidden = !errorKey && !serverError;
-      text(nodes.error,t(errorKey||specific||"mediaOutput.error")+(failure?` (${t(`mediaOutput.stage.${failure.stage}`)} · ${failure.code})`:""));
+      const failure=!trackError&&!errorKey&&options.host&&output.failure?.code===output.last_error&&["media_preparation","media_pipeline","control","before_play","starting","not_requested","request_rejected_or_interrupted","transport_stopped","delivered_unverified"].includes(output.failure?.stage)?output.failure:null;
+      nodes.error.hidden = !errorKey && !serverError && !trackError;
+      text(nodes.error,t(errorKey||trackError||specific||"mediaOutput.error")+(failure?` (${t(`mediaOutput.stage.${failure.stage}`)} · ${failure.code})`:""));
       if(errorKey)text(nodes.status,t("mediaOutput.actionFailed"));
       nodes.status.hidden=!errorKey&&options.host&&root.dataset.mediaOutput!=="console"&&["local","authorized"].includes(phase);
     }

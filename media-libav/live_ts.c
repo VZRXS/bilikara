@@ -249,7 +249,10 @@ static uint32_t live_mux(const BmLiveRequest *q, const BmL1Request *l1,
         writer.time_us = dts;
         writer.key = !index && (p->flags & AV_PKT_FLAG_KEY) ? 1 : 0;
         if (writer.key) last_key = dts;
-        if (!index && dts - last_key > 4000000) { status = BM_UNSUPPORTED_LAYOUT; goto done; }
+        /* Only enforce the cadence of our own L2 encoder. Copied video
+         * interleaves packet by packet with audio regardless of key spacing.
+         * Live retention and pacing remain bounded by the caller. */
+        if (l2 && !index && dts - last_key > 4000000) { status = BM_UNSUPPORTED_LAYOUT; goto done; }
         if (!index && filter) {
             ret = av_bsf_send_packet(filter, p);
             if (ret < 0) goto failed;

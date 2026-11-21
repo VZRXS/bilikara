@@ -202,9 +202,15 @@ recorded separately from local regression results.
 
 ### 实验性网络媒体播放的 Android 资源
 
-接收端投屏由共享的 Rust 投屏会话（`cast_session`，见 `docs/purek-media-output.md`）执行，无接收端的独立管线由 libav L1 执行。选择输出必须在 Host 明确确认；Android shell 只根据已提交的状态提供媒体播放前台服务、通知与系统资源。服务不导出，声明 `mediaPlayback`、`FOREGROUND_SERVICE` 和 Android 14+ 的 `FOREGROUND_SERVICE_MEDIA_PLAYBACK`，不随开机或系统重启自动恢复。首次开始要求 Activity 在前台；已有前台服务可在暂停后接受 Remote 恢复。通知中的停止或服务被系统关闭会停止网络输出，不恢复本地播放。
+接收端投屏由共享的 Rust 投屏会话（`cast_session`，见 `docs/purek-media-output.md`）执行，无接收端的独立管线由 libav L1 执行。选择输出必须在 Host 明确确认；Android shell 只根据已提交的状态提供媒体播放前台服务、通知与系统资源。同一个私有服务播放时使用 `mediaPlayback`，暂停及等待歌曲时使用 `connectedDevice` 保留用户已建立的接收端连接。Android 14+ 的 `connectedDevice` 运行条件由已有的 `CHANGE_WIFI_MULTICAST_STATE` 满足。首次开始需要前台 Activity；已运行的服务直接接收暂停和恢复，Remote 可在后台继续控制。通知停止、移除任务及系统结束服务分别按其原因释放租约。
 
-播放时持有 PARTIAL_WAKE_LOCK 和 Wi-Fi 锁：API 34+ 使用 LOW_LATENCY（系统在该版本把 HIGH_PERF 也映射为 LOW_LATENCY），API 29–33 使用后台仍有效的 HIGH_PERF（此前 API 29+ 即用 LOW_LATENCY，独立本地 L1 输出同样适用这一变化）。多播锁不再随播放持有，只由 SSDP 发现期间的发现租约持有。暂停时释放 wake/Wi-Fi 锁，恢复时重新获取，保留前台服务以供显式恢复；退出输出、空队列、错误和 Host 关闭释放服务。低延迟 Wi-Fi 锁仅在连接 Wi-Fi、屏幕亮起且应用前台时由系统启用，不能将持锁视为后台网络保证。通知停止、移除任务或 Activity 销毁（配置变更重建除外）、服务失败、热状态 CRITICAL 依次上报停止原因 1–4；每次输出带租约，旧通知和旧回调不能停止新的输出。API 29+ 每 15 秒采样热状态，API 30+ 采样 thermal headroom；未知/NaN 投影为 null。达到 CRITICAL 时停止输出并要求降温后显式重试。热状态不构成设备性能验收。
+播放时持有 PARTIAL_WAKE_LOCK 和 Wi-Fi 锁：API 34+ 使用 LOW_LATENCY（系统在该版本把 HIGH_PERF 也映射为 LOW_LATENCY），API 29–33 使用后台仍有效的 HIGH_PERF（此前 API 29+ 即用 LOW_LATENCY，独立本地 L1 输出同样适用这一变化）。多播锁不再随播放持有，只由 SSDP 发现期间的发现租约持有。暂停时释放 wake/Wi-Fi 锁，恢复时重新获取，保留前台服务以供显式恢复；断开接收端或 Host 关闭时释放服务。低延迟 Wi-Fi 锁仅在连接 Wi-Fi、屏幕亮起且应用前台时由系统启用，不能将持锁视为后台网络保证。通知停止、移除任务、服务失败、热状态 CRITICAL 依次上报停止原因 1–4；每次输出带租约，旧通知和旧回调不能停止新的输出。API 29+ 每 15 秒采样热状态，API 30+ 采样 thermal headroom；未知/NaN 投影为 null。达到 CRITICAL 时停止输出并要求降温后显式重试。热状态不构成设备性能验收。
+
+正常切换应用及配置重建保留同一进程内的 Rust Host。Activity 的暂停、停止和销毁回调用于记录界面状态。若 Android 实际结束进程，或 Tauri 因最后一个 Activity 非配置性销毁而退出，当前进程内的 Host 仍会终止。用户可在 Host 的 `/api/cast/report` 查看会话和前台服务状态、最近停止原因、锁状态、网络类别和接收端事实。媒体 GET 和路由变化见投屏跟踪中的 `http.get` 和路由阶段。
+
+Home、跳往外部扫码 App、锁屏不会由 Activity 回调主动撤销投屏。已启动的服务可以在后台切换资源模式；缺少首次启动资格时显示明确错误。移除任务和通知停止仍明确结束对应投屏租约。拒绝通知不阻止服务启动；Android 13+ 可从系统「正在运行的应用」停止，或回 Host 点断开。服务成功 promotion 前，诊断的 `output_mode`（请求）和 `service_mode`（已应用）可能不同。
+
+L2 的歌曲切换、等待／暂停卡片和合成编码由 Rust 投屏工作线程驱动。新点歌提示、临时操作反馈和卡片翻译由 Host WebView 提供。WebView 冻结时这些动态内容可能延迟或缺失，Rust 按到期时间清除旧提示并按现有默认文案渲染卡片。后台 L2 画面连续性及通知独立验收。
 
 当前 targetSdk 36 使用 INTERNET 获得局域网访问；按照 Android 官方要求，尚不声明或请求 targetSdk 37 的 ACCESS_LOCAL_NETWORK。升级目标 SDK 时必须重新检查局域网权限流程。Android 的 `HostMediaPlaybackTest` instrumentation 验证实际服务声明、前台准入、锁的获取/释放与暂停恢复；需要连接设备执行。没有设备时只能报告 APK/测试编译，不得以桌面或 Kotlin 单元测试替代 G4 后台、网络切换、两小时播放与温升记录。
 

@@ -38,6 +38,7 @@
       save: preferences => call("save-update-preferences", {preferences}),
     },
     openLoginLink: url => call("open-bilibili-login", {url}),
+    openQrWebLink: url => call("open-qr-web-link", {url}),
     openBilibiliVideo: url => call("open-bilibili-video", {url}),
     openRoomAuthorization: url => call("open-room-authorization", {url}),
     environment: () => call("environment"),

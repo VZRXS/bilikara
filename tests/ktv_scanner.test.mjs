@@ -182,3 +182,18 @@ test('V7 cover preview decodes exactly the visible centered region in both orien
   assert.deepEqual(plain(scanner.coverRegion(640, 480, 320, 240)), {x:0,y:0,width:640,height:480});
   assert.throws(() => scanner.coverRegion(0,480,300,300), error => error.code === 'qr_image');
 });
+
+test('Host routing isolates Pure K, web destinations, text and unsafe schemes', () => {
+ const {classify}=environment().scanner;
+ for(const value of ['https://wx.chunk.cn/projection/login?place_code=fixture', 'https://wx.chunk.cn./projection/login', 'https://wx.chunk.cn../projection/login', 'https://conn.dolphinstar.cn/Remote']) {
+   assert.equal(classify(value).kind,'purek');
+ }
+ const link=classify('https://example.org/app?pair=fixture');
+ assert.equal(link.kind,'web');assert.equal(link.preview,'https://example.org');
+ assert.equal(classify('https://wx.chunk.cn.example.org/').kind,'web');
+ assert.equal(classify('unknowncast://pair/fixture').kind,'unsupported');
+ assert.equal(classify('984623').kind,'text');
+ for(const value of ['intent://host/#Intent;scheme=https;end','file:///tmp/a','content://provider/x','data:text/plain,x','javascript:alert(1)',
+   'https://user:secret@example.org','https://@example.org','https:///example.org','https://example.org:0','https://example.org/%0A',
+   'https://example.org/%5c','https://exam\tple.org/','https://example.org/'+ 'x'.repeat(4096),'https://example.org/'+ 'x'.repeat(12001)]) assert.equal(classify(value).kind,'invalid',value.slice(0,100));
+});

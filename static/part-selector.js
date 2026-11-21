@@ -23,17 +23,26 @@
     const requestKey = `${item?.item_incarnation_id}:`;
     const requesting = [...pending].some(key => key.startsWith(requestKey));
     const busy = requesting || ["queued", "downloading"].includes(task?.status);
+    const output = snapshot?.media_output;
+    const castTrack = output?.target === "purek" ? output.audio_track_switch : null;
+    const cachedVariants = castTrack === "remux" ? new Set([...(item?.audio_variants || []), ...supplementVariants(snapshot, item)]
+      .filter(variant => variant.audio_url).map(variant => variant.id)) : null;
     for (const root of roots) for (const button of root?.querySelectorAll(".audio-variant-button") || []) {
       if (button.dataset.itemId !== item?.id) continue;
       const active = busy && (Number(button.dataset.page) === task?.page || pending.has(requestKey + button.dataset.page));
-      button.disabled = button.dataset.bound === "true" ? locked : busy || item?.cache_status !== "ready";
+      const bound = button.dataset.bound === "true";
+      const restriction = !bound ? "" : ["pending", "file_required"].includes(castTrack)
+        ? `cast.error.cast_track_${castTrack}`
+        : cachedVariants && !cachedVariants.has(button.dataset.variantId) ? "cast.error.cast_track_not_cached" : "";
+      button.disabled = bound ? locked || Boolean(restriction) : busy || item?.cache_status !== "ready";
       if (active) button.setAttribute("aria-busy", "true");
       else button.removeAttribute("aria-busy");
       const pageFailed = !active && failed && Number(button.dataset.page) === task.page;
       button.dataset.audioCache = active ? "pending" : pageFailed ? "failed" : "";
       const label = button.querySelector(".audio-variant-button-text")?.textContent || "";
-      button.title = pageFailed ? `${label}: ${failureMessage}` : label;
-      if (pageFailed) button.setAttribute("aria-description", failureMessage);
+      const description = pageFailed ? failureMessage : restriction ? t(restriction) : bound && cachedVariants ? t("cast.trackRemux") : "";
+      button.title = description ? `${label}: ${description}` : label;
+      if (description) button.setAttribute("aria-description", description);
       else button.removeAttribute("aria-description");
       let progress = button.querySelector(".audio-part-progress");
       if (!progress) {

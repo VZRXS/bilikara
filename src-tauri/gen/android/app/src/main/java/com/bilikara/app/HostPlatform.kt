@@ -66,6 +66,11 @@ internal class HostPlatform(private val activity: AppCompatActivity,
             openVideo(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE))
             JSONObject().put("opened", true)
           }
+          "open-qr-web-link" -> {
+            val url = HostQrWebLink.validated(input.optString("url")) ?: error("invalid_qr_link")
+            activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE))
+            JSONObject().put("opened", true)
+          }
           "environment" -> environment()
           "webview-diagnostics" -> { diagnostics.show(webView); JSONObject().put("shown", true) }
           "get-update-preferences" -> updatePreferences()

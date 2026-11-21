@@ -685,6 +685,7 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
             </button>
           </div>
+          <p class="cache-panel-hint" id="audio-variant-cast-status" role="status" hidden></p>
           <div class="audio-variant-popover" id="audio-variant-popover" hidden></div>
           <div class="audio-variant-backdrop" id="audio-variant-backdrop" hidden inert aria-hidden="true"></div>
           <section class="presentation-host-controls" id="presentation-host-controls" hidden
@@ -1996,6 +1997,13 @@
         <div id="ktv-host-devices" class="ktv-host-devices"></div>
         <div id="ktv-host-local-scan" hidden>
           <div id="ktv-host-scan-view"></div>
+          <div id="ktv-host-qr-result" hidden>
+            <p id="ktv-host-qr-preview" role="status" dir="auto"></p>
+            <div class="purek-assistance-actions">
+              <button type="button" class="toolbar-button purek-action" id="ktv-host-qr-copy" data-i18n="qr.copy" hidden>复制</button>
+              <button type="button" class="toolbar-button purek-action purek-primary" id="ktv-host-qr-open" data-i18n="qr.open" hidden>打开链接</button>
+            </div>
+          </div>
         </div>
         <div id="ktv-host-authorization" hidden>
           <p data-i18n="ktv.hostWechatHelp"></p>

@@ -219,22 +219,27 @@ pub(super) fn select_ready(
     incarnation: &str,
     variant: &str,
 ) -> Result<(), ExecuteError> {
-    let Some(supplement) = data.audio_supplements.get(id) else {
-        return Ok(());
-    };
-    let Some(item) = data.find_item(id) else {
-        return Ok(());
-    };
-    if item.item_incarnation_id != incarnation
-        || supplement.item_incarnation_id != incarnation
+    if let Some(candidate) = data
+        .find_item(id)
+        .filter(|item| item.item_incarnation_id == incarnation)
+        .and_then(|item| selection_candidate(data, item, variant))
+    {
+        *data.find_item_mut(id).unwrap() = candidate;
+    }
+    Ok(())
+}
+
+pub(super) fn selection_candidate(
+    data: &AppStateData,
+    item: &PlaylistItem,
+    variant: &str,
+) -> Option<PlaylistItem> {
+    let supplement = data.audio_supplements.get(&item.id)?;
+    if supplement.item_incarnation_id != item.item_incarnation_id
         || item.audio_variants.iter().any(|v| v["id"] == variant)
     {
-        return Ok(());
+        return None;
     }
     let candidate = supplement.candidate(item);
-    if !candidate.audio_variants.iter().any(|v| v["id"] == variant) {
-        return Ok(());
-    }
-    *data.find_item_mut(id).unwrap() = candidate;
-    Ok(())
+    candidate.audio_variants.iter().any(|v| v["id"] == variant).then_some(candidate)
 }

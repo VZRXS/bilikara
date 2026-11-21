@@ -79,6 +79,7 @@ impl Request {
                 request.action.as_str(),
                 "open-bilibili-login"
                     | "open-bilibili-video"
+                    | "open-qr-web-link"
                     | "cancel"
                     | "set-player-fullscreen"
                     | "document"
@@ -117,6 +118,13 @@ impl Request {
                         .as_deref()
                         .is_some_and(|value| video_url(value).is_ok())
             }
+            "open-qr-web-link" => {
+                request.active.is_none()
+                    && request
+                        .url
+                        .as_deref()
+                        .is_some_and(|value| qr_web_url(value).is_some())
+            }
             "set-player-fullscreen" => request.active.is_some() && request.url.is_none(),
             _ => request.active.is_none() && request.url.is_none(),
         };
@@ -130,6 +138,35 @@ impl Request {
         }
         Ok(request)
     }
+}
+
+/// Revalidate the scanned destination at the UIKit boundary.
+pub(crate) fn qr_web_url(value: &str) -> Option<Url> {
+    let (scheme, rest) = value.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    if value.len() > 4096
+        || !["http", "https"]
+            .iter()
+            .any(|prefix| scheme.eq_ignore_ascii_case(prefix))
+        || authority.is_empty()
+        || authority.contains('@')
+        || value
+            .bytes()
+            .any(|b| b <= b' ' || matches!(b, 0x7f | b'\\' | b'<' | b'>' | b'"' | b'`'))
+    {
+        return None;
+    }
+    let is_unsafe_escape = |bytes: &[u8]| {
+        bytes[0] == b'%'
+            && u8::from_str_radix(std::str::from_utf8(&bytes[1..]).unwrap_or(""), 16)
+                .is_ok_and(|b| b < b' ' || matches!(b, 0x7f | b'\\'))
+    };
+    if value.as_bytes().windows(3).any(is_unsafe_escape) {
+        return None;
+    }
+    let url = Url::parse(value).ok()?;
+    let host = url.host_str()?.trim_end_matches('.');
+    (!matches!(host, "wx.chunk.cn" | "conn.dolphinstar.cn") && url.port() != Some(0)).then_some(url)
 }
 
 /// Save-only options. No caller paths, arbitrary URLs or supplied record data.
@@ -302,6 +339,27 @@ pub(crate) fn login_url(value: &str) -> Result<Url, &'static str> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn qr_web_handoff_rejects_credentials_controls_and_purek_hosts() {
+        assert!(super::qr_web_url("https://example.org/pair?q=demo").is_some());
+        for value in [
+            "https://@example.org/",
+            "https:///example.org/",
+            "https://example.org/%0D",
+            "https://example.org/%5c",
+            "https://example.org/a\tb",
+            "https://wx.chunk.cn../projection/login",
+            "https://conn.dolphinstar.cn/",
+            "intent://example.org/",
+            "javascript:alert(1)",
+            "https://example.org:0/",
+        ] {
+            assert!(super::qr_web_url(value).is_none(), "{value:?}");
+        }
+        assert!(super::qr_web_url(&format!("https://example.org/{}", "a".repeat(4096))).is_none());
+    }
+
     #[test]
     fn video_only_handoff_keeps_login_authorization_separate() {
         let base = "https://www.bilibili.com/video/BV1yyjzzCEQn";

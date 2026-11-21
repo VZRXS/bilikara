@@ -58,6 +58,18 @@ class CastResourceStateTest {
     assertEquals(1, stops)
     assertFalse(gate.end(2) { stops++ })
   }
+  @Test fun oldWorkerUpdatesCannotReplaceOrRestartAnOutput() {
+    val gate = CastOutputGate()
+    var updates = 0
+    assertEquals(0, gate.update(10, 1, true, { updates++ }, {}))
+    assertEquals(0, gate.update(12, 1, false, { updates++ }, {}))
+    assertEquals(1, gate.update(10, 2, false, { updates++ }, {}))
+    assertEquals(0, gate.update(12, 1, false, { updates++ }, {}))
+    assertEquals(2, updates)
+    assertTrue(gate.end(12) {})
+    assertEquals(1, gate.update(12, 2, true, { updates++ }, {}))
+    assertEquals(2, updates)
+  }
   @Test fun failedStartRestoresPreviousOwnerAndRapidRestartStaysOwned() {
     val gate = CastOutputGate()
     assertEquals(1, gate.update(1, 2, true, { error("system refused") }, {}))

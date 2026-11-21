@@ -5,13 +5,17 @@
 ## 本机扫码与 Remote 房间协助
 
 桌面 Host 提供“请求 Remote 扫码”和现有连接管理/媒体输出。Android、iOS
-Host 使用本机实时相机或图片导入，复用同一个
-`ktv-scanner.js` 解码器；图片、文件名和像素不发送到服务端。只有解码后的
-文本提交到已有的 Host-only `/api/purek/prepare`，由 Rust `Room::from_input`
-验证。扫码仅暂存候选，用户仍须在微信完成纯 K 官方授权，并明确检查连接；
-普通 DLNA 不使用该授权。Host 是当前可信业务客户端，此路径不复用或绕过
-Remote 的一次性协助许可。已认证、已登记身份的本地局域网 Remote 可通过
-下述窄协助协议提交解码文本，仍不能调用 Host-only 接口。
+Host 使用本机实时相机或图片导入，复用 `ktv-scanner.js`；图片、文件名和像素留在本机。
+纯 K 专用域名交给 Host-only `/api/purek/prepare`，由 Rust `Room::from_input` 验证。
+扫码只暂存候选，用户仍须完成微信官方授权并明确检查连接。已连接设备时，通用扫码仍可用，房台码
+必须等当前连接或协助结束后才可处理。普通 DLNA 可继续通过手动设备地址明确连接。
+已认证、已登记身份的 Remote 仍使用一次性纯 K 协助许可，并且不能调用 Host-only 接口或在 Host
+设备上打开其他应用。
+
+普通 HTTP(S) 码只预览目标站点，点击打开才交给系统处理。Android 让系统通过 `ACTION_VIEW` 选择
+浏览器或已验证的 App Link，iOS 使用系统 URL 打开接口。纯 K 专用域名和含用户凭据的链接不可经过
+此入口。未知自定义协议只提示复制或使用对应接收端的 App 扫描。二维码的解码结果不会写入日志、
+浏览器存储或 Remote 状态；跳转前释放相机，返回后不自动重启扫码。
 
 实时相机需要安全上下文和系统许可；iOS 声明扫码用途，未申请麦克风。
 Android 主清单声明 `android.permission.CAMERA`，由 WebView 的视频采集权限
@@ -365,12 +369,13 @@ L1 在同一个 MPEG-TS muxer 中保留 H.264 视频包，音频解码后统一�
 
 ### 投屏中的 L1
 
-直播模式下，companion 具备 L1 且片源最长关键帧间隔不超过 4 秒时，L1 通过 T4 的唯一外部生产者
+直播模式下，companion 具备 L1 时，L1 通过 T4 的唯一外部生产者
 （`LiveStream::external` 与不可复制的 `LiveProducer`）向接收端供流；T4 继续负责 HTTP、环形缓冲、
 关键帧加入和每个读者的 continuity 重写（`rust-runtime/src/native_host/cast_session/l1.rs`）。
-开播前一次只读包预检（`cast_preflight`）决定是否走 L1，结果直接交给 L1 复用，不重复读取。
-文件模式、companion 不具备 L1，或片源有超过 4 秒的关键帧间隔（`live_ts.c` 拒绝距关键帧 4 秒以上的包，
-T3 没有此限制）时走 T3 合流；这两种直播情况仍可跳转，但不能实时调整。
+开播前一次只读包预检（`cast_preflight`）验证并记录片源，结果直接交给 L1。
+L1 逐包复用 H.264 视频。关键帧间隔会影响直播加入和跳转起点，但不决定 L1 资格；内存仍受 T4
+64 MiB 上限和整 GOP 保留约束。超过实际字节预算时，会话报告失败并按现有路径恢复本地播放。
+companion 缺少 L1 时使用 T3。
 
 - **音轨**：companion 的 L1 ABI 一次渲染至多两条音轨。会话送入当前音轨，以及按歌曲顺序的第一条
   其他已缓存音轨；未缓存的音轨被略过，不再使 L1 失败（当前音轨本身必须已缓存）。切到这两条之外的
@@ -383,13 +388,14 @@ T3 没有此限制）时走 T3 合流；这两种直播情况仍可跳转，但�
 - 每个 DSP 控制回调都从同一 Rust AppState 读取变调、有效延迟、音轨、音量、静音和 splice／gradual，
   调整不重新发布 URI；换轨推进播放代次但保留输出代次，暂停时换轨保持暂停。切歌由会话回收旧生产者，
   复用接收端连接和纯 K 登记。
-- **非 L1 时禁用**：投屏拥有播放、实际管线不是 L1（片源或 companion 不能走 L1）时，AppState 拒绝变调、
-  延迟和换轨且不改设置；Host 的变调和延迟控件禁用，信息气泡显示原因，控件经独立的
-  `host-*-network-dsp` 描述节点关联原因。L1 时开放；本地和独立 native 输出不受影响。
-  不从接收端声明推测 L1。原因见 `media_output.pipeline_reason`：`long_gop`（片源关键帧间隔过长，
-  直播与文件都只能用 T3）、`l1_unavailable`（companion 不具备 L1），或文件输出仍在准备中的过渡值
-  `file_mode`；调整可送达接收端（直播 L1 或文件重新生成）、未投屏和独立 native 输出时为 `null`。
-  信息气泡对 `long_gop` 说明是片源原因（换交付方式无效），其余说明交付方式。
+- **L0 播放**：变调和延迟控件禁用，继续通过信息气泡显示 `media_output.pipeline_reason`。Host 和 Remote
+  音轨按钮采用 `media_output.audio_track_switch`，区分暂时忙、文件重新合流和当前直播不支持换轨。
+  L0 直播可切到文件交付或返回本地播放后换轨。
+- **L0 文件换轨**：Rust 在旧文件仍可播放时，用指定的已缓存音轨准备 T3 文件。发布新 URI、接收端开始读取新
+  代次的数据，并恢复歌曲位置和暂停状态后，才提交所选音轨。接收端拒绝新 URI 或未读取时重新发布原文件。
+  切换可能因接收端缓冲短暂中断。两次交付均失败时报告恢复失败并使用会话既有的退出路径。
+- `l1_unavailable` 表示 companion 缺少 L1，`file_mode` 表示文件输出尚在准备。旧版快照中
+  的 `long_gop` 表示当时的片源间隔规则。
 
 ### 文件模式中的 L1
 
@@ -413,7 +419,7 @@ T3 没有此限制）时走 T3 合流；这两种直播情况仍可跳转，但�
 - **中断时长**：接收端重新起播（通常 1–3 秒）加上渲染出前几秒所需的时间；整段渲染（一首 4 分钟 720p 歌曲
   在一个服务器 CPU 核上约 5.5 秒，手机更慢）在后台继续，只有读文件末尾的接收端才需要等它完成。
   需要实时生效时使用直播模式。
-- 片源有超过 4 秒的关键帧间隔或 companion 不具备 L1 时，文件模式保持 T3 拷贝并报告原因，调整被拒绝。
+- companion 不具备 L1 时，文件模式保留 T3 拷贝与音轨换轨，变调和延迟不可用。长 GOP 可正常进入增长文件模式，继续使用配额和生成长度限制。
 
 `pipeline_level`（`media_output` 与 `purek.output` 一致）：
 
@@ -534,6 +540,11 @@ Android APK 使用 NDK 构建同一 libav/companion（R1 投屏合流、next 的
   无关局域网地址。
 
 ### 诊断
+
+Host-only `/api/cast/report` 的 `lifecycle.platform` 提供 Android Activity、服务状态、请求和已应用模式、停止原因与锁状态。
+`delivery` 提供当前管线等级、原因、媒体交付代次和 `first_get_written`。该标记表示发送端已向该代次
+的 GET 写出媒体字节，不能代替接收端画面或声音确认。仅建立连接时标记仍为 false；历史取流事件见有界的诊断跟踪。
+
 
 投屏会话使用 `rust-runtime/src/dlna/diagnostics/` 的分阶段轨迹（最近六次连接，当前与上一次输出），
 由“复制诊断报告”、诊断 ZIP 的 `diagnostics.cast`／`diagnostics.cast_self_test` 和 `/api/cast/report` 输出；

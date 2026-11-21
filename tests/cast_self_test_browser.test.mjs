@@ -7,10 +7,12 @@ import { chromium } from 'playwright';
 const read = name => readFileSync(new URL(`../static/${name}`, import.meta.url), 'utf8');
 const dictionary = JSON.parse(read('i18n.json')).languages;
 test('cast and compatibility translations retain Unicode and intentional question marks', () => {
+  const codecLabels = {'cast.capability.ts':'MPEG-TS','cast.capability.h264':'H.264','cast.capability.mpeg2':'MPEG-2','cast.capability.mp4':'MP4'};
   for (const language of ['zh', 'en', 'ja']) for (const [key, value] of Object.entries(dictionary[language])) {
     if (key.startsWith('cast.') || ['purek.manualAddress','purek.addressConfirmed','purek.manualAddressHint','mediaOutput.dspUnavailable'].includes(key)) {
       assert.doesNotMatch(value, /\?\?|\uFFFD|\?(?!$)/, key);
-      if (language !== 'en') assert.match(value, /[\u3040-\u9fff]/, key);
+      if (Object.hasOwn(codecLabels,key)) assert.equal(value,codecLabels[key],key);
+      else if (language !== 'en') assert.match(value, /[\u3040-\u9fff]/, key);
       if (key.startsWith('cast.test.cell.')) assert.match(value, /×/, key);
       // Busy/close reuse purek.working and common.close; no unused cast.test copies.
       assert.ok(!['cast.test.busy', 'cast.test.close'].includes(key), key);

@@ -720,6 +720,36 @@ impl AppState {
         })
     }
 
+    pub(crate) fn native_cast_program_matches(&self, generation: u64) -> bool {
+        self.data.as_ref().is_some_and(|data| data.playback_generation == generation)
+    }
+
+    pub(crate) fn native_cast_file_candidate(
+        &self,
+        item_id: &str,
+        incarnation: &str,
+        variant: &str,
+        generation: u64,
+    ) -> Result<PlaylistItem, ApiError> {
+        let data = self
+            .data
+            .as_ref()
+            .filter(|data| data.playback_generation == generation)
+            .ok_or_else(|| ApiError::new(409, "stale_player", "Playback changed"))?;
+        let item = data.current_item.as_ref()
+            .filter(|item| item.id == item_id && item.item_incarnation_id == incarnation)
+            .ok_or_else(|| ApiError::new(409, "stale_player", "Playback changed"))?;
+        let mut candidate = audio_supplement::selection_candidate(data, item, variant)
+            .unwrap_or_else(|| item.clone());
+        if !candidate.audio_variants.iter().any(|entry| {
+            entry["id"] == variant && entry["audio_url"].as_str().is_some_and(|url| !url.is_empty())
+        }) {
+            return Err(ApiError::new(409, "cast_track_not_cached", "Cache the audio track before switching on this receiver"));
+        }
+        candidate.selected_audio_variant_id = variant.to_owned();
+        Ok(candidate)
+    }
+
     pub(crate) fn native_cast_queue(&self, limit: usize) -> Result<NativeCastQueue, ApiError> {
         let data = self
             .data

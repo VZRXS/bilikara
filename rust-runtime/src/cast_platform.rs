@@ -26,6 +26,33 @@ pub enum WifiLockMode {
     LowLatency,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityState {
+    Initializing,
+    Resumed,
+    Paused,
+    Stopped,
+    Recreating,
+    Destroyed,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceState {
+    Starting,
+    Promoted,
+    Stopped,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceOutputMode {
+    Playing,
+    Retained,
+    Stopped,
+}
+
 /// Closed categories only: no addresses, SSIDs, network handles or error text.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -38,6 +65,14 @@ pub struct NetworkFacts {
     pub battery_optimization_ignored: Option<bool>,
     pub multicast_acquired: Option<bool>,
     pub wifi_lock_mode: Option<WifiLockMode>,
+    pub activity_state: Option<ActivityState>,
+    pub service_state: Option<ServiceState>,
+    pub service_stop_reason: Option<u8>,
+    /// Requested lease mode, which may precede system promotion.
+    pub output_mode: Option<ServiceOutputMode>,
+    pub service_mode: Option<ServiceOutputMode>,
+    pub wake_lock_held: Option<bool>,
+    pub wifi_lock_held: Option<bool>,
 }
 
 /// Closed startup categories; never retain JNI exceptions or platform paths.
@@ -158,7 +193,7 @@ pub(crate) fn has_platform_state() -> bool {
 pub mod stop_reason {
     /// The notification's stop action.
     pub const NOTIFICATION: i32 = 1;
-    /// Task removal or a non-configuration Activity destruction.
+    /// User task removal delivered to the active foreground service.
     pub const TASK_REMOVED: i32 = 2;
     /// The foreground service failed to start or was destroyed unexpectedly.
     pub const SERVICE_FAILURE: i32 = 3;
@@ -222,15 +257,32 @@ pub struct OutputLease {
 }
 impl OutputLease {
     pub fn acquire() -> Result<Self, PlatformError> {
+        Self::acquire_mode(false)
+    }
+    pub(crate) fn acquire_retained() -> Result<Self, PlatformError> {
+        Self::acquire_mode(true)
+    }
+    fn acquire_mode(retained: bool) -> Result<Self, PlatformError> {
         if initialization_failure().is_some() {
             return Err(PlatformError::Unavailable);
         }
-        Self::with_platform(installed().and_then(Result::ok))
+        Self::with_mode(installed().and_then(Result::ok), retained)
     }
+    #[cfg(test)]
     fn with_platform(platform: Option<Arc<dyn CastPlatform>>) -> Result<Self, PlatformError> {
+        Self::with_mode(platform, false)
+    }
+    fn with_mode(
+        platform: Option<Arc<dyn CastPlatform>>,
+        retained: bool,
+    ) -> Result<Self, PlatformError> {
         let id = NEXT_LEASE.fetch_add(1, Ordering::Relaxed);
         if let Some(p) = &platform
-            && let Err(error) = p.output_active(id, true)
+            && let Err(error) = if retained {
+                p.output_mode(id, 1)
+            } else {
+                p.output_active(id, true)
+            }
         {
             let _ = p.output_active(id, false);
             return Err(error);

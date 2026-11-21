@@ -127,5 +127,26 @@
     });
   }
   function validOfficial(raw){try{const u=new URL(raw);return ["http:","https:"].includes(u.protocol)&&u.hostname==="wx.chunk.cn"&&u.pathname.replace(/\/$/,"")==="/projection/login"&&!u.username&&!u.password&&!u.port&&!u.hash;}catch{return false;}}
-  window.BilikaraKtvScanner=Object.freeze({create,surface,decode,validOfficial,coverRegion});
+  function classify(raw) {
+    if (typeof raw !== 'string' || !raw.trim() || raw.length > 12000) return {kind:'invalid'};
+    const value = raw.trim();
+    const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(value)?.[1]?.toLowerCase();
+    if (!scheme) return {kind:'text', value};
+    if (!['http', 'https'].includes(scheme)) {
+      return ['javascript', 'data', 'file', 'content', 'intent', 'blob'].includes(scheme)
+        ? {kind:'invalid'} : {kind:'unsupported', value};
+    }
+    const unsafe = /[\u0000-\u0020\u007f\\<>"`]/;
+    if (value.length > 4096 || !/^https?:\/\/[^/?#]/i.test(value) || unsafe.test(value)) return {kind:'invalid'};
+    let url;
+    try {
+      url = new URL(value);
+      if (/[\u0000-\u001f\u007f\\]/.test(decodeURIComponent(url.pathname + url.search + url.hash))) return {kind:'invalid'};
+    } catch { return {kind:'invalid'}; }
+    if (!url.hostname || url.port === '0' || url.username || url.password || /^https?:\/\/[^/?#]*@/i.test(value)) return {kind:'invalid'};
+    const host = url.hostname.replace(/\.+$/, '');
+    if (host === 'wx.chunk.cn' || host === 'conn.dolphinstar.cn') return {kind:'purek', value};
+    return {kind:'web', value:url.href, preview:url.origin};
+  }
+  window.BilikaraKtvScanner=Object.freeze({create,surface,decode,validOfficial,coverRegion,classify});
 })();

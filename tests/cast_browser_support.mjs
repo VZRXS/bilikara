@@ -33,7 +33,7 @@ export async function openManage(t,{width=700,height=800,language='zh',platform=
     window.setAppMessage=message=>messages.push(message);
     window.render=sync;window.closeCacheAdvancedInfo=()=>{};window.syncPresentationPanelVisibility=()=>{};
     window.setRemoteQrPinned=()=>{};window.bindHostContextualInfo=()=>{};window.renderPresentationHostSurface=()=>{};
-    window.BilikaraKtvScanner={surface:()=>({gallery:document.createElement('button'),stop(){},setDisabled(){},open:async()=>{},waitingForAndroidPermission:()=>false}),validOfficial:url=>/^https?:\/\/wx\.chunk\.cn(?::\d+)?\//i.test(url)};
+    window.BilikaraKtvScanner={surface:({onDecode})=>(window.fixtureDecode=onDecode,{gallery:document.createElement('button'),stop(){},setDisabled(){},open:async()=>{},waitingForAndroidPermission:()=>false}),validOfficial:url=>/^https?:\/\/wx\.chunk\.cn(?::\d+)?\//i.test(url)};
     window.apiPost=(path,payload)=>{calls.push({path,payload});return new Promise((resolve,reject)=>waiting.push({path,resolve,reject}));};
     window.acceptHostStateSnapshot=value=>{if(value.state_revision<state.data.state_revision)return false;state.data=value;return true;};
     window.fetch=async path=>{
@@ -60,6 +60,8 @@ export async function openManage(t,{width=700,height=800,language='zh',platform=
   await page.addScriptTag({content:read('media-output.js')});
   await page.addScriptTag({content:read('cast-self-test.js')});
   await page.addScriptTag({content:appSection('function syncMediaOutputComponents()', 'function holdLocalPlaybackForNetworkOutput()')+'\nwindow.syncOutput=syncMediaOutputComponents;'});
+  const scanner=read('ktv-scanner.js');
+  await page.addScriptTag({content:scanner.replace('window.BilikaraKtvScanner=Object.freeze({create,surface,decode,validOfficial,coverRegion,classify});','window.BilikaraKtvScanner.classify=classify;')});
   await page.addScriptTag({content:read('purek-room.js')});
   await page.evaluate(language=>{fixture.language(language);render();},language);
   await page.locator('#purek-open').click();

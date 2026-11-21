@@ -16341,6 +16341,17 @@ function syncAudioVariantOverflow() {
 document.fonts?.ready?.then(syncAudioVariantOverflow);
 
 function renderAudioVariantBar(currentItem, playbackMode) {
+  const variants = currentItem && playbackMode === "local" ? partOptionsForItem(currentItem) : [];
+  const output = state.data?.media_output;
+  const castTrack = output?.target === "purek" ? output.audio_track_switch : null;
+  const trackMessage = document.getElementById("audio-variant-cast-status");
+  if (trackMessage) {
+    const error = ["cast_track_prepare_failed", "cast_track_rejected", "cast_track_no_delivery", "cast_track_restore_failed"].includes(output?.last_error)
+      ? `cast.error.${output.last_error}` : "";
+    const key = error || (["pending", "file_required"].includes(castTrack) ? `cast.error.cast_track_${castTrack}` : "");
+    trackMessage.hidden = !key || variants.length <= 1;
+    setTextContent(trackMessage, trackMessage.hidden ? "" : t(key));
+  }
   if (playbackMode !== "local" || !currentItem) {
     const signature = JSON.stringify({ hidden: true, playbackMode, itemId: currentItem?.id || "", language: state.language });
     if (signature === state.audioVariantBarRenderSignature) {
@@ -16361,7 +16372,6 @@ function renderAudioVariantBar(currentItem, playbackMode) {
     return;
   }
 
-  const variants = partOptionsForItem(currentItem);
   if (variants.length <= 1) {
     const signature = JSON.stringify({
       hidden: true,
@@ -23105,10 +23115,12 @@ async function selectHostAudioVariant(nextVariantId) {
     return;
   }
 
+  const network = state.data?.media_output?.target === 'purek';
+  if (network && ["pending", "file_required"].includes(state.data.media_output.audio_track_switch)) return;
   const playbackSession = state.hostPlaybackSession;
   const video = playbackSession?.video;
   if (
-    !isCurrentHostPlaybackSession(
+    !network && !isCurrentHostPlaybackSession(
       playbackSession,
       video,
       playbackSession?.audio,
@@ -23119,7 +23131,7 @@ async function selectHostAudioVariant(nextVariantId) {
   state.audioVariantSwitchInFlight = true;
   state.audioVariantSwitchUnlockAt = Date.now() + audioVariantSwitchDebounceMs;
   renderAudioVariantBar(currentItem, frontendPlaybackMode(state.data?.playback_mode));
-  const pendingRestore = {
+  const pendingRestore = network ? null : {
     itemId: currentItem.id,
     itemIncarnationId: currentItem.item_incarnation_id,
     variantId: nextVariantId,
@@ -23127,7 +23139,7 @@ async function selectHostAudioVariant(nextVariantId) {
     // Buffering/clock recovery can hold video without changing play intent.
     wasPlaying: Boolean(playbackSession.logicalPlayIntent),
   };
-  state.pendingPlaybackRestore = pendingRestore;
+  if (pendingRestore) state.pendingPlaybackRestore = pendingRestore;
   try {
     const outcome = await apiPostExactStateCommand("/api/player/audio-variant", {
       item_id: currentItem.id,
@@ -23145,7 +23157,8 @@ async function selectHostAudioVariant(nextVariantId) {
     if (state.pendingPlaybackRestore === pendingRestore) {
       state.pendingPlaybackRestore = null;
     }
-    setAppMessage(error.message, true);
+    const key = `cast.error.${error.code}`;
+    setAppMessage(network && t(key) !== key ? t(key) : error.message, true);
   } finally {
     state.audioVariantSwitchInFlight = false;
     scheduleAudioVariantSwitchUnlock();

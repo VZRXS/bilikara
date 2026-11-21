@@ -12,7 +12,7 @@ Generated using FFmpeg's lavfi color/sine sources, libx264 `-g 60 -keyint_min
 
 `long-gop-12s.mp4` is synthetic black H.264 video (160x90, 30 fps, two B
 frames, 12 seconds) with keyframes only at 0 s and 10 s. Its 10-second group
-of pictures exceeds the L1 renderer's 4-second keyframe limit, so live
-delivery must keep the raw T3 stream and report `long_gop`. Generated with
+of pictures exercises copied video with L1 DSP through both the live HTTP
+producer and file regeneration. Generated with
 FFmpeg's lavfi color source and libx264 `-preset veryfast -g 300 -keyint_min
 300 -sc_threshold 0 -bf 2 -threads 1 -pix_fmt yuv420p` and `+faststart`.

@@ -10190,6 +10190,7 @@ async function handleAudioVariantSelection(event) {
     return;
   }
 
+  const remux = state.data?.media_output?.audio_track_switch === "remux";
   try {
     state.audioVariantSwitchInFlight = true;
     state.audioVariantSwitchUnlockAt = Date.now() + audioVariantSwitchDebounceMs;
@@ -10202,12 +10203,15 @@ async function handleAudioVariantSelection(event) {
     if (outcome.commandApplied) {
       const activeItem = state.data?.current_item;
       const activeVariant = activeItem ? selectedAudioVariantForItem(activeItem) : null;
-      setFormMessage(t("player.switchedPart", { part: activeVariant?.label || nextVariantId }));
+      if (!remux || activeVariant?.id === nextVariantId) {
+        setFormMessage(t("player.switchedPart", { part: activeVariant?.label || nextVariantId }));
+      }
     } else {
       state.audioVariantSwitchUnlockAt = 0;
     }
   } catch (error) {
-    setFormMessage(error.message, true);
+    const key = `cast.error.${error.code}`;
+    setFormMessage(t(key) !== key ? t(key) : error.message, true);
   } finally {
     state.audioVariantSwitchInFlight = false;
     scheduleAudioVariantSwitchUnlock();

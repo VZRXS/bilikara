@@ -185,7 +185,7 @@ test('temporary preferences and Manage geometry remain stable at 700/360/320px i
   for(const width of [700,360,320])for(const language of ['zh','en','ja']){
     await page.setViewportSize({width,height:800});await page.evaluate(language=>fixture.language(language),language);
     const row=page.locator('[data-cast-device="one"]');
-    assert.equal(await row.locator('.cast-mode-label').innerText(),dictionary[language]['cast.deliveryThisRun']);
+    assert.equal(await row.locator('.cast-modes').getAttribute('aria-label'),dictionary[language]['cast.deliveryThisRun']);
     assert.equal(await page.evaluate(()=>window.originalRow===document.querySelector('[data-cast-device="one"]')),true);
     assert.equal(await page.locator('.purek-card').evaluate(n=>n.scrollWidth<=n.clientWidth+1),true);
     for(const selector of ['#cast-discover','[data-cast-connect="one"]','[data-cast-device="one"] [data-cast-compatibility-test]'])assert.equal(await page.locator(selector).evaluate(n=>n.getBoundingClientRect().height),44);
@@ -307,4 +307,46 @@ for(const language of ['zh','en','ja'])test(`pipeline test result reports the R1
   assert.equal(await line.isVisible(),false);
   assert.equal(await line.textContent(),'');
   assert.equal((await page.locator('[data-media-output="settings"]').innerText()).includes(text['cast.error.cast_cancelled']),false);
+});
+
+test('Host can confirm a scanned web handoff while casting without calling Pure K or replacing the output', async t => {
+  const page=await openManage(t,{platform:'android',width:390,language:'en'});
+  await page.evaluate(async()=>{
+    fixture.update({purek:{connected:true},cast:{connected:true,owns_playback:true},media_output:{target:'purek',stream_generation:17}});
+    document.documentElement.dataset.nativeHost='true';
+    window.BilikaraAndroidPlatform={openQrWebLink:async url=>{fixture.calls.push({openQr:url});return{opened:true};}};
+    await fixtureDecode('https://example.org/pair?opaque=fixture');
+  });
+  assert.equal(await page.locator('#ktv-host-qr-preview').textContent(),'Destination: https://example.org');
+  assert.deepEqual(await page.evaluate(()=>fixture.calls),[]);
+  await page.locator('#ktv-host-qr-open').click();
+  assert.deepEqual(await page.evaluate(()=>fixture.calls),[{openQr:'https://example.org/pair?opaque=fixture'}]);
+  assert.equal(await page.evaluate(()=>fixture.state.data.media_output.stream_generation),17);
+  await page.evaluate(()=>fixtureDecode('https://wx.chunk.cn/projection/login?place_code=fixture'));
+  assert.equal(await page.locator('#ktv-host-qr-open').isVisible(),false);
+  assert.match(await page.locator('#ktv-host-qr-preview').textContent(),/Pure K authorization/);
+  assert.equal(await page.evaluate(()=>fixture.calls.length),1);
+});
+
+
+test('a failed native web QR handoff leaves the result available for retry without touching the receiver', async t => {
+  const page=await openManage(t,{platform:'android',width:390,language:'en'});
+  await page.evaluate(async()=>{
+    fixture.update({purek:{connected:true},cast:{connected:true,owns_playback:true},media_output:{target:'purek',stream_generation:17}});
+    document.documentElement.dataset.nativeHost='true';
+    window.BilikaraAndroidPlatform={openQrWebLink:async()=>({opened:false})};
+    await fixtureDecode('https://example.org/pair');
+  });
+  await page.locator('#ktv-host-qr-open').click();
+  assert.match(await page.locator('#purek-error').innerText(),/could not open|no app|unable to open|couldn't open|cannot open/i);
+  assert.equal(await page.locator('#ktv-host-qr-open').isEnabled(),true);
+  assert.equal(await page.locator('#ktv-host-qr-result').isVisible(),true);
+  assert.equal(await page.evaluate(()=>fixture.state.data.media_output.stream_generation),17);
+  assert.deepEqual(await page.evaluate(()=>fixture.calls),[]);
+  await page.evaluate(()=>fixtureDecode('unverifiedcast://pair/example'));
+  assert.equal(await page.locator('#ktv-host-qr-open').isVisible(),false);
+  assert.equal(await page.locator('#ktv-host-qr-copy').isVisible(),true);
+  await page.evaluate(()=>fixtureDecode('plain example'));
+  assert.equal(await page.locator('#ktv-host-qr-copy').isVisible(),true);
+  assert.match(await page.locator('#ktv-host-qr-preview').innerText(),/plain example/);
 });

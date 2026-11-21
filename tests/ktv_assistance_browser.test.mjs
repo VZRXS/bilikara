@@ -241,7 +241,7 @@ for(const engine of [chromium,webkit])for(const platform of ['android','ios'])te
     tv.state.deny=false;await host.locator('#purek-submit').click();await waitFor(async()=>(await roomState(server)).connected,'authorized fixture connected');
     await host.waitForFunction(()=>document.querySelector('#ktv-host-authorization-url').value==='');
     assert.equal(await host.locator('#purek-open').textContent(),await host.evaluate(()=>t('purek.manage')));
-    assert.equal(await host.locator('#ktv-host-local-scan').isVisible(),false,'connected device management has no idle scanner');
+    assert.equal(await host.locator('#ktv-host-local-scan').isVisible(),true,'connected device management retains the universal scanner');
     await host.locator('#purek-close').click();
     await host.locator('#purek-open').click();
     assert.equal(await host.locator('#purek-modal').isVisible(),true,'mobile management stays separate from the output switch');
@@ -250,10 +250,16 @@ for(const engine of [chromium,webkit])for(const platform of ['android','ios'])te
     await host.locator('#purek-open').click();await host.waitForFunction(()=>!document.querySelector('#purek-close').disabled);
     await host.waitForFunction(()=>document.querySelector('#purek-open').textContent===t('ktv.scan'));
     const authorizations=tv.state.actions.filter(a=>a==='SetDeviceAuthorization').length;
+    const unexpectedPrepares=[];
+    host.on('request',request=>{if(new URL(request.url()).pathname==='/api/purek/prepare')unexpectedPrepares.push(request.url());});
     await host.locator('#ktv-host-image-input').setInputFiles(image(tv.description));
-    await host.waitForFunction(()=>state.data.purek.connection_type==='dlna'&&!document.querySelector('#purek-submit').disabled);
+    await host.locator('#ktv-host-qr-open').waitFor();
+    assert.deepEqual(unexpectedPrepares,[],'ordinary web links are never sent to receiver preparation');
     assert.equal(await host.locator('#ktv-host-authorization').isVisible(),false);
-    await host.locator('#purek-submit').click();await waitFor(async()=>(await roomState(server)).connected,'DLNA fixture connected');
+    await host.locator('#purek-dlna-entry summary').click();
+    await host.locator('#purek-dlna-url').fill(tv.description);
+    await host.locator('#purek-dlna-connect').click();
+    await waitFor(async()=>(await roomState(server)).connected,'explicit manual DLNA fixture connected');
     assert.equal(tv.state.actions.filter(a=>a==='SetDeviceAuthorization').length,authorizations,'DLNA does not perform Pure K registration');
     const lan=new HttpClient(server.base);await lan.request('/remote');
     assert.equal((await lan.request('/api/purek/prepare',{url:roomQr(tv.base)})).status,403);
@@ -642,7 +648,7 @@ for(const engine of[chromium,webkit])test(`${engine.name()} GIF and BMP QR image
   for(const platform of ['ios','android'])for(const kind of ['gif','bmp']){
     const {tv,page,errors}=await scanHost(t,engine,platform);await openLocalScan(page);
     assert.equal(await page.locator('#ktv-host-image-input').getAttribute('accept'),'image/*');
-    assert.equal(await importOutcome(page,()=>page.locator('#ktv-host-image-input').setInputFiles(qrFile[kind](tv.description))),'prepare',`${platform} ${kind} import decodes`);
+    assert.equal(await importOutcome(page,()=>page.locator('#ktv-host-image-input').setInputFiles(qrFile[kind](roomQr(tv.base)))),'prepare',`${platform} ${kind} import decodes`);
     assert.deepEqual(errors,[]);
   }
 });
@@ -655,12 +661,12 @@ for(const engine of[chromium,webkit])test(`${engine.name()} Android Host system 
   for(const kind of ['gif','bmp']){
     const {tv,page,errors}=await scanHost(t,engine,'android');await openLocalScan(page);
     assert.deepEqual(await page.evaluate(()=>[...document.querySelectorAll('#ktv-host-image-input,#ktv-host-capture-input')].map(n=>n.accept)),['image/*','image/*']);
-    assert.equal(await importOutcome(page,()=>viaPicker(page,chooser=>chooser.setFiles(qrFile[kind](tv.description)))),'prepare',`picker ${kind} decodes`);
+    assert.equal(await importOutcome(page,()=>viaPicker(page,chooser=>chooser.setFiles(qrFile[kind](roomQr(tv.base))))),'prepare',`picker ${kind} decodes`);
     assert.deepEqual(errors,[]);
   }
   // The system picker hides the WebView; its selection after hidden -> visible still decodes.
   const {tv,page,errors}=await scanHost(t,engine,'android');await openLocalScan(page);
-  assert.equal(await importOutcome(page,()=>viaPicker(page,async chooser=>{await setHidden(page,true);await setHidden(page,false);await chooser.setFiles(qrFile.gif(tv.description));})),'prepare','picker GIF after hidden/visible decodes');
+  assert.equal(await importOutcome(page,()=>viaPicker(page,async chooser=>{await setHidden(page,true);await setHidden(page,false);await chooser.setFiles(qrFile.gif(roomQr(tv.base)));})),'prepare','picker GIF after hidden/visible decodes');
   assert.deepEqual(errors,[]);
 });
 

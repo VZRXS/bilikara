@@ -292,10 +292,8 @@ static uint32_t cast_mux(const BmCastRequest *q, BmCastResult *r) {
         last_dts[index] = dts;
         writer.time_us = FFMAX(writer.time_us,dts);
         writer.key = !index && (p->flags & AV_PKT_FLAG_KEY) ? 1 : 0;
-        if (writer.key) {
-            if(last_key>=0) r->gop_us=FFMAX(r->gop_us,dts-last_key);
-            last_key=dts;
-        }
+        if (!index && last_key>=0) r->gop_us=FFMAX(r->gop_us,dts-last_key);
+        if (writer.key) last_key=dts;
         r->has_b_frames |= !index && p->pts != p->dts;
         r->duration_us=FFMAX(r->duration_us,cast_time(in,p->pts+p->duration)-source_start);
         if (!index && !q->output_kind) {
@@ -367,10 +365,9 @@ uint32_t bm_cast_preflight_v1(const BmRequest *q,BmCastResult *r) {
         AVPacket *p=in.packet;int64_t pts=cast_time(&in,p->pts);
         first=FFMIN(first,pts);end=FFMAX(end,pts+cast_time(&in,p->duration));
         r->has_b_frames|=p->pts!=p->dts;
-        if(p->flags&AV_PKT_FLAG_KEY) {
-            if(key!=INT64_MIN) r->gop_us=FFMAX(r->gop_us,pts-key);
-            key=pts;
-        }
+        int64_t dts=cast_time(&in,p->dts);
+        if(key!=INT64_MIN) r->gop_us=FFMAX(r->gop_us,dts-key);
+        if(p->flags&AV_PKT_FLAG_KEY) key=dts;
         r->packets++;r->bytes+=p->size;
     }
     if(!r->packets || key==INT64_MIN || end<=first) {status=BM_INVALID_MEDIA;goto done;}

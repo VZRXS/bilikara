@@ -47,6 +47,7 @@ internal class CastForegroundRequired : RuntimeException()
 internal class CastOutputGate {
   private var owner = 0L
   private var mode = 0
+  private var latestLease = 0L
   @Synchronized fun update(id: Long, nextMode: Int, foreground: Boolean,
     start: () -> Unit, stop: () -> Unit): Int {
     if (id <= 0 || nextMode !in 0..2) return 1
@@ -54,12 +55,14 @@ internal class CastOutputGate {
       if (owner == id) { owner = 0; mode = 0; stop() }
       return 0
     }
+    if (owner == id && mode == nextMode) return 0
+    if (owner != id && id <= latestLease) return 1
     if (owner == 0L && !foreground) return 2
     val previous = owner
     val previousMode = mode
     owner = id
     mode = nextMode
-    return try { start(); 0 } catch (error: RuntimeException) {
+    return try { start(); latestLease = maxOf(latestLease, id); 0 } catch (error: RuntimeException) {
       owner = previous
       mode = previousMode
       if (error is CastForegroundRequired) 2 else 1

@@ -5214,11 +5214,38 @@ impl AppState {
                         "Receiver owns playback",
                     ));
                 }
-                AppStateRequest::SetAudioVariant { .. } if !self.native_session.cast.l1 => {
-                    return execute_error_response(rejected(
-                        "cast_command_unsupported",
-                        "Audio track changes require L1 output",
-                    ));
+                AppStateRequest::SetAudioVariant { item_id, expected_item_incarnation_id, variant_id, .. } => {
+                    use crate::native_host::cast_session::{Control, Phase};
+                    use cast::Mode;
+                    let cast = &self.native_session.cast;
+                    if cast.phase != Phase::Active || cast.control_busy || !cast.delivered {
+                        return execute_error_response(rejected("cast_track_pending", "Wait for the current cast operation and try again"));
+                    }
+                    if !cast.l1 {
+                        if cast.mode != Mode::File {
+                            return execute_error_response(rejected("cast_track_file_required", "Switch this receiver to file delivery to change tracks, or return to local playback"));
+                        }
+                        let Some(data) = self.data.as_ref() else { return uninitialized_response(); };
+                        let generation = data.playback_generation;
+                        let variant = variant_id.trim();
+                        if let Err(error) = self.native_cast_file_candidate(item_id, expected_item_incarnation_id, variant, generation) {
+                            return execute_error_response(rejected(&error.code, &error.message));
+                        }
+                        let accepted = data.current_item.as_ref().is_some_and(|item| item.selected_audio_variant_id != variant);
+                        if accepted {
+                            let cast = &mut self.native_session.cast;
+                            cast.control = Some(Control::FileTrack { playback_generation: generation, variant: variant.to_owned() });
+                            cast.control_busy = true;
+                            cast.track_error = None;
+                            self.native_session.revision += 1;
+                        }
+                        let mut response = self.execute_inner(AppStateRequest::Snapshot { schema_version: 1 });
+                        if let AppStateResponse::Success(success) = &mut response {
+                            success.result = json!({"found":true,"changed":false,"accepted":accepted});
+                        }
+                        return response;
+                    }
+                    None
                 }
                 AppStateRequest::RestartPlaybackProgram { .. } => {
                     return execute_error_response(rejected(

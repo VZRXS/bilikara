@@ -55,6 +55,7 @@ pub(crate) enum Control {
     Seek(f64),
     Restart,
     ProgramChanged,
+    FileTrack { playback_generation: u64, variant: String },
     Probe,
 }
 
@@ -76,6 +77,8 @@ pub(crate) struct State {
     pub room_failure: Option<(String, &'static str)>,
     // Local output failures do not revoke the receiver connection or room lease.
     pub output_failure: Option<(String, &'static str)>,
+    /// Nonterminal track-switch result for the current output.
+    pub track_error: Option<&'static str>,
     pub connection_id: Option<String>,
     pub connection_cancel: Option<CancellationToken>,
     pub offset_mode: bilikara_rust::output_audio::OffsetMode,
@@ -93,8 +96,7 @@ pub(crate) struct State {
     pub owns_playback: bool,
     /// Actual admitted live L1 pipeline; never inferred from receiver metadata.
     pub l1: bool,
-    /// Why the admitted live stream is raw T3 instead of L1 (`long_gop`,
-    /// `l1_unavailable`); set with `l1` when an output starts.
+    /// Why the admitted output cannot apply L1 audio processing.
     pub l1_refusal: Option<&'static str>,
     /// Encoder of the admitted composited (L2) video; None when not composited.
     pub composited: Option<&'static str>,
@@ -168,7 +170,7 @@ impl State {
             "renderers":self.renderers.iter().map(|r| json!({"device_key":renderer_key(r),"preferences_persisted":preference_key(r).is_some(),"label":r.description.name.chars().take(100).collect::<String>()})).collect::<Vec<_>>(),
             "devices":preferences.devices.iter().chain(self.session_devices.iter()).map(|(key,d)|(key.clone(),json!({"mode":d.mode,"learned_mode":d.learned_mode,"picture":d.picture}))).collect::<serde_json::Map<_,_>>(),
             "selected":self.selected,"receiver_state":self.receiver_state,"position":self.position,
-            "duration":self.duration,"is_paused":self.paused,"error_code":self.error_code,"resume":self.resume,
+            "duration":self.duration,"is_paused":self.paused,"error_code":self.error_code.as_deref().or(self.track_error),"resume":self.resume,
             "mode":preference.mode,"learned_mode":preference.learned_mode,"effective_mode":self.mode,
             "picture":preference.picture,"compositing":crate::cast_compositor::capability(),
             "busy":self.control_busy || self.pending.is_some() || self.pipeline_running,"local_media":if self.owns_playback {"retain_paused_muted"} else {"host"}})
@@ -187,6 +189,7 @@ impl State {
         self.room_error = None;
         self.room_failure = None;
         self.output_failure = None;
+        self.track_error = None;
         self.capability_probe_running = false;
         self.protocol_state = None;
         self.protocol_error = None;
@@ -300,22 +303,29 @@ pub(super) fn route(
             json!({"pipeline_available":media::probe().is_ok_and(|probe| probe.cast_mux_available())}),
         );
     }
-    with_app(|app| {
-        app.native_authorize(identity, path != "/api/cast/command")?;
-        if path == "/api/cast/report" && method == Method::GET {
-            return app
-                .native()
-                .cast
-                .trace
-                .as_ref()
-                .map(|t| {
+    if path == "/api/cast/report" && method == Method::GET {
+        with_app(|app| app.native_authorize(identity, true))?;
+        let current_network = crate::cast_platform::network_facts();
+        return with_app(|app| {
+            let cast = &app.native().cast;
+            cast.trace.as_ref().map(|t| {
                     let report = t.report();
-                    json!({"diagnostics":report.diagnostics(),"text":report.text()})
+                    json!({"diagnostics":report.diagnostics(),"text":report.text(),
+                        "lifecycle": {"platform":current_network,"host_http_available":true,
+                            "phase":cast.phase,"connection_retained":cast.connected,
+                            "owns_playback":cast.owns_playback,"receiver_state":cast.receiver_state},
+                        "delivery": {"pipeline_level":cast.pipeline_level(),
+                            "pipeline_reason":cast.pipeline_reason(),
+                            "generation":cast.owns_playback.then_some(cast.generation),
+                            "first_get_written":cast.owns_playback && cast.delivered}})
                 })
                 .ok_or_else(|| {
                     ApiError::new(404, "cast_report_unavailable", "No cast report yet")
-                });
-        }
+                })
+        });
+    }
+    with_app(|app| {
+        app.native_authorize(identity, path != "/api/cast/command")?;
         if method != Method::POST || !body.is_object() {
             return Err(ApiError::invalid("Cast requires POST JSON"));
         }
@@ -528,7 +538,7 @@ pub(super) fn route(
                             ApiError::invalid("Prepare or discover a receiver first")
                         })?
                     };
-                    let output = crate::cast_platform::OutputLease::acquire()
+                    let output = crate::cast_platform::OutputLease::acquire_retained()
                         .map_err(|e| ApiError::new(409, e.code(), e.code()))?;
                     app.native().cast.room_generation += 1;
                     admit_prepared(
@@ -566,7 +576,7 @@ pub(super) fn route(
                     ))
                 };
                 let snapshot = app.native_snapshot(true)?;
-                let output = crate::cast_platform::OutputLease::acquire()
+                let output = crate::cast_platform::OutputLease::acquire_retained()
                     .map_err(|error| ApiError::new(409, error.code(), error.code()))?;
                 app.native().cast.platform_output_id = Some(output.id());
                 app.native().cast.platform_stop_error = None;

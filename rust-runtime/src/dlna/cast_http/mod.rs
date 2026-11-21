@@ -185,7 +185,7 @@ struct FileBody {
     /// Present while the file is still being rendered behind its declared length.
     growth: Option<Arc<Growth>>,
     // File handles must close before the final T3 lease is dropped (Windows).
-    _lease: Option<CastFile>,
+    _lease: Option<Arc<CastFile>>,
 }
 
 /// Render progress of a file-mode TS published before it is complete
@@ -479,6 +479,15 @@ impl CastEndpoint {
         file: CastFile,
         mime: TsMime,
     ) -> Result<PublishedMedia, EndpointError> {
+        self.publish_shared_file(generation, Arc::new(file), mime)
+    }
+
+    pub(crate) fn publish_shared_file(
+        &self,
+        generation: u64,
+        file: Arc<CastFile>,
+        mime: TsMime,
+    ) -> Result<PublishedMedia, EndpointError> {
         let length = std::fs::metadata(file.path())
             .map_err(|_| EndpointError::InvalidFile)?
             .len();
@@ -525,7 +534,7 @@ impl CastEndpoint {
             mp4: false,
             converted: file.summary.audio_transcoded,
             growth: Some(growth),
-            _lease: Some(file),
+            _lease: Some(Arc::new(file)),
         };
         self.publish(generation, Body::File(body), mime)
     }

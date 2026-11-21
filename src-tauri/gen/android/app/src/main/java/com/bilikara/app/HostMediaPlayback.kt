@@ -23,6 +23,10 @@ object HostMediaPlayback {
   @Volatile var foreground = false
   @Volatile internal var service: HostMediaPlaybackService? = null
   internal val gate = CastOutputGate()
+  private val main = Handler(Looper.getMainLooper())
+  private var startPending = false
+  @Volatile internal var lastStopReason: Int? = null
+    private set
 
   // Stop reasons passed to nativeStopped. Same table as Rust
   // cast_platform::stop_reason and docs/android-host-beta.md.
@@ -36,29 +40,34 @@ object HostMediaPlayback {
   // The lease fences delayed intents and callbacks across rapid reconnects.
   @JvmStatic @Keep fun update(context: Context, mode: Int, lease: Long): Int =
     gate.update(lease, mode, foreground, start = {
-      val intent = Intent(context, HostMediaPlaybackService::class.java)
-        .putExtra("mode", mode).putExtra("lease", lease)
-      try {
-        if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent) else context.startService(intent)
-      } catch (error: RuntimeException) {
-        if (Build.VERSION.SDK_INT >= 31 && error is android.app.ForegroundServiceStartNotAllowedException) throw CastForegroundRequired()
-        throw error
+      val running = service
+      if (running != null) {
+        // An existing foreground service can apply the newest resource mode
+        // without asking Android to start a service from the background.
+        check(main.post { running.applyLease() })
+      } else if (!startPending) {
+        val intent = Intent(context, HostMediaPlaybackService::class.java)
+        try {
+          if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent) else context.startService(intent)
+          startPending = true
+        } catch (error: RuntimeException) {
+          if (Build.VERSION.SDK_INT >= 31 && error is android.app.ForegroundServiceStartNotAllowedException) throw CastForegroundRequired()
+          throw error
+        }
       }
     }, stop = { stopService(context) })
 
+  internal fun clearPendingStart() { startPending = false }
+
   private fun stopService(context: Context) {
-    service?.finishExpected()
+    clearPendingStart()
     service = null
     context.stopService(Intent(context, HostMediaPlaybackService::class.java))
-  }
-  internal fun stopFromPlatform(context: Context, reason: Int) {
-    gate.current { id, _ ->
-      if (gate.end(id) { stopService(context) }) reportStopped(reason, id)
-    }
   }
   internal fun reportStopped(reason: Int, lease: Long) {
     // Rust admission may hold AppState while waiting for a platform call.
     // Never call back synchronously on Android's UI/service thread.
+    lastStopReason = reason
     Thread({ try { nativeStopped(reason, lease) } catch (_: UnsatisfiedLinkError) { } }, "cast-stopped").start()
   }
   internal fun reportThermal(status: Int, headroom: Float, lease: Long) {
@@ -78,8 +87,10 @@ class HostMediaPlaybackService : Service() {
   }
   private var expectedStop = false
   private var servedLease = 0L
-  private var wake: PowerManager.WakeLock? = null
-  private var wifi: WifiManager.WifiLock? = null
+  internal var appliedMode = 0
+    private set
+  @Volatile private var wake: PowerManager.WakeLock? = null
+  @Volatile private var wifi: WifiManager.WifiLock? = null
 
   private val handler = Handler(Looper.getMainLooper())
   private var thermalRunning = false
@@ -121,8 +132,11 @@ class HostMediaPlaybackService : Service() {
       .addAction(Notification.Action.Builder(android.R.drawable.ic_media_pause, getString(R.string.network_output_stop), stop).build()).build()
   }
   private fun promote(lease: Long, playing: Boolean) {
-    if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION, notification(lease, playing), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
-    else startForeground(NOTIFICATION, notification(lease, playing))
+    if (Build.VERSION.SDK_INT >= 29) {
+      val type = if (playing) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+        else ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+      startForeground(NOTIFICATION, notification(lease, playing), type)
+    } else startForeground(NOTIFICATION, notification(lease, playing))
   }
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     HostMediaPlayback.gate.current { lease, mode ->
@@ -132,6 +146,7 @@ class HostMediaPlaybackService : Service() {
         else if (lease == 0L) stopSelfResult(startId)
         return@current
       }
+      HostMediaPlayback.clearPendingStart()
       if (lease == 0L) {
         // An asynchronous start can arrive after release. Fulfil Android's
         // promotion deadline then immediately remove the obsolete service.
@@ -139,21 +154,29 @@ class HostMediaPlaybackService : Service() {
         finishExpected(); stopSelfResult(startId)
         return@current
       }
-      servedLease = lease
-      expectedStop = false
-      HostMediaPlayback.service = this
-      try {
-        promote(lease, mode == 2)
-        if (mode == 2) acquireLocks() else releaseLocks()
-        // Pause/resume updates must not reset the headroom sampling interval.
-        if (!thermalRunning) {
-          thermalRunning = true
-          handler.post(thermal)
-        }
-      }
-      catch (_: RuntimeException) { stopOutput(HostMediaPlayback.STOP_SERVICE_FAILURE, lease) }
+      applyMode(lease, mode)
     }
     return START_NOT_STICKY
+  }
+  internal fun applyLease() = HostMediaPlayback.gate.current { lease, mode ->
+    if (HostMediaPlayback.service === this && lease != 0L) applyMode(lease, mode)
+  }
+  private fun applyMode(lease: Long, mode: Int) {
+    servedLease = lease
+    expectedStop = false
+    try {
+      promote(lease, mode == 2)
+      if (mode == 2) acquireLocks() else releaseLocks()
+      appliedMode = mode
+      HostMediaPlayback.service = this
+      // Changing resource mode does not reset the headroom sampling interval.
+      if (!thermalRunning) {
+        thermalRunning = true
+        handler.post(thermal)
+      }
+    } catch (_: RuntimeException) {
+      stopOutput(HostMediaPlayback.STOP_SERVICE_FAILURE, lease)
+    }
   }
   private fun acquireLocks() {
     if (wake?.isHeld != true) {
@@ -178,6 +201,7 @@ class HostMediaPlaybackService : Service() {
   }
   internal fun finishExpected() {
     expectedStop = true
+    appliedMode = 0
     handler.removeCallbacks(thermal)
     thermalRunning = false
     releaseLocks()
@@ -191,7 +215,7 @@ class HostMediaPlaybackService : Service() {
     }) HostMediaPlayback.reportStopped(reason, lease)
   }
   override fun onTaskRemoved(rootIntent: Intent?) {
-    HostMediaPlayback.stopFromPlatform(this, HostMediaPlayback.STOP_TASK_REMOVED)
+    stopOutput(HostMediaPlayback.STOP_TASK_REMOVED, servedLease)
     super.onTaskRemoved(rootIntent)
   }
   override fun onDestroy() {

@@ -1,0 +1,19 @@
+name: CI And Bundles
+run-name: Stage 1 Android Cast and QR / All six Bundle targets
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  bundle:
+    name: Stage 1 Bundle
+    uses: ./.github/workflows/bundle.yml
+    with:
+      target: all
+      ios_adhoc: false
+    secrets:
+      ANDROID_BETA_KEYSTORE_BASE64: ${{ secrets.ANDROID_BETA_KEYSTORE_BASE64 }}

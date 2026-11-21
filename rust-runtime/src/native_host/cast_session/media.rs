@@ -76,15 +76,17 @@ pub(super) fn l1_track_ids(
         .map(str::to_owned)
         .collect()
 }
-/// Why live delivery cannot run L1 for this source. `live_ts.c` refuses any
-/// video packet more than 4 s after its keyframe; T3 has no such limit, so
-/// those sources keep the raw T3 stream and report the reason.
-pub(super) fn l1_refusal(available: bool, facts: &CastSummary) -> Option<&'static str> {
-    if !available {
+#[cfg(test)]
+pub(super) static TEST_L1_UNAVAILABLE: AtomicBool = AtomicBool::new(false);
+
+/// Copied video does not use the encoder's GOP policy. The T4 ring bounds live
+/// output by retained bytes and the file path uses the session's file quota.
+fn l1_refusal(probe: &LibavMetadataProbe) -> Option<&'static str> {
+    #[cfg(test)]
+    if TEST_L1_UNAVAILABLE.load(Ordering::Acquire) {
         return Some("l1_unavailable");
     }
-    let longest = facts.gop_us.unwrap_or(facts.duration_us);
-    (longest > 4_000_000).then_some("long_gop")
+    (!probe.live_l1_available()).then_some("l1_unavailable")
 }
 /// Source-codec refusals are the user's actionable case (re-cache as H.264);
 /// every other preparation failure keeps the generic code.
@@ -261,9 +263,9 @@ pub(super) fn file(
                 )
                 .map_err(|e| prepare_error(e, "Cannot prepare cast media"))
         };
-        if wanted.is_neutral() && wanted.track == item.selected_audio_variant_id {
+        let refusal = l1_refusal(&probe);
+        if refusal.is_some() || (wanted.is_neutral() && wanted.track == item.selected_audio_variant_id) {
             let file = t3(&input)?;
-            let refusal = l1_refusal(probe.live_l1_available(), &file.summary);
             return Ok(Prepared {
                 file,
                 baked: Baked::neutral(&item),
@@ -275,16 +277,6 @@ pub(super) fn file(
         let facts = probe
             .cast_preflight(&input.video, &stop)
             .map_err(|e| prepare_error(e, "Cannot inspect cast media"))?;
-        if let Some(refusal) = l1_refusal(probe.live_l1_available(), &facts) {
-            // Not renderable by L1: the unprocessed copy, as before.
-            return Ok(Prepared {
-                file: t3(&input)?,
-                baked: Baked::neutral(&item),
-                refusal: Some(refusal),
-                growth: None,
-                origin: 0.0,
-            });
-        }
         // The companion handle is thread-affine (Windows): the renderer
         // thread loads its own and keeps the input leases until it ends.
         drop(probe);
@@ -508,11 +500,11 @@ pub(super) async fn live(
         let prepared = (|| {
             let probe = probe()?;
             let base = inputs(&context, &item)?;
-            // One read-only packet pass decides L1 and is reused by it.
+            // Validate the source and reuse its preflight metadata for L1.
             let facts = probe
                 .cast_preflight(&base.video, producing.cancellation())
                 .map_err(|e| prepare_error(e, "Cannot inspect live media"))?;
-            let refusal = l1_refusal(probe.live_l1_available(), &facts);
+            let refusal = l1_refusal(&probe);
             // Keep the base leases until the L1 set holds its own pins.
             let input = if refusal.is_none() {
                 inputs_for(&context, &item, true)?
@@ -627,35 +619,5 @@ mod selection_tests {
         assert_eq!(l1_track_ids(&variants(&[("solo", true)]), "solo"), ["solo"]);
         // The selected track must itself be cached (inputs() refuses first).
         assert_eq!(l1_track_ids(&pages, "p1"), ["p2"]);
-    }
-
-    #[test]
-    fn l1_refusal_reports_the_companion_and_the_four_second_keyframe_limit() {
-        let facts = |gop_us: Option<i64>, duration_us: i64| CastSummary {
-            packets: 1,
-            bytes: 1,
-            profile: 100,
-            level: 40,
-            width: 1920,
-            height: 1080,
-            has_b_frames: false,
-            audio_transcoded: false,
-            source_start_us: 0,
-            duration_us,
-            gop_us,
-        };
-        assert_eq!(l1_refusal(true, &facts(Some(2_000_000), 240_000_000)), None);
-        assert_eq!(l1_refusal(true, &facts(Some(4_000_000), 240_000_000)), None);
-        assert_eq!(
-            l1_refusal(true, &facts(Some(4_000_001), 240_000_000)),
-            Some("long_gop")
-        );
-        // A single keyframe makes the whole video one group of pictures.
-        assert_eq!(l1_refusal(true, &facts(None, 3_000_000)), None);
-        assert_eq!(l1_refusal(true, &facts(None, 9_000_000)), Some("long_gop"));
-        assert_eq!(
-            l1_refusal(false, &facts(Some(1_000_000), 9_000_000)),
-            Some("l1_unavailable")
-        );
     }
 }

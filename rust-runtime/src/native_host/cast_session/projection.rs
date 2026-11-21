@@ -11,6 +11,7 @@ pub(super) fn legacy_error(code: &str) -> &str {
         }
         "cast_purek_cancelled" | "cancelled" | "purek_cancelled" => "purek_stopped",
         code if code.starts_with("purek_") => code,
+        "cast_track_prepare_failed" | "cast_track_rejected" | "cast_track_no_delivery" | "cast_track_restore_failed" => code,
         "cast_purek_qr_invalid" | "cast_purek_address_not_allowed" => "purek_qr_invalid",
         "cast_purek_authorization_rejected" => "purek_authorization",
         "cast_purek_identity_changed" | "cast_purek_route_changed" => "purek_identity_changed",
@@ -98,16 +99,13 @@ impl State {
         }
     }
 
-    /// Why casting cannot apply pitch, delay or track edits: the source or
-    /// companion L1 refused (`long_gop`, `l1_unavailable`), or a file output
-    /// still being prepared (`file_mode`). None while edits reach the receiver
-    /// (live L1, or file regeneration) and when not casting.
+    /// Whether DSP settings can reach the receiver without file regeneration.
     fn live_l1(&self) -> bool {
         self.l1 && self.mode == Mode::Live
     }
 
     /// L2 composited, L1 (DSP audio with copied video), L0 (raw T3).
-    fn pipeline_level(&self) -> Option<&'static str> {
+    pub(super) fn pipeline_level(&self) -> Option<&'static str> {
         self.owns_playback.then(|| {
             if self.composited.is_some() {
                 "L2"
@@ -138,6 +136,8 @@ impl State {
             "desired_playing":self.output_enabled && !self.paused,"position":self.position,"duration":self.duration,
             "transition_remaining_ms":0,"pipeline_level":self.pipeline_level(),
             "pipeline_reason":self.pipeline_reason(),
+            "audio_track_switch":if !self.owns_playback {"local"} else if self.phase != Phase::Active || self.control_busy || !self.delivered {"pending"}
+                else if self.l1 {"direct"} else if self.mode == Mode::File {"remux"} else {"file_required"},
             "picture":self.picture,"composite_encoder":self.composited,
             "composite_reason":if self.connected {self.composite_refusal} else {None},
             "receiver_capabilities":if self.connected {self.receiver_capabilities()} else {Value::Null},
@@ -197,6 +197,9 @@ impl State {
     fn output_error(&self) -> Option<&str> {
         if let Some((code, _)) = &self.output_failure {
             return Some(legacy_error(code));
+        }
+        if self.owns_playback && let Some(code) = self.track_error {
+            return Some(code);
         }
         match self.status() {
             "unsupported" => Some("purek_output_no_av_transport"),

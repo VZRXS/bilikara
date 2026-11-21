@@ -146,23 +146,44 @@
     selfTest?.render();wake();
   }
   const mobile = ["android","ios"].includes(document.documentElement.dataset.hostPlatform);
-  let officialUrl="", officialOwner="", localLife=0, localAcquisition=false;
+  let officialUrl="", officialOwner="", localLife=0, localAcquisition=false, localPrepare=false, qrResult=null;
   const scanner=window.BilikaraKtvScanner.surface({root:byId("ktv-host-scan-view"),prefix:"ktv-host",translate:t,
     onCamera:()=>void openScanner(),
-    onFile:(file,input)=>void action(scanner.gallery,async()=>{localAcquisition=true;try{await scanner.file(file);}finally{localAcquisition=false;input.value="";}}),
-    onDecode:raw=>pending?(localAcquisition?prepareLocal(raw):stopScan()):action(scanner.gallery,()=>prepareLocal(raw)),
+    onFile:(file,input)=>void action(scanner.gallery,async()=>{localAcquisition=true;setQrResult(null);try{await scanner.file(file);}finally{localAcquisition=false;input.value="";}}),
+    onDecode:raw=>pending?(localAcquisition?handleQr(raw):stopScan()):action(scanner.gallery,()=>handleQr(raw)),
     onError:showError});
-  function stopScan(){localLife++;scanner.stop();paint();}
+  function setQrResult(result) {
+    qrResult = result;
+    byId('ktv-host-qr-result').hidden = result === null;
+    byId('ktv-host-qr-open').hidden = result?.kind !== 'web';
+    byId('ktv-host-qr-copy').hidden = !['text','unsupported'].includes(result?.kind);
+    const preview = result?.preview ?? result?.value?.replace(/[\u202a-\u202e\u2066-\u2069]/g, '').slice(0,240) ?? '';
+    byId('ktv-host-qr-preview').textContent = result ? t(`qr.${result.kind}`, {preview}) : '';
+  }
+  async function handleQr(raw) {
+    if (!opened || !mobile) return;
+    const result = window.BilikaraKtvScanner.classify(raw);
+    if (result.kind === 'purek') {
+      if (active() || snapshot?.connected) setQrResult({kind:'roomBusy'});
+      else await prepareLocal(result.value);
+      return;
+    }
+    setQrResult(result);
+  }
+  function stopScan(){localLife++;scanner.stop();setQrResult(null);paint();}
   async function prepareLocal(raw,{manual=false}={}){
     if(!opened||(!mobile&&!manual)||active()||snapshot?.connected)return;
     const ticket=localLife;
-    const prepared=await request("/api/purek/prepare",{url:raw});
-    if(ticket!==localLife||!opened)return;
-    officialOwner="";officialUrl=window.BilikaraKtvScanner.validOfficial(prepared.authorization_url)?prepared.authorization_url:"";
-    const value=await readState();
-    if(ticket!==localLife||!opened){officialUrl="";return;}
-    apply(value.purek);applyAssistance(value.ktv_assistance);
-    return prepared;
+    localPrepare=true;paint();
+    try{
+      const prepared=await request("/api/purek/prepare",{url:raw});
+      if(ticket!==localLife||!opened)return;
+      officialOwner="";officialUrl=window.BilikaraKtvScanner.validOfficial(prepared.authorization_url)?prepared.authorization_url:"";
+      const value=await readState();
+      if(ticket!==localLife||!opened){officialUrl="";return;}
+      apply(value.purek);applyAssistance(value.ktv_assistance);
+      return prepared;
+    }finally{localPrepare=false;paint();}
   }
   function position(){
     const phone=["android","ios"].includes(document.documentElement.dataset.hostPlatform)&&document.documentElement.dataset.hostLayout==="portrait";
@@ -232,16 +253,15 @@
     byId("purek-cancel").hidden=submit.hidden;
     byId("purek-cancel").parentElement.hidden=submit.hidden;
     modal.classList.toggle("is-actions-empty",submit.hidden);
-    // Closing is an immediate UI action (AGENTS §5.2): running discovery, scan
-    // or checks continue or abort through their own tickets; only the store
-    // self-test owns the dialog until it settles.
-    byId("purek-close").disabled=selfTest?.busy()||cast().self_test?.running===true;
+    // A local receiver prepare must finish before dismissal. Discovery and
+    // camera permission keep their independent cancellation behavior.
+    byId("purek-close").disabled=localPrepare||selfTest?.busy()||cast().self_test?.running===true;
     // A Remote-assisted check fails on the Host worker; show its stage here too.
     const stored=!connected&&!pending&&String(snapshot?.error_code||"").startsWith("purek_")&&snapshot?.error_stage?snapshot.error_code:"";
     if(actionError||stored){const value=errorText(actionError||stored);if(byId("purek-error").textContent!==value)byId("purek-error").textContent=value;byId("purek-error").hidden=false;storedShown=!actionError;}
     else if(storedShown){byId("purek-error").hidden=true;storedShown=false;}
-    byId("ktv-host-local-scan").hidden=!mobile||connected;
-    scanner.setDisabled(pending||active()||connected);
+    byId("ktv-host-local-scan").hidden=!mobile;
+    scanner.setDisabled(pending);
     byId("ktv-host-authorization").hidden=connected||!officialUrl&&!candidateKey();
     byId("ktv-host-load-authorization").hidden=!!officialUrl||!candidateKey();
     byId("ktv-host-load-authorization").disabled=pending||snapshot?.busy===true;
@@ -275,6 +295,7 @@
       :code.startsWith("purek_")&&["qr_invalid","qr_required","authorization","network","http","identity_changed","busy","protocol","renderer"].includes(code.slice(6))?`purek.error.${code.slice(6)}`:`ktv.error.${code.startsWith("ktv_")&&["busy","offline","stale","confirmation_required","secure_transport_required","scan_required","resume_unavailable","receiver_connected"].includes(code.slice(4))?code.slice(4):"failed"}`;
   // Host-only stage and stable code for support reports; never addresses or URLs.
   const errorText=code=>{
+    if(code==="qr_open_failed")return t("qr.openFailed");
     const stage=snapshot?.error_code===code&&["route","description","connection_manager","authorization","revalidation","health_check"].includes(snapshot?.error_stage)?snapshot.error_stage:"";
     return code.startsWith("cast_")?castError(code):code.startsWith("purek_")?`${t(errorKey(code))} (${stage?`${t(`purek.stage.${stage}`)} · `:""}${code})`:t(errorKey(code));
   };
@@ -307,9 +328,10 @@
       .flatMap(n=>n===shell?[...n.children].filter(child=>child!==banner):[n]).map(n=>[n,n.inert]);inert.forEach(([n])=>{n.inert=true;});
     modal.classList.remove("hidden");paint();byId("purek-close").focus({preventScroll:true});window.BilikaraHostWindow?.postMessage("purek-open");
   }
-  function close({force=false}={}){if(!opened||(selfTest?.busy()||cast().self_test?.running)&&!force)return;stopScan();officialUrl="";officialOwner="";byId("ktv-host-authorization-url").value="";actionError="";storedShown=false;byId("purek-error").hidden=true;closeCacheAdvancedInfo();opened=false;modal.classList.add("hidden");inert.forEach(([n,v])=>{n.inert=v;});inert=[];previousFocus?.focus({preventScroll:true});window.BilikaraHostWindow?.postMessage("purek-close");}
+  function close({force=false}={}){if(!opened||(localPrepare||selfTest?.busy()||cast().self_test?.running)&&!force)return;stopScan();officialUrl="";officialOwner="";byId("ktv-host-authorization-url").value="";actionError="";storedShown=false;byId("purek-error").hidden=true;closeCacheAdvancedInfo();opened=false;modal.classList.add("hidden");inert.forEach(([n,v])=>{n.inert=v;});inert=[];previousFocus?.focus({preventScroll:true});window.BilikaraHostWindow?.postMessage("purek-close");}
   async function openScanner(){
-    if(!opened||!mobile||active()||snapshot?.connected||pending)return;
+    if(!opened||!mobile||pending)return;
+    setQrResult(null);
     await action(byId("purek-open"),()=>scanner.open());
   }
   byId("purek-open").addEventListener("click",()=>{if(snapshot?.connected&&!mobile){void action(byId("purek-open"),()=>castAction("disconnect"));return;}show();if(mobile&&!snapshot?.room_name)void openScanner();if(!mobile)void action(byId("purek-open"),async()=>{const r=await fetch("/api/ktv/host",{cache:"no-store"});const p=await r.json();if(!r.ok||!p.ok)throw Error();applyAssistance(p.data);});});
@@ -333,8 +355,29 @@
       else{const input=byId("ktv-host-authorization-url");input.focus();input.select();if(!document.execCommand("copy"))throw Error();}setAppMessage(t("purek.authorizationCopied"));}
     catch{throw Object.assign(new Error(),{code:"clipboard"});}
   }));
+  byId('ktv-host-qr-open').addEventListener('click', () => void action(byId('ktv-host-qr-open'), async () => {
+    if (!opened || qrResult?.kind !== 'web') return;
+    const url = qrResult.value;
+    scanner.stop();
+    try {
+      if (document.documentElement.dataset.nativeHost === 'true') {
+        const bridge = document.documentElement.dataset.hostPlatform === 'android'
+          ? window.BilikaraAndroidPlatform : window.BilikaraIosPlatform;
+        if ((await bridge?.openQrWebLink?.(url))?.opened !== true) throw new Error();
+      } else {
+        window.open(url, '_blank', 'noopener,noreferrer');
+      }
+      setQrResult(null);
+    } catch {
+      throw Object.assign(new Error(), {code:'qr_open_failed'});
+    }
+  }));
+  byId('ktv-host-qr-copy').addEventListener('click', () => void action(byId('ktv-host-qr-copy'), async () => {
+    if (!opened || !['text','unsupported'].includes(qrResult?.kind)) return;
+    await window.BilikaraDiagnosticsCopy.copyText(qrResult.value, {fallbackMessage:t('qr.copyFailed')});
+  }));
   document.addEventListener("visibilitychange",()=>{if(document.hidden&&!scanner.waitingForAndroidPermission())stopScan();});
-  window.addEventListener("pagehide",()=>{localLife++;scanner.stop();officialUrl="";officialOwner="";byId("ktv-host-authorization-url").value="";});
+  window.addEventListener("pagehide",()=>{localLife++;scanner.stop();setQrResult(null);officialUrl="";officialOwner="";byId("ktv-host-authorization-url").value="";});
   byId("ktv-host-pair").addEventListener("click",event=>{event.stopPropagation();close();window.BilikaraHostLayout?.selectPage?.("playback");document.querySelector('[data-android-page="playback"]')?.click();setRemoteQrPinned(true);});
   for(const [id,operation]of[["ktv-host-approve","approve"],["ktv-host-reject","decline"],["ktv-host-cancel","cancel"]])byId(id).addEventListener("click",()=>void action(byId(id),async()=>{
     const s=assistance.session;if(!s)return;

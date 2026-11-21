@@ -25,7 +25,7 @@ object HostCastPlatform {
   private lateinit var context: Context
   private lateinit var multicast: MulticastLeases
   private var activity = WeakReference<Activity>(null)
-  @Volatile private var alive = true
+  @Volatile private var activityState = "initializing"
   private val main = Handler(Looper.getMainLooper())
 
   @JvmStatic @Keep
@@ -35,6 +35,7 @@ object HostCastPlatform {
     activity = WeakReference(host)
     HostMediaPlayback.foreground = (host as? LifecycleOwner)?.lifecycle?.currentState
       ?.isAtLeast(Lifecycle.State.RESUMED) == true
+    if (HostMediaPlayback.foreground) activityState = "resumed"
     multicast = MulticastLeases {
       val manager = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
       val resource = manager.createMulticastLock("bilikara:cast-discovery").apply { setReferenceCounted(false) }
@@ -46,32 +47,37 @@ object HostCastPlatform {
     }
     host.application.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
       override fun onActivityResumed(value: Activity) {
-        if (value is MainActivity) { activity = WeakReference(value); alive = true; HostMediaPlayback.foreground = true }
+        if (value is MainActivity) {
+          activity = WeakReference(value)
+          activityState = "resumed"
+          HostMediaPlayback.foreground = true
+        }
       }
       override fun onActivityPaused(value: Activity) {
-        if (activity.get() === value) HostMediaPlayback.foreground = false
+        if (activity.get() === value) {
+          activityState = "paused"
+          HostMediaPlayback.foreground = false
+        }
       }
       override fun onActivityDestroyed(value: Activity) {
         if (activity.get() !== value) return
         activity.clear()
         HostMediaPlayback.foreground = false
-        // Configuration recreation must not tear down an active cast/scan.
-        if (!value.isChangingConfigurations) {
-          synchronized(multicast) { alive = false; multicast.releaseAll() }
-          HostMediaPlayback.stopFromPlatform(context, HostMediaPlayback.STOP_TASK_REMOVED)
-        }
+        activityState = if (value.isChangingConfigurations) "recreating" else "destroyed"
+        // The Activity owns the WebViews; the service and the native lease
+        // own the receiver connection. Task removal is a service event.
       }
       override fun onActivityCreated(value: Activity, state: Bundle?) { }
       override fun onActivityStarted(value: Activity) { }
-      override fun onActivityStopped(value: Activity) { }
+      override fun onActivityStopped(value: Activity) {
+        if (activity.get() === value) activityState = "stopped"
+      }
       override fun onActivitySaveInstanceState(value: Activity, state: Bundle) { }
     })
     return true
   }
 
-  @JvmStatic @Keep fun acquireMulticast(id: Long): Boolean = synchronized(multicast) {
-    alive && multicast.acquire(id)
-  }
+  @JvmStatic @Keep fun acquireMulticast(id: Long): Boolean = multicast.acquire(id)
   @JvmStatic @Keep fun releaseMulticast(id: Long) = multicast.release(id)
   @JvmStatic @Keep fun updateNetworkPlayback(id: Long, mode: Int): Int {
     val result = HostMediaPlayback.update(context, mode, id)
@@ -94,7 +100,18 @@ object HostCastPlatform {
   }
 
   @JvmStatic @Keep fun networkFacts(): String {
-    val facts = JSONObject().put("default_network", "unknown")
+    fun modeLabel(mode: Int) = when (mode) { 2 -> "playing"; 1 -> "retained"; else -> "stopped" }
+    val facts = HostMediaPlayback.gate.current { outputLease, outputMode ->
+      val service = HostMediaPlayback.service
+      val (wake, wifi) = service?.heldLocks() ?: listOf(false, false)
+      JSONObject().put("activity_state", activityState)
+        .put("service_state", if (service != null) "promoted" else if (outputLease != 0L) "starting" else "stopped")
+        .put("service_stop_reason", HostMediaPlayback.lastStopReason ?: JSONObject.NULL)
+        .put("wake_lock_held", wake).put("wifi_lock_held", wifi)
+        .put("output_mode", modeLabel(outputMode))
+        .put("service_mode", modeLabel(service?.appliedMode ?: 0))
+    }
+    facts.put("default_network", "unknown")
       .put("wifi_connected", JSONObject.NULL).put("wifi_validated", JSONObject.NULL)
       .put("vpn_active", JSONObject.NULL).put("battery_optimization_ignored", JSONObject.NULL)
       .put("multicast_acquired", multicast.status() ?: JSONObject.NULL)

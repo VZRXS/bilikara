@@ -140,3 +140,5 @@ dialog.cast-self-test:not([open]) {display:none;}
 .media-output-pipeline-check[hidden]{display:none}
 /* The result belongs to the visible pipeline test action; hide it with the button. */
 .media-output-pipeline-test[hidden]+.media-output-pipeline-check{display:none}
+
+#ktv-host-qr-preview { overflow-wrap: anywhere; }

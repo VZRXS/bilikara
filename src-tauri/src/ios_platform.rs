@@ -1,6 +1,6 @@
 //! Narrow UIKit operations from this process's Host main WKWebView. No Tauri
 //! remote IPC permission, arbitrary URL opener or parallel business authority.
-use crate::ios_bridge_policy::{DocumentSession, HostFramePolicy, Request, login_url, video_url};
+use crate::ios_bridge_policy::{DocumentSession, HostFramePolicy, Request, login_url, qr_web_url, video_url};
 use block2::RcBlock;
 use objc2::{
     DeclaredClass, MainThreadOnly, define_class, extern_class, extern_conformance, extern_methods,
@@ -256,6 +256,7 @@ define_class!(
                     .and_then(|value| match request.action.as_str() {
                         "open-bilibili-login" => login_url(value).ok(),
                         "open-bilibili-video" => video_url(value).ok(),
+                        "open-qr-web-link" => qr_web_url(value),
                         _ => None,
                     });
                 if pending.is_some() || crate::ios_export::busy() || url.is_none() {

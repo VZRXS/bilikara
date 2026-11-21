@@ -92,7 +92,7 @@ assert.ok(contains("cargo:rustc-link-arg=-Wl,-z,max-page-size=16384", build));
 assert.ok(contains("cargo:rustc-link-arg=-Wl,-z,common-page-size=16384", build));
 manifest = readFileSync(path.join(TAURI, "gen/android/app/src/main/AndroidManifest.xml"), "utf8");
 assert.ok(contains('android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK',manifest));
-assert.match(manifest, /<service[^>]+android:name=".HostMediaPlaybackService"[^>]+android:exported="false"[^>]+android:foregroundServiceType="mediaPlayback"/);
+assert.match(manifest, /<service[^>]+android:name=".HostMediaPlaybackService"[^>]+android:exported="false"[^>]+android:foregroundServiceType="mediaPlayback\|connectedDevice"/);
 assert.ok(!contains('RECEIVE_BOOT_COMPLETED',manifest));
 assert.ok(contains("android.permission.REQUEST_INSTALL_PACKAGES", manifest));
 updater = readFileSync(path.join(TAURI, "gen/android/app/src/main/java/com/bilikara/app/HostUpdate.kt"), "utf8");
@@ -232,7 +232,7 @@ test("Android cast stop reasons share one table with Rust and the Host documenta
   assert.deepEqual(kotlin, expected);
   assert.deepEqual(native, expected);
   const docs = readFileSync(path.join(ROOT, "docs/android-host-beta.md"), "utf8");
-  assert.ok(docs.includes("通知停止、移除任务或 Activity 销毁（配置变更重建除外）、服务失败、热状态 CRITICAL 依次上报停止原因 1–4"));
+  assert.ok(docs.includes("通知停止、移除任务、服务失败、热状态 CRITICAL 依次上报停止原因 1–4"));
   for (const source of [service, platform]) {
     assert.doesNotMatch(source, /stopOutput\(\d|stopFromPlatform\([^,]+,\s*\d/);
   }
@@ -244,4 +244,8 @@ test("Android cast stop reasons share one table with Rust and the Host documenta
   const activity = readFileSync(path.join(TAURI, "gen/android/app/src/main/java/com/bilikara/app/MainActivity.kt"), "utf8");
   assert.ok(!activity.includes("updateNetworkPlayback"), "Rust calls HostCastPlatform.updateNetworkPlayback directly");
   assert.ok(platform.includes("fun updateNetworkPlayback(id: Long, mode: Int): Int"));
+  assert.doesNotMatch(platform, /stopFromPlatform/);
+  assert.match(service, /if \(running != null\)[\s\S]*running\.applyLease\(\)[\s\S]*else if \(!startPending\)/);
+  assert.match(service, /onTaskRemoved[\s\S]*stopOutput\(HostMediaPlayback\.STOP_TASK_REMOVED, servedLease\)/);
+  assert.match(service, /gate\.end\(lease\)/);
 });

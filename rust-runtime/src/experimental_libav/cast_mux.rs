@@ -77,7 +77,7 @@ pub struct CastSummary {
     pub audio_transcoded: bool,
     pub source_start_us: i64,
     pub duration_us: i64,
-    /// Maximum observed keyframe interval; None if only one keyframe was seen.
+    /// Longest observed decode-time span since a keyframe, including the final GOP.
     pub gop_us: Option<i64>,
 }
 impl LibavMetadataProbe {

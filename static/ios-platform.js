@@ -110,6 +110,7 @@
       if(!Number.isInteger(reply?.status)||reply.status<200||reply.status>599||!reply.body||typeof reply.body!=='object')throw new Error('native_api_invalid_reply');
       return reply;
     }} : {}),
+    openQrWebLink: url => call("open-qr-web-link", {url}),
     openBilibiliVideo: async url => {
       const result = await call("open-bilibili-video", {url});
       if (result?.opened !== true) throw new Error("ios_platform_failed");
